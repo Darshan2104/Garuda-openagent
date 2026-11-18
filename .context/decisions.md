@@ -1,5 +1,15 @@
 # Durable decisions
 
+## 2026-11-18 — Rigorous planning inherits run authority (#500)
+
+Rigorous mode resolves the packaged `garuda/plan` profile directly. Its read-only
+planner selects from the caller's admitted tool instances and keeps the caller's
+effect ceiling. The planner
+admits read-only effects, the built-in Bash tool under its inspection policy,
+and the built-in terminal tool. Its delegated permission engine inherits the
+run's policy and approval broker. Its tool context carries the caller's
+per-tool limits.
+
 ## 2026-11-17 — Diagnose malformed global settings before harness probes (#497)
 
 Doctor reads the same strict global settings loader as runtime catalog preparation
@@ -1849,6 +1859,12 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
   before any session changes; metadata keeps `previous_project_ids`; the key
   is published last and the journal becomes a receipt. An interrupted run
   resumes from the journal; a finished one is a no-op.
+
+## 2026-11-18 — Session verification follows the grader verdict (#502)
+
+Native completion records the verdict the authoritative grader supplied.
+Session state requires an affirmative verdict to attribute verification to that
+grader. Configuration and abstention alone leave verification unavailable.
 
 ## 2026-10-02 — Session state is four independent fields (issue #157, B.2)
 
