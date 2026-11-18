@@ -1,11 +1,16 @@
 """Tests for the rigorous-mode critic repair loop."""
 
-from garuda.core.events import EventStore
+import pytest
+
+from garuda.core.events import EventStore, EventType
+from garuda.core.permissions import PermissionEngine
 from garuda.core.rigorous import MAX_REPAIR_ROUNDS, RigorousAgent, _parse_critic_verdict
 from garuda.model.protocol import ModelResponse
 from garuda.model.script_model import ScriptModel
 from garuda.tools import tools_for_names
-from garuda.types import AgentConfig, Role, ToolCall
+from garuda.tools.files import ReadFileTool
+from garuda.tools.protocol import ToolEffect
+from garuda.types import AgentConfig, ExecResult, Role, ToolCall, ToolResult
 from garuda.workspace.local import LocalEnvironment
 
 
@@ -69,6 +74,155 @@ async def test_critic_rejection_triggers_repair_then_approves(tmp_path):
     user_messages = [m.content for m in result.messages if m.role == Role.USER]
     assert any("## Critic feedback on previous attempt" in content for content in user_messages)
     assert any("did not run the tests" in content for content in user_messages)
+
+
+@pytest.mark.parametrize("restrict_effects", [False, True])
+async def test_planner_uses_the_admitted_tools_and_parent_policy(tmp_path, restrict_effects):
+    expected_tools = {"read_file", "bash"}
+    plan_calls = [ToolCall(id="review-policy", name="read_file", arguments={"path": "fixture.txt"})]
+    if restrict_effects:
+        expected_tools.remove("bash")
+        plan_calls.append(ToolCall(id="review-effect", name="bash", arguments={"command": "pwd"}))
+
+    class PlannerScript(ScriptModel):
+        async def complete(self, messages, tools=None, temperature=None, max_tokens=None):
+            if "Create a detailed step-by-step plan" in messages[-1].content:
+                assert {entry["function"]["name"] for entry in tools} == expected_tools
+            return await super().complete(messages, tools, temperature, max_tokens)
+
+    events = EventStore()
+    events.append(EventType.USER_MESSAGE, {"content": "prepare a plan"})
+    result = await RigorousAgent().run(
+        task="prepare a plan",
+        model=PlannerScript([
+            ModelResponse(content=None, tool_calls=plan_calls),
+            ModelResponse(content="Plan", tool_calls=[]),
+            ModelResponse(content="Done", tool_calls=[]),
+            ModelResponse(content="APPROVED", tool_calls=[]),
+        ]),
+        env=LocalEnvironment(workspace_root=tmp_path),
+        tools=tools_for_names(["read_file", "ls", "bash"]),
+        config=AgentConfig(max_turns=8, enable_verifier=False, allowed_tools=["read_file", "bash"]),
+        permissions=PermissionEngine(path_rules={"deny": ["fixture.txt"]}),
+        allowed_tool_effects=frozenset({ToolEffect.READ_ONLY}) if restrict_effects else None,
+        events=events,
+    )
+    assert result.success
+    read = next(row["payload"] for row in events.get_all() if row["type"] == "permission_ask")
+    assert read["id"] == "review-policy" and read["approved"] is False
+    if restrict_effects:
+        denied_effect = next(
+            row["payload"] for row in events.get_all()
+            if row["type"] == "tool_result" and row["payload"]["tool_call_id"] == "review-effect"
+        )
+        assert denied_effect["is_error"] and denied_effect["content"] == "Unknown tool: bash"
+
+
+@pytest.mark.parametrize("effect", [ToolEffect.READ_ONLY, ToolEffect.MUTATING])
+async def test_planner_uses_a_run_scoped_override_only_when_read_only(tmp_path, effect):
+    class ScopedReader(ReadFileTool):
+        async def execute(self, arguments, env, ctx):
+            return ToolResult(tool_call_id="", content="scoped reader")
+
+    reader = ScopedReader()
+    reader.effect = effect
+    events = EventStore()
+    events.append(EventType.USER_MESSAGE, {"content": "Read the fixture"})
+    call = ToolCall(id="planner-reader", name="read_file", arguments={"path": "fixture.txt"})
+    result = await RigorousAgent().run(
+        task="Read the fixture", env=LocalEnvironment(tmp_path), tools=[reader],
+        model=ScriptModel([
+            ModelResponse(content=None, tool_calls=[call]),
+            *(ModelResponse(content=text, tool_calls=[]) for text in ("Plan", "Done", "APPROVED")),
+        ]),
+        config=AgentConfig(max_turns=8, enable_verifier=False), events=events,
+    )
+    assert result.success
+    [read] = [row["payload"] for row in events.get_all() if row["type"] == "tool_result"]
+    if effect == ToolEffect.READ_ONLY:
+        assert not read["is_error"] and read["content"] == "scoped reader"
+    else:
+        assert read["is_error"] and read["content"] == "Unknown tool: read_file"
+
+
+async def test_user_plan_profile_cannot_change_rigorous_planning_permissions(tmp_path):
+    from garuda.agents.resolve import user_agents_dir
+
+    profiles = user_agents_dir()
+    profiles.mkdir(parents=True, exist_ok=True)
+    (profiles / "plan.yaml").write_text("name: plan\npermission_mode: smart\ntools: [bash]\n")
+    inspection_command = "python3 --version"
+
+    class InspectEnvironment(LocalEnvironment):
+        async def execute(self, command, timeout=None, cwd=None):
+            if command == inspection_command:
+                return ExecResult(stdout="Python fixture", stderr="", exit_code=0, duration_ms=1)
+            return await super().execute(command, timeout=timeout, cwd=cwd)
+
+    def inspect(phase):
+        return ModelResponse(content=None, tool_calls=[
+            ToolCall(id=phase, name="bash", arguments={"command": inspection_command}),
+        ])
+
+    result = await RigorousAgent().run(
+        task="Inspect the fixture", env=InspectEnvironment(tmp_path), tools=tools_for_names(["bash"]),
+        model=ScriptModel([
+            inspect("plan"), ModelResponse(content="Plan", tool_calls=[]),
+            inspect("build"), ModelResponse(content="Done", tool_calls=[]),
+            ModelResponse(content="APPROVED", tool_calls=[]),
+        ]),
+        config=AgentConfig(enable_verifier=False, permission_mode="smart"),
+    )
+    assert result.success
+    [refusal] = [
+        row["payload"] for row in result.metadata["events"]
+        if row["type"] == "permission_ask" and row["payload"]["id"] == "plan"
+    ]
+    assert refusal["approved"] is False
+    outcomes = {
+        row["payload"]["tool_call_id"]: row["payload"]
+        for row in result.metadata["events"] if row["type"] == "tool_result"
+    }
+    assert "plan" not in outcomes
+    assert not outcomes["build"]["is_error"] and "Python fixture" in outcomes["build"]["content"]
+
+
+async def test_rigorous_planner_preserves_configured_bash_limits(tmp_path):
+    class InspectEnvironment(LocalEnvironment):
+        def __init__(self, root):
+            super().__init__(root)
+            self.inspection_timeouts: list[float | None] = []
+
+        async def execute(self, command, timeout=None, cwd=None):
+            if command == "pwd":
+                self.inspection_timeouts.append(timeout)
+                return ExecResult(stdout="x" * 1024, stderr="", exit_code=0, duration_ms=1)
+            return await super().execute(command, timeout=timeout, cwd=cwd)
+
+    def inspect(phase):
+        return ModelResponse(content=None, tool_calls=[
+            ToolCall(id=phase, name="bash", arguments={"command": "pwd"}),
+        ])
+
+    env = InspectEnvironment(tmp_path)
+    result = await RigorousAgent().run(
+        task="Inspect the fixture", env=env, tools=tools_for_names(["bash"]),
+        model=ScriptModel([
+            inspect("plan"), ModelResponse(content="Plan", tool_calls=[]),
+            inspect("build"), ModelResponse(content="Done", tool_calls=[]),
+            ModelResponse(content="APPROVED", tool_calls=[]),
+        ]),
+        config=AgentConfig(
+            enable_verifier=False, tool_options={"bash": {"timeout_sec": 2, "max_output_bytes": 96}},
+        ),
+    )
+    assert result.success
+    assert env.inspection_timeouts == [2, 2]
+    outputs = [
+        row["payload"]["content"] for row in result.metadata["events"] if row["type"] == "tool_result"
+    ]
+    assert len(outputs) == 2
+    assert all("cut at 96 bytes by tools.options.bash.max_output_bytes" in output for output in outputs)
 
 
 async def test_persistent_rejection_fails_after_max_rounds(tmp_path):

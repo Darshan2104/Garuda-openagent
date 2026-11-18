@@ -569,6 +569,9 @@ class LitellmModel:
             attempts = []
         try:
             return await self._attempt_with_retries(kwargs, attempts)
+        except asyncio.CancelledError as exc:
+            attach_usage(exc, list(attempts))
+            raise
         except litellm.ContextWindowExceededError as exc:
             # Re-raised as a provider-agnostic type so the loop can recognise the
             # one model failure it can act on — shrink the prompt and try again —
@@ -593,7 +596,11 @@ class LitellmModel:
                 # Acquire the slot per attempt so a request sleeping on backoff
                 # releases its slot instead of starving the rest of the fleet.
                 async with governor.slot(provider):
-                    response = await litellm.acompletion(**kwargs)
+                    try:
+                        response = await litellm.acompletion(**kwargs)
+                    except asyncio.CancelledError:
+                        attempt_usage.append({**usage_attempt({}, "interrupted"), "rejected": False})
+                        raise
                 if not kwargs.get("stream"):
                     attempt_usage.append(usage_attempt(_extract_usage(response), "success"))
                 return response
@@ -655,16 +662,22 @@ class LitellmModel:
         received_anything = False
         try:
             async for chunk in response_stream:
+                # Publish earlier attempts before yielding content. A consumer
+                # can be cancelled while handling the first text fragment.
+                first_chunk_after_retry = not received_anything and bool(attempts)
                 received_anything = True
                 # Usage chunks are cumulative snapshots of this attempt, not deltas.
                 reported = _extract_usage(chunk)
                 usage.update(reported)
                 current = attempts + [usage_attempt(usage, "success")]
-                if reported:
+                if reported or first_chunk_after_retry:
                     yield StreamDelta(usage=sum_usage(current), attempt_usage=current)
                 for delta in _stream_deltas_from_chunk(chunk):
                     terminal = terminal or delta.finish_reason is not None or delta.status in _TERMINAL_STATUSES
                     yield delta
+        except asyncio.CancelledError as exc:
+            attach_usage(exc, attempts + [{**usage_attempt(usage, "interrupted"), "rejected": False}])
+            raise
         except Exception as exc:
             usage.update(_error_usage(exc))
             attach_usage(exc, attempts + [{**usage_attempt(usage, "failed"),

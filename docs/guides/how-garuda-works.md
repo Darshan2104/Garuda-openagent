@@ -128,6 +128,13 @@ unrun command set does not restrict later attempts. A command-free readonly
 completion can therefore follow a denied check. Checks that actually fail still
 constrain resubmission; eval and rigorous evidence requirements still apply.
 
+Other refusals that leave commands unexamined also permit reusing them: unresolved
+acceptance criteria, an empty or too-short summary, an unavailable workspace
+baseline, an `answer_check` hook exception, or an LLM judge that cannot be reached
+after retry or returns an unclear verdict. Commands may already have run when
+the hook or judge fails. Each attempt still fails closed and counts as rejected;
+an explicit judge `REJECTED` verdict still requires new evidence.
+
 ## 5. Session: what gets recorded
 
 Each `garuda run` or `garuda chat` creates a session under

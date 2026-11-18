@@ -168,6 +168,9 @@ async def settle(gate: Any, reservation: Any, *, response: Any = None,
     Otherwise, tokens are summed per attempt. Unreported attempts except definite rejections
     add the largest reported prompt size, or the reservation when unavailable,
     with unknown cost. This lower bound excludes unreported generated output.
+    A trailing interrupted active attempt charges at least its own reservation
+    on top of known earlier attempts. Any increase over its reported tokens is
+    estimated, and the call's cost remains unknown.
     """
     from garuda.core.spend import usage_tokens
 
@@ -175,11 +178,21 @@ async def settle(gate: Any, reservation: Any, *, response: Any = None,
     interrupted = error is not None and not isinstance(error, Exception)
     usage = getattr(source, "usage", None)
     attempts = getattr(source, "attempt_usage", None) or []
+    prior, active = attempts, None
+    if (interrupted and attempts and isinstance(attempts[-1], dict)
+            and attempts[-1].get("outcome") == "interrupted"):
+        prior, active = attempts[:-1], attempts[-1]
     attempt_tokens = sum(
-        usage_tokens(attempt["usage"]) for attempt in attempts
+        usage_tokens(attempt["usage"]) for attempt in prior
         if isinstance(attempt, dict) and isinstance(attempt.get("usage"), dict))
-    missing = unreported_attempts(attempts)
-    per_attempt = reported_prompt_tokens(attempts) or reservation.tokens
+    missing = unreported_attempts(prior)
+    per_attempt = reported_prompt_tokens(prior) or reservation.tokens
+    estimated_attempt_tokens = missing * per_attempt
+    if active is not None:
+        active_tokens = usage_tokens(active.get("usage"))
+        attempt_tokens += max(active_tokens, reservation.tokens)
+        if reservation.tokens > active_tokens:
+            missing += 1
     # The final error cannot rule out spend on an earlier failed attempt.
     # Legacy attempts without rejection evidence remain unknown outcomes.
     rejected = is_definite_rejection(error) and all(
@@ -199,7 +212,7 @@ async def settle(gate: Any, reservation: Any, *, response: Any = None,
                                 model=getattr(model, "model_name", None),
                                 cost_partial=cost_partial, attempt_tokens=attempt_tokens,
                                 estimated_attempts=missing,
-                                estimated_attempt_tokens=missing * per_attempt)
+                                estimated_attempt_tokens=estimated_attempt_tokens)
     events = _events.get()
     if warning is not None and events is not None:
         events.append(EventType.BUDGET, {"spend": warning})

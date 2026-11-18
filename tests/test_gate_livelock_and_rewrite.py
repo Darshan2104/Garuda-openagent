@@ -12,6 +12,8 @@
 """
 
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 import yaml
@@ -66,6 +68,110 @@ def _contract_events(result, action):
         for e in result.metadata.get("events", [])
         if e.get("type") == EventType.CONTRACT.value and e.get("payload", {}).get("action") == action
     ]
+
+
+@pytest.mark.parametrize("refusal", ["summary", "baseline"])
+async def test_repaired_preflight_reuses_the_same_verification_commands(tmp_path, refusal):
+    command = "test -d ."
+    first = _complete([command], call_id="first")
+    if refusal == "summary":
+        first.tool_calls[0].arguments["summary"] = "short"
+
+    baseline_reads = 0
+
+    def load_baseline():
+        nonlocal baseline_reads
+        baseline_reads += 1
+        if baseline_reads == 1:
+            raise OSError("temporarily unavailable")
+        return SimpleNamespace(to_evidence=lambda: {"attribution": "fixture"})
+
+    result = await DefaultAgent().run(
+        task="Check the workspace", model=ScriptModel([first, _complete([command], call_id="second")]),
+        env=LocalEnvironment(tmp_path), tools=default_tools(),
+        config=_config(max_turns=2, enable_acceptance_contract=False, force_final_submission=False),
+        workspace_delta_loader=load_baseline if refusal == "baseline" else None,
+    )
+    assert result.success
+    rejected, accepted = [
+        event["payload"] for event in result.metadata["events"] if event["type"] == EventType.VERIFICATION.value
+    ]
+    assert not rejected["approved"] and not rejected["evidence"]
+    assert accepted["approved"] and [item["command"] for item in accepted["evidence"]] == [command]
+
+
+async def test_recovered_answer_check_reuses_the_same_verification_commands(tmp_path):
+    command = "test -d ."
+    hook_calls = 0
+
+    def answer_check(env):
+        nonlocal hook_calls
+        hook_calls += 1
+        if hook_calls == 1:
+            raise RuntimeError("temporarily unavailable")
+        return None
+
+    result = await DefaultAgent().run(
+        task="Check the workspace",
+        model=ScriptModel([_complete([command], call_id="first"), _complete([command], call_id="second")]),
+        env=LocalEnvironment(tmp_path), tools=default_tools(),
+        config=_config(
+            max_turns=2, enable_acceptance_contract=False, force_final_submission=False,
+            answer_check=answer_check,
+        ),
+    )
+    rejected, accepted = [
+        event["payload"] for event in result.metadata["events"] if event["type"] == EventType.VERIFICATION.value
+    ]
+    assert not rejected["approved"] and "answer_check hook failed" in rejected["feedback"]
+    assert rejected["checklist"]["verify_cmd_0"]
+    assert result.success and hook_calls == 2
+    assert accepted["approved"] and [item["command"] for item in accepted["evidence"]] == [command]
+
+
+@pytest.mark.parametrize(
+    "judge_outcome, feedback",
+    [("unclear", "verdict was unclear"), ("unreachable", "could not be reached"),
+     ("rejected", "Completion rejected by verifier:")],
+)
+async def test_judge_refusal_only_locks_out_judged_commands(tmp_path, monkeypatch, judge_outcome, feedback):
+    command = "test -d ."
+    if judge_outcome == "unreachable":
+        first_verdict = [RuntimeError("unreachable"), RuntimeError("still unreachable")]
+    else:
+        first_verdict = [ModelResponse(
+            content=(
+                '{"verdict":"REJECTED","reason":"A requirement is unverified."}'
+                if judge_outcome == "rejected" else "I cannot decide."
+            ),
+            tool_calls=[],
+        )]
+    model = ScriptModel([])
+    monkeypatch.setattr(model, "complete", AsyncMock(side_effect=[
+        _complete([command], call_id="first"), *first_verdict,
+        _complete([command], call_id="second"),
+        ModelResponse(content='{"verdict":"APPROVED","reason":"Checks passed."}', tool_calls=[]),
+    ]))
+    result = await DefaultAgent().run(
+        task="Check the workspace", model=model,
+        env=LocalEnvironment(tmp_path), tools=default_tools(),
+        config=_config(
+            max_turns=2, enable_acceptance_contract=False, force_final_submission=False,
+            enable_llm_verifier=True,
+        ),
+    )
+    rejected, retried = [
+        event["payload"] for event in result.metadata["events"] if event["type"] == EventType.VERIFICATION.value
+    ]
+    assert not rejected["approved"] and feedback in rejected["feedback"]
+    assert [item["command"] for item in rejected["evidence"]] == [command]
+    if judge_outcome == "rejected":
+        assert not result.success and not retried["approved"]
+        assert "presents no new evidence" in retried["feedback"]
+        assert not retried["evidence"]
+    else:
+        assert result.success and retried["approved"]
+        assert [item["command"] for item in retried["evidence"]] == [command]
 
 
 # --- 1. the livelock -------------------------------------------------------

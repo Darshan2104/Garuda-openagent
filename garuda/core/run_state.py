@@ -42,15 +42,6 @@ from garuda.workspace.protocol import Environment
 logger = logging.getLogger(__name__)
 
 
-def _has_authoritative_grader(config) -> bool:
-    from garuda.core.verifier import CompletionVerifier
-
-    try:
-        return CompletionVerifier._has_authoritative_grader(config)
-    except Exception:
-        return False
-
-
 @dataclass
 class RunState:
     """Everything one run of the loop needs, assembled once by :func:`prepare_run`."""
@@ -197,6 +188,7 @@ class RunState:
         self.flush_turn_metrics()
         metric_summary = self.metrics.summary()
         metric_summary.update(aggregate_model_metrics(self.events.get_all()))
+        gate = getattr(self.terminal, "completion_gate", None)
         metadata: dict = {
             "session_id": self.events.session_id,
             "events": self.events.get_all(),
@@ -210,9 +202,8 @@ class RunState:
             # stood behind it. A gate pass alone is a self-check, not verification.
             "completion_gate": {
                 "verifier": bool(self.config.enable_verifier),
-                "authoritative_grader": _has_authoritative_grader(self.config),
-                "self_check": getattr(getattr(self.terminal, "completion_gate", None),
-                                      "self_check_status", None),
+                "authoritative_grader_verdict": getattr(gate, "authoritative_grader_verdict", None),
+                "self_check": getattr(gate, "self_check_status", None),
             },
         }
         contract = self.completion_contract
