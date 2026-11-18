@@ -22,6 +22,20 @@ Explicit non-null, non-mapping routing sections and zero/false/empty-sequence
 global documents now refuse in the shared parsers rather than silently becoming
 defaults. Null reminder sections also load as absent under strict validation.
 
+## 2026-11-18 — ACP stdio output uses cancellable pipe writes (#507)
+
+ACP stdio bounds queued output, with no timeout on queue backpressure while
+stdin remains open. Reads continue during an ordered dispatch, retaining at
+most the frame bound plus one read chunk so EOF is observed even when replies
+are blocked. The cleanup deadline applies only after input EOF or teardown
+begins; output queue waits, pending prompts and output drain share that one
+deadline. It bounds output waits after EOF, not an in-flight ordered handler
+such as session creation or runtime startup. Expiry during an output wait
+cancels the writer and bypasses protocol error delivery on the stalled
+channel. Nonblocking stdout writes let cancellation settle the readiness wait.
+The connection owner observes the writer alongside its nonblocking input
+read, so a terminal output failure starts session teardown without stdin EOF.
+
 ## 2026-11-17 — Bound inbound transport work and preserve log progress (#485, #486, #488, #489)
 
 Inbound HTTP authenticates headers before body reads and refuses ambiguous

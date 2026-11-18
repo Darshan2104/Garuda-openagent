@@ -14,7 +14,7 @@ future listener needs explicit secure configuration to exist at all.
 
 Dispatch is concurrent with a bound: prompts run as tasks so a cancel or
 approval arriving mid-turn is processed instead of waiting behind the blocked
-prompt; everything else dispatches inline, and the task set is bounded with
+prompt; everything else dispatches one at a time, and the task set is bounded with
 backpressure. A valid initialize handshake is required before any session
 method; malformed framing ends the process nonzero without leaking internals.
 """
@@ -27,6 +27,7 @@ import os
 import sys
 import uuid
 from collections.abc import Awaitable, Callable
+from contextlib import contextmanager
 from typing import Any
 
 from garuda.acp.protocol import (
@@ -45,9 +46,14 @@ logger = logging.getLogger(__name__)
 #: Ceiling on concurrent prompt tasks. Past it the reader waits for one to
 #: finish instead of growing the set without bound.
 MAX_INFLIGHT_TASKS = 64
+MAX_QUEUED_REPLIES = 32
 CLEANUP_TIMEOUT = 5.0
 
 MakeRuntime = Callable[[str], Awaitable[Any]]
+
+
+class _OutputUnavailable(OSError):
+    """Output cannot accept further protocol frames."""
 
 
 class AcpServer:
@@ -135,6 +141,8 @@ class AcpServer:
             return
         try:
             await handler(call_id, params)
+        except _OutputUnavailable:
+            raise
         except (AcpError, RuntimeProtocolError) as exc:
             if call_id is not None:
                 await self._fail(call_id, str(exc))
@@ -333,32 +341,107 @@ def _to_update(event: Any) -> dict[str, Any] | None:
     return None
 
 
+@contextmanager
+def _nonblocking_descriptor(stream):
+    try:
+        fd = stream.fileno()
+    except (AttributeError, OSError):
+        # In-memory stream doubles have no selectable file descriptor.
+        yield None
+        return
+    was_blocking = os.get_blocking(fd)
+    os.set_blocking(fd, False)
+    try:
+        yield fd
+    finally:
+        os.set_blocking(fd, was_blocking)
+
+
 async def serve_stdio(make_runtime: MakeRuntime) -> int:
-    """Run the framing loop over real stdin/stdout. Returns a process exit code.
+    """Run the ACP server with interruptible stdin and stdout."""
+    input_stream, output = sys.stdin.buffer, sys.stdout.buffer
+    try:
+        with _nonblocking_descriptor(input_stream) as input_fd, _nonblocking_descriptor(output) as output_fd:
+            return await _serve_stdio(make_runtime, input_stream, input_fd, output, output_fd)
+    except OSError:
+        return 1
+
+
+async def _serve_stdio(
+    make_runtime: MakeRuntime, input_stream, input_fd: int | None, output, output_fd: int | None,
+) -> int:
+    """Run the framing loop. Returns a process exit code.
 
     Prompts dispatch as bounded background tasks so a cancel or approval
     arriving mid-turn is handled instead of waiting behind the blocked
-    prompt; every other message dispatches inline, preserving arrival order
-    for the fast paths. Malformed framing ends the process nonzero (2)
-    without leaking internals; transport errors end it nonzero (1).
+    prompt; other messages dispatch one at a time, preserving arrival order.
+    Input reads continue during dispatch so EOF can start the cleanup deadline
+    even while output is backpressured. Malformed framing ends the process
+    nonzero (2) without leaking internals; transport errors end it nonzero (1).
     """
     loop = asyncio.get_running_loop()
-    outbox: asyncio.Queue[bytes] = asyncio.Queue()
+    outbox: asyncio.Queue[bytes] = asyncio.Queue(maxsize=MAX_QUEUED_REPLIES)
+    closing = asyncio.Event()
+    deadline: float | None = None
+
+    def _begin_closing() -> None:
+        nonlocal deadline
+        if deadline is None:
+            deadline = loop.time() + CLEANUP_TIMEOUT
+            closing.set()
+
+    def _require_output() -> None:
+        if writer.done() or writer.cancelling():
+            raise _OutputUnavailable("ACP output writer stopped")
 
     async def _send(frame: bytes) -> None:
-        outbox.put_nowait(frame)
+        _require_output()
+        try:
+            outbox.put_nowait(frame)
+            return
+        except asyncio.QueueFull:
+            pass
+        put = asyncio.create_task(outbox.put(frame))
+        closed = asyncio.create_task(closing.wait())
+        try:
+            # While input is open, queue pressure must never interrupt a frame.
+            await asyncio.wait({put, closed, writer}, return_when=asyncio.FIRST_COMPLETED)
+            _require_output()
+            if not put.done():
+                async with asyncio.timeout_at(deadline):
+                    await asyncio.wait({put, writer}, return_when=asyncio.FIRST_COMPLETED)
+                    _require_output()
+            put.result()
+        except TimeoutError as exc:
+            # The output deadline has already expired. Cancel the pipe wait
+            # now so neither error delivery nor teardown can restart it.
+            writer.cancel()
+            raise _OutputUnavailable("ACP output queue stalled") from exc
+        finally:
+            put.cancel()
+            closed.cancel()
+            await asyncio.gather(put, closed, return_exceptions=True)
 
     async def _writer() -> None:
         while True:
             frame = await outbox.get()
             try:
-                await loop.run_in_executor(None, _write_stdout, frame)
+                await _write_stdout(output, output_fd, frame)
             finally:
                 outbox.task_done()
 
     server = AcpServer(make_runtime, _send)
     writer = asyncio.ensure_future(_writer())
     pending: set[asyncio.Task[None]] = set()
+
+    async def _wait_for_work(tasks: set[asyncio.Task]) -> None:
+        done, _ = await asyncio.wait(
+            {writer, *tasks}, return_when=asyncio.FIRST_COMPLETED,
+            timeout=None if deadline is None else max(0, deadline - loop.time()),
+        )
+        if not done:
+            writer.cancel()
+        _require_output()
 
     def _reap(task: asyncio.Task[None]) -> None:
         pending.discard(task)
@@ -368,9 +451,10 @@ async def serve_stdio(make_runtime: MakeRuntime) -> int:
                 logger.warning("ACP server prompt task failed", exc_info=exc)
 
     async def _dispatch(message: dict[str, Any]) -> None:
+        _require_output()
         if message.get("method") == "session/prompt":
             while len(pending) >= MAX_INFLIGHT_TASKS:
-                await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+                await _wait_for_work(pending)
             task = asyncio.ensure_future(server.handle(message))
             pending.add(task)
             task.add_done_callback(_reap)
@@ -378,14 +462,16 @@ async def serve_stdio(make_runtime: MakeRuntime) -> int:
             await server.handle(message)
 
     buffer = b""
+    eof = False
+    read: asyncio.Task[bytes] | None = None
+    dispatch: asyncio.Task[None] | None = None
     exit_code = 0
     try:
         while True:
-            chunk = await loop.run_in_executor(None, sys.stdin.buffer.read1, 65536)
-            if not chunk:
-                break
-            buffer += chunk
-            while True:
+            if dispatch is not None and dispatch.done():
+                dispatch.result()
+                dispatch = None
+            while dispatch is None:
                 newline = buffer.find(b"\n")
                 if 0 <= newline <= MAX_FRAME_BYTES and not buffer[:newline].strip():
                     buffer = buffer[newline + 1:]
@@ -394,36 +480,65 @@ async def serve_stdio(make_runtime: MakeRuntime) -> int:
                     message, buffer = decode_frame(buffer)
                 except ValueError:
                     break
-                await _dispatch(message)
-        if buffer.strip():
-            raise AcpProtocolError("incomplete NDJSON record")
+                dispatch = asyncio.create_task(_dispatch(message))
+            if eof and dispatch is None:
+                if buffer.strip():
+                    raise AcpProtocolError("incomplete NDJSON record")
+                break
+            # At most MAX_FRAME_BYTES plus one read chunk is retained while a
+            # dispatch waits. Do not dispatch another message to free space.
+            if not eof and read is None and len(buffer) <= MAX_FRAME_BYTES:
+                read = asyncio.create_task(_read_stdin(input_stream, input_fd))
+            await asyncio.wait(
+                {writer, *(task for task in (read, dispatch) if task is not None)},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            _require_output()
+            if read is not None and read.done():
+                chunk = read.result()
+                read = None
+                if chunk:
+                    buffer += chunk
+                else:
+                    eof = True
+                    _begin_closing()
     except AcpProtocolError:
         print("error: malformed input frame", file=sys.stderr)
         exit_code = 2
     except OSError:
         exit_code = 1
     finally:
-        if pending:
-            _done, waiting = await asyncio.wait(pending, timeout=CLEANUP_TIMEOUT)
-            for task in waiting:
-                task.cancel()
-            await asyncio.gather(*waiting, return_exceptions=True)
-        # EOF may arrive immediately after a batch: dispatch has queued replies
-        # that the executor-backed writer has not flushed yet.
-        drain = asyncio.create_task(outbox.join())
-        try:
-            done, _ = await asyncio.wait(
-                (drain, writer), timeout=CLEANUP_TIMEOUT, return_when=asyncio.FIRST_COMPLETED,
-            )
-            if drain not in done:
-                exit_code = exit_code or 1
-        finally:
-            drain.cancel()
-            await asyncio.gather(drain, return_exceptions=True)
+        _begin_closing()
+        waiting = set(pending)
+        foreground = {task for task in (read, dispatch) if task is not None}
+        for task in foreground:
+            task.cancel()
+        if waiting and not (writer.done() or writer.cancelling()):
+            _done, waiting = await asyncio.wait(waiting, timeout=max(0, deadline - loop.time()))
+        for task in waiting:
+            task.cancel()
+        # EOF may arrive immediately after a batch, while replies are queued.
+        if writer.cancelling():
+            exit_code = exit_code or 1
+        elif not writer.done():
+            drain = asyncio.create_task(outbox.join())
+            try:
+                done, _ = await asyncio.wait(
+                    (drain, writer), timeout=max(0, deadline - loop.time()),
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if drain not in done:
+                    exit_code = exit_code or 1
+            finally:
+                drain.cancel()
+                await asyncio.gather(drain, return_exceptions=True)
         writer.cancel()
         writer_result, = await asyncio.gather(writer, return_exceptions=True)
         if isinstance(writer_result, Exception):
             exit_code = exit_code or 1
+        # A cancelled prompt may still need runtime cleanup. Settle the
+        # writer before waiting for it so cleanup cannot extend the pipe wait.
+        await asyncio.gather(*waiting, *foreground, return_exceptions=True)
         for session in list(server._sessions.values()):
             try:
                 await asyncio.wait_for(session.close(), CLEANUP_TIMEOUT)
@@ -432,9 +547,43 @@ async def serve_stdio(make_runtime: MakeRuntime) -> int:
     return exit_code
 
 
-def _write_stdout(frame: bytes) -> None:
-    sys.stdout.buffer.write(frame)
-    sys.stdout.buffer.flush()
+async def _read_stdin(input_stream, fd: int | None) -> bytes:
+    if fd is None:
+        return input_stream.read1(65536)
+    loop = asyncio.get_running_loop()
+    while True:
+        try:
+            return os.read(fd, 65536)
+        except BlockingIOError:
+            ready = asyncio.Event()
+            loop.add_reader(fd, ready.set)
+            try:
+                await ready.wait()
+            finally:
+                loop.remove_reader(fd)
+
+
+async def _write_stdout(output, fd: int | None, frame: bytes) -> None:
+    if fd is None:
+        output.write(frame)
+        output.flush()
+        return
+    loop = asyncio.get_running_loop()
+    remaining = memoryview(frame)
+    while remaining:
+        try:
+            written = os.write(fd, remaining)
+        except BlockingIOError:
+            ready = asyncio.Event()
+            loop.add_writer(fd, ready.set)
+            try:
+                await ready.wait()
+            finally:
+                loop.remove_writer(fd)
+        else:
+            if written == 0:
+                raise BrokenPipeError("ACP stdout stopped accepting bytes")
+            remaining = remaining[written:]
 
 
 async def make_echo_runtime(session_id: str) -> Any:
