@@ -1676,9 +1676,10 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 
 ## 2026-11-18 — MCP launch-tree binding excludes Git bookkeeping (#505)
 
-Walked launch trees exclude Git metadata entries, including linked worktree
-pointers. Direct operands and aliases into that metadata are visibly unpinned.
-A fingerprint that previously included Git metadata requires re-approval.
+A launch tree excludes `.git` entries and the Git administrative directories
+resolved from a checkout pointer. Ambiguous pointers refuse trust. Direct operands
+and aliases into that metadata are visibly unpinned. A fingerprint that previously
+included Git metadata requires re-approval.
 
 ## 2026-10-02 — Project authority: profile ceiling and MCP trust (issue #143)
 

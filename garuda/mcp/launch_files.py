@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -20,6 +22,8 @@ class LaunchBindingError(ValueError):
 
 @dataclass
 class LaunchFiles:
+    workspace: Path
+    git_directories: tuple[Path, ...]
     paths: list[Path] = field(default_factory=list)
     reasons: list[str] = field(default_factory=list)
     trees: list[Path] = field(default_factory=list)
@@ -32,6 +36,13 @@ class LaunchFiles:
     def mark_unpinned(self, reason: str) -> None:
         if reason not in self.reasons:
             self.reasons.append(reason)
+
+    def is_git_metadata(self, path: Path) -> bool:
+        if path.is_relative_to(self.workspace) and any(
+            part.casefold() == ".git" for part in path.relative_to(self.workspace).parts
+        ):
+            return True
+        return any(path.is_relative_to(directory) for directory in self.git_directories)
 
 
 def is_python_command(command: str) -> bool:
@@ -100,21 +111,55 @@ def _bytecode(path: Path) -> bool:
     return "__pycache__" in path.parts or path.suffix in {".pyc", ".pyo"}
 
 
-def is_git_metadata(path: Path, root: Path) -> bool:
-    return path.is_relative_to(root) and any(
-        part.casefold() == ".git" for part in path.relative_to(root).parts
-    )
+def _git_metadata_directories(workspace: Path) -> tuple[Path, ...]:
+    """Resolve alternate Git administrative paths from the checkout's marker."""
+    marker = workspace / ".git"
+    if not (marker.is_symlink() or marker.is_file() or (marker / "commondir").is_file()):
+        # Ordinary .git entries are excluded by name and need no Git process.
+        return ()
+    try:
+        # This lookup runs before any project code is trusted.
+        search_path = os.pathsep.join(
+            entry for entry in os.get_exec_path()
+            if os.path.isabs(entry) and not Path(entry).resolve().is_relative_to(workspace)
+        )
+        executable = shutil.which("git", path=search_path)
+        if executable is None:
+            raise OSError("Git is unavailable")
+        git = Path(executable).resolve(strict=True)
+        if git.is_relative_to(workspace):
+            raise ValueError("Git executable is inside the workspace")
+        result = subprocess.run(
+            [str(git), "rev-parse", "--show-toplevel", "--absolute-git-dir", "--git-common-dir"],
+            cwd=workspace, capture_output=True, check=True, timeout=5,
+            env={
+                "PATH": search_path,
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_CONFIG_GLOBAL": os.devnull,
+                "GIT_TERMINAL_PROMPT": "0",
+            },
+        )
+        top, git_dir, common_dir = os.fsdecode(result.stdout).splitlines()
+        directories = tuple((workspace / value).resolve(strict=True) for value in (git_dir, common_dir))
+        if Path(top).resolve(strict=True) != workspace or any(
+            workspace.is_relative_to(directory) or not directory.is_dir() for directory in directories
+        ):
+            raise ValueError("Git metadata overlaps or does not describe the workspace")
+    except (OSError, RuntimeError, subprocess.SubprocessError, ValueError) as exc:
+        raise LaunchBindingError("cannot resolve checkout Git metadata") from exc
+    return directories
 
 
 def discover_launch_files(
     tokens: list[str], workspace: Path, environment: dict[str, str] | None = None,
 ) -> LaunchFiles:
-    """Bind local modules/packages and script-containing trees, excluding bytecode.
+    """Bind local modules/packages and script trees, excluding bytecode and Git metadata.
 
     No sys.path lookup or import is allowed. Every tree uses the same enumeration
     bound; failures refuse the grant instead of silently truncating its coverage.
     """
-    found = LaunchFiles()
+    git_directories = _git_metadata_directories(workspace) if any(tokens) else ()
+    found = LaunchFiles(workspace, git_directories)
     walked: set[Path] = set()
     for variable in sorted(environment or {}):
         if variable in _CODE_ENV or variable.startswith("DYLD_"):
@@ -133,16 +178,16 @@ def discover_launch_files(
             return
         raw = Path(value).expanduser()
         candidate = Path(os.path.abspath(raw if raw.is_absolute() else workspace / raw))
+        if found.is_git_metadata(candidate):
+            found.mark_unpinned(f"code/path operand references excluded Git metadata: {value}")
+            return
         if not _within(candidate, workspace):
             if required or code_like:
                 found.mark_unpinned(f"code/path operand outside project: {value}")
             return
-        if is_git_metadata(candidate, workspace):
-            found.mark_unpinned(f"code/path operand references excluded Git metadata: {value}")
-            return
         if candidate.is_file() or candidate.is_symlink():
             resolved = candidate.resolve()
-            if is_git_metadata(resolved, workspace):
+            if found.is_git_metadata(resolved):
                 found.mark_unpinned(f"code/path operand references excluded Git metadata: {value}")
                 return
             if _bytecode(candidate):
@@ -167,7 +212,7 @@ def discover_launch_files(
         for directory, dirs, files in os.walk(base, followlinks=True, onerror=_walk_error):
             path = Path(directory)
             resolved = path.resolve(strict=True)
-            if is_git_metadata(resolved, workspace):
+            if found.is_git_metadata(resolved):
                 found.mark_unpinned(f"launch tree references excluded Git metadata: {path.relative_to(workspace)}")
                 dirs.clear()
                 continue
@@ -184,10 +229,10 @@ def discover_launch_files(
                 continue
             visited.add(resolved)
             dirs[:] = sorted(
-                name for name in dirs if name.casefold() != ".git" and not _bytecode(path / name)
+                name for name in dirs if not found.is_git_metadata(path / name) and not _bytecode(path / name)
             )
             for name in sorted(files):
-                if name.casefold() == ".git":
+                if found.is_git_metadata(path / name):
                     continue
                 if _bytecode(path / name):
                     if not (path / name).with_suffix(".py").is_file():

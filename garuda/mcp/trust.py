@@ -44,7 +44,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from garuda.config_sources import record_digest, record_source
-from garuda.mcp.launch_files import LaunchBindingError, discover_launch_files, is_git_metadata
+from garuda.mcp.launch_files import LaunchBindingError, LaunchFiles, discover_launch_files
 
 logger = logging.getLogger(__name__)
 
@@ -102,16 +102,16 @@ def _file_digest(path: Path) -> str:
     return value
 
 
-def _referenced_files(paths: list[Path], workspace: Path) -> list[dict]:
+def _referenced_files(files: LaunchFiles) -> list[dict]:
     """Repository files the command line names, with how each one resolves."""
     refs: list[dict] = []
-    for candidate in sorted(set(paths)):
+    for candidate in sorted(set(files.paths)):
         resolved = candidate.resolve()
-        if is_git_metadata(resolved, workspace):
+        if files.is_git_metadata(resolved):
             raise TrustError("launch file changed to excluded Git metadata during discovery")
-        ref = {"token": str(candidate.relative_to(workspace)),
+        ref = {"token": str(candidate.relative_to(files.workspace)),
                "symlink": candidate.is_symlink(), "target": str(resolved)}
-        if resolved.is_file() and _within(resolved, workspace):
+        if resolved.is_file() and _within(resolved, files.workspace):
             ref["sha256"] = _file_digest(resolved)
         refs.append(ref)
     return refs
@@ -122,7 +122,7 @@ def trust_key(server, workspace: str | Path) -> TrustKey:
     root = Path(repository_identity(workspace))
     try:
         files = discover_launch_files([server.command, *server.args], root, server.env)
-        references = _referenced_files(files.paths, root)
+        references = _referenced_files(files)
     except (LaunchBindingError, RuntimeError) as exc:
         raise TrustError(str(exc)) from exc
     payload = {

@@ -501,10 +501,11 @@ def test_review_script_grant_binds_sibling_imports_and_discloses_tree(home, repo
     assert "tree" in descriptions[0] and "app" in descriptions[0]
 
 
-def test_root_mcp_grant_survives_staging_but_binds_source(home, repo):
+@pytest.mark.parametrize("git_dir", [".git", "repo-admin"])
+def test_root_mcp_grant_survives_staging_but_binds_source(home, repo, git_dir):
     script = repo / "server.py"
     script.write_text("value = 1\n")
-    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    _init_mcp_checkout(repo, git_dir)
     _write_mcp(repo / ".agent/mcp.json", {"tool": {"command": "python3", "args": ["server.py"]}})
     server = _untrusted(repo)[0]
     assert trust.grant(server, repo).code_pinned
@@ -514,14 +515,49 @@ def test_root_mcp_grant_survives_staging_but_binds_source(home, repo):
     assert not trust.is_trusted(server, repo)
 
 
-@pytest.mark.parametrize("path", [".git/HEAD", "head-alias"])
-def test_mcp_operands_referring_to_git_metadata_are_unpinned(home, repo, path):
-    subprocess.run(["git", "init", "-q", str(repo)], check=True)
-    (repo / "head-alias").symlink_to(".git/HEAD")
+def _init_mcp_checkout(repo, git_dir):
+    args = [] if git_dir == ".git" else ["--separate-git-dir", str(repo / git_dir)]
+    subprocess.run(["git", "init", "-q", *args, str(repo)], check=True)
+
+
+@pytest.mark.parametrize("git_dir", [".git", "repo-admin"])
+@pytest.mark.parametrize("alias", [False, True])
+def test_mcp_operands_referring_to_git_metadata_are_unpinned(home, repo, git_dir, alias):
+    _init_mcp_checkout(repo, git_dir)
+    path = f"{git_dir}/HEAD"
+    if alias:
+        (repo / "head-alias").symlink_to(path)
+        path = "head-alias"
     _write_mcp(repo / ".agent/mcp.json", {"tool": {"command": "python3", "args": [path]}})
     key = trust.trust_key(_untrusted(repo)[0], repo)
     assert not key.code_pinned
     assert any("excluded Git metadata" in reason for reason in key.unpinned_reasons)
+
+
+def test_mcp_grant_refuses_an_unresolved_git_pointer(home, repo):
+    (repo / ".git").write_text("gitdir: missing-admin\n")
+    (repo / "server.py").write_text("value = 1\n")
+    _write_mcp(repo / ".agent/mcp.json", {"tool": {"command": "python3", "args": ["server.py"]}})
+
+    with pytest.raises(trust.TrustError, match="cannot resolve checkout Git metadata"):
+        trust.grant(_untrusted(repo)[0], repo)
+
+
+def test_mcp_checkout_discovery_does_not_start_git_from_the_workspace(home, repo, monkeypatch):
+    _init_mcp_checkout(repo, "repo-admin")
+    (repo / "server.py").write_text("value = 1\n")
+    _write_mcp(repo / ".agent/mcp.json", {"tool": {"command": "python3", "args": ["server.py"]}})
+    server = _untrusted(repo)[0]
+    local_git = repo / "git"
+    local_git.touch(mode=0o700)
+    monkeypatch.setenv("PATH", str(repo))
+
+    def refuse_spawn(*args, **kwargs):
+        pytest.fail("Checkout discovery attempted to launch the workspace executable")
+
+    monkeypatch.setattr("garuda.mcp.launch_files.subprocess.run", refuse_spawn)
+    with pytest.raises(trust.TrustError, match="cannot resolve checkout Git metadata"):
+        trust.grant(server, repo)
 
 
 @pytest.mark.parametrize("variable", [
