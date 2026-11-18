@@ -77,6 +77,15 @@ class SpendLimitExceeded(RuntimeError):
         self.cause = cause
 
 
+def describe_refusal(exc: SpendLimitExceeded) -> str:
+    """Describe a spend refusal without mistaking recording failures for exhaustion."""
+    if exc.cause == "cost_unknown":
+        return f"Run-tree spend budget cannot be enforced: {exc}"
+    if exc.cause == "checkpoint":
+        return f"Run stopped fail-closed: run-tree spend could not be recorded ({exc})"
+    return f"Run-tree spend budget exhausted: {exc}"
+
+
 @dataclass(frozen=True)
 class SpendReservation:
     purpose: str

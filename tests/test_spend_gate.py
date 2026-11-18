@@ -18,7 +18,7 @@ from garuda.context.manager import ContextManager
 from garuda.core.events import EventStore, EventType
 from garuda.core.loop import DefaultAgent
 from garuda.core.permissions import PermissionEngine
-from garuda.core.spend import SpendGate, SpendLimitExceeded
+from garuda.core.spend import SpendGate, SpendLimitExceeded, describe_refusal
 from garuda.model import accounting
 from garuda.model.protocol import ContextOverflowError, ModelResponse, count_request_tokens
 from garuda.model.script_model import ScriptModel
@@ -47,6 +47,16 @@ async def _run(tmp_path: Path, script, **limits):
         config=config, permissions=PermissionEngine(mode="yolo"), events=events,
     )
     return result, config, events
+
+
+@pytest.mark.parametrize("cause,expected", [
+    ("cost_unknown", "Run-tree spend budget cannot be enforced: detail"),
+    ("checkpoint", "Run stopped fail-closed: run-tree spend could not be recorded (detail)"),
+    ("tokens", "Run-tree spend budget exhausted: detail"),
+    ("dollars", "Run-tree spend budget exhausted: detail"),
+])
+def test_describe_refusal_preserves_the_cause_and_detail(cause, expected):
+    assert describe_refusal(SpendLimitExceeded("detail", cause)) == expected
 
 
 async def test_concurrent_calls_cannot_both_spend_the_same_remainder():
@@ -439,6 +449,27 @@ async def test_spend_checkpoint_write_failure_refuses_admission():
     assert refused.value.cause == gate.last_refusal_cause == "checkpoint"
     assert gate.reserved_tokens == gate.reserved_calls == gate.calls == 0
     assert gate.refused == 1
+
+
+async def test_native_checkpoint_refusal_reports_recording_failure(tmp_path):
+    def broken(snapshot):
+        raise OSError("disk full")
+
+    gate = SpendGate(max_tokens=1_000_000, checkpoint=broken)
+    result, _, events = await _run(tmp_path, [_done("d1", {"total_tokens": 10})],
+                                   spend_gate=gate)
+
+    assert not result.success
+    assert "exhausted" not in result.final_message
+    assert result.final_message == (
+        "Run stopped fail-closed: run-tree spend could not be recorded "
+        "(main call refused: spend checkpoint could not be recorded)"
+    )
+    assert result.metadata["spend_limit"] == "checkpoint"
+    end = _session_end(events)
+    assert end["reason"] == "spend_limit" and end["spend_cause"] == "checkpoint"
+    assert gate.settled_tokens == gate.calls == gate.reserved_tokens == 0
+    assert not [r for r in events.get_all() if r["type"] == EventType.MODEL_RESPONSE.value]
 
 
 async def test_spend_checkpoint_interrupt_rolls_back_admission():
@@ -1197,6 +1228,29 @@ async def test_a_refused_critic_call_ends_a_rigorous_run_on_the_spend_limit(tmp_
     refusals = [r["payload"]["refused"] for r in events.get_all()
                 if r["type"] == EventType.BUDGET.value and "refused" in r["payload"]]
     assert refusals == ["critic"] and config.spend_gate.refused == 1
+
+
+async def test_critic_checkpoint_refusal_reports_recording_failure(tmp_path):
+    def broken_on_critic(snapshot):
+        # Let plan and build admit and settle before failing the critic admission.
+        if snapshot["calls"] == 3:
+            raise OSError("disk full")
+
+    gate = SpendGate(max_tokens=1_000_000, checkpoint=broken_on_critic)
+    script = [_text("PLAN: do it", 100), _text("done", 100), _text("APPROVED", 100)]
+    result, _, events, model = await _rigorous(tmp_path, script, spend_gate=gate)
+
+    assert not result.success and model.sent == 2
+    assert "exhausted" not in result.final_message
+    assert result.final_message == (
+        "Run stopped fail-closed: run-tree spend could not be recorded "
+        "(critic call refused: spend checkpoint could not be recorded)"
+    )
+    assert result.metadata["spend_limit"] == "checkpoint"
+    end = _session_end(events)
+    assert end["reason"] == "spend_limit" and end["spend_cause"] == "checkpoint"
+    assert gate.calls == 2 and gate.settled_tokens == 200 and gate.refused == 1
+    assert not [r for r in events.get_all() if r["type"] == EventType.VERIFICATION.value]
 
 
 async def test_a_rigorous_critic_call_is_admitted_settled_and_recorded(tmp_path):

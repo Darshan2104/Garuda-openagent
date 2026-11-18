@@ -288,8 +288,11 @@ fastest way to learn the system.
    The root runner writes an initial `spend_gate` checkpoint after resume
    inheritance, then checkpoints each admission under the gate lock before the
    request is sent and each settlement after usage is charged. A checkpoint
-   write failure at admission refuses the call with cause `checkpoint`; a
-   settlement write failure warns and retains the previous reservation record.
+   write failure at admission refuses the call with cause `checkpoint` and reports
+   `Run stopped fail-closed: run-tree spend could not be recorded (<detail>)`.
+   The native loop and rigorous critic share the refusal formatter in
+   `core/spend.py`; session-end reason `spend_limit` and cause metadata are unchanged.
+   A settlement write failure warns and retains the previous reservation record.
    Resume charges crash-interrupted reservations at their token estimate with
    unknown cost, retaining interrupted-call provenance through later resumes.
    Failed calls without usage release their reservation only for definite
