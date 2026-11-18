@@ -14,8 +14,8 @@ A grant binds:
   resolved secret is hashed or stored), plus directly identifiable repository
   launch files and their symlink targets. This includes attached option values,
   -r/--require/--import/--loader operands and project-local Python -m modules
-  and script-containing directory trees. Trees exclude __pycache__, .pyc and
-  .pyo. Discovery never imports repository code.
+  and script-containing directory trees. Trees exclude Git metadata,
+  __pycache__, .pyc and .pyo. Discovery never imports repository code.
 
 Changing the entry, a referenced script, or a symlink target invalidates the grant.
 The store lives next to the user's global settings, is owner-only, is written
@@ -44,7 +44,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from garuda.config_sources import record_digest, record_source
-from garuda.mcp.launch_files import LaunchBindingError, discover_launch_files
+from garuda.mcp.launch_files import LaunchBindingError, discover_launch_files, is_git_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +107,8 @@ def _referenced_files(paths: list[Path], workspace: Path) -> list[dict]:
     refs: list[dict] = []
     for candidate in sorted(set(paths)):
         resolved = candidate.resolve()
+        if is_git_metadata(resolved, workspace):
+            raise TrustError("launch file changed to excluded Git metadata during discovery")
         ref = {"token": str(candidate.relative_to(workspace)),
                "symlink": candidate.is_symlink(), "target": str(resolved)}
         if resolved.is_file() and _within(resolved, workspace):

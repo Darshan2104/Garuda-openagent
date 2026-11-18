@@ -1,5 +1,11 @@
 # Durable decisions
 
+## 2026-11-18 — MCP launch-tree binding excludes Git bookkeeping (#505)
+
+Walked launch trees exclude Git metadata entries, including linked worktree
+pointers. Direct operands and aliases into that metadata are visibly unpinned.
+A fingerprint that previously included Git metadata requires re-approval.
+
 ## 2026-11-18 — Model cancellation retains earlier billed attempts (#503)
 
 The native transport carries earlier attempts through cancellation. Only a

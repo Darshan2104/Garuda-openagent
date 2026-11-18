@@ -12,6 +12,7 @@ effects (a launched process, an HTTP request), not private calls:
 import json
 import os
 import py_compile
+import subprocess
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -498,6 +499,29 @@ def test_review_script_grant_binds_sibling_imports_and_discloses_tree(home, repo
     helper.write_text("value = 2\n")
     assert not trust.is_trusted(server, repo)
     assert "tree" in descriptions[0] and "app" in descriptions[0]
+
+
+def test_root_mcp_grant_survives_staging_but_binds_source(home, repo):
+    script = repo / "server.py"
+    script.write_text("value = 1\n")
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    _write_mcp(repo / ".agent/mcp.json", {"tool": {"command": "python3", "args": ["server.py"]}})
+    server = _untrusted(repo)[0]
+    assert trust.grant(server, repo).code_pinned
+    subprocess.run(["git", "-C", str(repo), "add", "server.py"], check=True)
+    assert trust.is_trusted(server, repo)
+    script.write_text("value = 2\n")
+    assert not trust.is_trusted(server, repo)
+
+
+@pytest.mark.parametrize("path", [".git/HEAD", "head-alias"])
+def test_mcp_operands_referring_to_git_metadata_are_unpinned(home, repo, path):
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    (repo / "head-alias").symlink_to(".git/HEAD")
+    _write_mcp(repo / ".agent/mcp.json", {"tool": {"command": "python3", "args": [path]}})
+    key = trust.trust_key(_untrusted(repo)[0], repo)
+    assert not key.code_pinned
+    assert any("excluded Git metadata" in reason for reason in key.unpinned_reasons)
 
 
 @pytest.mark.parametrize("variable", [
