@@ -145,6 +145,48 @@ async def test_planner_uses_a_run_scoped_override_only_when_read_only(tmp_path, 
         assert read["is_error"] and read["content"] == "Unknown tool: read_file"
 
 
+async def test_user_plan_profile_cannot_change_rigorous_planning_permissions(tmp_path):
+    from garuda.agents.resolve import user_agents_dir
+
+    profiles = user_agents_dir()
+    profiles.mkdir(parents=True, exist_ok=True)
+    (profiles / "plan.yaml").write_text("name: plan\npermission_mode: smart\ntools: [bash]\n")
+    inspection_command = "python3 --version"
+
+    class InspectEnvironment(LocalEnvironment):
+        async def execute(self, command, timeout=None, cwd=None):
+            if command == inspection_command:
+                return ExecResult(stdout="Python fixture", stderr="", exit_code=0, duration_ms=1)
+            return await super().execute(command, timeout=timeout, cwd=cwd)
+
+    def inspect(phase):
+        return ModelResponse(content=None, tool_calls=[
+            ToolCall(id=phase, name="bash", arguments={"command": inspection_command}),
+        ])
+
+    result = await RigorousAgent().run(
+        task="Inspect the fixture", env=InspectEnvironment(tmp_path), tools=tools_for_names(["bash"]),
+        model=ScriptModel([
+            inspect("plan"), ModelResponse(content="Plan", tool_calls=[]),
+            inspect("build"), ModelResponse(content="Done", tool_calls=[]),
+            ModelResponse(content="APPROVED", tool_calls=[]),
+        ]),
+        config=AgentConfig(enable_verifier=False, permission_mode="smart"),
+    )
+    assert result.success
+    [refusal] = [
+        row["payload"] for row in result.metadata["events"]
+        if row["type"] == "permission_ask" and row["payload"]["id"] == "plan"
+    ]
+    assert refusal["approved"] is False
+    outcomes = {
+        row["payload"]["tool_call_id"]: row["payload"]
+        for row in result.metadata["events"] if row["type"] == "tool_result"
+    }
+    assert "plan" not in outcomes
+    assert not outcomes["build"]["is_error"] and "Python fixture" in outcomes["build"]["content"]
+
+
 async def test_rigorous_planner_preserves_configured_bash_limits(tmp_path):
     class InspectEnvironment(LocalEnvironment):
         def __init__(self, root):

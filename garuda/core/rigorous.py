@@ -135,7 +135,7 @@ class RigorousAgent:
         gate = gate_for(config)
         accounting_token = accounting.bind(events, gate, thinking_budget_tokens=config.thinking_budget_tokens)
         try:
-            plan_profile = load_profile("plan")
+            plan_profile = load_profile("garuda/plan")
             plan_config = plan_profile.to_agent_config()
             plan_config.max_turns = min(max(config.max_turns // 4, 5), 30)
             plan_config.enable_verifier = False

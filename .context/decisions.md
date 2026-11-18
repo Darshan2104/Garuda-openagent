@@ -2,8 +2,9 @@
 
 ## 2026-11-18 — Rigorous planning inherits run authority (#500)
 
-The built-in read-only planning profile intersects its toolkit with the caller's
-admitted tool instances and keeps the caller's effect ceiling. The planner
+Rigorous mode resolves the packaged `garuda/plan` profile directly. Its read-only
+planner selects from the caller's admitted tool instances and keeps the caller's
+effect ceiling. The planner
 admits read-only effects, the built-in Bash tool under its inspection policy,
 and the built-in terminal tool. Its delegated permission engine inherits the
 run's policy and approval broker. Its tool context carries the caller's
