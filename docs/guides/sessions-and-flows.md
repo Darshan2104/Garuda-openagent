@@ -40,8 +40,9 @@ records `passed` only when that attempt has verification command results
 examined by the gate; otherwise it records `no_evidence`. Tool results, workspace
 changes, and summary claims do not qualify. A run with no reported self-check
 keeps `self_check: null` (not judged). The run summary, `sessions show` (text and JSON), and dashboard expose
-that status. Completion still exits successfully; only checks with a named
-authority can change independent `verification`.
+that status. Completion still exits successfully. Independent `verification`
+requires a verdict from a check with a named authority. A configured grader that
+abstains leaves verification unavailable.
 
 ```bash
 garuda sessions                 # this project's recent sessions
