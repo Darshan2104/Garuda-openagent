@@ -3105,6 +3105,13 @@ stops is stopped before its verdict is published, so a handshake that finishes
 in the same instant can never mark it ready.
 
 
+## 2026-11-18 — Model cancellation retains earlier billed attempts (#503)
+
+The native transport carries earlier attempts through cancellation. Only a
+dispatched request gains an interrupted attempt at the LiteLLM boundary.
+Streaming fallback combines its prior stream attempts with the fallback's
+attempts before settling the run-tree reservation.
+
 ## 2026-11-06 — Preserve logical-call usage through retries and failures (#406)
 
 - Model responses and original raised exception types carry `attempt_usage` and
