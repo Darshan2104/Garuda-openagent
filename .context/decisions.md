@@ -1,5 +1,11 @@
 # Durable decisions
 
+## 2026-11-18 — ACP stdio output uses cancellable pipe writes (#507)
+
+ACP stdio bounds queued output and the wait for queue space. The stdout
+descriptor uses nonblocking writes and an event-loop readiness wait. At EOF
+the drain deadline cancels that wait without leaving a blocked writer thread.
+
 ## 2026-11-18 — MCP launch-tree binding excludes Git bookkeeping (#505)
 
 Walked launch trees exclude Git metadata entries, including linked worktree

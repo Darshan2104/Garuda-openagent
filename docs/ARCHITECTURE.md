@@ -181,7 +181,9 @@ body limit is 12 MiB, versus JSON-RPC's 32 MiB; body reads use 30-second timeout
 Inbound ACP retains partial NDJSON across reads up to the codec's 16 MiB frame
 bound, ignores blank lines and refuses unfinished records at EOF. The package
 exports `AcpServer` lazily so module execution does not preload its entry point.
-EOF drains queued replies until completion, writer failure or the cleanup deadline.
+The output queue holds up to 32 frames. EOF drains queued replies until
+completion, writer failure or the cleanup deadline. Nonblocking stdout writes
+let the server stop an unfinished drain at that deadline.
 Dashboard tail and SSE readers share bounded window scanning: complete event
 lines over 4 MiB are skipped at a newline, counted in the tail's `malformed` field
 and SSE `skipped` events (`data: {"malformed": count}`). Torn final lines retain
