@@ -607,12 +607,22 @@ async def test_cancelling_a_provider_retry_retains_all_reported_cost(tmp_path, m
                 await asyncio.Future()
             error_type = litellm.InternalServerError
         error = error_type(message="fixture", model="gpt-4o-mini", llm_provider="openai")
-        error.usage = {"total_tokens": 25, "cost_usd": 0.012}
+        error.usage = {"prompt_tokens": 3000, "completion_tokens": 400,
+                       "total_tokens": 3400, "cost_usd": 0.012}
         raise error
 
     monkeypatch.setattr(litellm, "acompletion", provider)
     monkeypatch.setattr("garuda.model.litellm_model._retry_after_seconds", lambda _: 0)
     gate = SpendGate(max_tokens=10_000)
+    reservations = []
+    original_admit = gate.admit
+
+    async def capture_reservation(*args, **kwargs):
+        reservation = await original_admit(*args, **kwargs)
+        reservations.append(reservation)
+        return reservation
+
+    monkeypatch.setattr(gate, "admit", capture_reservation)
     task = asyncio.create_task(DefaultAgent().run(
         task="inspect the workspace", model=LitellmModel("openai/gpt-4o-mini", max_retries=2),
         env=LocalEnvironment(workspace_root=tmp_path), tools=default_tools(),
@@ -625,9 +635,12 @@ async def test_cancelling_a_provider_retry_retains_all_reported_cost(tmp_path, m
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
+    [reservation] = reservations
+    known_prior_tokens = 6800 if streaming else 3400
+    assert gate.settled_tokens == known_prior_tokens + reservation.tokens
     assert gate.settled_cost_usd == (0.024 if streaming else 0.012)
     assert gate.reserved_calls == 0
-    assert gate.interrupted_calls == gate.cost_unknown_calls == 1
+    assert gate.interrupted_calls == gate.estimated_token_calls == gate.cost_unknown_calls == 1
 
 
 async def test_cancelling_a_live_consumer_before_usage_keeps_reported_retry_cost(tmp_path, monkeypatch):

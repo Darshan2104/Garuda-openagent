@@ -3112,6 +3112,12 @@ dispatched request gains an interrupted attempt at the LiteLLM boundary.
 The first streamed chunk carries any known retry records before live text
 delivery. Streaming fallback combines its prior stream attempts with the
 fallback's attempts before settling the run-tree reservation.
+Settlement charges a trailing interrupted active attempt the larger of its
+reported tokens and its own reservation, in addition to earlier attempts'
+reported tokens and missing-attempt estimates. The reservation increase counts
+as estimated usage even when prior usage already exceeds one reservation.
+Known dollars remain charged and final cost remains unknown. The existing
+whole-call reservation floor still applies after per-attempt settlement.
 
 ## 2026-11-06 — Preserve logical-call usage through retries and failures (#406)
 
