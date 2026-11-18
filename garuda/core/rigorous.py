@@ -16,8 +16,9 @@ from garuda.core.verifier import CompletionVerifier, gather_git_evidence
 from garuda.model import accounting
 from garuda.model.protocol import Model
 from garuda.plugins.hooks import HookRegistry
-from garuda.tools import tools_for_names
-from garuda.tools.protocol import Tool, tool_effect
+from garuda.tools.bash import BashTool
+from garuda.tools.protocol import Tool, ToolEffect, tool_effect
+from garuda.tools.task_complete import TaskCompleteTool
 from garuda.types import AgentConfig, AgentResult, Message, Role
 from garuda.workspace.protocol import Environment
 
@@ -141,10 +142,13 @@ class RigorousAgent:
             plan_config.max_run_cost_usd = config.max_run_cost_usd
             plan_config.spend_gate = gate
             parent_tools = _filter_tools(tools, config.allowed_tools) if config.allowed_tools else tools
-            plan_names = {tool.name for tool in parent_tools} - set(config.removed_tools or ())
+            plan_names = set(plan_profile.tools or ()) - set(config.removed_tools or ())
+            # Only the built-in Bash implementation has the planner's screened
+            # inspection path. The built-in terminal can only submit the plan.
             plan_tools = [
-                tool for tool in tools_for_names(plan_profile.tools)
+                tool for tool in parent_tools
                 if tool.name in plan_names
+                and (tool_effect(tool) == ToolEffect.READ_ONLY or type(tool) in (BashTool, TaskCompleteTool))
                 and (allowed_tool_effects is None or tool_effect(tool) in allowed_tool_effects)
             ]
             plan_permissions = DelegatedPermissionEngine(

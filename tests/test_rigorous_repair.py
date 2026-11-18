@@ -8,8 +8,9 @@ from garuda.core.rigorous import MAX_REPAIR_ROUNDS, RigorousAgent, _parse_critic
 from garuda.model.protocol import ModelResponse
 from garuda.model.script_model import ScriptModel
 from garuda.tools import tools_for_names
+from garuda.tools.files import ReadFileTool
 from garuda.tools.protocol import ToolEffect
-from garuda.types import AgentConfig, Role, ToolCall
+from garuda.types import AgentConfig, Role, ToolCall, ToolResult
 from garuda.workspace.local import LocalEnvironment
 
 
@@ -115,6 +116,33 @@ async def test_planner_uses_the_admitted_tools_and_parent_policy(tmp_path, restr
             if row["type"] == "tool_result" and row["payload"]["tool_call_id"] == "review-effect"
         )
         assert denied_effect["is_error"] and denied_effect["content"] == "Unknown tool: bash"
+
+
+@pytest.mark.parametrize("effect", [ToolEffect.READ_ONLY, ToolEffect.MUTATING])
+async def test_planner_uses_a_run_scoped_override_only_when_read_only(tmp_path, effect):
+    class ScopedReader(ReadFileTool):
+        async def execute(self, arguments, env, ctx):
+            return ToolResult(tool_call_id="", content="scoped reader")
+
+    reader = ScopedReader()
+    reader.effect = effect
+    events = EventStore()
+    events.append(EventType.USER_MESSAGE, {"content": "Read the fixture"})
+    call = ToolCall(id="planner-reader", name="read_file", arguments={"path": "fixture.txt"})
+    result = await RigorousAgent().run(
+        task="Read the fixture", env=LocalEnvironment(tmp_path), tools=[reader],
+        model=ScriptModel([
+            ModelResponse(content=None, tool_calls=[call]),
+            *(ModelResponse(content=text, tool_calls=[]) for text in ("Plan", "Done", "APPROVED")),
+        ]),
+        config=AgentConfig(max_turns=8, enable_verifier=False), events=events,
+    )
+    assert result.success
+    [read] = [row["payload"] for row in events.get_all() if row["type"] == "tool_result"]
+    if effect == ToolEffect.READ_ONLY:
+        assert not read["is_error"] and read["content"] == "scoped reader"
+    else:
+        assert read["is_error"] and read["content"] == "Unknown tool: read_file"
 
 
 async def test_persistent_rejection_fails_after_max_rounds(tmp_path):
