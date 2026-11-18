@@ -12,6 +12,7 @@
 """
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -66,6 +67,36 @@ def _contract_events(result, action):
         for e in result.metadata.get("events", [])
         if e.get("type") == EventType.CONTRACT.value and e.get("payload", {}).get("action") == action
     ]
+
+
+@pytest.mark.parametrize("refusal", ["summary", "baseline"])
+async def test_repaired_preflight_reuses_the_same_verification_commands(tmp_path, refusal):
+    command = "test -d ."
+    first = _complete([command], call_id="first")
+    if refusal == "summary":
+        first.tool_calls[0].arguments["summary"] = "short"
+
+    baseline_reads = 0
+
+    def load_baseline():
+        nonlocal baseline_reads
+        baseline_reads += 1
+        if baseline_reads == 1:
+            raise OSError("temporarily unavailable")
+        return SimpleNamespace(to_evidence=lambda: {"attribution": "fixture"})
+
+    result = await DefaultAgent().run(
+        task="Check the workspace", model=ScriptModel([first, _complete([command], call_id="second")]),
+        env=LocalEnvironment(tmp_path), tools=default_tools(),
+        config=_config(max_turns=2, enable_acceptance_contract=False, force_final_submission=False),
+        workspace_delta_loader=load_baseline if refusal == "baseline" else None,
+    )
+    assert result.success
+    rejected, accepted = [
+        event["payload"] for event in result.metadata["events"] if event["type"] == EventType.VERIFICATION.value
+    ]
+    assert not rejected["approved"] and not rejected["evidence"]
+    assert accepted["approved"] and [item["command"] for item in accepted["evidence"]] == [command]
 
 
 # --- 1. the livelock -------------------------------------------------------

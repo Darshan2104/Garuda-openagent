@@ -182,7 +182,7 @@ class CompletionGate:
             return True, summary
 
         feedback = result.feedback or "Completion verification failed."
-        if result.permission_denied:
+        if result.permission_denied or result.commands_unexamined:
             self.gate.record_unexamined_rejection(feedback)
         else:
             self.gate.record_rejection(verification_commands, feedback)

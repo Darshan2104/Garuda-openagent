@@ -207,6 +207,7 @@ class VerificationResult:
     approved: bool
     checklist: dict[str, bool] = field(default_factory=dict)
     feedback: str | None = None
+    commands_unexamined: bool = field(default=False, kw_only=True)
     # Observed output of each verification command, so the judge reasons about
     # what the workspace actually printed rather than the agent's account of it.
     evidence: list[dict] = field(default_factory=list)
@@ -400,6 +401,7 @@ class CompletionVerifier:
                     f"is unavailable ({type(exc).__name__})."
                 ),
                 workspace={"attribution": "unavailable", "error": type(exc).__name__},
+                commands_unexamined=True,
             )
         result = await self._verify(
             task, summary, verification_commands, env, config, permissions,
@@ -436,12 +438,14 @@ class CompletionVerifier:
                 approved=False,
                 checklist=checklist,
                 feedback="Completion rejected: provide a non-empty summary in task_complete.",
+                commands_unexamined=True,
             )
         if not checklist["summary_length"]:
             return VerificationResult(
                 approved=False,
                 checklist=checklist,
                 feedback="Completion rejected: summary is too short. Explain what was done and how it was verified.",
+                commands_unexamined=True,
             )
 
         # A resubmission that drops the check it just failed is the cheapest way
