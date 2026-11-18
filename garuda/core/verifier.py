@@ -506,22 +506,10 @@ class CompletionVerifier:
         # that holds once and not twice is not a result — it depends on state
         # the first run consumed or created.
         if config.require_stable_verification:
-            unstable = await self._recheck_stability(observed, env)
+            unstable = await self._recheck_stability(observed, env, permissions, checklist)
             checklist["verification_stable"] = unstable is None
             if unstable is not None:
-                command, first, second = unstable
-                return VerificationResult(
-                    approved=False,
-                    checklist=checklist,
-                    evidence=observed,
-                    feedback=(
-                        f"Completion rejected: verification is not repeatable. `{command}` exited "
-                        f"{first} on the first run and {second} when run again immediately after, "
-                        "so the result depends on state that one run consumes or creates. Make the "
-                        "work idempotent — running it twice from the same starting point must give "
-                        "the same outcome — then verify again."
-                    ),
-                )
+                return unstable
 
         # Optional domain grader (research/coding/eval profiles plug in their own
         # correctness check without core knowing the benchmark). A returned
@@ -814,27 +802,51 @@ class CompletionVerifier:
         return None
 
     async def _recheck_stability(
-        self, observed: list[dict], env: Environment
-    ) -> tuple[str, int, int] | None:
-        """Re-run the discriminating checks once; report the first that disagrees.
+        self, observed: list[dict], env: Environment, permissions: "PermissionEngine | None",
+        checklist: dict[str, bool],
+    ) -> VerificationResult | None:
+        """Re-authorize and repeat discriminating checks, rejecting the first failure.
 
         Only discriminating commands are repeated — re-running `cat` proves
         nothing and costs time — and only their exit codes are compared, since
         stdout legitimately varies (timings, ordering, temp paths).
         """
-        for entry in observed:
+        for index, entry in enumerate(observed):
             if entry.get("class") not in (evidence.EXECUTION, evidence.ASSERTION):
                 continue
             command = entry["command"]
+            denied = await self._screen(command, index, permissions, checklist, observed)
+            if denied is not None:
+                return denied
             try:
                 repeat = await env.execute(command, timeout=VERIFICATION_COMMAND_TIMEOUT)
             except EnvironmentUnavailableError:
                 raise
-            except Exception:
-                logger.warning("Stability re-check could not run: %s", command, exc_info=True)
-                continue
-            if repeat.exit_code != entry["exit_code"]:
-                return command, int(entry["exit_code"]), int(repeat.exit_code)
+            except Exception as exc:
+                unavailable_reason = type(exc).__name__
+            else:
+                # Workspace backends report killed or interrupted commands with
+                # a truncated timeout result. A completed exit 124 can still
+                # be a genuine check failure.
+                if repeat.exit_code == 124 and repeat.truncated:
+                    unavailable_reason = "timed out"
+                elif repeat.exit_code == entry["exit_code"]:
+                    continue
+                else:
+                    return VerificationResult(
+                        approved=False, checklist=checklist, evidence=observed,
+                        feedback=(
+                            f"Completion rejected: verification is not repeatable. `{command}` exited "
+                            f"{entry['exit_code']} on the first run and {repeat.exit_code} on the repeat. "
+                            "Make the work idempotent so both runs produce the same outcome."
+                        ),
+                    )
+            checklist["verification_repeat_unavailable"] = True
+            return VerificationResult(
+                approved=False, checklist=checklist, evidence=observed,
+                feedback=f"Completion rejected: stability re-check could not run "
+                         f"({unavailable_reason}): {command}.",
+            )
         return None
 
     async def _llm_verdict(
