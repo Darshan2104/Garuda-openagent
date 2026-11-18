@@ -14,10 +14,13 @@ defaults. Null reminder sections also load as absent under strict validation.
 
 ## 2026-11-18 — ACP stdio output uses cancellable pipe writes (#507)
 
-ACP stdio bounds queued output and the wait for queue space. A queue timeout
-cancels the writer and bypasses protocol error delivery on the stalled channel.
-At EOF, pending prompts and output drain share one cleanup deadline.
-Nonblocking stdout writes let cancellation settle the readiness wait.
+ACP stdio bounds queued output, with no timeout on queue backpressure while
+stdin remains open. Reads continue during an ordered dispatch, retaining at
+most the frame bound plus one read chunk so EOF is observed even when replies
+are blocked. The cleanup deadline applies only after input EOF or teardown
+begins; queue waits, pending prompts and output drain share that one deadline.
+Expiry cancels the writer and bypasses protocol error delivery on the stalled
+channel. Nonblocking stdout writes let cancellation settle the readiness wait.
 The connection owner observes the writer alongside its nonblocking input
 read, so a terminal output failure starts session teardown without stdin EOF.
 

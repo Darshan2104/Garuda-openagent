@@ -227,6 +227,55 @@ async def test_stdio_drains_replies_to_large_batch_before_eof_exit():
         await process.wait()
 
 
+async def test_stdio_slow_reader_keeps_all_replies_while_input_is_open():
+    process = await asyncio.create_subprocess_exec(
+        sys.executable, "-c",
+        "from garuda.acp import server; server.CLEANUP_TIMEOUT = 0.1; "
+        "raise SystemExit(server.main(['--driver', 'echo']))",
+        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE, limit=1024,
+    )
+    try:
+        # Warm up the driver before the pause so startup time cannot hide a stall.
+        for call_id, method, params in (
+            (1, "initialize", {"protocolVersion": ACP_VERSION}),
+            (2, "session/new", {}),
+        ):
+            process.stdin.write(encode_frame({
+                "jsonrpc": "2.0", "id": call_id, "method": method, "params": params,
+            }))
+            await process.stdin.drain()
+            assert "result" in await _read_reply(process.stdout, call_id)
+
+        call_ids = list(range(3, 3003))
+        process.stdin.write(b"".join(encode_frame({
+            "jsonrpc": "2.0", "id": call_id, "method": "session/new", "params": {},
+        }) for call_id in call_ids))
+        # The small StreamReader limit ensures its transport also stops reading,
+        # so the real stdout pipe and the server's output queue fill up.
+        await asyncio.sleep(1)
+        replies = []
+        for _ in call_ids:
+            line = await asyncio.wait_for(process.stdout.readline(), 10)
+            if not line:
+                break
+            message, rest = decode_frame(line)
+            assert line.endswith(b"\n") and rest == b""
+            replies.append(message)
+        assert [reply["id"] for reply in replies] == call_ids
+        assert all("sessionId" in reply["result"] for reply in replies)
+        await process.stdin.drain()
+        process.stdin.close()
+        assert await asyncio.wait_for(process.wait(), 10) == 0
+        assert await process.stdout.read() == b""
+        assert await process.stderr.read() == b""
+    finally:
+        if process.returncode is None:
+            process.kill()
+        await process.wait()
+        process.stdin.close()
+
+
 async def test_subprocess_conformance_against_echo_driver():
     argv = [sys.executable, "-m", "garuda.acp.server", "--driver", "echo"]
     process = await asyncio.create_subprocess_exec(
@@ -561,10 +610,12 @@ async def test_stdio_eof_drain_deadline_cancels_pending_pipe_io(monkeypatch):
 async def test_stdio_stalled_output_settles_without_sending_an_error_reply(monkeypatch):
     from garuda.acp.server import serve_stdio
 
+    # Span multiple input reads: EOF must be observed while dispatch is blocked
+    # on the full output queue, rather than only after dispatch completes.
     frames = b"".join(encode_frame({
         "jsonrpc": "2.0", "id": call_id, "method": "initialize",
         "params": {"protocolVersion": ACP_VERSION},
-    }) for call_id in range(1, 4))
+    }) for call_id in range(1, 1001))
     writer_settled = asyncio.Event()
     error_replies = []
 
