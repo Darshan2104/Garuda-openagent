@@ -1,5 +1,11 @@
 # Durable decisions
 
+## 2026-11-18 — Rigorous planning inherits run authority (#500)
+
+The built-in read-only planning profile intersects its toolkit with the caller's
+admitted tools and keeps the caller's effect ceiling. Its delegated permission
+engine inherits the run's policy and approval broker.
+
 ## 2026-11-17 — Diagnose malformed global settings before harness probes (#497)
 
 Doctor reads the same strict global settings loader as runtime catalog preparation
