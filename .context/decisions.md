@@ -1,5 +1,12 @@
 # Durable decisions
 
+## 2026-11-18 — Model cancellation retains earlier billed attempts (#503)
+
+The native transport carries earlier attempts through cancellation. Only a
+dispatched request gains an interrupted attempt at the LiteLLM boundary.
+Streaming fallback combines its prior stream attempts with the fallback's
+attempts before settling the run-tree reservation.
+
 ## 2026-11-18 — Session verification follows the grader verdict (#502)
 
 Native completion records the verdict the authoritative grader supplied.

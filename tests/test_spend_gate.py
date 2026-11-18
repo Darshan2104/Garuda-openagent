@@ -587,6 +587,48 @@ async def test_main_loop_cancellation_charges_the_reserved_estimate(tmp_path):
     assert gate.unknown_outcome_calls == 0
 
 
+@pytest.mark.parametrize("streaming", [False, True])
+async def test_cancelling_a_provider_retry_retains_all_reported_cost(tmp_path, monkeypatch, streaming):
+    import litellm
+
+    from garuda.model.litellm_model import LitellmModel
+
+    active_retry = asyncio.Event()
+    blocking_calls = 0
+
+    async def provider(**kwargs):
+        nonlocal blocking_calls
+        error_type = litellm.BadRequestError
+        if not kwargs.get("stream"):
+            blocking_calls += 1
+            if blocking_calls == 2:
+                active_retry.set()
+                await asyncio.Future()
+            error_type = litellm.InternalServerError
+        error = error_type(message="fixture", model="gpt-4o-mini", llm_provider="openai")
+        error.usage = {"total_tokens": 25, "cost_usd": 0.012}
+        raise error
+
+    monkeypatch.setattr(litellm, "acompletion", provider)
+    monkeypatch.setattr("garuda.model.litellm_model._retry_after_seconds", lambda _: 0)
+    gate = SpendGate(max_tokens=10_000)
+    task = asyncio.create_task(DefaultAgent().run(
+        task="inspect the workspace", model=LitellmModel("openai/gpt-4o-mini", max_retries=2),
+        env=LocalEnvironment(workspace_root=tmp_path), tools=default_tools(),
+        config=AgentConfig(enable_verifier=False, max_tokens=50, spend_gate=gate),
+        model_delta_consumer=(lambda _: None) if streaming else None,
+    ))
+    try:
+        await asyncio.wait_for(active_retry.wait(), timeout=5)
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert gate.settled_cost_usd == (0.024 if streaming else 0.012)
+    assert gate.reserved_calls == 0
+    assert gate.interrupted_calls == gate.cost_unknown_calls == 1
+
+
 @pytest.mark.parametrize("error,status_code,rejected", [
     pytest.param(Exception("lost reply"), None, False, id="no-status"),
     pytest.param(Exception("unavailable"), 503, False, id="503"),
