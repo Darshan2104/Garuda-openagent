@@ -808,20 +808,30 @@ class CompletionVerifier:
             except EnvironmentUnavailableError:
                 raise
             except Exception as exc:
-                return VerificationResult(
-                    approved=False, checklist=checklist, evidence=observed,
-                    feedback=f"Completion rejected: stability re-check could not run "
-                             f"({type(exc).__name__}): {command}.",
-                )
-            if repeat.exit_code != entry["exit_code"]:
-                return VerificationResult(
-                    approved=False, checklist=checklist, evidence=observed,
-                    feedback=(
-                        f"Completion rejected: verification is not repeatable. `{command}` exited "
-                        f"{entry['exit_code']} on the first run and {repeat.exit_code} on the repeat. "
-                        "Make the work idempotent so both runs produce the same outcome."
-                    ),
-                )
+                unavailable_reason = type(exc).__name__
+            else:
+                # Workspace backends report killed or interrupted commands with
+                # a truncated timeout result. A completed exit 124 can still
+                # be a genuine check failure.
+                if repeat.exit_code == 124 and repeat.truncated:
+                    unavailable_reason = "timed out"
+                elif repeat.exit_code == entry["exit_code"]:
+                    continue
+                else:
+                    return VerificationResult(
+                        approved=False, checklist=checklist, evidence=observed,
+                        feedback=(
+                            f"Completion rejected: verification is not repeatable. `{command}` exited "
+                            f"{entry['exit_code']} on the first run and {repeat.exit_code} on the repeat. "
+                            "Make the work idempotent so both runs produce the same outcome."
+                        ),
+                    )
+            checklist["verification_repeat_unavailable"] = True
+            return VerificationResult(
+                approved=False, checklist=checklist, evidence=observed,
+                feedback=f"Completion rejected: stability re-check could not run "
+                         f"({unavailable_reason}): {command}.",
+            )
         return None
 
     async def _llm_verdict(

@@ -3920,6 +3920,7 @@ No changes to child semantics, SDK defaults, editing-worker activation or SSE.
 
 The completion verifier screens every repeat through the permission engine.
 A denied or unavailable repeat rejects the completion's stability claim.
+A failed dispatch or backend timeout leaves the same check eligible for retry.
 A dead workspace continues to abort the run at the workspace boundary.
 
 ## 2026-11-17 — Bounded token admission and honest completion evidence (#479, #480, #491, #492)

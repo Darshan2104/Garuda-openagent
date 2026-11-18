@@ -184,6 +184,8 @@ class CompletionGate:
         feedback = result.feedback or "Completion verification failed."
         if result.permission_denied:
             self.gate.record_unexamined_rejection(feedback)
+        elif result.checklist.get("verification_repeat_unavailable"):
+            self.gate.record_unexamined_rejection(feedback)
         else:
             self.gate.record_rejection(verification_commands, feedback)
         self._reject(call, feedback)
