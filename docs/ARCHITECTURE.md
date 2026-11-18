@@ -1069,6 +1069,12 @@ fastest way to learn the system.
    rejection returns to the loop with what was not shown. The judge excludes
    fork-inherited messages from conversation evidence; historical checks never
    verify the new candidate. Commands run by the gate observe the current environment.
+   Refusals that never judge the commands use `record_unexamined_rejection`:
+   unresolved acceptance criteria, invalid summaries, unavailable workspace baselines,
+   policy denials, raised `answer_check` hooks, and unreachable or unparseable LLM
+   verdicts. These still reject and count the attempt, but permit the same commands
+   on a later attempt, even when they already ran. Failed checks and explicit judge
+   `REJECTED` verdicts record the command set and require new evidence.
 8. **Record** — `core/events.py` appends an event log; `core/sessions.py`
    persists `meta.json` / `messages.json` / `events.jsonl` so a killed run is
    resumable. `observability/tracing.py` emits spans.

@@ -207,6 +207,7 @@ class VerificationResult:
     approved: bool
     checklist: dict[str, bool] = field(default_factory=dict)
     feedback: str | None = None
+    commands_unexamined: bool = field(default=False, kw_only=True)
     # Observed output of each verification command, so the judge reasons about
     # what the workspace actually printed rather than the agent's account of it.
     evidence: list[dict] = field(default_factory=list)
@@ -402,6 +403,7 @@ class CompletionVerifier:
                     f"is unavailable ({type(exc).__name__})."
                 ),
                 workspace={"attribution": "unavailable", "error": type(exc).__name__},
+                commands_unexamined=True,
             )
         result = await self._verify(
             task, summary, verification_commands, env, config, permissions,
@@ -438,12 +440,14 @@ class CompletionVerifier:
                 approved=False,
                 checklist=checklist,
                 feedback="Completion rejected: provide a non-empty summary in task_complete.",
+                commands_unexamined=True,
             )
         if not checklist["summary_length"]:
             return VerificationResult(
                 approved=False,
                 checklist=checklist,
                 feedback="Completion rejected: summary is too short. Explain what was done and how it was verified.",
+                commands_unexamined=True,
             )
 
         # A resubmission that drops the check it just failed is the cheapest way
@@ -535,6 +539,7 @@ class CompletionVerifier:
                     approved=False,
                     checklist=checklist,
                     feedback="Completion rejected: answer_check hook failed.",
+                    commands_unexamined=True,
                 )
             if verdict is not None:
                 authoritative = self._has_authoritative_grader(config)
@@ -935,6 +940,7 @@ class CompletionVerifier:
                 approved=False,
                 checklist=checklist,
                 feedback="Completion rejected: the verifier could not be reached to confirm the work.",
+                commands_unexamined=True,
             )
 
         # Prefer a structured JSON verdict; fall back to an APPROVED/REJECTED prefix.
@@ -963,4 +969,5 @@ class CompletionVerifier:
                 "Completion rejected: verifier verdict was unclear. Re-state the outcome and how "
                 "it was verified, then call task_complete again."
             ),
+            commands_unexamined=True,
         )

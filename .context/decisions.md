@@ -4018,3 +4018,15 @@ Binding version 3 invalidates earlier MCP grants without changing the shared
 store format or project garuda.yaml grants. Stored older grants explain that
 "trust needs review after the binding update". The trust command reports each
 unbindable server, continues to later entries, and returns an error if any fail.
+
+## 2026-11-18: Unexamined completion refusals permit command reuse (#504, #513)
+
+Completion refusals for unresolved acceptance criteria, empty or too-short
+summaries, unavailable workspace baselines, policy denials, raised `answer_check`
+hooks, and unreachable (after retry) or unparseable LLM verdicts use
+`record_unexamined_rejection`. Each refusal still fails closed, increments the
+rejection count and retains feedback, but does not file its command set as
+rejected evidence. Hook and judge failures leave the commands unexamined even
+when execution already succeeded; a later attempt may reuse the same commands.
+Actual failed checks and explicit judge `REJECTED` verdicts remain judged
+rejections and require new evidence on resubmission.
