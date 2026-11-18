@@ -25,6 +25,7 @@ from garuda.model.script_model import ScriptModel
 from garuda.tools import default_tools
 from garuda.tools.files import WriteFileTool
 from garuda.types import AgentConfig, ExecResult, Role, ToolCall
+from garuda.workspace.health import EnvironmentUnavailableError
 from garuda.workspace.local import LocalEnvironment
 
 DEFAULTS_DIR = Path(__file__).resolve().parents[1] / "garuda" / "agents" / "defaults"
@@ -312,6 +313,35 @@ async def test_only_a_completed_stability_failure_blocks_reusing_the_check(tmp_p
         assert first["checklist"]["verification_repeat_unavailable"]
         assert result.success and env.calls == 4
         assert retry["checklist"]["verification_stable"]
+
+
+async def test_workspace_unavailable_during_stability_recheck_aborts_without_retry(tmp_path):
+    command = "./run_pipeline.sh"
+
+    class CheckEnvironment(LocalEnvironment):
+        calls = 0
+
+        async def execute(self, command_text, timeout=None, cwd=None):
+            if command_text != command:
+                return await super().execute(command_text, timeout=timeout, cwd=cwd)
+            self.calls += 1
+            if self.calls == 2:
+                raise EnvironmentUnavailableError(reason="container gone", detail="probe")
+            return ExecResult(stdout="", stderr="", exit_code=0, duration_ms=1)
+
+    env = CheckEnvironment(tmp_path)
+    result = await DefaultAgent().run(
+        task="Check the pipeline", env=env, tools=default_tools(),
+        model=ScriptModel([_complete([command], call_id="first"), _complete([command], call_id="retry")]),
+        config=_config(
+            max_turns=2, enable_acceptance_contract=False, force_final_submission=False,
+            require_stable_verification=True,
+        ),
+    )
+    assert not result.success
+    assert "unavailable" in result.final_message
+    assert result.turns == 1
+    assert env.calls == 2
 
 
 class _NullContext:

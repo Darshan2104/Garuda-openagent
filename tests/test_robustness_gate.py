@@ -5,6 +5,7 @@ import pytest
 from garuda.core import evidence
 from garuda.core.verifier import CompletionGateState, CompletionVerifier
 from garuda.types import AgentConfig, ExecResult
+from garuda.workspace.health import EnvironmentUnavailableError
 
 
 def _exec(stdout="", stderr="", code=0):
@@ -278,6 +279,26 @@ async def test_stable_verification_passes():
     config = AgentConfig(enable_llm_verifier=False, require_stable_verification=True)
     result = await _verify(["./run_pipeline.sh"], config=config)
     assert result.approved is True
+
+
+async def test_stability_recheck_propagates_workspace_unavailable():
+    command = "./run_pipeline.sh"
+
+    def outcome(attempt):
+        if attempt >= 2:
+            raise EnvironmentUnavailableError(reason="container gone", detail="probe")
+        return 0
+
+    env = _Env(results={command: outcome})
+    with pytest.raises(EnvironmentUnavailableError):
+        await CompletionVerifier().verify_with_commands(
+            task="Check the pipeline",
+            summary="The pipeline passed verification.",
+            verification_commands=[command],
+            env=env,
+            config=AgentConfig(enable_llm_verifier=False, require_stable_verification=True),
+        )
+    assert env.ran == [command, command]
 
 
 @pytest.mark.parametrize("repeat_allowed", [True, False])
