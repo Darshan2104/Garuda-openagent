@@ -665,3 +665,8 @@ and why; if none can start, the run refuses and lists every reason.
 | `GARUDA_TOKEN_PRICES` | Reproducible price overrides |
 | `GARUDA_SERVE_TOKEN` | JSON-RPC server bearer token |
 | `GARUDA_TRACING` | Enable OTLP tracing |
+
+Harness `allowed_models` restrictions apply to every fallback candidate before
+discovery or selection. Runtime aliases must satisfy both their own configured
+allowlist and the canonical runtime's allowlist. Invalid candidates refuse the
+configuration even when an earlier candidate is available.

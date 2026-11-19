@@ -640,10 +640,16 @@ def _check_resolved(config: dict) -> None:
     roles = config.get("roles", {})
     harnesses = config.get("harnesses", {})
     for name, role in roles.items():
-        allowed = harnesses.get(role["harness"], {}).get("allowed_models")
-        if allowed is not None and role.get("model_id") and role["model_id"] not in allowed:
-            _fail(f"roles.{name}.model_id",
-                  f"{role['model_id']} is not in harnesses.{role['harness']}.allowed_models")
+        candidates = [(role, f"roles.{name}")] + [
+            (candidate, f"roles.{name}.fallback[{index}]")
+            for index, candidate in enumerate(role.get("fallback", []))]
+        for candidate, path in candidates:
+            allowed = harnesses.get(candidate["harness"], {}).get("allowed_models")
+            if (allowed is not None and candidate.get("model_id")
+                    and candidate["model_id"] not in allowed):
+                _fail(f"{path}.model_id",
+                      f"{candidate['model_id']} is not in "
+                      f"harnesses.{candidate['harness']}.allowed_models")
         for consulted in role.get("consult", []):
             if consulted not in roles:
                 _fail(f"roles.{name}.consult", f"names no role {consulted!r}")

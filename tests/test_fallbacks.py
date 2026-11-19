@@ -138,3 +138,31 @@ def test_a_harness_without_a_proved_limit_source_is_never_skipped_for_quota(harn
 
     _plan_, _resolved, catalog = _plan("fakea", ["fakeb"], harnesses)
     assert default_limit_check(catalog, "fakea") is False  # no proved source: the real check
+
+
+@pytest.mark.parametrize("primary", [False, True])
+@pytest.mark.parametrize("model", ["approved", "forbidden"])
+def test_native_alias_models_obey_canonical_allowlist_before_any_probe(
+        harnesses, monkeypatch, primary, model):
+    from garuda.agents.setup import prepare_runtime_catalog
+
+    (harnesses / ".agent").mkdir()
+    (harnesses / ".agent" / "settings.yaml").write_text(
+        "runtime_refs: [{alias: local, runtime_id: native}]\n")
+    spec = ({"harness": "local", "model_id": model} if primary else {
+        "harness": "fakec", "fallback": [{"harness": "local", "model_id": model}]})
+    config = gy.parse({"version": 1, "harnesses": {"native": {"allowed_models": ["approved"]}},
+                       "roles": {"coder": spec}})
+    resolved = gy.resolve(config, None, cli_role="coder")
+    catalog = prepare_runtime_catalog(harnesses)
+
+    def no_probe(*args, **kwargs):
+        raise AssertionError("model rejection must precede discovery")
+
+    if model == "forbidden":
+        monkeypatch.setattr(type(catalog), "discover", no_probe)
+        with pytest.raises(RoleRefused, match="model_not_allowed"):
+            choose(plan_role(resolved, catalog), resolved, catalog)
+    else:
+        chosen = choose(plan_role(resolved, catalog), resolved, catalog)
+        assert chosen.runtime_id == "native" and chosen.model_id == model
