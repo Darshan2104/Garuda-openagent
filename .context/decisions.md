@@ -1,5 +1,12 @@
 # Durable decisions
 
+## 2026-11-19 — Flow resume approvals bind individual candidates (#524)
+
+Persist review approval per build step with the candidate session, attempt,
+workspace version, reviewer receipt, policy and packet digest. Resume validates
+that binding against completed receipts and approved history. A global latest
+review status cannot approve another build; legacy unbound approval refuses.
+
 ## 2026-11-18 — Rigorous planning inherits run authority (#500)
 
 Rigorous mode resolves the packaged `garuda/plan` profile directly. Its read-only

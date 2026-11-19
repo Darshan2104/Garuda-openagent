@@ -804,3 +804,68 @@ async def test_packet_only_review_under_the_no_edits_flow_guard(repo, packet_onl
         path = {"source": "retry.py", "ignored": "review.log", "metadata": ".git/config"}[edit]
         assert path in receipt["no_edits"]["changed"]
         assert not meta.get("review", {}).get("history")  # edited reviews never reach parsing
+
+
+@pytest.mark.parametrize("second_approves", [False, True])
+async def test_multiple_reviewed_builds_resume_with_their_own_approval(repo, second_approves):
+    config = {"version": 1, "roles": {
+        "coder": {"harness": "native"},
+        "reviewer": {"harness": "native", "write_policy": "no-edits"}},
+        "flows": {"qa": {"steps": [
+            {"id": name, "role": "coder", "review": {
+                "by": "reviewer", "independent": False, "max_rounds": 0}}
+            for name in ("first", "second")
+        ] + [{"id": "review", "role": "reviewer", "outputs": ["review"]}]}}}
+    resolved = gy.resolve(gy.parse(config), None)
+    store, calls = SessionStore(), []
+
+    async def launch(request):
+        calls.append((request.step_id, request.attempt))
+        if request.step_id == "review":
+            if request.attempt == 2 and not second_approves:
+                return StepResult(str(uuid.uuid4()), False, "", error="review failed")
+            return StepResult(str(uuid.uuid4()), True, _block("review", APPROVE))
+        (repo / "a.txt").write_text(request.step_id)
+        return StepResult(str(uuid.uuid4()), True, "built")
+
+    runner = FlowRunner(store, repo, "qa", resolved.config["flows"]["qa"], resolved,
+                        task="review both builds", launcher=launch)
+    first = await runner.run()
+    assert first.completed == second_approves
+    assert len(calls) == 4
+    resumed = await FlowRunner(store, repo, "qa", resolved.config["flows"]["qa"], resolved,
+                               task="review both builds", launcher=launch,
+                               flow_session=runner.flow_session).run(resume=True)
+    assert resumed.completed == second_approves
+    if not second_approves:
+        assert resumed.stopped.code == "flow.review_unresolved"
+    assert len(calls) == 4
+
+
+@pytest.mark.parametrize("changed", ["missing", "session_id", "attempt", "workspace_version",
+                                      "reviewer", "packet_digest"])
+async def test_resumed_review_refuses_missing_or_mismatched_approval_binding(repo, changed):
+    first = await _run(repo, Script([APPROVE]), _config(max_rounds=0)).run()
+    assert first.completed
+    store = SessionStore()
+    meta = store.load_meta(first.flow_session)
+    approval = meta["review_approvals"]["build"]
+    if changed == "missing":
+        meta["review_approvals"].clear()
+    elif changed in {"session_id", "attempt", "workspace_version"}:
+        approval["candidate"][changed] = "different-candidate"
+    elif changed == "reviewer":
+        approval["reviewer"]["attempt"] += 1
+    else:
+        approval.pop("packet_digest")
+    store.update_meta(first.flow_session, {"review_approvals": meta["review_approvals"]})
+    resolved = gy.resolve(gy.parse(_config(max_rounds=0)), None)
+
+    async def must_not_replay(request):
+        raise AssertionError("unbound approvals must not replay finished work")
+
+    resumed = await FlowRunner(store, repo, "pbr", resolved.config["flows"]["pbr"], resolved,
+                               task="t", launcher=must_not_replay,
+                               flow_session=first.flow_session).run(resume=True)
+    assert not resumed.completed
+    assert resumed.stopped.code == "flow.review_unresolved"
