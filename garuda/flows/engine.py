@@ -252,6 +252,7 @@ class FlowRunner:
         self.prepared_roles = dict(prepared_roles) if prepared_roles is not None else None
         self.prepared_fallbacks = dict(prepared_fallbacks or {})
         self._fallback_probes = {}
+        self._review_approvals = {}
         self.runtime_catalog = runtime_catalog
         self.authority_sources = tuple(authority_sources)
         self.configuration_sources = (self.authority_sources if configuration_sources is None
@@ -693,8 +694,9 @@ class FlowRunner:
             for r in existing:
                 tried[r["step"]] = max(tried.get(r["step"], 0), r.get("attempt", 0))
             steps = self.steps
-            prior_review = ((await _settled_sync(self.store.load_meta, self.flow_session))
-                            .get("review") if resume else None) or {}
+            prior_approvals = ((await _settled_sync(self.store.load_meta, self.flow_session))
+                               .get("review_approvals") if resume else None)
+            self._review_approvals = prior_approvals if isinstance(prior_approvals, dict) else {}
             for step in steps:
                 if step["id"] in completed_steps:
                     # A receipt says the step ran, not that its reviewer approved it.
@@ -704,7 +706,7 @@ class FlowRunner:
                         await self._review_loop(step, steps[-1], done, lease, tried)
                         completed_steps.add(steps[-1]["id"])
                         continue
-                    if step.get("review") and prior_review.get("status") != "review_approved":
+                    if step.get("review") and not self._review_approved(step, steps[-1], done):
                         raise FlowStopped(
                             "flow.review_unresolved",
                             f"{step['id']} has no approved review; a resume never treats it "
@@ -940,6 +942,38 @@ class FlowRunner:
                              "launched": ordered(launched), "consulted": ordered(consulted)},
                 "consults": len(consults)}
 
+    def _review_approved(self, step: dict, terminal: dict, done: list[dict]) -> bool:
+        """A resume needs approval for this exact build attempt and candidate."""
+        approval = self._review_approvals.get(step["id"])
+        if not isinstance(approval, dict) or approval.get("policy") != step["review"]:
+            return False
+        build = next((r for r in reversed(done) if r.get("step") == step["id"]), None)
+        if build is None:
+            return False
+        candidate = {"step": step["id"], "session_id": build.get("session_id"),
+                     "attempt": build.get("attempt"),
+                     "workspace_version": build.get("workspace_version_after"),
+                     "workspace_version_before": build.get("workspace_version_before")}
+        if approval.get("candidate") != candidate:
+            return False
+        reviewer = approval.get("reviewer")
+        if not isinstance(reviewer, dict) or reviewer.get("step") != terminal["id"]:
+            return False
+        receipt = next((r for r in done if all(r.get(key) == reviewer.get(key)
+                       for key in ("step", "attempt", "session_id"))), None)
+        if receipt is None or receipt.get("workspace_version_after") != candidate["workspace_version"]:
+            return False
+        from garuda.core.acceptance_request import is_digest
+
+        digest = approval.get("packet_digest")
+        if not isinstance(digest, str) or not digest.startswith("sha256:") or not is_digest(digest[7:]):
+            return False
+        history = approval.get("history")
+        return (approval.get("status") == "review_approved" and isinstance(history, list)
+                and bool(history) and isinstance(history[-1], dict)
+                and history[-1].get("approved") is True
+                and history[-1].get("packet_digest") == approval.get("packet_digest"))
+
     async def _review_loop(self, step: dict, terminal: dict, done: list[dict], lease,
                            tried: dict) -> None:
         """Run ``step`` and its terminal reviewer until approval or the rounds run out."""
@@ -1033,9 +1067,15 @@ class FlowRunner:
                     "was consulted for the reviewed step")
                 raise FlowStopped("flow.review_not_independent", why, step=terminal["id"])
             if parsed.approved:
-                await self._publish(self.flow_session, {"review": {
-                    "status": "review_approved", "rounds": pair + 1, "history": history,
-                    "independence": independence}})
+                review = {"status": "review_approved", "rounds": pair + 1, "history": history,
+                          "independence": independence}
+                self._review_approvals[step["id"]] = {
+                    **review, "candidate": packet["candidate"], "packet_digest": packet["digest"],
+                    "policy": dict(spec), "reviewer": {
+                        "step": terminal["id"], "session_id": receipt["session_id"],
+                        "attempt": receipt["attempt"]}}
+                await self._publish(self.flow_session, {
+                    "review": review, "review_approvals": dict(self._review_approvals)})
                 if self.quota_recovery is not None:
                     self.quota_recovery.continuation = None
                     await self._publish(self.flow_session, {"flow_continuation": None})
