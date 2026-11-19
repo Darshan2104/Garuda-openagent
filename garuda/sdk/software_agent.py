@@ -261,4 +261,6 @@ class SoftwareAgent:
             docker_host=self.docker_host,
             runtime=self.runtime_name,
             store=self._store,
+            extra_tools=self._extra_tools,
+            load_project_tools=self._load_project_tools,
         )
