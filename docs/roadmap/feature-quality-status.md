@@ -87,3 +87,11 @@ Record focused checks, full-suite results, dependency/install conditions and
 unavailable integrations in each PR. The campaign tracker is the rollup, not a
 fifth runtime feature. Close it only after the remaining implementation issues
 have their own acceptance evidence.
+
+## November feature QA follow-up
+
+The [19 November fix-validation report](../development/qa-fixes-2026-11-19.md)
+tracks the 17 bugs reproduced by [QA review #536](https://github.com/Darshan2104/Garuda-openagent/issues/536).
+Each has its own repair PR and focused regression evidence. The tracker report
+records the combined validation and remaining integration limits, and is the
+last merge in that set; an open PR remains a proposed fix.

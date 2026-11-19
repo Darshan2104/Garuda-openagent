@@ -240,6 +240,16 @@ Child deltas never enter event logs. Streamed child responses gain the existing
 can be withheld after a workspace guard; collection calls are auxiliary and also
 excluded.
 
+## Held native conversations
+
+SDK and dashboard conversations share `session_service.ConversationRecord` for
+message/working-state checkpoints and final outcomes. A new user turn is
+checkpointed before queued work starts; loop progress and settlement update the
+same shared history. One outer session span covers all turns, allowing strict
+recovery audit and resume. Closing persists the actual last result, failure or
+cancellation. Dashboard close first settles its active job before session and
+workspace teardown or lease release.
+
 ## The run path
 
 A task flows through these in order. Following this list top to bottom is the
