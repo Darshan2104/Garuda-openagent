@@ -163,6 +163,10 @@ sizes, estimated tokens and a digest.
 
 ## Structured output
 
+Local `$ref` targets must be schema nodes (for example under `$defs` or
+`properties`). References into annotation or instance data such as `default`,
+`examples`, `const` and `enum` are refused before activation.
+
 ```yaml
 output:
   schema: schemas/result.json     # relative to this definition
