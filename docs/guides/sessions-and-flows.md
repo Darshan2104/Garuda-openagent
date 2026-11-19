@@ -355,3 +355,8 @@ changing while the snapshot is taken, is refused with
 whose agent requires a final-output schema or a completion check can't answer
 a read-only question and is refused (`consult.target_unavailable`). This
 read-only profile is a guardrail, not a sandbox boundary.
+
+Acceptance checks recognize composed launchers such as `uv run python -m
+pytest`, `poetry run python -m pytest`, `pipenv run python -m pytest`, and
+`hatch run python -m pytest`. Changes to pytest infrastructure invalidate these
+checks just as they invalidate a direct pytest invocation.
