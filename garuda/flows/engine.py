@@ -351,7 +351,7 @@ class FlowRunner:
 
     def _no_edits(self, step: dict, role: str) -> bool:
         spec = self.resolved.config.get("roles", {}).get(role, {})
-        return (step.get("write_policy") or spec.get("write_policy")) == "no-edits"
+        return "no-edits" in (step.get("write_policy"), spec.get("write_policy"))
 
     def _closed_step(self, outcome: StepResult, step: dict, attempt: int, role_record=None) -> dict:
         """Keep only bound lifetime facts, never raw process output tails."""

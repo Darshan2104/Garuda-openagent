@@ -494,6 +494,8 @@ def _narrow_role(name: str, user: dict | None, project: dict, ceiling: str) -> d
         _check_project_ceiling(path, project.get("permissions"), ceiling)
         return project
     role = dict(project)
+    if user.get("write_policy") == "no-edits":
+        role["write_policy"] = "no-edits"
     if user.get("permissions") is None:
         _check_project_ceiling(path, project.get("permissions"), ceiling)
     role["permissions"] = _stricter(user.get("permissions"), project.get("permissions"))

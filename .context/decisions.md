@@ -1,5 +1,11 @@
 # Durable decisions
 
+## 2026-11-19 — Role write restrictions survive project overlays (#526)
+
+User no-edits is a ceiling alongside permissions and grants. Project role
+replacement cannot remove it, and flow step policy can only add a no-edits
+restriction. CLI and flow launches use that effective restriction.
+
 ## 2026-11-19 — Output references stay inside validated schema nodes (#519)
 
 A local output-schema reference may target only a node traversed as a schema
