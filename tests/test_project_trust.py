@@ -4,7 +4,6 @@ import hashlib
 import os
 import random
 import subprocess
-import threading
 
 import pytest
 
@@ -96,42 +95,30 @@ def test_a_symlinked_file_is_refused(repo, tmp_path):
         gy.load_effective(repo)
 
 
-def test_only_trusted_bytes_run_while_the_file_is_swapped(repo, tmp_path):
+@pytest.mark.parametrize("read_trusted", [True, False])
+def test_only_trusted_bytes_run_while_the_file_is_swapped(repo, monkeypatch, read_trusted):
     _grant(repo, TRUSTED)
-    other = tmp_path / "other.yaml"
-    other.write_text(OTHER)
-    stop = threading.Event()
+    config = repo / "garuda.yaml"
+    config.write_text(TRUSTED if read_trusted else OTHER)
+    replacement = repo / ".replacement.yaml"
+    replacement.write_text(OTHER if read_trusted else TRUSTED)
+    is_trusted = pt.is_trusted
 
-    def swap():
-        i = 0
-        while not stop.is_set():
-            tmp = repo / f".swap{i % 2}"
-            if i % 3 == 2:
-                if tmp.exists() or tmp.is_symlink():
-                    tmp.unlink()
-                tmp.symlink_to(other)
-            else:
-                tmp.write_text(OTHER if i % 3 else TRUSTED)
-            os.replace(tmp, repo / "garuda.yaml")
-            i += 1
+    def swap_before_authorizing(project):
+        # The loader already owns a snapshot. Replace the pathname at the
+        # authority decision so the check proves both directions every time.
+        assert project.data == (TRUSTED if read_trusted else OTHER).encode()
+        os.replace(replacement, config)
+        return is_trusted(project)
 
-    thread = threading.Thread(target=swap)
-    thread.start()
-    seen = {"trusted": 0, "withheld": 0, "refused": 0}
-    try:
-        for _ in range(300):
-            try:
-                resolved = gy.load_effective(repo)
-            except GarudaConfigError:
-                seen["refused"] += 1
-                continue
-            checks = resolved.config.get("checks", [])
-            assert checks in ([], [{"run": "pytest -q"}])  # never the untrusted command
-            seen["trusted" if checks else "withheld"] += 1
-    finally:
-        stop.set()
-        thread.join()
-    assert seen["trusted"] and seen["withheld"]
+    monkeypatch.setattr(pt, "is_trusted", swap_before_authorizing)
+    resolved = gy.load_effective(repo)
+    if read_trusted:
+        assert resolved.config["checks"] == [{"run": "pytest -q"}]
+        assert resolved.withheld == []
+    else:
+        assert "checks" not in resolved.config
+        assert resolved.withheld == ["checks[0]"]
 
 
 def test_headless_cannot_create_trust(repo, monkeypatch, capsys):
