@@ -3,7 +3,8 @@ import json
 import pytest
 
 from garuda.agents.setup import prepare_agent_run
-from garuda.core.events import EventStore
+from garuda.core import loop, tool_runner
+from garuda.core.events import EventStore, EventType
 from garuda.core.loop import DefaultAgent
 from garuda.core.permissions import PermissionEngine
 from garuda.core.spend import SpendGate
@@ -11,7 +12,7 @@ from garuda.model.config import CollectionPolicy
 from garuda.model.protocol import ModelResponse
 from garuda.model.script_model import ScriptModel
 from garuda.tools import DelegateCollectionTool, default_tools
-from garuda.types import AgentConfig, ToolCall
+from garuda.types import AgentConfig, Role, ToolCall
 from garuda.workspace.local import LocalEnvironment
 
 
@@ -25,16 +26,34 @@ class RecordingModel(ScriptModel):
         return await super().complete(messages, tools, temperature, max_tokens)
 
 
-@pytest.mark.parametrize("remaining", [0, 100_000])
-async def test_collection_calls_consume_the_parent_tree_budget(tmp_path, remaining):
+@pytest.mark.parametrize(("remaining", "dispatch"), [
+    pytest.param(100_000, "single", id="admitted"),
+    pytest.param(0, "single", id="refused"),
+    pytest.param(0, "parallel", id="parallel-refusal"),
+    pytest.param(0, "sequential", id="sequential-refusal"),
+])
+async def test_collection_calls_consume_the_parent_tree_budget(
+    tmp_path, monkeypatch, remaining, dispatch,
+):
     gate = SpendGate(max_tokens=200_000)
     gate.settled_tokens = 200_000 - remaining - 20_000
+    calls = [ToolCall("delegate", "delegate_collection", {
+        "objective": "inspect", "questions": ["what is here?"], "handoff": "none",
+    })]
+    if dispatch == "parallel":
+        # Admit the real delegation tool to a read batch for this test only.
+        parallel_tools = tool_runner.PARALLEL_SAFE_TOOLS | {"delegate_collection"}
+        monkeypatch.setattr(loop, "PARALLEL_SAFE_TOOLS", parallel_tools)
+        monkeypatch.setattr(tool_runner, "PARALLEL_SAFE_TOOLS", parallel_tools)
+        (tmp_path / "source.txt").write_text("source\n")
+        calls.append(ToolCall("read", "read_file", {"path": "source.txt"}))
+    elif dispatch == "sequential":
+        calls.extend([
+            ToolCall("write", "write_file", {"path": "later.txt", "content": "later"}),
+            ToolCall("read", "read_file", {"path": "later.txt"}),
+        ])
     parent = RecordingModel([
-        ModelResponse(content=None, usage={"total_tokens": 20_000}, tool_calls=[
-            ToolCall("delegate", "delegate_collection", {
-                "objective": "inspect", "questions": ["what is here?"], "handoff": "none",
-            }),
-        ]),
+        ModelResponse(content=None, usage={"total_tokens": 20_000}, tool_calls=calls),
         ModelResponse(content="finished", tool_calls=[], usage={"total_tokens": 10}),
     ])
     collector = RecordingModel([ModelResponse(
@@ -59,8 +78,28 @@ async def test_collection_calls_consume_the_parent_tree_budget(tmp_path, remaini
         assert len(collector.schemas) == 1
     else:
         assert not result.success
+        assert result.metadata["spend_limit"] == "tokens"
+        assert result.turns == 1
+        assert gate.refused == 1
+        events = result.metadata["events"]
+        terminal = next(event["payload"] for event in events
+                        if event["type"] == EventType.SESSION_END.value)
+        assert terminal["reason"] == "spend_limit"
+        assert terminal["spend_cause"] == "tokens"
+        assert result.final_message == f"Run-tree spend budget exhausted: {terminal['error']}"
         assert collector.schemas == []  # refused before provider dispatch
         assert gate.settled_tokens == 200_000
+        answers = [message for message in result.messages if message.role == Role.TOOL]
+        assert [message.tool_call_id for message in answers] == [call.id for call in calls]
+        dispatched = [event["payload"]["id"] for event in events
+                      if event["type"] == EventType.TOOL_CALL.value]
+        if dispatch == "parallel":
+            assert dispatched == ["delegate", "read"]
+            assert [event["payload"]["tool_call_id"] for event in events
+                    if event["type"] == EventType.TOOL_RESULT.value] == dispatched
+        elif dispatch == "sequential":
+            assert dispatched == ["delegate"]
+            assert all(message.content == result.final_message for message in answers)
     assert gate.reserved_tokens == 0
 
 

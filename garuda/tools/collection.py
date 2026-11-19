@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from garuda.core.spend import SpendLimitExceeded
 from garuda.tools.protocol import ToolContext, ToolEffect
 from garuda.types import ToolResult
 from garuda.workspace.health import EnvironmentUnavailableError
@@ -63,7 +64,7 @@ class DelegateCollectionTool:
             )
         try:
             content = await coordinator.delegate(arguments)
-        except EnvironmentUnavailableError:
+        except (EnvironmentUnavailableError, SpendLimitExceeded):
             raise
         except Exception as exc:  # validation/provider failures are a tool result
             return ToolResult(

@@ -576,6 +576,11 @@ class DefaultAgent:
                 await self._run_parallel_batch(state, response.tool_calls, turn)
                 return None
             return await self._run_calls(state, response.tool_calls, turn)
+        except SpendLimitExceeded as exc:
+            state.answer_open_calls(
+                response.tool_calls, None, reason=describe_refusal(exc),
+            )
+            return self._spend_limited(state, exc, turn)
         except EnvironmentUnavailableError as exc:
             # The more reachable of the two abort paths: any tool in the walk can
             # raise mid-response, so every call after it in that response is left

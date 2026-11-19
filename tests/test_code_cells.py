@@ -11,15 +11,20 @@ import pytest
 
 from garuda.context.manager import ContextManager
 from garuda.core.action_memo import ActionMemo
-from garuda.core.events import EventStore
+from garuda.core.events import EventStore, EventType
+from garuda.core.loop import DefaultAgent
 from garuda.core.permissions import PermissionEngine
 from garuda.core.side_effects import SideEffectLedger
+from garuda.core.spend import SpendGate
 from garuda.core.tool_runner import ToolRunner
+from garuda.model.config import CollectionPolicy
+from garuda.model.protocol import ModelResponse
+from garuda.model.script_model import ScriptModel
 from garuda.plugins.hooks import HookRegistry
 from garuda.tools import build_toolkit, default_tools
 from garuda.tools.code_cell import CodeCellTool
 from garuda.tools.protocol import ToolContext
-from garuda.types import ToolCall
+from garuda.types import AgentConfig, Role, ToolCall
 from garuda.workspace.cells import WORKER, CellError, CellLimits, cell_process, exchange_cell
 from garuda.workspace.docker import DockerWorkspace
 from garuda.workspace.local import LocalEnvironment
@@ -331,6 +336,43 @@ class HostTransportEnvironment(LocalEnvironment):
 
     def open_code_cell(self):
         return cell_process([sys.executable, "-I", "-u", "-c", WORKER])
+
+
+async def test_cell_records_nested_collection_spend_refusal(tmp_path):
+    call = ToolCall("outer", "code_cell", {
+        "code": 'result = tool("delegate_collection", inputs)',
+        "inputs": {"objective": "inspect", "questions": ["what is here?"]},
+    })
+    result = await DefaultAgent().run(
+        task="inspect",
+        model=ScriptModel([ModelResponse(
+            content=None, tool_calls=[call], usage={"total_tokens": 200_000},
+        )]),
+        collection_model=ScriptModel([]), collection_policy=CollectionPolicy(enabled=True),
+        env=HostTransportEnvironment(tmp_path), tools=[*default_tools(), CodeCellTool()],
+        config=AgentConfig(
+            max_turns=2, spend_gate=SpendGate(max_tokens=200_000),
+            enable_verifier=False, bootstrap_environment=False,
+        ),
+    )
+
+    assert not result.success
+    assert result.metadata["spend_limit"] == "tokens"
+    events = result.metadata["events"]
+    calls = [event["payload"] for event in events if event["type"] == EventType.TOOL_CALL.value]
+    outer, nested = calls
+    assert outer["id"] == "outer"
+    assert nested["name"] == "delegate_collection"
+    assert nested["cell_id"] == outer["cell_id"]
+    receipts = [event["payload"] for event in events if event["type"] == EventType.TOOL_RESULT.value]
+    assert [(receipt["tool_call_id"], receipt["cell_id"], receipt["nested_index"])
+            for receipt in receipts] == [(call["id"], call["cell_id"], call["nested_index"])
+                                         for call in (nested, outer)]
+    assert [receipt["nested_index"] for receipt in receipts] == [1, 0]
+    assert all(receipt["is_error"] and receipt["content"] == result.final_message
+               for receipt in receipts)
+    answers = [message for message in result.messages if message.role == Role.TOOL]
+    assert [message.tool_call_id for message in answers] == ["outer"]
 
 
 async def test_approval_wait_is_not_charged_to_the_cell_budget(tmp_path):

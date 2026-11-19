@@ -25,6 +25,7 @@ from garuda.core.evidence import is_discriminating
 from garuda.core.metrics import RunMetrics, stopwatch
 from garuda.core.permissions import PermissionEngine
 from garuda.core.side_effects import SideEffectLedger
+from garuda.core.spend import SpendLimitExceeded, describe_refusal
 from garuda.plugins.hooks import HookRegistry
 from garuda.plugins.reminders import ReminderObserver
 from garuda.tools.protocol import Tool, ToolContext, ToolDispatcher
@@ -262,6 +263,12 @@ class ToolRunner:
                     is_error=True,
                 ), turn=turn)
             raise
+        except SpendLimitExceeded as exc:
+            if provenance is not None:
+                self.record(call, ToolResult(
+                    tool_call_id=call.id, content=describe_refusal(exc), is_error=True,
+                ), turn=turn)
+            raise
         except asyncio.CancelledError:
             if provenance is not None:
                 self.record(call, ToolResult(
@@ -293,9 +300,8 @@ class ToolRunner:
 
         The single timing point for tool work, so the sequential and concurrent
         paths cannot drift into measuring different things. ``execute`` already
-        converts tool exceptions into error results; the only thing that escapes
-        it is ``EnvironmentUnavailableError``, which aborts the run, so nothing
-        useful is lost by not recording a metric for that case.
+        converts ordinary tool exceptions into error results. Workspace loss and
+        spend refusals escape to the loop's terminal paths.
         """
         with stopwatch() as elapsed:
             result = await self.execute(call)
@@ -493,9 +499,8 @@ class ToolRunner:
                 self.memo.record(
                     call, signature, result.content, result.is_error, result.metadata
                 )
-        except EnvironmentUnavailableError:
-            # Not a tool failure the model can route around — the workspace is
-            # gone. Propagate so the run aborts instead of continuing blind.
+        except (EnvironmentUnavailableError, SpendLimitExceeded):
+            # The loop owns terminal workspace and spend failures.
             raise
         except WorkspaceAccessDenied as exc:
             result = ToolResult(
@@ -931,10 +936,9 @@ class ToolRunner:
             # durations show what overlapping actually recovered.
             self.metrics.note_tool_wall(batch_elapsed[0])
             self.metrics.note_parallel_segment(len(exec_indices))
-        # A dead workspace must abort the whole run, not be reported as one
-        # read failing; surface it before results are folded into the transcript.
+        # Surface terminal failures before folding results into the transcript.
         for outcome in results:
-            if isinstance(outcome, EnvironmentUnavailableError):
+            if isinstance(outcome, (EnvironmentUnavailableError, SpendLimitExceeded)):
                 retain_undelivered()
                 raise outcome
         settled: list[ToolResult] = []

@@ -568,14 +568,12 @@ config is assembled. The child binds its own event store with the same gate;
 worker calls, auxiliaries and reasoning fallbacks therefore reserve and settle
 against the parent remainder. The collection ledger remains an additional
 job-level limit. Standalone collection without an active gate stays compatible.
-This supersedes the #405 entry's collection-worker exclusion. A worker result
-carrying `spend_limit`, or any new shared-gate refusal during the attempt, fails
-the job with its spend cause and does not trigger a reasoning-model fallback or
-record a `MODEL_FALLBACK` event. The coordinator compares the gate's public
-refusal count around each attempt and reads its last refusal cause, so auxiliary
-callers that catch admission exceptions cannot hide budget exhaustion. Because
-the gate is shared, concurrent refusals conservatively stop the job too; a
-refusal predating the attempt alone does not suppress ordinary failure fallback.
+This supersedes the #405 entry's collection-worker exclusion. With #555 and
+#556, the coordinator tracks each attempt's own admissions, including refusals
+caught by auxiliary callers. A worker result carrying `spend_limit` or a
+refusal in that scope fails the job and skips further attempts. The failure
+event records `spend_cause`, and the typed exception ends the parent run with
+`spend_limit`. The shared gate still accounts for all callers across the tree.
 
 ## 2026-11-12 — Dashboard chat uses the native delta consumer (#389)
 

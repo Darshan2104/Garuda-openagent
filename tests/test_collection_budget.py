@@ -7,6 +7,8 @@ from garuda.context.manager import ContextManager
 from garuda.core.collection import CollectionCoordinator
 from garuda.core.events import EventStore
 from garuda.core.permissions import PermissionEngine
+from garuda.core.spend import SpendGate, SpendLimitExceeded
+from garuda.model import accounting
 from garuda.model.config import CollectionBudget, CollectionPolicy
 from garuda.model.protocol import ModelResponse
 from garuda.model.script_model import ScriptModel
@@ -96,6 +98,31 @@ async def test_concurrent_jobs_cannot_oversubscribe_shared_parallel_limit(tmp_pa
     await asyncio.gather(first, second)
     assert model.max_active == 1
     assert coordinator.ledger.snapshot()["active_jobs"] == 0
+
+
+async def test_parent_spend_refusal_preserves_in_flight_collection_report(tmp_path):
+    model = GatedModel()
+    coordinator = _coordinator(tmp_path, model, CollectionBudget())
+    gate = SpendGate(max_tokens=100_000)
+    token = accounting.bind(coordinator.events, gate)
+    try:
+        async with asyncio.TaskGroup() as tasks:
+            job = tasks.create_task(coordinator.delegate({
+                "objective": "inspect", "questions": ["what?"],
+            }))
+            try:
+                await asyncio.wait_for(model.started.wait(), timeout=5)
+                with pytest.raises(SpendLimitExceeded):
+                    await accounting.admit(gate, "main", 100_001)
+            finally:
+                model.release.set()
+    finally:
+        accounting.reset(token)
+
+    payload = json.loads(job.result())
+    assert payload["state"] == "completed"
+    assert payload["report"]["summary"] == "No supported facts were required."
+    assert len(payload["attempts"]) == 1
 
 
 @pytest.mark.asyncio
