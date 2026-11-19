@@ -1,5 +1,12 @@
 # Durable decisions
 
+## 2026-11-19 — Dashboard close settles work before releasing ownership (#521)
+
+Chat close withdraws approval access and cancels/awaits its active job before
+session or workspace teardown. The close task is shielded from HTTP request
+cancellation and settles fully before cancellation propagates. Workspace
+evidence and lease release therefore follow completed turn cleanup.
+
 ## 2026-11-18 — Rigorous planning inherits run authority (#500)
 
 Rigorous mode resolves the packaged `garuda/plan` profile directly. Its read-only

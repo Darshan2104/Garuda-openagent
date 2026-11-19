@@ -445,3 +445,8 @@ See [Safety and workspaces](safety-and-workspaces.md) for workspace and
 permission guidance. Run the opt-in real-browser checks in
 [Browser checks](../development/browser-checks.md) after changing dashboard
 behavior or presentation.
+
+Closing a chat cancels and waits for its active turn before closing the
+session, capturing final workspace evidence and releasing the workspace.
+Cancellation of the close request does not abandon this cleanup; another chat
+cannot acquire the workspace while the previous turn is still settling.
