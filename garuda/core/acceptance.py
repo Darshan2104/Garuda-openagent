@@ -69,11 +69,14 @@ def _words(run) -> list[str]:
 def infra_patterns(run) -> tuple[str, ...]:
     """The infrastructure a check's result depends on, from its command."""
     words = [w for w in _words(run) if "=" not in w or w.startswith("-")]
-    if (len(words) >= 2 and words[1] == "-m"
-            and re.fullmatch(r"python(?:\d+(?:\.\d+)?)?", Path(words[0]).name)):
-        words = words[2:]
-    if words and words[0] in ("uv", "poetry", "pipenv", "hatch") and "run" in words[:2]:
-        words = words[words.index("run") + 1:]
+    while len(words) >= 2:
+        executable = Path(words[0]).name
+        if executable in ("uv", "poetry", "pipenv", "hatch") and words[1] == "run":
+            words = words[2:]
+        elif words[1] == "-m" and re.fullmatch(r"python(?:\d+(?:\.\d+)?)?", executable):
+            words = words[2:]
+        else:
+            break
     return INFRA.get(Path(words[0]).name, ()) if words else ()
 
 
