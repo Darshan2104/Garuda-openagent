@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 from garuda.agents import spec
 
@@ -56,11 +57,13 @@ def _refuse(code: str, message: str, where: str = "") -> spec.AgentSpecError:
     return spec.AgentSpecError(code, "output.schema", message, source=where)
 
 
-def _walk(node: Any, pointer: str, depth: int, refs: list, where: str) -> None:
+def _walk(node: Any, pointer: str, depth: int, refs: list, schemas: set[str],
+          where: str) -> None:
     """Check keywords and collect ``(pointer, $ref)`` pairs of one subschema."""
     if depth > MAX_DEPTH:
         raise _refuse("agent.output_schema_too_large",
                       f"nested deeper than {MAX_DEPTH} levels", where)
+    schemas.add(pointer)
     if isinstance(node, bool):
         return
     if not isinstance(node, dict):
@@ -73,17 +76,17 @@ def _walk(node: Any, pointer: str, depth: int, refs: list, where: str) -> None:
         if key == "$ref":
             refs.append((pointer, value))
         elif key in _SCHEMA:
-            _walk(value, here, depth + 1, refs, where)
+            _walk(value, here, depth + 1, refs, schemas, where)
         elif key in _SCHEMA_LIST:
             if not isinstance(value, list):
                 raise _refuse("agent.output_schema_invalid", f"{here} must be a list", where)
             for index, item in enumerate(value):
-                _walk(item, f"{here}/{index}", depth + 1, refs, where)
+                _walk(item, f"{here}/{index}", depth + 1, refs, schemas, where)
         elif key in _SCHEMA_MAP:
             if not isinstance(value, dict):
                 raise _refuse("agent.output_schema_invalid", f"{here} must be a mapping", where)
             for name, item in value.items():
-                _walk(item, f"{here}/{_escape(name)}", depth + 1, refs, where)
+                _walk(item, f"{here}/{_escape(name)}", depth + 1, refs, schemas, where)
     if node.get("$schema", DIALECT) != DIALECT and pointer == "":
         raise _refuse("agent.output_schema_unsupported",
                       f"only $schema {DIALECT} is supported", where)
@@ -99,25 +102,32 @@ def _lookup(doc: Any, ref: str, where: str) -> str:
         raise _refuse("agent.output_schema_ref",
                       f"$ref {ref!r} must point inside the same schema file (#/...)", where)
     node: Any = doc
-    pointer = ref[1:]
-    for part in pointer.split("/")[1:] if pointer else []:
+    fragment = unquote(ref[1:])
+    pointer = ""
+    for part in fragment.split("/")[1:] if fragment else []:
         part = part.replace("~1", "/").replace("~0", "~")
         if isinstance(node, dict) and part in node:
             node = node[part]
         elif isinstance(node, list) and part.isdigit() and int(part) < len(node):
+            part = str(int(part))
             node = node[int(part)]
         else:
             raise _refuse("agent.output_schema_ref", f"$ref {ref!r} does not resolve", where)
+        pointer += "/" + _escape(part)
     return pointer
 
 
-def _check_references(doc: dict, refs: list, where: str) -> None:
+def _check_references(doc: dict, refs: list, schemas: set[str], where: str) -> None:
     if len(refs) > MAX_REFS:
         raise _refuse("agent.output_schema_too_large",
                       f"{len(refs)} references; at most {MAX_REFS}", where)
     targets: dict[str, list[str]] = {}
     for owner, ref in refs:
-        targets.setdefault(owner, []).append(_lookup(doc, ref, where))
+        target = _lookup(doc, ref, where)
+        if target not in schemas:
+            raise _refuse("agent.output_schema_ref",
+                          f"$ref {ref!r} must point to a validated schema node", where)
+        targets.setdefault(owner, []).append(target)
     # Expanding every reference must stay small, and may not loop.
     sizes: dict[str, int] = {}
 
@@ -154,9 +164,10 @@ def compile_schema(doc: Any, *, where: str = "") -> dict:
     if not isinstance(doc, (dict, bool)):
         raise _refuse("agent.output_schema_invalid", "the schema must be a JSON object", where)
     refs: list = []
-    _walk(doc, "", 0, refs, where)
+    schemas: set[str] = set()
+    _walk(doc, "", 0, refs, schemas, where)
     if isinstance(doc, dict):
-        _check_references(doc, refs, where)
+        _check_references(doc, refs, schemas, where)
     try:
         Draft202012Validator.check_schema(doc)
     except SchemaError as exc:

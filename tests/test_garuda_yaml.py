@@ -333,3 +333,14 @@ def test_fallback_models_obey_harness_allowlists_during_config_resolution():
     with pytest.raises(GarudaConfigError) as error:
         gy.resolve(config, None, cli_role="coder")
     assert error.value.path == "roles.coder.fallback[0].model_id"
+
+
+@pytest.mark.parametrize("steps", [
+    [{"id": "coder-2", "role": "coder"}, {"role": "coder"}],
+    [{"role": "coder"}, {"id": "coder-1", "role": "coder"}],
+    [{"id": "group-2", "role": "coder"}, {"parallel": ["coder"]}],
+])
+def test_effective_flow_ids_reject_explicit_generated_collisions(steps):
+    with pytest.raises(GarudaConfigError, match="step ids must be unique") as error:
+        gy.parse({"version": 1, "flows": {"qa": {"steps": steps}}})
+    assert error.value.path == "flows.qa.steps"
