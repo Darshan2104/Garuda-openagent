@@ -255,6 +255,7 @@ is refused by name (`agent.field_unsupported`).
 
 Files without `version:` are legacy profiles and keep working unchanged.
 `garuda agent migrate PATH` shows the version 1 form and confirms it resolves
-to the same agent; `--write` replaces the file and keeps a backup. If the
+to the same agent; `--write` replaces the file, preserves its file permissions,
+and keeps an owner-only backup. If the
 result would behave differently, `--write` refuses; where it is only stricter,
 it waits for `--accept-tightening`.
