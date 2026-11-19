@@ -13,6 +13,7 @@ from garuda.workspace.protocol import Environment
 
 if TYPE_CHECKING:
     from garuda.model.streaming import DeltaConsumer
+    from garuda.tools.protocol import Tool
 
 
 class Conversation:
@@ -36,6 +37,8 @@ class Conversation:
         collection_model: str | object | None = None,
         no_collection: bool = False,
         model_binding: str | None = None,
+        extra_tools: list["Tool"] | None = None,
+        load_project_tools: bool | None = None,
     ):
         self._workspace = str(workspace)
         self._model_name = model
@@ -54,6 +57,8 @@ class Conversation:
         self._collection_model = collection_model
         self._no_collection = no_collection
         self._model_binding = model_binding
+        self._extra_tools = list(extra_tools or [])
+        self._load_project_tools = load_project_tools
         self._session: AgentSession | None = None
         self._env: Environment | None = None
         self._acp: Any | None = None
@@ -63,6 +68,7 @@ class Conversation:
         self._approval_broker: Any | None = None
         self._lease: Any | None = None
         self._live: Any | None = None
+        self._record: Any | None = None
 
     async def _ensure_session(self) -> AgentSession:
         if self._session is None:
@@ -79,6 +85,8 @@ class Conversation:
                 collection_model=self._collection_model,
                 no_collection=self._no_collection,
                 model_binding=self._model_binding,
+                extra_tools=self._extra_tools,
+                load_project_tools=self._load_project_tools,
                 workspace=self._workspace,
                 agents_dir=self._agents_dir,
                 mcp_config_path=self._mcp_config,
@@ -117,7 +125,8 @@ class Conversation:
         session.config.stream_subagent_deltas = subagent_deltas
         live = await self._ensure_live(session, task)
         context = session.prepare_context(task)
-        return await live.turn(session.agent.run(
+        self._record.begin_turn(context, task=task, session=session)
+        return await live.turn(self._record.turn(session.agent.run(
             task=task,
             model=session.model,
             env=live.env,
@@ -131,7 +140,8 @@ class Conversation:
             collection_model=getattr(session, "collection", None),
             collection_policy=getattr(session, "collection_policy", None),
             model_delta_consumer=on_delta,
-        ))
+            **self._record.checkpoints,
+        )))
 
     async def _ensure_live(self, session: AgentSession, task: str):
         """Open the conversation's session once, through the shared lifecycle (B.6).
@@ -178,6 +188,7 @@ class Conversation:
         from garuda.observability import usage as usage_ledger
 
         usage_ledger.attach(session.events, store)
+        self._record = session_service.ConversationRecord(store, session.events.session_id, session.events)
         self._live, self._lease, self._env = live, live.lease, live.env
         return live
 
@@ -420,20 +431,8 @@ class Conversation:
         self._session = None
 
     async def _finish_native(self, workspace: str) -> None:
-        from garuda.runtime.session_state import finished
-        from garuda.workspace import evidence
-
-        session_id = self._session.events.session_id
-        try:
-            await asyncio.to_thread(
-                evidence.finish_session_evidence, self._store, session_id, workspace,
-                extra_meta={"status": "finished", "state": finished(success=True)},
-            )
-        except Exception as exc:
-            self._store.update_meta(session_id, {
-                "status": "failed", "state": finished(success=False),
-                "workspace_delta_error": type(exc).__name__,
-            })
+        await self._record.finish(workspace)
+        self._record = None
 
     @property
     def events(self) -> EventStore:

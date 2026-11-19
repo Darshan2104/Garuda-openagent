@@ -467,6 +467,12 @@ claimed; inspect recorded tick times after those transitions.
     asyncio.run(main())
     ```
 
+A conversation inherits the agent instance's registered tools and explicit
+`load_project_tools` choice. Tool registrations are snapshotted when you call
+`conversation()`; later registrations affect later conversations. Different
+agent instances keep separate tool registries.
+
+
 === "Your own tool"
 
     ```python
@@ -697,3 +703,9 @@ whole-file compatibility path. Custom environments can implement the optional
 `BoundedTextEnvironment` protocol from `garuda.workspace.text_reads`. This
 capability must use the backend's existing path policy; it grants no new file
 access. Existing `read_file()` callers keep their original contract.
+
+Native SDK and dashboard conversations checkpoint the full shared message
+history and working state during each turn. Closing persists the actual last
+turn outcome, including failure or cancellation. The held conversation owns
+one session event span, so a multi-turn chat can pass recovery audit and resume
+through `SoftwareAgent.run(..., resume=SESSION_ID)`.

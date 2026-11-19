@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import pytest
+
 from garuda.tools import build_toolkit, builtin_registry
 from garuda.tools.project_loader import load_project_tools
 
@@ -152,3 +154,31 @@ async def test_flag_override_forces_off(tmp_path: Path, monkeypatch):
         ["my_project_tool"], None, workspace=str(tmp_path), load_project_tools=False
     )
     assert tools == []  # ...flag wins
+
+
+@pytest.mark.parametrize("explicit,global_enabled", [(True, False), (False, True)])
+async def test_sdk_conversation_keeps_explicit_project_tool_loading(
+        tmp_path, monkeypatch, explicit, global_enabled):
+    from garuda.model.protocol import ModelResponse
+    from garuda.model.script_model import ScriptModel
+    from garuda.sdk import SoftwareAgent
+    from garuda.types import Role, ToolCall
+
+    _write_tools_dir(tmp_path)
+    _set_global_load_project_tools(tmp_path, monkeypatch, enabled=global_enabled)
+    agent = SoftwareAgent(workspace=tmp_path, load_project_tools=explicit, agent={
+        "extends": "garuda/build",
+        "permissions": {"rules": {"tools": {"my_project_tool": "allow"}}},
+    }, model=ScriptModel([
+        ModelResponse(content="", tool_calls=[ToolCall("ping", "my_project_tool", {})]),
+        ModelResponse(content="", tool_calls=[ToolCall(
+            "done", "task_complete", {"summary": "Project tool selection was exercised."})]),
+    ]))
+    conversation = agent.conversation()
+    try:
+        result = await conversation.run("Call my_project_tool then finish")
+    finally:
+        await conversation.close()
+    content = next(message.content for message in result.messages
+                   if message.role == Role.TOOL and message.name == "my_project_tool")
+    assert content == "ok" if explicit else "Unknown tool" in content

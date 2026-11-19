@@ -868,3 +868,7 @@ garuda run --load-project-tools -t "How many words are in README.md?"
 
 **Next:** run several tasks at once in
 [Level 4 · Run work in parallel](parallel.md).
+
+Language navigation results honor path permissions before reading source for
+excerpts or column conversion. An ASK path requires approval through the normal
+permission broker; a denial or unavailable approval withholds that location.

@@ -4,7 +4,6 @@ import hashlib
 import os
 import random
 import subprocess
-import threading
 
 import pytest
 
@@ -96,42 +95,30 @@ def test_a_symlinked_file_is_refused(repo, tmp_path):
         gy.load_effective(repo)
 
 
-def test_only_trusted_bytes_run_while_the_file_is_swapped(repo, tmp_path):
+@pytest.mark.parametrize("read_trusted", [True, False])
+def test_only_trusted_bytes_run_while_the_file_is_swapped(repo, monkeypatch, read_trusted):
     _grant(repo, TRUSTED)
-    other = tmp_path / "other.yaml"
-    other.write_text(OTHER)
-    stop = threading.Event()
+    config = repo / "garuda.yaml"
+    config.write_text(TRUSTED if read_trusted else OTHER)
+    replacement = repo / ".replacement.yaml"
+    replacement.write_text(OTHER if read_trusted else TRUSTED)
+    is_trusted = pt.is_trusted
 
-    def swap():
-        i = 0
-        while not stop.is_set():
-            tmp = repo / f".swap{i % 2}"
-            if i % 3 == 2:
-                if tmp.exists() or tmp.is_symlink():
-                    tmp.unlink()
-                tmp.symlink_to(other)
-            else:
-                tmp.write_text(OTHER if i % 3 else TRUSTED)
-            os.replace(tmp, repo / "garuda.yaml")
-            i += 1
+    def swap_before_authorizing(project):
+        # The loader already owns a snapshot. Replace the pathname at the
+        # authority decision so the check proves both directions every time.
+        assert project.data == (TRUSTED if read_trusted else OTHER).encode()
+        os.replace(replacement, config)
+        return is_trusted(project)
 
-    thread = threading.Thread(target=swap)
-    thread.start()
-    seen = {"trusted": 0, "withheld": 0, "refused": 0}
-    try:
-        for _ in range(300):
-            try:
-                resolved = gy.load_effective(repo)
-            except GarudaConfigError:
-                seen["refused"] += 1
-                continue
-            checks = resolved.config.get("checks", [])
-            assert checks in ([], [{"run": "pytest -q"}])  # never the untrusted command
-            seen["trusted" if checks else "withheld"] += 1
-    finally:
-        stop.set()
-        thread.join()
-    assert seen["trusted"] and seen["withheld"]
+    monkeypatch.setattr(pt, "is_trusted", swap_before_authorizing)
+    resolved = gy.load_effective(repo)
+    if read_trusted:
+        assert resolved.config["checks"] == [{"run": "pytest -q"}]
+        assert resolved.withheld == []
+    else:
+        assert "checks" not in resolved.config
+        assert resolved.withheld == ["checks[0]"]
 
 
 def test_headless_cannot_create_trust(repo, monkeypatch, capsys):
@@ -256,3 +243,66 @@ def test_no_project_file_widens_authority():
         for key, value in config.get("consults", {}).items():
             assert value <= USER["consults"].get(key, value)
     assert applied > 300  # the generator reaches the accepting paths
+
+
+@pytest.mark.parametrize("alias", ["native", "local"])
+def test_untrusted_native_model_is_withheld_through_runtime_alias(repo, alias):
+    from garuda.agents.setup import prepare_runtime_catalog
+    from garuda.runtime.roles import plan_role
+
+    (repo / ".agent").mkdir()
+    (repo / ".agent" / "settings.yaml").write_text(
+        "runtime_refs: [{alias: local, runtime_id: native}]\n")
+    text = ("version: 1\ndefaults: {role: coder}\nroles:\n"
+            f"  coder: {{harness: {alias}, model_id: openai/untrusted-project-model}}\n")
+    (repo / "garuda.yaml").write_text(text)
+    resolved = gy.load_effective(repo)
+    assert resolved.withheld == ["roles.coder.model_id"]
+    plan = plan_role(resolved, prepare_runtime_catalog(repo))
+    assert plan.kind == "native" and plan.model_id is None
+
+    pt.grant(pt.read_project_file(repo))
+    resolved = gy.load_effective(repo)
+    assert not resolved.withheld
+    assert plan_role(resolved, prepare_runtime_catalog(repo)).model_id == "openai/untrusted-project-model"
+
+
+def test_external_project_model_cannot_reach_native_role_after_alias_change(repo):
+    from garuda.agents.setup import prepare_runtime_catalog
+    from garuda.runtime.roles import RoleRefused, plan_role
+
+    (repo / ".agent").mkdir()
+    settings = repo / ".agent" / "settings.yaml"
+    settings.write_text("runtime_refs: [{alias: local, runtime_id: codex}]\n")
+    (repo / "garuda.yaml").write_text(
+        "version: 1\ndefaults: {role: coder}\n"
+        "roles: {coder: {harness: local, model_id: fixture/choice}}\n")
+
+    resolved = gy.load_effective(repo)
+    external = plan_role(resolved, prepare_runtime_catalog(repo))
+    assert external.kind == "acp" and external.model_id == "fixture/choice"
+
+    settings.write_text("runtime_refs: [{alias: local, runtime_id: native}]\n")
+    native_catalog = prepare_runtime_catalog(repo)
+    with pytest.raises(RoleRefused, match="config.project_untrusted"):
+        plan_role(resolved, native_catalog)
+    assert plan_role(gy.load_effective(repo), native_catalog).model_id is None
+
+
+def test_config_trust_displays_native_models_named_through_aliases(repo, monkeypatch, capsys):
+    import sys
+
+    from tests.test_runtime_cli import _main
+
+    (repo / ".agent").mkdir()
+    (repo / ".agent" / "settings.yaml").write_text(
+        "runtime_refs: [{alias: local, runtime_id: native}]\n")
+    (repo / "garuda.yaml").write_text(
+        "version: 1\nroles: {coder: {harness: local, model_id: openai/project-choice}}\n")
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr("builtins.input", lambda *_: "y")
+    code, out = _main(monkeypatch, capsys, "config", "trust", "--workspace", str(repo))
+    assert code == 0
+    assert "native model for role coder: openai/project-choice" in out
+    assert not gy.load_effective(repo).withheld

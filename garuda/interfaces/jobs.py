@@ -84,8 +84,17 @@ class JobManager:
         self._jobs[job.id] = job
         self._order.append(job.id)
         job._task = asyncio.create_task(self._run_job(job, runner))
+        job._task.add_done_callback(lambda task: self._settle_unstarted_cancel(job, task))
         self._prune()
         return job
+
+    def _settle_unstarted_cancel(self, job: Job, task: asyncio.Task) -> None:
+        # Cancelling before the first coroutine step bypasses its try/finally.
+        # Started jobs already settle in _run_job, after runner cleanup finishes.
+        if task.cancelled() and job.finished_at is None:
+            job.state = JobState.CANCELLED
+            job.finished_at = time.monotonic()
+            self._prune()
 
     async def _run_job(self, job: Job, runner: JobRunner) -> None:
         try:

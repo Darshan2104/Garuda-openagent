@@ -227,3 +227,32 @@ async def test_a_cancelled_job_is_stamped_and_becomes_evictable():
     assert job.finished_at is not None
     job.finished_at -= 61.0
     assert mgr.get(job.id) is None
+
+
+@pytest.mark.parametrize("cancel_directly", [False, True])
+async def test_jobs_cancelled_before_start_settle_and_are_pruned(cancel_directly):
+    mgr = JobManager(max_retained=1, retain_seconds=60.0)
+    ran = []
+
+    async def runner(job):
+        ran.append(job.id)
+        return _result()
+
+    jobs = []
+    for _ in range(2):
+        job = mgr.submit(runner, task="never started", events=EventStore())
+        jobs.append(job)
+        if cancel_directly:
+            job._task.cancel()
+        else:
+            assert mgr.cancel(job.id)
+        with pytest.raises(asyncio.CancelledError):
+            await job._task
+        assert job.state == JobState.CANCELLED and job.done
+        assert job.finished_at is not None
+        assert not mgr.cancel(job.id)
+
+    assert not ran
+    assert mgr.list() == [jobs[-1]]
+    jobs[-1].finished_at -= 61.0
+    assert not mgr.list()

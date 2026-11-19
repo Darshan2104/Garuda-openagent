@@ -255,6 +255,19 @@ def _step(value, path) -> dict:
     return out
 
 
+def effective_flow_steps(flow: dict, *, path: str = "flow.steps") -> list[dict]:
+    """Freeze the IDs used by admission, execution, receipts and resume."""
+    steps = []
+    seen = set()
+    for index, step in enumerate(flow["steps"]):
+        sid = step.get("id") or (step.get("role") or "group") + f"-{index + 1}"
+        if sid in seen:
+            _fail(path, f"step ids must be unique (duplicate {sid!r})")
+        seen.add(sid)
+        steps.append({**step, "id": sid, "index": index})
+    return steps
+
+
 def _flow(value, path) -> dict:
     data = _mapping(value, path, ("steps", "description"))
     steps = data.get("steps")
@@ -263,9 +276,7 @@ def _flow(value, path) -> dict:
     if len(steps) > MAX_STEPS:
         _fail(f"{path}.steps", f"at most {MAX_STEPS} steps")
     out: dict[str, Any] = {"steps": [_step(s, f"{path}.steps[{i}]") for i, s in enumerate(steps)]}
-    ids = [s["id"] for s in out["steps"] if "id" in s]
-    if len(set(ids)) != len(ids):
-        _fail(f"{path}.steps", "step ids must be unique")
+    effective_flow_steps(out, path=f"{path}.steps")
     if "description" in data:
         out["description"] = _str(data["description"], f"{path}.description")
     return out
@@ -445,6 +456,8 @@ class Resolved:
     role: str | None = None
     #: Project values left out because the project file is not trusted (C.2).
     withheld: list[str] = field(default_factory=list)
+    #: Untrusted project models admitted for external runtimes only.
+    external_project_models: frozenset[str] = frozenset()
 
     def selected_role(self) -> dict | None:
         return self.config.get("roles", {}).get(self.role) if self.role else None
@@ -483,6 +496,8 @@ def _narrow_role(name: str, user: dict | None, project: dict, ceiling: str) -> d
         _check_project_ceiling(path, project.get("permissions"), ceiling)
         return project
     role = dict(project)
+    if user.get("write_policy") == "no-edits":
+        role["write_policy"] = "no-edits"
     if user.get("permissions") is None:
         _check_project_ceiling(path, project.get("permissions"), ceiling)
     role["permissions"] = _stricter(user.get("permissions"), project.get("permissions"))
@@ -640,10 +655,16 @@ def _check_resolved(config: dict) -> None:
     roles = config.get("roles", {})
     harnesses = config.get("harnesses", {})
     for name, role in roles.items():
-        allowed = harnesses.get(role["harness"], {}).get("allowed_models")
-        if allowed is not None and role.get("model_id") and role["model_id"] not in allowed:
-            _fail(f"roles.{name}.model_id",
-                  f"{role['model_id']} is not in harnesses.{role['harness']}.allowed_models")
+        candidates = [(role, f"roles.{name}")] + [
+            (candidate, f"roles.{name}.fallback[{index}]")
+            for index, candidate in enumerate(role.get("fallback", []))]
+        for candidate, path in candidates:
+            allowed = harnesses.get(candidate["harness"], {}).get("allowed_models")
+            if (allowed is not None and candidate.get("model_id")
+                    and candidate["model_id"] not in allowed):
+                _fail(f"{path}.model_id",
+                      f"{candidate['model_id']} is not in "
+                      f"harnesses.{candidate['harness']}.allowed_models")
         for consulted in role.get("consult", []):
             if consulted not in roles:
                 _fail(f"roles.{name}.consult", f"names no role {consulted!r}")
@@ -683,6 +704,11 @@ def load_effective(workspace, *, cli_role=None, cli_runtime=None, cli_model=None
                        legacy_capacity=capacity if isinstance(capacity, dict) else None,
                        project_ceiling=ceiling)
     resolved.withheld = loaded.withheld
+    if not loaded.trusted:
+        resolved.external_project_models = frozenset(
+            name for name, role in (project or {}).get("roles", {}).items()
+            if "model_id" in role
+        )
     return resolved
 
 

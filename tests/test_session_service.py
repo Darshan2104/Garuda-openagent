@@ -230,3 +230,103 @@ async def test_a_process_not_proven_dead_quarantines_the_workspace(repo, monkeyp
     assert CapacityStore().holders("native") == [session_id]  # uncertain descendants remain counted
     with pytest.raises(LeaseConflictError):
         LeaseStore().acquire(repo, "next-editor", "mutating")
+
+
+@pytest.mark.parametrize("entry", ["sdk", "dashboard"])
+@pytest.mark.parametrize("ending", ["success", "failure", "exception", "cancelled"])
+async def test_conversations_checkpoint_history_and_keep_the_real_last_outcome(repo, entry, ending):
+    from garuda.interfaces.web.live import ChatSpec, LiveRuns
+    from garuda.sdk.conversation import Conversation
+    from garuda.types import Role
+
+    agents = repo / ".agent" / "agents"
+    agents.mkdir(parents=True)
+    (agents / "qa.yaml").write_text("version: 1\nextends: garuda/build\nlimits: {max_turns: 1}\n")
+
+    def done(text):
+        return ModelResponse(content="", tool_calls=[ToolCall(
+            "done", "task_complete", {"summary": text})])
+
+    class Model(ScriptModel):
+        def __init__(self):
+            script = [done("The first conversation turn remembered blue.")]
+            if ending in {"success", "failure"}:
+                script.append(done("The second turn completed with the saved context.") if ending == "success"
+                              else ModelResponse(content="unfinished", tool_calls=[]))
+            super().__init__(script)
+            self.entered = asyncio.Event()
+
+        async def before(self):
+            if not self._responses:
+                if ending == "exception":
+                    raise RuntimeError("model unavailable")
+                if ending == "cancelled":
+                    self.entered.set()
+                    await asyncio.Event().wait()
+
+        async def complete(self, *args, **kwargs):
+            await self.before()
+            return await super().complete(*args, **kwargs)
+
+        async def stream(self, *args, **kwargs):
+            await self.before()
+            async for delta in super().stream(*args, **kwargs):
+                yield delta
+
+    store, model = SessionStore(), Model()
+    if entry == "sdk":
+        conversation = Conversation(workspace=repo, model=model, agent="qa", store=store)
+
+        async def run(task):
+            return await conversation.run(task)
+
+        close = conversation.close
+    else:
+        live = LiveRuns(loop=asyncio.get_running_loop(), store=store, workspaces=(repo,),
+                        default_agent="qa", default_model=model)
+        opened = await live.start_chat(ChatSpec())
+
+        async def run(task):
+            turn = await live.chat_turn(opened["chat_id"], task)
+            job = live.jobs.get(turn["job_id"])
+            await job._task
+            return job.result
+
+        close = live.aclose
+    try:
+        first = await run("FIRST-TURN-COLOR is blue")
+        sid = first.metadata.get("session_id") or (
+            conversation.events.session_id if entry == "sdk" else opened["session_id"])
+        saved = store.load_messages(sid)
+        assert any(m.role == Role.USER and m.content == "FIRST-TURN-COLOR is blue" for m in saved)
+        assert any(m.role == Role.TOOL and m.name == "task_complete" for m in saved)
+        assert store.load_state(sid)
+        second = asyncio.create_task(run("SECOND-TURN remembers the first"))
+        if ending == "cancelled":
+            await asyncio.wait_for(model.entered.wait(), 5)
+            second.cancel()
+        try:
+            result = await second
+            assert result is None or result.success == (ending == "success")
+        except (asyncio.CancelledError, RuntimeError):
+            assert ending in {"cancelled", "exception"}
+        saved = store.load_messages(sid)
+        assert [m.content for m in saved if m.role == Role.USER
+                and m.content.startswith(("FIRST-TURN", "SECOND-TURN"))] == [
+            "FIRST-TURN-COLOR is blue", "SECOND-TURN remembers the first"]
+    finally:
+        await close()
+    meta = store.load_meta(sid)
+    assert meta["state"]["outcome"] == ("completed" if ending == "success" else
+                                        "cancelled" if ending == "cancelled" else "failed")
+    assert len(store.load_messages(sid)) >= len(saved)
+    if ending == "success":
+        from garuda.sdk import SoftwareAgent
+
+        resumed = await SoftwareAgent(workspace=repo, agent="qa", store=store, model=ScriptModel([
+            done("The resumed conversation retained both earlier user turns.")
+        ])).run("Resume this conversation", resume=sid)
+        assert resumed.success
+        history = [message.content for message in resumed.messages if message.role == Role.USER]
+        assert "FIRST-TURN-COLOR is blue" in history
+        assert "SECOND-TURN remembers the first" in history
