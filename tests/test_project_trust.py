@@ -256,3 +256,44 @@ def test_no_project_file_widens_authority():
         for key, value in config.get("consults", {}).items():
             assert value <= USER["consults"].get(key, value)
     assert applied > 300  # the generator reaches the accepting paths
+
+
+@pytest.mark.parametrize("alias", ["native", "local"])
+def test_untrusted_native_model_is_withheld_through_runtime_alias(repo, alias):
+    from garuda.agents.setup import prepare_runtime_catalog
+    from garuda.runtime.roles import plan_role
+
+    (repo / ".agent").mkdir()
+    (repo / ".agent" / "settings.yaml").write_text(
+        "runtime_refs: [{alias: local, runtime_id: native}]\n")
+    text = ("version: 1\ndefaults: {role: coder}\nroles:\n"
+            f"  coder: {{harness: {alias}, model_id: openai/untrusted-project-model}}\n")
+    (repo / "garuda.yaml").write_text(text)
+    resolved = gy.load_effective(repo)
+    assert resolved.withheld == ["roles.coder.model_id"]
+    plan = plan_role(resolved, prepare_runtime_catalog(repo))
+    assert plan.kind == "native" and plan.model_id is None
+
+    pt.grant(pt.read_project_file(repo))
+    resolved = gy.load_effective(repo)
+    assert not resolved.withheld
+    assert plan_role(resolved, prepare_runtime_catalog(repo)).model_id == "openai/untrusted-project-model"
+
+
+def test_config_trust_displays_native_models_named_through_aliases(repo, monkeypatch, capsys):
+    import sys
+
+    from tests.test_runtime_cli import _main
+
+    (repo / ".agent").mkdir()
+    (repo / ".agent" / "settings.yaml").write_text(
+        "runtime_refs: [{alias: local, runtime_id: native}]\n")
+    (repo / "garuda.yaml").write_text(
+        "version: 1\nroles: {coder: {harness: local, model_id: openai/project-choice}}\n")
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr("builtins.input", lambda *_: "y")
+    code, out = _main(monkeypatch, capsys, "config", "trust", "--workspace", str(repo))
+    assert code == 0
+    assert "native model for role coder: openai/project-choice" in out
+    assert not gy.load_effective(repo).withheld

@@ -99,25 +99,36 @@ def grant(project: ProjectFile):
     return grant_key(_key(project))
 
 
-def needs_trust(doc: dict) -> list[str]:
+def needs_trust(doc: dict, *, registry=None) -> list[str]:
     """Paths of the values that need trust before they can run."""
+    from garuda.runtime.registry import RegistryError
+
     paths = [f"checks[{i}]" for i in range(len(doc.get("checks", [])))]
     for name, role in doc.get("roles", {}).items():
-        if role.get("harness") == "native" and "model_id" in role:
+        if "model_id" not in role:
+            continue
+        native = role.get("harness") == "native"
+        if registry is not None:
+            try:
+                native = registry.get(role["harness"]).kind.value == "native"
+            except RegistryError:
+                # An unresolved identity cannot establish an external runtime boundary.
+                native = True
+        if native:
             paths.append(f"roles.{name}.model_id")
     return paths
 
 
-def withhold(doc: dict) -> tuple[dict, list[str]]:
+def withhold(doc: dict, *, registry=None) -> tuple[dict, list[str]]:
     """``doc`` without the values that need trust, and their paths."""
-    paths = needs_trust(doc)
+    paths = needs_trust(doc, registry=registry)
     if not paths:
         return doc, []
     out = dict(doc)
     out.pop("checks", None)
     roles = {}
     for name, role in doc.get("roles", {}).items():
-        if role.get("harness") == "native" and "model_id" in role:
+        if f"roles.{name}.model_id" in paths:
             role = {k: v for k, v in role.items() if k != "model_id"}
         roles[name] = role
     if roles:
@@ -144,7 +155,11 @@ def load_project(workspace) -> LoadedProject:
     except UnicodeDecodeError as exc:
         raise gy.GarudaConfigError("config.invalid", "", f"{project.path} is not UTF-8") from exc
     doc = gy.load_text(text, source=str(project.path))
-    if not needs_trust(doc) or is_trusted(project):
-        return LoadedProject(doc, trusted=bool(needs_trust(doc)), file=project)
-    kept, withheld = withhold(doc)
+    from garuda.agents.setup import prepare_runtime_catalog
+
+    registry = prepare_runtime_catalog(workspace).registry if doc.get("roles") else None
+    paths = needs_trust(doc, registry=registry)
+    if not paths or is_trusted(project):
+        return LoadedProject(doc, trusted=bool(paths), file=project)
+    kept, withheld = withhold(doc, registry=registry)
     return LoadedProject(kept, trusted=False, withheld=withheld, file=project)

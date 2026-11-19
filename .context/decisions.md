@@ -1,5 +1,12 @@
 # Durable decisions
 
+## 2026-11-19 — Project model trust follows runtime identity (#520)
+
+Resolve role harness aliases through the static trusted registry before
+classifying project model authority. Native aliases require the same hash-bound
+model grant as native itself. An unresolved identity cannot exempt a model from
+trust. Trust preview uses the same classification and runs no discovery probes.
+
 ## 2026-11-18 — Rigorous planning inherits run authority (#500)
 
 Rigorous mode resolves the packaged `garuda/plan` profile directly. Its read-only

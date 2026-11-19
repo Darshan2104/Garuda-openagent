@@ -665,3 +665,7 @@ and why; if none can start, the run refuses and lists every reason.
 | `GARUDA_TOKEN_PRICES` | Reproducible price overrides |
 | `GARUDA_SERVE_TOKEN` | JSON-RPC server bearer token |
 | `GARUDA_TRACING` | Enable OTLP tracing |
+
+Project model trust follows the canonical runtime identity. A project alias
+for the native runtime needs the same model trust as `harness: native`, and
+`garuda config trust` displays that model choice before asking for trust.
