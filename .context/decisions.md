@@ -1,5 +1,13 @@
 # Durable decisions
 
+## 2026-11-19 — No-edits includes linked Git administrative state (#522)
+
+Resolve alternate administrative/common directories through sanitized Git
+queries. The bounded manifest checks their refs, HEAD, hooks and config, and
+compares indexes by staged entries so Git stat-cache refreshes are harmless.
+A malformed or unavailable Git pointer leaves attribution unknown and cannot
+produce an unchanged result. This remains a guardrail, not confinement.
+
 ## 2026-11-19 — LSP result source reads require ordinary permission approval (#525)
 
 A language-server location is a path reference, not permission to read its
