@@ -227,15 +227,15 @@ def _dict_to_server_configs(
     """Normalize raw server dicts into :class:`McpServerConfig` objects.
 
     Each entry is parsed under its own try/except so one malformed definition
-    cannot abort loading the rest unless that server is required. ``${VAR}`` interpolation is applied to
-    command / args / env string values for both JSON and YAML sources.
+    cannot abort loading the rest unless that server is required. ``${VAR}``
+    interpolation applies to command / args / env string values in JSON and YAML.
     """
     configs: list[McpServerConfig] = []
     for entry in entries:
         required = _required_flag(entry, str(entry.get("name") or "<unnamed>"))
         try:
             name = entry.get("name")
-            if not name and required:
+            if required and (not isinstance(name, str) or not name.strip()):
                 raise TypeError("name must be a non-empty string")
             if not name:
                 logger.warning("Skipping MCP server entry with no name: %r", entry)

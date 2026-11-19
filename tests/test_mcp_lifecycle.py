@@ -503,6 +503,16 @@ async def test_malformed_required_server_refuses_shared_toolkit(tmp_path, field,
     assert len(str(refused.value)) < 400
 
 
+async def test_nonstring_required_server_name_refuses_shared_toolkit(tmp_path):
+    from garuda.model.config import ConfigError
+
+    cfg = tmp_path / "mcp.yaml"
+    cfg.write_text("servers: [{name: 42, command: not-launched, required: true}]\n")
+
+    with pytest.raises(ConfigError, match=r"Required MCP server '42'.*name must be a non-empty string"):
+        await build_toolkit([], [str(cfg)])
+
+
 @pytest.mark.parametrize("field,value", [("args", {}), ("env", []), ("headers", "bad")])
 async def test_malformed_optional_server_stays_isolated_at_toolkit_start(tmp_path, field, value):
     cfg = tmp_path / "mcp.json"
