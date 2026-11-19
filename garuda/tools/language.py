@@ -5,8 +5,8 @@ Present only when the user's global settings configure a language server (see
 environment (so workspace path policy applies), sends that exact text to the
 server, and converts positions both ways: the model speaks 1-based lines and
 columns in characters, as ``read_file`` shows them; the server speaks 0-based
-UTF-16. Result locations the run's path rules deny are withheld. Rename and
-code-action previews share a run-owned store with the separate mutating
+UTF-16. Result locations require ordinary path permission and ASK approval.
+Rename and code-action previews share a run-owned store with the separate mutating
 ``lsp_apply`` tool; all file writes go through the Environment.
 
 The effect is declared read-only because Garuda sends only read-labelled
@@ -241,9 +241,12 @@ class LanguageServerTool:
                 shown.append(f"{location.uri} (not a local file)")
                 continue
             permissions = getattr(ctx, "permissions", None)
-            if permissions is not None and permissions.check_path(path, "read") == "deny":
-                withheld += 1
-                continue
+            if permissions is not None:
+                allowed, _reason = await permissions.evaluate_tool_call(
+                    "lsp", {"action": "references" if noun == "reference" else noun, "path": path})
+                if not allowed:
+                    withheld += 1
+                    continue
             if len(shown) >= MAX_SHOWN_LOCATIONS:
                 continue
             shown.append(await self._render(path, location, env, root, texts))

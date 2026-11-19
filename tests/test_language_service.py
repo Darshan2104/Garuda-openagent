@@ -783,3 +783,53 @@ async def test_workspace_edit_refuses_distinct_uris_for_hardlinked_targets(ws, e
     assert "preview_token" not in result.metadata
     assert (ws / "lib.py").read_text() == LIB
     assert (ws / "main b#.py").read_text() == MAIN
+
+
+@pytest.mark.parametrize("approve", [None, False, True])
+@pytest.mark.parametrize("action", ["definition", "references"])
+async def test_location_source_requires_ask_approval_before_read(ws, monkeypatch, approve, action):
+    from garuda.lsp.protocol import Location, Range
+
+    target = ws / "lib.py"
+    target.write_text("SECRET-SOURCE-CONTENT\n")
+    reads, asks = [], []
+    read_file = LocalEnvironment.read_file
+
+    async def tracked_read(env, path):
+        if Path(path) == target:
+            reads.append(path)
+            assert asks and approve is True
+        return await read_file(env, path)
+
+    monkeypatch.setattr(LocalEnvironment, "read_file", tracked_read)
+
+    async def approval(prompt):
+        assert not reads
+        asks.append(prompt)
+        return approve
+
+    class LocationIndex:
+        name = "location-only-index"
+        extensions = ("py",)
+
+        async def sync(self, *args):
+            return 1
+
+        async def definition(self, *args):
+            return [Location(path_to_uri(str(target)), Range(0, 0, 0, 1))]
+
+        references = definition
+
+    permissions = PermissionEngine(
+        mode="smart", workspace_root=str(ws), path_rules={"ask": ["lib.py"]},
+        approval_handler=approval if approve is not None else None)
+    result = await _call(LanguageServerTool([LocationIndex()]), ws, permissions,
+                         action=action, path="main b#.py", line=1, column=1)
+    assert len(asks) == (0 if approve is None else 1)
+    if approve:
+        assert len(reads) == 1
+        assert "lib.py:1:1: SECRET-SOURCE-CONTENT" in result.content
+    else:
+        assert not reads
+        assert "SECRET-SOURCE-CONTENT" not in result.content
+        assert "withheld by path rules" in result.content
