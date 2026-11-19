@@ -38,12 +38,12 @@ from typing import Any
 from garuda.core.events import EventStore
 from garuda.core.sessions import SessionStore
 from garuda.interfaces.jobs import Job, JobManager
+from garuda.interfaces.session_service import ConversationRecord
 from garuda.interfaces.web import grounding
 from garuda.interfaces.web.approvals import ApprovalBroker
 from garuda.model.config import ConfigError
 from garuda.model.protocol import DEFAULT_MODEL
 from garuda.model.streaming import CHILD_CALL_END, PARENT_CLEARS_CHILDREN
-from garuda.workspace import evidence
 
 logger = logging.getLogger(__name__)
 
@@ -68,13 +68,6 @@ CHILD_LABEL_CHARS = 64
 
 class WorkspaceBusy(Exception):
     """The chat's workspace is held by another session (or its runtime is full)."""
-
-
-def _closed_state(ok: bool) -> dict:
-    """A closed dashboard chat: finished by the user, never verified by Garuda."""
-    from garuda.runtime.session_state import finished
-
-    return finished(success=ok)
 
 
 class SpecError(ValueError):
@@ -367,9 +360,12 @@ class LiveRuns:
             chat.session_task = task[:200]
             self.store.update_meta(chat.session_id, {"task": chat.session_task})
         context = chat.session.prepare_context(prompt)
+        if chat.record is None:
+            chat.record = ConversationRecord(self.store, chat.session_id, chat.session.events)
+        chat.record.begin_turn(context, task=prompt, session=chat.session)
         chat.session.config.stream_subagent_deltas = True
         job = self.jobs.submit(
-            lambda job: chat.guarded(chat.session.agent.run(
+            lambda job: chat.guarded(chat.record.turn(chat.session.agent.run(
                 task=prompt,
                 model=chat.session.model,
                 env=chat.env,
@@ -383,13 +379,14 @@ class LiveRuns:
                 collection_model=getattr(chat.session, "collection", None),
                 collection_policy=getattr(chat.session, "collection_policy", None),
                 model_delta_consumer=chat.on_model_delta,
-            )),
+                **chat.record.checkpoints,
+            ))),
             task=prompt,
             events=chat.session.events,
         )
         chat.job_id = job.id
         if job._task is not None:
-            job._task.add_done_callback(lambda _: chat.finish_turn(job.id))
+            job._task.add_done_callback(lambda task: chat.finish_turn(job.id, cancelled=task.cancelled()))
         return {
             "chat_id": chat_id,
             "job_id": job.id,
@@ -477,29 +474,8 @@ class LiveRuns:
             logger.warning("Closing chat %s session failed", chat_id, exc_info=True)
 
         async def finish() -> None:
-            try:
-                await asyncio.to_thread(
-                    evidence.finish_session_evidence,
-                    self.store,
-                    chat.session_id,
-                    chat.workspace,
-                    extra_meta={"status": "finished", "state": _closed_state(True)},
-                )
-            except Exception as exc:
-                # Closing cannot turn missing evidence into a successful chat.
-                try:
-                    self.store.update_meta(
-                        chat.session_id,
-                        {
-                            "status": "failed",
-                            "state": _closed_state(False),
-                            "workspace_delta_error": type(exc).__name__,
-                        },
-                    )
-                except Exception:
-                    logger.warning(
-                        "Recording chat %s evidence failure failed", chat_id, exc_info=True
-                    )
+            record = chat.record or ConversationRecord(self.store, chat.session_id, chat.session.events)
+            await record.finish(chat.workspace)
 
         if chat.live is not None:
             # Reap background processes, tear the workspace down, record the
@@ -608,6 +584,7 @@ class LiveChat:
     lease: Any = None
     #: The shared session lifecycle that opened this chat (B.6).
     live: Any = None
+    record: Any = None
     _preview_text: str = ""
     _preview_cursor: int = -1
     # Delta consumers, event observers and HTTP snapshots (via call_on_loop)
@@ -621,8 +598,10 @@ class LiveChat:
         self._child_previews.clear()
         self._child_cursor = -1
 
-    def finish_turn(self, job_id: str) -> None:
+    def finish_turn(self, job_id: str, *, cancelled: bool = False) -> None:
         if self.job_id == job_id:
+            if cancelled and self.record is not None:
+                self.record.cancelled = True
             self.reset_preview()
             self.busy = False
 

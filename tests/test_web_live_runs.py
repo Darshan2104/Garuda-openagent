@@ -343,7 +343,9 @@ class _FakeSession:
     def __init__(self):
         self.events = __import__("garuda.core.events", fromlist=["EventStore"]).EventStore()
         self.tools = []
-        self.config = type("C", (), {"workspace_kind": "local", "docker_image": None})()
+        from garuda.types import AgentConfig
+
+        self.config = AgentConfig(workspace_kind="local", docker_image=None)
         self.model = object()
         self.permissions = PermissionEngine()
         self.agents_dir = None
@@ -358,7 +360,9 @@ class _FakeSession:
 
     def prepare_context(self, task):
         self.contexts.append(task)
-        return object()
+        from types import SimpleNamespace
+
+        return SimpleNamespace(get_messages=lambda: [])
 
     async def run(self, **kwargs):
         self.runs += 1

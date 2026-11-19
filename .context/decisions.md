@@ -1,5 +1,14 @@
 # Durable decisions
 
+## 2026-11-19 — Held conversations own resumable checkpoints and final outcomes (#528)
+
+SDK and dashboard conversations share ConversationRecord for message/working
+state checkpoints and finalization. Publish a user turn before queued work can
+start, checkpoint loop progress and settlement, and close from the actual last
+result or cancellation. The held conversation emits one session span; inner
+turns suppress their own session delimiters so recovery audit remains strict.
+Workspace evidence failures persist failure, never a completed result.
+
 ## 2026-11-18 — Rigorous planning inherits run authority (#500)
 
 Rigorous mode resolves the packaged `garuda/plan` profile directly. Its read-only
