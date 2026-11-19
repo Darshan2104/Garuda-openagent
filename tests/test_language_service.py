@@ -833,3 +833,38 @@ async def test_location_source_requires_ask_approval_before_read(ws, monkeypatch
         assert not reads
         assert "SECRET-SOURCE-CONTENT" not in result.content
         assert "withheld by path rules" in result.content
+
+
+async def test_location_result_limit_bounds_approval_requests(ws, monkeypatch):
+    from garuda.core.permissions import DelegatedPermissionEngine
+    from garuda.lsp.protocol import Location, Range
+
+    monkeypatch.setattr("garuda.tools.language.MAX_SHOWN_LOCATIONS", 1)
+    asked = []
+
+    async def deny(prompt):
+        asked.append(prompt)
+        return False
+
+    class LocationIndex:
+        name = "limited-index"
+        extensions = ("py",)
+
+        async def sync(self, *args):
+            return 1
+
+        async def references(self, *args):
+            return [Location(path_to_uri(str(ws / name)), Range(0, 0, 0, 1))
+                    for name in ("lib.py", "omitted.py")]
+
+    parent = PermissionEngine(mode="smart", workspace_root=str(ws),
+                              path_rules={"ask": ["lib.py", "omitted.py"]},
+                              approval_handler=deny)
+    child = PermissionEngine(mode="smart", workspace_root=str(ws))
+    result = await _call(LanguageServerTool([LocationIndex()]), ws,
+                         DelegatedPermissionEngine(child, parent), action="references",
+                         path="main b#.py", line=1, column=1)
+    assert len(asked) == 1
+    assert result.metadata["locations"] == 0
+    assert result.metadata["locations_omitted"] == 1
+    assert "unexamined" in result.content and "omitted.py" not in result.content

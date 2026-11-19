@@ -235,7 +235,7 @@ class LanguageServerTool:
         texts: dict[str, list[str] | None] = {os.path.realpath(absolute): lines}
         shown: list[str] = []
         withheld = 0
-        for location in found:
+        for location in found[:MAX_SHOWN_LOCATIONS]:
             path = uri_to_path(location.uri)
             if path is None:
                 shown.append(f"{location.uri} (not a local file)")
@@ -247,18 +247,18 @@ class LanguageServerTool:
                 if not allowed:
                     withheld += 1
                     continue
-            if len(shown) >= MAX_SHOWN_LOCATIONS:
-                continue
             shown.append(await self._render(path, location, env, root, texts))
-        total = len(found) - withheld
+        omitted = max(0, len(found) - MAX_SHOWN_LOCATIONS)
         if not found:
             return ToolResult(tool_call_id="", content=f"No {noun} found.", metadata=metadata)
-        body = "\n".join(shown[:MAX_SHOWN_LOCATIONS])
-        if total > MAX_SHOWN_LOCATIONS:
-            body += f"\n… (+{total - MAX_SHOWN_LOCATIONS} more)"
+        body = "\n".join(shown)
+        if omitted:
+            body += f"\n… (+{omitted} unexamined location(s))"
         if withheld:
             body += f"\n({withheld} location(s) withheld by path rules)"
-        metadata["locations"] = total
+        metadata["locations"] = len(shown)
+        if omitted:
+            metadata["locations_omitted"] = omitted
         return ToolResult(tool_call_id="", content=body.strip() or f"No {noun} found.",
                           metadata=metadata)
 
