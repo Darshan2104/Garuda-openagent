@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 MAX_ENTRIES = 200_000
+MAX_METADATA_FILE_BYTES = 128 * 1024 * 1024
 LABEL = "guardrail, not confinement"
 
 
@@ -33,14 +34,22 @@ class ManifestIncomplete(Exception):
 
 
 def _digest(path: Path) -> str:
-    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-    h = hashlib.sha256()
+    flags = os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
     try:
-        while chunk := os.read(fd, 1 << 20):
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_METADATA_FILE_BYTES:
+            raise ManifestIncomplete("Git metadata is not a bounded regular file")
+        h = hashlib.sha256()
+        remaining = MAX_METADATA_FILE_BYTES
+        while chunk := os.read(fd, min(remaining + 1, 1 << 20)):
+            remaining -= len(chunk)
+            if remaining < 0:
+                raise ManifestIncomplete("Git metadata exceeded its byte limit")
             h.update(chunk)
+        return h.hexdigest()
     finally:
         os.close(fd)
-    return h.hexdigest()
 
 
 def _index_digest(root: Path, index: Path | None = None) -> str:
@@ -128,7 +137,10 @@ def manifest(root, *, max_entries: int = MAX_ENTRIES) -> dict[str, tuple]:
                 raise ManifestIncomplete(f"cannot stat {rel}: {exc}") from exc
             kind, mode = stat.S_IFMT(info.st_mode), stat.S_IMODE(info.st_mode)
             if stat.S_ISLNK(info.st_mode):
-                out[rel] = (kind, mode, os.readlink(path))
+                try:
+                    out[rel] = (kind, mode, os.readlink(path))
+                except OSError as exc:
+                    raise ManifestIncomplete(f"cannot read link {rel}") from exc
             elif stat.S_ISDIR(info.st_mode):
                 out[rel] = (kind, mode) if in_git else (kind, mode, info.st_ino,
                                                          info.st_ctime_ns)
@@ -137,7 +149,13 @@ def manifest(root, *, max_entries: int = MAX_ENTRIES) -> dict[str, tuple]:
                 parts = Path(git_relative).parts
                 is_index = (git_relative == ".git/index" or (
                     len(parts) == 4 and parts[1] == "worktrees" and parts[3] == "index"))
-                out[rel] = (kind, mode, _index_digest(root, path) if is_index else _digest(path))
+                if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_METADATA_FILE_BYTES:
+                    raise ManifestIncomplete(f"cannot observe Git metadata {rel}: unsupported file")
+                try:
+                    digest = _index_digest(root, path) if is_index else _digest(path)
+                except OSError as exc:
+                    raise ManifestIncomplete(f"cannot read Git metadata {rel}") from exc
+                out[rel] = (kind, mode, digest)
             else:
                 out[rel] = (kind, mode, info.st_ino, info.st_ctime_ns, info.st_size,
                             info.st_mtime_ns)

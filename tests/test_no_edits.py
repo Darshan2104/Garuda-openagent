@@ -218,3 +218,23 @@ def test_broken_linked_git_marker_cannot_report_unchanged(linked):
     result = NoEditsGuard(linked).check()
     assert not result.unchanged
     assert "no baseline" in result.reason
+
+
+
+def test_linked_worktree_guard_reports_unreadable_metadata(repo, linked, monkeypatch):
+    import errno
+
+    hook = repo / ".git" / "hooks" / "post-commit"
+    hook.write_text("#!/bin/sh\n")
+    guard = NoEditsGuard(linked)
+    original_open = os.open
+
+    def open_metadata(path, *args, **kwargs):
+        if path == hook:
+            raise PermissionError(errno.EACCES, "fixture: unreadable hook")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", open_metadata)
+    result = guard.check()
+    assert not result.unchanged
+    assert result.reason == "attribution unknown: cannot read Git metadata .git/common/hooks/post-commit"
