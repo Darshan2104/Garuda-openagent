@@ -51,7 +51,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -75,6 +77,11 @@ class SpendLimitExceeded(RuntimeError):
     def __init__(self, message: str, cause: str):
         super().__init__(message)
         self.cause = cause
+
+
+_refusal_scope: ContextVar[tuple[SpendGate, list[SpendLimitExceeded]] | None] = ContextVar(
+    "spend_refusal_scope", default=None,
+)
 
 
 def describe_refusal(exc: SpendLimitExceeded) -> str:
@@ -163,12 +170,26 @@ class SpendGate:
 
     @property
     def last_refusal_cause(self) -> str | None:
-        """Most recent admission refusal's cause, or ``None`` before any refusal.
-
-        Phase coordinators pair this with ``refused`` to retain the spend cause
-        when a worker's auxiliary caller catches the admission exception.
-        """
+        """Most recent admission refusal's cause across all callers of this gate."""
         return self._last_refusal_cause
+
+    @contextmanager
+    def track_refusals(self) -> Iterator[list[SpendLimitExceeded]]:
+        """Capture refusals from this caller and async tasks it starts in the scope."""
+        refusals: list[SpendLimitExceeded] = []
+        token = _refusal_scope.set((self, refusals))
+        try:
+            yield refusals
+        finally:
+            _refusal_scope.reset(token)
+
+    def _record_refusal(self, error: SpendLimitExceeded) -> SpendLimitExceeded:
+        self.refused += 1
+        self._last_refusal_cause = error.cause
+        scope = _refusal_scope.get()
+        if scope is not None and scope[0] is self:
+            scope[1].append(error)
+        return error
 
     def would_refuse(self, estimate_tokens: int) -> str | None:
         """Read-only advisory admission check; zero also detects an exhausted cap.
@@ -208,10 +229,9 @@ class SpendGate:
                 estimate = prompt + max(output_tokens, minimum_output_tokens)
             refusal = self._refusal(estimate)
             if refusal is not None:
-                self.refused += 1
                 cause, reason = refusal
-                self._last_refusal_cause = cause
-                raise SpendLimitExceeded(f"{purpose} call refused: {reason}", cause)
+                raise self._record_refusal(
+                    SpendLimitExceeded(f"{purpose} call refused: {reason}", cause))
             self.reserved_tokens += estimate
             self.reserved_calls += 1
             self.calls += 1
@@ -224,11 +244,9 @@ class SpendGate:
                     self.calls -= 1
                     if not isinstance(exc, Exception):
                         raise
-                    self.refused += 1
-                    self._last_refusal_cause = "checkpoint"
-                    raise SpendLimitExceeded(
+                    raise self._record_refusal(SpendLimitExceeded(
                         f"{purpose} call refused: spend checkpoint could not be recorded",
-                        "checkpoint") from exc
+                        "checkpoint")) from exc
             return SpendReservation(purpose, estimate, output_tokens)
 
     def _refusal(self, estimate: int) -> tuple[str, str] | None:

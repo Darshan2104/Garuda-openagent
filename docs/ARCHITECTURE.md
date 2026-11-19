@@ -429,12 +429,11 @@ fastest way to learn the system.
    Each collection attempt, including a reasoning-model fallback, inherits the
    active root spend gate before binding its child event store. Collection job
    limits remain additional limits; they cannot reset the tree's remaining spend.
-   A worker's `spend_limit` result or a new shared-gate refusal during its attempt
-   fails the job with the spend cause, without starting or recording a
-   reasoning-model fallback. The coordinator compares the gate's public refusal
-   count around the attempt and reads its last refusal cause, covering auxiliary
-   callers that catch admission exceptions. Concurrent refusals on the shared
-   gate conservatively stop the job as well.
+   The shared gate tracks refusals within each attempt's async scope, including
+   those caught by the worker's auxiliary callers. A worker refusal fails the job
+   with a structured `spend_cause` and suppresses reasoning-model fallback.
+   The delegation tool propagates that refusal to the parent's `spend_limit`
+   exit. Refusals by concurrent callers leave the attempt's outcome intact.
    Ordinary native `invoke_subagent` calls preserve an accepted schema result
    through `core/child_result.py`. The tool keeps its human summary and adds a
    versioned `child_result` metadata envelope; deterministic JSON in the tool

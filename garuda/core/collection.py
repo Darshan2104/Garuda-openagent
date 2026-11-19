@@ -13,6 +13,7 @@ import json
 import shlex
 import time
 import uuid
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass, field, replace
 from enum import Enum
 from pathlib import Path, PurePosixPath
@@ -1137,22 +1138,23 @@ class CollectionCoordinator:
         )
         started = time.monotonic()
         spend_gate = config.spend_gate
-        refused_before = spend_gate.refused if spend_gate is not None else 0
-        result = await DefaultAgent(profile_name="collection").run(
-            task=request.objective,
-            model=model,
-            env=self.env,
-            tools=tools,
-            config=config,
-            events=child_events,
-            permissions=permissions,
-            context=context,
-            buffer=buffer_view,
-            terminal_strategy=gate,
-            allowed_tool_effects=frozenset(
-                {ToolEffect.READ_ONLY, ToolEffect.EXTERNAL_READ}
-            ),
-        )
+        refusal_scope = spend_gate.track_refusals() if spend_gate is not None else nullcontext(())
+        with refusal_scope as refusals:
+            result = await DefaultAgent(profile_name="collection").run(
+                task=request.objective,
+                model=model,
+                env=self.env,
+                tools=tools,
+                config=config,
+                events=child_events,
+                permissions=permissions,
+                context=context,
+                buffer=buffer_view,
+                terminal_strategy=gate,
+                allowed_tool_effects=frozenset(
+                    {ToolEffect.READ_ONLY, ToolEffect.EXTERNAL_READ}
+                ),
+            )
         elapsed_ms = int((time.monotonic() - started) * 1000)
         usage = dict(result.metadata.get("usage") or {})
         cost = estimate_cost(model_name, usage)
@@ -1175,12 +1177,16 @@ class CollectionCoordinator:
         )
         error: str | SpendLimitExceeded | None = None
         cause = result.metadata.get("spend_limit")
-        # Auxiliary callers can swallow admission exceptions, and final submission
-        # can return an ordinary exhausted result. Any new shared-gate refusal
-        # during this attempt must stop the job before recording a fallback.
-        if spend_gate is not None and spend_gate.refused > refused_before:
-            cause = spend_gate.last_refusal_cause or "unknown"
-        if cause is not None:
+        # Auxiliary callers can catch admission exceptions and leave the worker
+        # free to submit a report. A refusal of its own call still fails the job.
+        if refusals:
+            refusal = refusals[-1]
+            error = SpendLimitExceeded(
+                f"collection worker stopped by spend_limit ({refusal.cause}): {refusal}",
+                refusal.cause,
+            )
+            error.__cause__ = refusal
+        elif cause is not None:
             error = SpendLimitExceeded(
                 f"collection worker stopped by spend_limit ({cause}): {result.final_message}",
                 cause,
@@ -1293,7 +1299,9 @@ class CollectionCoordinator:
                 _merge_usage(combined_usage, attempt.usage)
                 if error is None and report is not None:
                     return report, attempt
-                if fallback_model is None or isinstance(error, SpendLimitExceeded):
+                if isinstance(error, SpendLimitExceeded):
+                    raise error
+                if fallback_model is None:
                     raise ValueError(error or "collection worker failed")
                 await self.ledger.note_fallback()
                 self.events.append(
@@ -1318,6 +1326,8 @@ class CollectionCoordinator:
                 )
                 attempts.append(retry)
                 _merge_usage(combined_usage, retry.usage)
+                if isinstance(retry_error, SpendLimitExceeded):
+                    raise retry_error
                 if retry_error is not None or report is None:
                     raise ValueError(retry_error or "collection fallback failed")
                 return report, retry
@@ -1385,6 +1395,8 @@ class CollectionCoordinator:
             }
             if child_session_id is not None:
                 payload["child_session_id"] = child_session_id
+            if isinstance(exc, SpendLimitExceeded):
+                payload["spend_cause"] = exc.cause
             self._event(state, **payload)
             raise
         finally:
