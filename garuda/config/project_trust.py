@@ -4,8 +4,8 @@ A project file may narrow your roles freely. What it may **not** do without
 your explicit, interactive trust is make Garuda run something it chose:
 
 - its ``checks`` (project commands);
-- a model string for the native harness (``roles.*.model_id`` where the
-  harness is ``native``), which picks a provider and endpoint;
+- a model string for a role whose runtime resolves to native, which picks a
+  provider and endpoint;
 - prompt templates (none in schema v1; any future one joins this list).
 
 Trust is a record in the content-bound store from #143

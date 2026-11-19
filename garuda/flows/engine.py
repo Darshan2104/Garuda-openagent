@@ -32,7 +32,7 @@ import json
 import os
 import uuid
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -308,19 +308,15 @@ class FlowRunner:
             return self.prepared_roles[role]
         from garuda.agents.fallbacks import choose
         from garuda.agents.setup import prepare_runtime_catalog
-        from garuda.config.garuda_yaml import Resolved
-        from garuda.runtime.roles import plan_role
+        from garuda.runtime.roles import RoleRefused, plan_role
 
-        resolved = Resolved(config=self.resolved.config, provenance=self.resolved.provenance,
-                            role=role)
+        resolved = replace(self.resolved, role=role)
         catalog = prepare_runtime_catalog(self.workspace)
-        plan = plan_role(resolved, catalog)
         # A step's fallback is decided before it launches and lands in its receipt.
-        from garuda.runtime.roles import RoleRefused
-
         try:
             from garuda.agents import role_agent
 
+            plan = plan_role(resolved, catalog)
             return role_agent.bind(choose(plan, resolved, catalog) if plan is not None else None,
                                    self.workspace)
         except RoleRefused as exc:

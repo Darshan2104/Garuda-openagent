@@ -40,7 +40,7 @@ import json
 import shutil
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from garuda.consult import envelope
@@ -295,11 +295,9 @@ class ConsultService:
         from garuda.agents import role_agent
         from garuda.agents.fallbacks import choose
         from garuda.agents.setup import prepare_runtime_catalog
-        from garuda.config.garuda_yaml import Resolved
         from garuda.runtime.roles import RoleRefused, plan_role
 
-        resolved = Resolved(config=self.resolved.config, provenance=self.resolved.provenance,
-                            role=target)
+        resolved = replace(self.resolved, role=target)
         try:
             catalog = self._catalog or prepare_runtime_catalog(".")
             plan = plan_role(resolved, catalog)

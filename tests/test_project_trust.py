@@ -267,6 +267,28 @@ def test_untrusted_native_model_is_withheld_through_runtime_alias(repo, alias):
     assert plan_role(resolved, prepare_runtime_catalog(repo)).model_id == "openai/untrusted-project-model"
 
 
+def test_external_project_model_cannot_reach_native_role_after_alias_change(repo):
+    from garuda.agents.setup import prepare_runtime_catalog
+    from garuda.runtime.roles import RoleRefused, plan_role
+
+    (repo / ".agent").mkdir()
+    settings = repo / ".agent" / "settings.yaml"
+    settings.write_text("runtime_refs: [{alias: local, runtime_id: codex}]\n")
+    (repo / "garuda.yaml").write_text(
+        "version: 1\ndefaults: {role: coder}\n"
+        "roles: {coder: {harness: local, model_id: fixture/choice}}\n")
+
+    resolved = gy.load_effective(repo)
+    external = plan_role(resolved, prepare_runtime_catalog(repo))
+    assert external.kind == "acp" and external.model_id == "fixture/choice"
+
+    settings.write_text("runtime_refs: [{alias: local, runtime_id: native}]\n")
+    native_catalog = prepare_runtime_catalog(repo)
+    with pytest.raises(RoleRefused, match="config.project_untrusted"):
+        plan_role(resolved, native_catalog)
+    assert plan_role(gy.load_effective(repo), native_catalog).model_id is None
+
+
 def test_config_trust_displays_native_models_named_through_aliases(repo, monkeypatch, capsys):
     import sys
 

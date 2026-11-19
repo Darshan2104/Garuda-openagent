@@ -147,6 +147,10 @@ def plan_role(resolved, catalog) -> RolePlan | None:
     manifest = catalog.registry.get(spec["harness"])
     kind = getattr(getattr(manifest, "kind", None), "value", None) or str(
         getattr(manifest, "kind", "native"))
+    if kind == "native" and resolved.role in resolved.external_project_models:
+        raise RoleRefused("config.project_untrusted",
+                          f"role {resolved.role} now resolves to native; reload the project "
+                          "configuration before using its model")
     check_model_allowed(resolved.config, catalog.registry, spec["harness"], spec.get("model_id"))
     digest = hashlib.sha256(json.dumps(
         {"role": resolved.role, "spec": spec,

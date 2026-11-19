@@ -172,7 +172,7 @@ def resolve_launch(entry: Starter, inputs: dict, root: Path, *, has_plan: bool =
         raise StarterError("starter.missing_roles", f"define {', '.join(missing)} with `garuda init`")
     role_plans, fallback_plans = {}, {}
     for name in names:
-        selected = gy.Resolved(config=resolved.config, provenance=resolved.provenance, role=name)
+        selected = replace(resolved, role=name)
         harness = resolved.config["roles"][name]["harness"]
         if catalog.registry.is_disabled(harness):
             raise StarterError("starter.runtime_disabled", f"{name}: {harness} is disabled; review settings.yaml and rerun `garuda init`")

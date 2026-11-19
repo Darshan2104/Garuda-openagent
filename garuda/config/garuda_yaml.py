@@ -456,6 +456,8 @@ class Resolved:
     role: str | None = None
     #: Project values left out because the project file is not trusted (C.2).
     withheld: list[str] = field(default_factory=list)
+    #: Untrusted project models admitted for external runtimes only.
+    external_project_models: frozenset[str] = frozenset()
 
     def selected_role(self) -> dict | None:
         return self.config.get("roles", {}).get(self.role) if self.role else None
@@ -702,6 +704,11 @@ def load_effective(workspace, *, cli_role=None, cli_runtime=None, cli_model=None
                        legacy_capacity=capacity if isinstance(capacity, dict) else None,
                        project_ceiling=ceiling)
     resolved.withheld = loaded.withheld
+    if not loaded.trusted:
+        resolved.external_project_models = frozenset(
+            name for name, role in (project or {}).get("roles", {}).items()
+            if "model_id" in role
+        )
     return resolved
 
 

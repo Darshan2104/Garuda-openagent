@@ -5,7 +5,9 @@
 Resolve role harness aliases through the static trusted registry before
 classifying project model authority. Native aliases require the same hash-bound
 model grant as native itself. An unresolved identity cannot exempt a model from
-trust. Trust preview uses the same classification and runs no discovery probes.
+trust. Planning refuses to use a model admitted only for an external runtime
+if the same reference now resolves to native. Trust preview runs no discovery
+probes.
 
 ## 2026-11-19 — Held conversations own resumable checkpoints and final outcomes (#528)
 
