@@ -5,8 +5,8 @@ Present only when the user's global settings configure a language server (see
 environment (so workspace path policy applies), sends that exact text to the
 server, and converts positions both ways: the model speaks 1-based lines and
 columns in characters, as ``read_file`` shows them; the server speaks 0-based
-UTF-16. Result locations the run's path rules deny are withheld. Rename and
-code-action previews share a run-owned store with the separate mutating
+UTF-16. Result locations require ordinary path permission and ASK approval.
+Rename and code-action previews share a run-owned store with the separate mutating
 ``lsp_apply`` tool; all file writes go through the Environment.
 
 The effect is declared read-only because Garuda sends only read-labelled
@@ -235,27 +235,30 @@ class LanguageServerTool:
         texts: dict[str, list[str] | None] = {os.path.realpath(absolute): lines}
         shown: list[str] = []
         withheld = 0
-        for location in found:
+        for location in found[:MAX_SHOWN_LOCATIONS]:
             path = uri_to_path(location.uri)
             if path is None:
                 shown.append(f"{location.uri} (not a local file)")
                 continue
             permissions = getattr(ctx, "permissions", None)
-            if permissions is not None and permissions.check_path(path, "read") == "deny":
-                withheld += 1
-                continue
-            if len(shown) >= MAX_SHOWN_LOCATIONS:
-                continue
+            if permissions is not None:
+                allowed, _reason = await permissions.evaluate_tool_call(
+                    "lsp", {"action": "references" if noun == "reference" else noun, "path": path})
+                if not allowed:
+                    withheld += 1
+                    continue
             shown.append(await self._render(path, location, env, root, texts))
-        total = len(found) - withheld
+        omitted = max(0, len(found) - MAX_SHOWN_LOCATIONS)
         if not found:
             return ToolResult(tool_call_id="", content=f"No {noun} found.", metadata=metadata)
-        body = "\n".join(shown[:MAX_SHOWN_LOCATIONS])
-        if total > MAX_SHOWN_LOCATIONS:
-            body += f"\n… (+{total - MAX_SHOWN_LOCATIONS} more)"
+        body = "\n".join(shown)
+        if omitted:
+            body += f"\n… (+{omitted} unexamined location(s))"
         if withheld:
             body += f"\n({withheld} location(s) withheld by path rules)"
-        metadata["locations"] = total
+        metadata["locations"] = len(shown)
+        if omitted:
+            metadata["locations_omitted"] = omitted
         return ToolResult(tool_call_id="", content=body.strip() or f"No {noun} found.",
                           metadata=metadata)
 

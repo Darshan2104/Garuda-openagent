@@ -7,6 +7,56 @@ classifying project model authority. Native aliases require the same hash-bound
 model grant as native itself. An unresolved identity cannot exempt a model from
 trust. Trust preview uses the same classification and runs no discovery probes.
 
+## 2026-11-19 — Held conversations own resumable checkpoints and final outcomes (#528)
+
+SDK and dashboard conversations share ConversationRecord for message/working
+state checkpoints and finalization. Publish a user turn before queued work can
+start, checkpoint loop progress and settlement, and close from the actual last
+result or cancellation. The held conversation emits one session span; inner
+turns suppress their own session delimiters so recovery audit remains strict.
+Workspace evidence failures persist failure, never a completed result.
+
+## 2026-11-19 — Flow resume approvals bind individual candidates (#524)
+
+Persist review approval per build step with the candidate session, attempt,
+workspace version, reviewer receipt, policy and packet digest. Resume validates
+that binding against completed receipts and approved history. A global latest
+review status cannot approve another build; legacy unbound approval refuses.
+
+## 2026-11-19 — Dashboard close settles work before releasing ownership (#521)
+
+Chat close withdraws approval access and cancels/awaits its active job before
+session or workspace teardown. The close task is shielded from HTTP request
+cancellation and settles fully before cancellation propagates. Workspace
+evidence and lease release therefore follow completed turn cleanup.
+
+## 2026-11-19 — No-edits includes linked Git administrative state (#522)
+
+Resolve alternate administrative/common directories through sanitized Git
+queries. The bounded manifest checks their refs, HEAD, hooks and config, and
+compares indexes by staged entries so Git stat-cache refreshes are harmless.
+A malformed or unavailable Git pointer leaves attribution unknown and cannot
+produce an unchanged result. This remains a guardrail, not confinement.
+
+## 2026-11-19 — LSP result source reads require ordinary permission approval (#525)
+
+A language-server location is a path reference, not permission to read its
+source. Definition and reference rendering evaluates lsp permission for each
+target through the shared approval path before excerpt reads or column
+conversion. ASK without approval withholds the location.
+
+## 2026-11-19 — Required MCP configuration fails closed before launch (#527)
+
+Read required status before normalizing server fields. Malformed required
+entries, including entries with ambiguous non-boolean required flags, refuse
+toolkit startup. Invalid optional entries retain per-entry isolation.
+
+## 2026-11-19 — Role write restrictions survive project overlays (#526)
+
+User no-edits is a ceiling alongside permissions and grants. Project role
+replacement cannot remove it, and flow step policy can only add a no-edits
+restriction. CLI and flow launches use that effective restriction.
+
 ## 2026-11-19 — Output references stay inside validated schema nodes (#519)
 
 A local output-schema reference may target only a node traversed as a schema

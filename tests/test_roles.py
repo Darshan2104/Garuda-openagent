@@ -589,3 +589,44 @@ def test_a_trajectory_that_cannot_be_written_is_reported_after_the_no_edits_chec
     assert code == 0, out
     assert "no-edits: no changes detected" in out
     assert "trajectory not saved" in out
+
+
+@pytest.mark.parametrize("user_policy,project_policy", [
+    ("no-edits", None), ("no-edits", "edits"),
+    ("no-edits", "no-edits"), ("edits", "no-edits"),
+])
+@pytest.mark.parametrize("step_policy", [None, "edits"])
+async def test_project_overlay_preserves_no_edits_at_launch(
+        tmp_path, user_policy, project_policy, step_policy):
+    from garuda.agents.setup import prepare_runtime_catalog
+    from garuda.flows.engine import FlowRunner, StepResult
+    from garuda.interfaces.main import _apply_role, _no_edits_requested
+
+    ws = _repo(tmp_path / "ws")
+    _user_file(f"version: 1\nroles:\n  reviewer: {{harness: native, write_policy: {user_policy}}}\n")
+    policy = f", write_policy: {project_policy}" if project_policy else ""
+    step = f", write_policy: {step_policy}" if step_policy else ""
+    (ws / "garuda.yaml").write_text(
+        "version: 1\nroles:\n  reviewer: {harness: native" + policy + "}\n"
+        "flows: {qa: {steps: [{id: review, role: reviewer" + step + "}]}}\n")
+    resolved = gy.load_effective(ws, cli_role="reviewer")
+    args = argparse.Namespace(workspace=str(ws), runtime=None, model=None, reasoning_effort=None,
+                              permission_mode=None, agent="build", json=True,
+                              no_edits=False, isolation="shared")
+    plan = _apply_role(args, resolved, prepare_runtime_catalog(ws))
+    args._role_plan = plan
+    assert resolved.config["roles"]["reviewer"]["write_policy"] == "no-edits"
+    assert args.permission_mode == "readonly"
+    assert _no_edits_requested(args)
+
+    launches = []
+
+    async def launch(request):
+        launches.append(request)
+        return StepResult("review-session", True, "reviewed")
+
+    runner = FlowRunner(SessionStore(), ws, "qa", resolved.config["flows"]["qa"], resolved,
+                        task="review", launcher=launch)
+    await runner.run()
+    assert len(launches) == 1
+    assert launches[0].no_edits
