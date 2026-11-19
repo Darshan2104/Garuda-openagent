@@ -795,6 +795,10 @@ are recorded. Quarantine is sticky across subsequent release/finalizer calls;
 a borrowed step propagates it to its parent and retains its own reservation,
 including cleanup after revocation. Ordinary reaped completion releases as
 before; supervised recovery receipts remain separate work).
+`ConversationRecord` in that service owns native SDK/dashboard message and
+working-state checkpoints plus final outcomes. It publishes each requested turn
+before queue execution, records one outer session span, and suppresses inner
+turn delimiters so multi-turn recovery stays unambiguous.
 
 `terminal_approval.py` owns `TerminalApprover`: request-aware worker, agent,
 depth and waiting-count labels, plus one shielded stdin reader per event loop.
