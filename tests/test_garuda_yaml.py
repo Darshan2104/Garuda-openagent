@@ -326,6 +326,15 @@ def test_migrate_previews_writes_once_and_refuses_conflicts(tmp_path, monkeypatc
     assert "max_parallel: 5" in gy.user_path().read_text()  # untouched
 
 
+def test_fallback_models_obey_harness_allowlists_during_config_resolution():
+    config = gy.parse({"version": 1, "harnesses": {"native": {"allowed_models": ["approved"]}},
+                       "roles": {"coder": {"harness": "codex", "fallback": [
+                           {"harness": "native", "model_id": "forbidden"}]}}})
+    with pytest.raises(GarudaConfigError) as error:
+        gy.resolve(config, None, cli_role="coder")
+    assert error.value.path == "roles.coder.fallback[0].model_id"
+
+
 @pytest.mark.parametrize("steps", [
     [{"id": "coder-2", "role": "coder"}, {"role": "coder"}],
     [{"role": "coder"}, {"id": "coder-1", "role": "coder"}],
