@@ -40,7 +40,7 @@ largest reported prompt size in that call, or its reservation estimate if unavai
 with unknown cost. This lower bound excludes unreported generated output.
 The whole-call failure estimate above is never charged these extras too.
 
-**A completed call with no token fields is charged its estimate.** A provider
+**A non-rejected call with no token fields is charged its estimate.** A provider
 that returns no usage at all (a stream whose server ignored ``include_usage``)
 did consume tokens; settling it as zero would leave the token cap unenforced, so
 its reservation estimate is charged instead and counted as ``estimated_token_calls``.
@@ -312,12 +312,13 @@ class SpendGate:
                     else:
                         self.unknown_outcome_calls += 1
             else:
-                estimated = bool(estimated_attempts)
+                estimated = bool(estimated_attempts or estimated_attempt_tokens)
                 if attempt_tokens:
                     tokens = attempt_tokens
-                elif not failed and not estimated_attempts and not reports_tokens(usage):
-                    # Completed without any token count: the call consumed
-                    # tokens nobody reported, so its estimate stands in.
+                elif (not rejected and not estimated_attempts and not estimated_attempt_tokens
+                      and not reports_tokens(usage)):
+                    # Successful or non-rejected failure with no token count:
+                    # preserve the estimate even if dollars were reported.
                     tokens = reservation.tokens
                     estimated = True
                 tokens += estimated_attempt_tokens
