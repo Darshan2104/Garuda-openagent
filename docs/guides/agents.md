@@ -71,7 +71,7 @@ the effective value of each.
 | Instructions | `instructions.text`, `instructions.files` | Text, or files relative to the definition |
 | | `instructions.mode` | `append` (default) or `replace` |
 | Memory | `memory.user` | Load `~/.agent/AGENTS.md` (default on) |
-| | `memory.project`, `memory.project_mode` | Project memory files (default `[AGENTS.md, GARUDA.md]`), `first` or `all` |
+| | `memory.project`, `memory.project_mode` | Project memory files (default `[AGENTS.md, GARUDA.md]`; `[]` disables them), `first` or `all` |
 | | `memory.max_chars`, `memory.max_total_chars` | Per-file cap (8,000) and whole-prompt cap (32,000) |
 | | `memory.context_pack` | Add the `.context/` architecture, decisions, discoveries and conventions |
 | | `memory.notes` | `propose` gives the agent a `remember` tool ([below](#memory-notes)) |
@@ -162,6 +162,10 @@ memory. `garuda agent prompt NAME` prints the result section by section, with
 sizes, estimated tokens and a digest.
 
 ## Structured output
+
+Local `$ref` targets must be schema nodes (for example under `$defs` or
+`properties`). References into annotation or instance data such as `default`,
+`examples`, `const` and `enum` are refused before activation.
 
 ```yaml
 output:
@@ -255,6 +259,7 @@ is refused by name (`agent.field_unsupported`).
 
 Files without `version:` are legacy profiles and keep working unchanged.
 `garuda agent migrate PATH` shows the version 1 form and confirms it resolves
-to the same agent; `--write` replaces the file and keeps a backup. If the
+to the same agent; `--write` replaces the file, preserves its file permissions,
+and keeps an owner-only backup. If the
 result would behave differently, `--write` refuses; where it is only stricter,
 it waits for `--accept-tightening`.

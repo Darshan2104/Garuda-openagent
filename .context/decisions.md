@@ -7,6 +7,40 @@ session or workspace teardown. The close task is shielded from HTTP request
 cancellation and settles fully before cancellation propagates. Workspace
 evidence and lease release therefore follow completed turn cleanup.
 
+## 2026-11-19 — No-edits includes linked Git administrative state (#522)
+
+Resolve alternate administrative/common directories through sanitized Git
+queries. The bounded manifest checks their refs, HEAD, hooks and config, and
+compares indexes by staged entries so Git stat-cache refreshes are harmless.
+A malformed or unavailable Git pointer leaves attribution unknown and cannot
+produce an unchanged result. This remains a guardrail, not confinement.
+
+## 2026-11-19 — LSP result source reads require ordinary permission approval (#525)
+
+A language-server location is a path reference, not permission to read its
+source. Definition and reference rendering evaluates lsp permission for each
+target through the shared approval path before excerpt reads or column
+conversion. ASK without approval withholds the location.
+
+## 2026-11-19 — Required MCP configuration fails closed before launch (#527)
+
+Read required status before normalizing server fields. Malformed required
+entries, including entries with ambiguous non-boolean required flags, refuse
+toolkit startup. Invalid optional entries retain per-entry isolation.
+
+## 2026-11-19 — Role write restrictions survive project overlays (#526)
+
+User no-edits is a ceiling alongside permissions and grants. Project role
+replacement cannot remove it, and flow step policy can only add a no-edits
+restriction. CLI and flow launches use that effective restriction.
+
+## 2026-11-19 — Output references stay inside validated schema nodes (#519)
+
+A local output-schema reference may target only a node traversed as a schema
+by the restricted compiler. JSON Pointer decoding matches runtime resolution.
+Annotation and instance-data objects cannot become schemas through a reference,
+so their unchecked keywords cannot trigger file or network retrieval.
+
 ## 2026-11-18 — Rigorous planning inherits run authority (#500)
 
 Rigorous mode resolves the packaged `garuda/plan` profile directly. Its read-only

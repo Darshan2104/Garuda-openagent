@@ -116,7 +116,8 @@ def inventory(agent, workspace, sections: list[dict] | None) -> dict:
     paths = [(path, root, "project") for path in _discover(root, problems)]
     paths.append((home / "AGENTS.md", home, "user"))
     profile = agent.to_profile()
-    configured = profile.memory_project or ["AGENTS.md", "GARUDA.md"]
+    configured = (profile.memory_project if profile.memory_project is not None
+                  else ["AGENTS.md", "GARUDA.md"])
     for rel in configured:
         relative = Path(rel)
         if not relative.is_absolute() and ".." not in relative.parts:
