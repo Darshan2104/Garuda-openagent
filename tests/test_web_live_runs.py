@@ -343,7 +343,9 @@ class _FakeSession:
     def __init__(self):
         self.events = __import__("garuda.core.events", fromlist=["EventStore"]).EventStore()
         self.tools = []
-        self.config = type("C", (), {"workspace_kind": "local", "docker_image": None})()
+        from garuda.types import AgentConfig
+
+        self.config = AgentConfig(workspace_kind="local", docker_image=None)
         self.model = object()
         self.permissions = PermissionEngine()
         self.agents_dir = None
@@ -358,7 +360,9 @@ class _FakeSession:
 
     def prepare_context(self, task):
         self.contexts.append(task)
-        return object()
+        from types import SimpleNamespace
+
+        return SimpleNamespace(get_messages=lambda: [])
 
     async def run(self, **kwargs):
         self.runs += 1
@@ -1215,4 +1219,26 @@ async def test_close_waits_for_model_cleanup_before_workspace_reuse(tmp_path, st
         model.release.set()
         model.cleanup.set()
         await asyncio.gather(closing, return_exceptions=True)
+        await live.aclose()
+
+
+async def test_failed_initial_checkpoint_does_not_leave_chat_busy(chatting, monkeypatch):
+    live, session, _ = chatting
+    opened = await live.start_chat(ChatSpec())
+    chat_id = opened["chat_id"]
+
+    def fail_checkpoint(*args):
+        raise OSError("fixture: checkpoint write failed")
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(live.store, "checkpoint_messages", fail_checkpoint)
+            with pytest.raises(OSError, match="checkpoint write failed"):
+                await live.chat_turn(chat_id, "First turn")
+        assert (await live.list_chats())["chats"][0]["busy"] is False
+        result = await live.chat_turn(chat_id, "Retry")
+        session.release.set()
+        await live.jobs.get(result["job_id"])._task
+        assert session.tasks == ["Retry"]
+    finally:
         await live.aclose()

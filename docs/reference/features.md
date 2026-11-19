@@ -135,7 +135,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 |---|---|---|---|
 | Recipes | Parameterised multi-step YAML | `garuda recipe run file.yaml` | [Level 6](../use-cases/automate.md#run-a-multi-step-recipe) |
 | CI and scripts | Exit status and JSON events | `garuda run --json -t "…"` | [Level 6](../use-cases/automate.md#use-garuda-in-scripts-and-ci) |
-| Python SDK | `SoftwareAgent`, conversations, your own tools; native conversations persist sessions with workspace baselines and shared approvals, and ACP conversations broker approval requests | `await SoftwareAgent(...).run("…")` | [Level 6](../use-cases/automate.md#call-garuda-from-python) |
+| Python SDK | `SoftwareAgent`, conversations, your own tools; native conversations checkpoint full history and working state, retain actual final outcomes, and persist one resumable session span with workspace baselines and shared approvals, and ACP conversations broker approval requests | `await SoftwareAgent(...).run("…")` | [Level 6](../use-cases/automate.md#call-garuda-from-python) |
 | Live model deltas | Native SDK runs forward text/reasoning fragments while the model generates | `await agent.run("…", on_delta=show)` | [Level 6](../use-cases/automate.md#stream-live-model-deltas) |
 | Dashboard live model output | Bounded transient assistant text and collapsible per-subagent previews while native chat generates, replaced by completed responses | `garuda web --allow-workspace .` | [Level 2](../use-cases/change-code.md#watch-assistant-text-in-dashboard-chat) |
 | `AgentSpec` | Load and narrow an agent from Python | `AgentSpec.load(NAME).narrow(...)` | [Level 6](../use-cases/automate.md#call-garuda-from-python) |

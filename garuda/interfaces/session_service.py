@@ -26,9 +26,10 @@ worktree behind; one refused after the session was recorded says so.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Awaitable, Callable
 
 logger = logging.getLogger(__name__)
@@ -128,6 +129,91 @@ def acquire_lease(workspace, session_id, *, capacity_key="native", mode="mutatin
         discard_new_worktree(worktree_plan)
         raise
     return lease
+
+
+@dataclass
+class ConversationRecord:
+    """Checkpoints and truthful close outcomes shared by held native conversations."""
+
+    store: Any
+    session_id: str
+    events: Any
+    context: Any = None
+    last_result: Any = None
+    attempted: bool = False
+    cancelled: bool = False
+
+    @property
+    def checkpoints(self) -> dict:
+        return {
+            "emit_session_events": False,
+            "checkpoint": lambda messages: self.store.checkpoint_messages(self.session_id, messages),
+            "state_checkpoint": lambda state: self.store.checkpoint_state(self.session_id, state),
+        }
+
+    def begin_turn(self, context, *, task: str, session) -> None:
+        if not self.attempted:
+            from garuda.core.events import EventType
+            from garuda.core.modes import describe_config
+            from garuda.model.factory import safe_model_identity
+
+            self.events.append(EventType.SESSION_START, {
+                "task": task, "model": safe_model_identity(session.model),
+                "agent": session.profile.name, "mode": session.config.mode,
+                "permission_mode": session.permissions.mode,
+                "config": describe_config(session.config),
+            })
+        self.context, self.last_result = context, None
+        self.attempted, self.cancelled = True, False
+        # Publish the new user turn even if cancellation precedes job execution.
+        self.store.checkpoint_messages(self.session_id, context.get_messages())
+
+    async def turn(self, work: Awaitable[Any]) -> Any:
+        try:
+            result = await work
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+        finally:
+            self.store.checkpoint_messages(self.session_id, self.context.get_messages())
+        self.last_result = result
+        return result
+
+    async def finish(self, workspace) -> None:
+        from garuda.runtime.session_state import interrupted
+        from garuda.types import AgentResult
+        from garuda.workspace import evidence
+
+        messages = self.context.get_messages() if self.context is not None else []
+        result = (replace(self.last_result, messages=messages,
+                          metadata=dict(self.last_result.metadata)) if self.last_result is not None else
+                  AgentResult(success=not self.attempted, final_message="", messages=messages, turns=0))
+        evidence_failed = False
+        try:
+            result.metadata["workspace_delta"] = await asyncio.to_thread(
+                evidence.finish_session_evidence, self.store, self.session_id, workspace)
+        except Exception as exc:
+            evidence_failed = True
+            result.success = False
+            result.metadata["workspace_delta_error"] = type(exc).__name__
+        self.store.finish(self.session_id, result)
+        updates = {"status": "finished" if result.success else "failed"}
+        if self.cancelled and not evidence_failed:
+            updates.update(status="cancelled", state=interrupted(cancelled=True))
+        if evidence_failed:
+            updates["workspace_delta_error"] = result.metadata["workspace_delta_error"]
+        self.store.update_meta(self.session_id, updates)
+        if self.attempted:
+            from garuda.core.events import EventType
+
+            # Summary observations must precede the single terminal event so the
+            # persisted trail remains safe to audit and resume.
+            if self.events.reminder_run is not None:
+                self.events.reminder_run.finish()
+            self.events.append(EventType.SESSION_END, {
+                "success": result.success, "turns": result.turns,
+                **({"reason": "cancelled"} if self.cancelled else {}),
+            })
 
 
 @dataclass
