@@ -260,7 +260,8 @@ async def run_agent_task(
     source_ref = fork if fork is not None else resume
     fork_plan = None
     resumed_from: str | None = None
-    source_scope = ExitStack()
+    run_scope = ExitStack()
+    source_scope = run_scope.enter_context(ExitStack())
     source_records = source_binding = None
     try:
         if source_ref:
@@ -310,7 +311,7 @@ async def run_agent_task(
             mode=lease_mode_for(getattr(config, "permission_mode", None)),
         )
     except BaseException:
-        source_scope.close()
+        run_scope.close()
         raise
 
     resumed_buffer = None
@@ -333,7 +334,7 @@ async def run_agent_task(
                 )
         except BaseException as exc:
             try:
-                source_scope.__exit__(type(exc), exc, exc.__traceback__)
+                run_scope.__exit__(type(exc), exc, exc.__traceback__)
             finally:
                 await lease.release()
             raise
@@ -359,7 +360,7 @@ async def run_agent_task(
             record_initial_selection(store, events.session_id, initial_selection)
     except BaseException:
         try:
-            source_scope.close()
+            run_scope.close()
         finally:
             await lease.release()
         raise
@@ -473,6 +474,7 @@ async def run_agent_task(
                 # Persist before any model call, using the same gate that resume
                 # inherited above and prepare_run will reuse. Children keep the
                 # asker's sink; a write failure must propagate, never be swallowed.
+                run_scope.callback(setattr, gate, "checkpoint", None)
                 gate.checkpoint = lambda snap: store.update_meta(events.session_id, {"spend_gate": snap})
                 gate.checkpoint(gate.snapshot())
 
@@ -512,8 +514,13 @@ async def run_agent_task(
             finally:
                 if config.spend_gate is not None and (session_record or {}).get("origin") != "consult":
                     # The tree's settled spend, children included: what a resume continues from.
-                    update_session_meta(store, events.session_id,
-                                        {"spend_gate": config.spend_gate.snapshot()})
+                    try:
+                        store.update_meta(events.session_id, {
+                            "spend_gate": config.spend_gate.snapshot(),
+                            "updated_at": datetime.now(timezone.utc).isoformat(),
+                        })
+                    except Exception:
+                        logger.warning("Spend final checkpoint failed", exc_info=True)
 
         async def _run_agent(*, task: str, trail: EventStore):
             return await agent.run(
@@ -557,7 +564,7 @@ async def run_agent_task(
                 logger.warning("Failed to close refused runtime", exc_info=True)
         finally:
             try:
-                source_scope.__exit__(type(exc), exc, exc.__traceback__)
+                run_scope.__exit__(type(exc), exc, exc.__traceback__)
             finally:
                 await lease.release()
         raise
@@ -656,10 +663,13 @@ async def run_agent_task(
             # lifecycle hook fails. Otherwise the heartbeat task can outlive
             # this call and hold the workspace indefinitely. Background
             # processes not proven dead quarantine the session instead (B.6).
-            if survivors:
-                await session_service.quarantine(store, events.session_id, lease, survivors)
-            else:
-                await lease.release()
+            try:
+                run_scope.close()
+            finally:
+                if survivors:
+                    await session_service.quarantine(store, events.session_id, lease, survivors)
+                else:
+                    await lease.release()
     if emit_json:
         for event in events.get_all():
             print(json.dumps(event))
