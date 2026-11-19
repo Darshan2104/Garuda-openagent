@@ -19,6 +19,7 @@ import os
 import shutil
 import sys
 import weakref
+from collections import deque
 from dataclasses import dataclass
 from time import monotonic
 from typing import Any
@@ -119,7 +120,8 @@ class ChatRenderer:
         self._suspended = 0
         self._plain_visible = False
         _LIVE.add(self)
-        self.rendered_assistant_text: set[str] = set()
+        # A run can return an earlier answer after rendering a forced response.
+        self.rendered_assistant_text: deque[str] = deque(maxlen=8)
         if self._rich:
             try:
                 from rich.console import Console
@@ -325,7 +327,7 @@ class ChatRenderer:
             self.on_assistant_delta(text)
             if not self._rich:
                 self._out("")
-            self.rendered_assistant_text.add(text.strip())
+            self.rendered_assistant_text.append(text.strip())
 
     def on_assistant_delta(self, text: str) -> None:
         if not text:

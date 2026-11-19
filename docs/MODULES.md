@@ -507,8 +507,9 @@ is excluded. `tui.py::ChatRenderer` keeps only a bounded preview tail, refreshed
 most ten times per second: the last terminal-height-minus-one wrapped lines with
 Rich, with bounded child lines above the parent, or a single plain line. Dumb/unset
 terminals suppress child forwarding, previews and their erase codes. Discard, response assembly, failure and cancellation clear previews.
-The completed response renders in full; a final message identical to any already
-rendered assistant response is not printed again. `--no-stream`, `--quiet`, JSON, non-TTY and no-edits
+The completed response renders in full. The run skips printing a final message
+that matches one of the eight most recent rendered assistant responses.
+`--no-stream`, `--quiet`, JSON, non-TTY and no-edits
 output withholding retain the ordinary model path for `run`.
 `interfaces/cli.py::chat_loop` attaches the shared consumer on a TTY unless
 `--json` or `--no-stream` is selected, draining events through the existing

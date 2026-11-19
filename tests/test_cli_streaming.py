@@ -414,6 +414,19 @@ async def test_run_exhausted_does_not_repeat_an_earlier_response(command):
     assert output.count("extra-3\n") == 1
 
 
+async def test_run_does_not_repeat_candidate_after_forced_response(command):
+    run, _ = command
+    status, model, output = await run([
+        ModelResponse(content=text, tool_calls=[])
+        for text in ("Candidate answer.", "Forced response.")
+    ], "--max-turns", "1", verifier=True)
+
+    assert status == 1
+    assert model.previews[-1][0].done
+    assert output.count("Candidate answer.\n") == 1
+    assert output.index("Candidate answer.\n") < output.index("Forced response.\n")
+
+
 async def test_run_erases_failed_stream_before_the_ordinary_retry(command):
     run, _ = command
     status, model, output = await run([
