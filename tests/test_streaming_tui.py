@@ -274,6 +274,17 @@ def test_renderer_force_plain_flag(capsys):
     assert "hi" in capsys.readouterr().out
 
 
+def test_renderer_retains_only_recent_assistant_responses(capsys):
+    renderer = ChatRenderer(use_rich=False)
+    for turn in range(20):
+        renderer.on_assistant_response(f"  response {turn}  ")
+
+    assert len(capsys.readouterr().out.splitlines()) == 20
+    assert len(renderer.rendered_assistant_text) <= 8
+    assert "response 0" not in renderer.rendered_assistant_text
+    assert "response 19" in renderer.rendered_assistant_text
+
+
 @pytest.mark.skipif(not tui.rich_available(), reason="rich not installed")
 def test_renderer_rich_smoke():
     renderer = ChatRenderer(use_rich=True)

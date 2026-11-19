@@ -303,6 +303,8 @@ fastest way to learn the system.
    The native loop and rigorous critic share the refusal formatter in
    `core/spend.py`; session-end reason `spend_limit` and cause metadata are unchanged.
    A settlement write failure warns and retains the previous reservation record.
+   The root runner clears its checkpoint sink on exit so a reused gate can
+   checkpoint to the next session. Final snapshot write failures warn.
    Resume charges crash-interrupted reservations at their token estimate with
    unknown cost, retaining interrupted-call provenance through later resumes.
    Failed calls without usage release their reservation only for definite

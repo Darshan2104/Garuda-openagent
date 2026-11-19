@@ -23,6 +23,7 @@ from garuda.model import accounting
 from garuda.model.protocol import ContextOverflowError, ModelResponse, count_request_tokens
 from garuda.model.script_model import ScriptModel
 from garuda.model.streaming import IncompleteStreamError
+from garuda.runtime.strict_store import StorageUnavailable
 from garuda.tools import default_tools
 from garuda.types import AgentConfig, Message, Role, ToolCall
 from garuda.workspace.local import LocalEnvironment
@@ -875,6 +876,87 @@ def test_the_run_command_accepts_tree_budget_flags():
     args = build_parser().parse_args(["run", "-t", "x", "--max-run-tokens", "5000",
                                       "--max-run-cost-usd", "2.5"])
     assert args.max_run_tokens == 5000 and args.max_run_cost_usd == 2.5
+
+
+@pytest.fixture
+def checkpoint_run(tmp_path):
+    from garuda.core.sessions import SessionStore
+    from garuda.interfaces.runner import run_agent_task
+    from garuda.tools import tools_for_names
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    store = SessionStore(tmp_path / "sessions")
+    gate = SpendGate(max_tokens=1000)
+    config = AgentConfig(max_turns=2, enable_verifier=False, max_tokens=50,
+                         spend_gate=gate, system_prompt="sys", bootstrap_environment=False)
+
+    async def run(sid, model, agent=None):
+        return await run_agent_task(
+            task="finish", model=model, agent=agent or DefaultAgent(),
+            tools=tools_for_names(["task_complete"]), config=config,
+            permissions=PermissionEngine(mode="yolo"), workspace=str(workspace),
+            events=EventStore(session_id=sid), store=store,
+        )
+
+    return run, store, gate
+
+
+@pytest.mark.parametrize("startup_failure", [False, True])
+async def test_reused_gate_checkpoints_admission_in_the_new_session(checkpoint_run, monkeypatch,
+                                                                  startup_failure):
+    run, store, gate = checkpoint_run
+    done = _done("done", {"total_tokens": 100})
+    if startup_failure:
+        update_meta = store.update_meta
+
+        def fail_checkpoint(sid, updates):
+            if "spend_gate" in updates:
+                raise OSError("initial spend checkpoint failed")
+            update_meta(sid, updates)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(store, "update_meta", fail_checkpoint)
+            with pytest.raises(OSError, match="initial spend checkpoint failed"):
+                await run("first", ScriptModel([done]))
+    else:
+        assert (await run("first", ScriptModel([done]))).success
+    first_spend = store.load_meta("first").get("spend_gate")
+
+    class ObserveAdmission(ScriptModel):
+        async def complete(self, *args, **kwargs):
+            snapshot = store.load_meta("second")["spend_gate"]
+            assert snapshot["reserved_calls"] == 1 and snapshot["reserved_tokens"] > 0
+            return await super().complete(*args, **kwargs)
+
+    assert (await run("second", ObserveAdmission([done]))).success
+    assert store.load_meta("first").get("spend_gate") == first_spend
+    assert gate.checkpoint is None
+
+
+@pytest.mark.parametrize("store_error", [OSError, StorageUnavailable])
+async def test_final_spend_checkpoint_failure_preserves_run_error(checkpoint_run, monkeypatch,
+                                                                caplog, store_error):
+    run, store, gate = checkpoint_run
+    update_meta = store.update_meta
+    run_error = ValueError("agent failed")
+
+    def fail_checkpoint(sid, updates):
+        if "spend_gate" in updates:
+            raise store_error("final spend checkpoint failed")
+        update_meta(sid, updates)
+
+    class FailingAgent(DefaultAgent):
+        async def run(self, **kwargs):
+            monkeypatch.setattr(store, "update_meta", fail_checkpoint)
+            raise run_error
+
+    with pytest.raises(ValueError) as raised:
+        await run("failed", ScriptModel([]), agent=FailingAgent())
+
+    assert raised.value is run_error
+    assert "Spend final checkpoint failed" in caplog.text
+    assert gate.checkpoint is None
 
 
 # --- resume continues the source's tree spend (#407) --------------------------
