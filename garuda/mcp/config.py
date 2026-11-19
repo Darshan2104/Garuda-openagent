@@ -10,6 +10,7 @@ from typing import Any
 import yaml
 
 from garuda.config_sources import read_source_text, record_source_error, source_is_file
+from garuda.model.config import ConfigError
 from garuda.tools.protocol import ToolEffect
 
 logger = logging.getLogger(__name__)
@@ -226,13 +227,16 @@ def _dict_to_server_configs(
     """Normalize raw server dicts into :class:`McpServerConfig` objects.
 
     Each entry is parsed under its own try/except so one malformed definition
-    cannot abort loading the rest. ``${VAR}`` interpolation is applied to
-    command / args / env string values for both JSON and YAML sources.
+    cannot abort loading the rest unless that server is required. ``${VAR}``
+    interpolation applies to command / args / env string values in JSON and YAML.
     """
     configs: list[McpServerConfig] = []
     for entry in entries:
+        required = _required_flag(entry, str(entry.get("name") or "<unnamed>"))
         try:
             name = entry.get("name")
+            if required and (not isinstance(name, str) or not name.strip()):
+                raise TypeError("name must be a non-empty string")
             if not name:
                 logger.warning("Skipping MCP server entry with no name: %r", entry)
                 continue
@@ -267,12 +271,17 @@ def _dict_to_server_configs(
                     headers=headers,
                     trusted_tool_effects=trusted_tool_effects,
                     spec_digest=spec_digest,
-                    required=_required_flag(entry, str(name)),
+                    required=required,
                     context_access=_context_access(entry, str(name), trusted_source=trusted_source),
                 )
             )
         except Exception as exc:
             server_name = entry.get("name") if isinstance(entry, dict) else entry
+            if required:
+                record_source_error()
+                raise ConfigError(
+                    f"Required MCP server {str(server_name)[:80]!r} has malformed configuration: "
+                    f"{type(exc).__name__}: {str(exc)[:200]}") from exc
             logger.warning(
                 "Skipping malformed MCP server entry %r (%s: %s)",
                 server_name,

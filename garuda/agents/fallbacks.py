@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from garuda.runtime.roles import RolePlan, RoleRefused
+from garuda.runtime.roles import RolePlan, RoleRefused, check_model_allowed
 
 
 def default_limit_check(catalog, runtime_id: str, *, refresh=None) -> bool:
@@ -69,6 +69,11 @@ def candidates(plan: RolePlan, resolved, catalog) -> tuple[RolePlan, ...]:
     """Resolve the configured candidate set without executing any probes."""
     spec = resolved.config.get("roles", {}).get(plan.role, {})
     chain = spec.get("fallback", [])
+    check_model_allowed(resolved.config, catalog.registry,
+                        spec.get("harness", plan.runtime_id), plan.model_id)
+    for candidate in chain:
+        check_model_allowed(resolved.config, catalog.registry,
+                            candidate["harness"], candidate.get("model_id"))
     if not chain:
         return (plan,)
     harnesses = resolved.config.get("harnesses", {})

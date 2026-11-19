@@ -125,6 +125,16 @@ class RolePlan:
         return out
 
 
+def check_model_allowed(config: dict, registry, harness: str, model_id: str | None) -> None:
+    """Check both reference-local and canonical model restrictions without probes."""
+    canonical = registry.get(harness).runtime_id
+    for reference in dict.fromkeys((harness, canonical)):
+        allowed = config.get("harnesses", {}).get(reference, {}).get("allowed_models")
+        if allowed is not None and model_id and model_id not in allowed:
+            raise RoleRefused("role.model_not_allowed",
+                              f"{model_id} is not in harnesses.{reference}.allowed_models")
+
+
 def plan_role(resolved, catalog) -> RolePlan | None:
     """The selected role of ``resolved`` as a plan; ``None`` when none is selected.
 
@@ -137,10 +147,7 @@ def plan_role(resolved, catalog) -> RolePlan | None:
     manifest = catalog.registry.get(spec["harness"])
     kind = getattr(getattr(manifest, "kind", None), "value", None) or str(
         getattr(manifest, "kind", "native"))
-    allowed = resolved.config.get("harnesses", {}).get(spec["harness"], {}).get("allowed_models")
-    if allowed is not None and spec.get("model_id") and spec["model_id"] not in allowed:
-        raise RoleRefused("role.model_not_allowed",
-                          f"{spec['model_id']} is not in harnesses.{spec['harness']}.allowed_models")
+    check_model_allowed(resolved.config, catalog.registry, spec["harness"], spec.get("model_id"))
     digest = hashlib.sha256(json.dumps(
         {"role": resolved.role, "spec": spec,
          "harness": resolved.config.get("harnesses", {}).get(spec["harness"], {})},

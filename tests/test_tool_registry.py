@@ -101,11 +101,51 @@ async def test_build_toolkit_no_extra_tools_leaves_base_semantics():
     assert {t.name for t in tools} == {"bash", "task_complete"}
 
 
-def test_sdk_register_tool_is_per_instance():
+async def test_sdk_register_tool_is_per_instance(tmp_path):
+    from garuda.model.protocol import ModelResponse
+    from garuda.model.script_model import ScriptModel
     from garuda.sdk.software_agent import SoftwareAgent
+    from garuda.types import Role, ToolCall, ToolResult
 
-    a1 = SoftwareAgent()
-    a2 = SoftwareAgent()
-    a1.register_tool(StubTool("agent1_tool"))
-    assert [t.name for t in a1._extra_tools] == ["agent1_tool"]
-    assert a2._extra_tools == []  # not shared across instances
+    class Ping:
+        name = "sdk_ping"
+        description = "Harmless instance-scoped echo"
+        parameters = {"type": "object", "properties": {}}
+
+        def __init__(self, value):
+            self.value = value
+
+        async def execute(self, arguments, env, ctx):
+            return ToolResult(tool_call_id="", content=self.value)
+
+    def agent():
+        workspace = tmp_path / str(len(list(tmp_path.iterdir())))
+        workspace.mkdir()
+        return SoftwareAgent(workspace=workspace, agent={
+            "extends": "garuda/build",
+            "permissions": {"rules": {"tools": {"sdk_ping": "allow"}}},
+        }, model=ScriptModel([
+            ModelResponse(content="", tool_calls=[ToolCall("ping", "sdk_ping", {})]),
+            ModelResponse(content="", tool_calls=[ToolCall(
+                "done", "task_complete", {"summary": "The instance-scoped ping completed."})]),
+        ]))
+
+    first, second, empty = agent(), agent(), agent()
+    first.register_tool(Ping("original"))
+    with pytest.raises(ValueError, match="already registered"):
+        first.register_tool(Ping("duplicate"))
+    first.register_tool(Ping("first"), replace=True)
+    second.register_tool(Ping("second"))
+    conversations = [first.conversation(), second.conversation(), empty.conversation()]
+    first.register_tool(Ping("later"), replace=True)
+    contents = []
+    for conversation in conversations:
+        try:
+            result = await conversation.run("Call sdk_ping then finish")
+            contents.append(next(message.content for message in result.messages
+                                 if message.role == Role.TOOL and message.name == "sdk_ping"))
+        finally:
+            await conversation.close()
+    assert contents[:2] == ["first", "second"]
+    assert "Unknown tool" in contents[2]
+    assert builtin_registry().get("sdk_ping") is None
