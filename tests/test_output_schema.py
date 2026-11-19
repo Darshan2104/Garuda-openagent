@@ -1159,3 +1159,29 @@ async def test_a_delegated_terminal_tool_does_not_carry_the_parents_schema(tmp_p
         config=AgentConfig(enable_verifier=False, max_turns=2))
     (entry,) = model.calls[0]
     assert "result" not in entry["function"]["parameters"]["properties"]
+
+
+@pytest.mark.parametrize("container,target", [
+    ("default", "default"), ("examples", "examples/0"),
+    ("const", "const"), ("enum", "enum/0"),
+])
+@pytest.mark.parametrize("hidden", [
+    {"$ref": "file:///outside/result.json"},
+    {"pattern": "unbounded-pattern"},
+    {"$ref": "#/default"},
+])
+def test_profile_refuses_references_into_data(tmp_path, container, target, hidden):
+    value = [hidden] if container in {"examples", "enum"} else hidden
+    agents = _typed_agent(tmp_path, {container: value, "$ref": "#/" + target})
+    with pytest.raises(ConfigError, match="agent.output_schema_ref"):
+        load_profile("typed", extra_dir=agents)
+
+
+def test_schema_references_use_the_validated_canonical_pointer(tmp_path):
+    from garuda.agents.output_schema import validation_errors
+
+    schema = {"$defs": {"a/b ~c": {"type": "integer"}}, "$ref": "#/$defs/a~1b%20~0c"}
+    agents = _typed_agent(tmp_path, schema)
+    profile = load_profile("typed", extra_dir=agents)
+    assert not validation_errors(profile.output_schema, 4)
+    assert validation_errors(profile.output_schema, "wrong")

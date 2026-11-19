@@ -1356,3 +1356,56 @@ async def test_one_priced_attempt_does_not_price_a_whole_call():
     assert gate.cost_unknown_calls == 1   # and the call is not treated as priced
     with pytest.raises(SpendLimitExceeded):
         await gate.admit("main", estimate_tokens=100)
+
+
+@pytest.mark.parametrize("attempts", [False, True])
+@pytest.mark.parametrize("reported_zero,rejected", [(False, False), (True, False), (False, True)])
+async def test_cost_only_failure_keeps_dollars_and_estimates_missing_tokens(
+        attempts, reported_zero, rejected):
+    error = RuntimeError("provider failed")
+    error.usage = {"cost_usd": 0.01, **({"total_tokens": 0} if reported_zero else {})}
+    if rejected:
+        error.status_code = 429
+    if attempts:
+        error.attempt_usage = [{"outcome": "failed", "usage": dict(error.usage),
+                                "rejected": rejected}]
+    gate = SpendGate(max_tokens=100)
+    await accounting.settle(gate, await gate.admit("main", estimate_tokens=100), error=error)
+    estimated = not (reported_zero or rejected)
+    assert gate.settled_tokens == (100 if estimated else 0)
+    assert gate.estimated_token_calls == int(estimated)
+    assert gate.settled_cost_usd == 0.01
+    assert gate.cost_unknown_calls == 0
+    assert gate.reserved_tokens == gate.reserved_calls == 0
+    if estimated:
+        with pytest.raises(SpendLimitExceeded):
+            await gate.admit("retry", estimate_tokens=1)
+    else:
+        await gate.admit("retry", estimate_tokens=100)
+
+
+async def test_mixed_attempts_charge_cost_only_failure_without_losing_success_tokens():
+    gate = SpendGate(max_tokens=100)
+    response = ModelResponse(content="ok", tool_calls=[],
+                             usage={"total_tokens": 20, "prompt_tokens": 10, "cost_usd": 0.03},
+                             attempt_usage=[
+                                 {"outcome": "failed", "usage": {"cost_usd": 0.01}},
+                                 {"outcome": "success", "usage": {
+                                     "prompt_tokens": 10, "total_tokens": 20, "cost_usd": 0.02}},
+                             ])
+    await accounting.settle(gate, await gate.admit("main", estimate_tokens=100), response=response)
+    assert gate.settled_tokens == 30  # reported success + estimated repeated prompt
+    assert gate.estimated_token_calls == 1
+    assert gate.settled_cost_usd == 0.03
+    assert gate.cost_unknown_calls == 0
+
+
+async def test_definite_rejection_with_reported_zero_does_not_make_dollar_spend_unknown():
+    error = RuntimeError("rate limited")
+    error.status_code = 429
+    error.usage = {"total_tokens": 0}
+    gate = SpendGate(max_cost_usd=1.0)
+    await accounting.settle(gate, await gate.admit("main", estimate_tokens=100), error=error)
+    assert gate.settled_tokens == gate.cost_unknown_calls == gate.estimated_token_calls == 0
+    assert gate.failed_without_usage == 1
+    await gate.admit("retry", estimate_tokens=100)
