@@ -208,14 +208,6 @@ def recover(store, flow_session: str) -> list[str]:
     return quarantined
 
 
-def _steps(flow: dict) -> list[dict]:
-    out = []
-    for index, step in enumerate(flow["steps"]):
-        sid = step.get("id") or (step.get("role") or "group") + f"-{index + 1}"
-        out.append({**step, "id": sid, "index": index})
-    return out
-
-
 class FlowRunner:
     """Run one flow. ``launcher`` starts a step's session (see :class:`StepLaunch`)."""
 
@@ -244,6 +236,9 @@ class FlowRunner:
         self.store = store
         self.workspace = str(Path(workspace).resolve())
         self.name = name
+        from garuda.config.garuda_yaml import effective_flow_steps
+
+        self.steps = effective_flow_steps(flow)
         self.flow = flow
         self.resolved = resolved
         self.task = task
@@ -357,7 +352,7 @@ class FlowRunner:
 
     def _no_edits(self, step: dict, role: str) -> bool:
         spec = self.resolved.config.get("roles", {}).get(role, {})
-        return (step.get("write_policy") or spec.get("write_policy")) == "no-edits"
+        return "no-edits" in (step.get("write_policy"), spec.get("write_policy"))
 
     def _closed_step(self, outcome: StepResult, step: dict, attempt: int, role_record=None) -> dict:
         """Keep only bound lifetime facts, never raw process output tails."""
@@ -417,7 +412,7 @@ class FlowRunner:
                                        for entry in actual}
                 or any(entry.get("event") not in {"intent", "receipt"} for entry in entries)):
             raise FlowStopped("flow.evidence_incomplete", "step attempt coverage is incomplete")
-        by_id = {step["id"]: step for step in _steps(self.flow)}
+        by_id = {step["id"]: step for step in self.steps}
         coverage = []
         for intent, recorded, receipt in zip(intents, settled, done, strict=True):
             key = (intent.get("step"), intent.get("attempt"))
@@ -565,11 +560,11 @@ class FlowRunner:
         self.dir.mkdir(mode=0o700)
         self.store.update_meta(self.flow_session, {
             "kind": "flow", "flow": {"name": self.name, "steps": [s["id"] for s in
-                                                                 _steps(self.flow)]},
+                                                                 self.steps]},
             "flow_state": "running",
             "review_policies": [{"step": s["id"], "reviewer": s["review"]["by"],
                                  "policy": "required" if s["review"].get("independent", True) else "waived"}
-                                for s in _steps(self.flow) if "review" in s],
+                                for s in self.steps if "review" in s],
             **({"starter": self.starter_record} if self.starter_record is not None else {}),
             **({"flow_operation": self.operation_binding}
                if self.operation_binding is not None else {}),
@@ -593,10 +588,10 @@ class FlowRunner:
     def _lease_mode(self) -> str:
         if self.require_owned:
             if (self.launch_kind == "run" and self.verification_request is None
-                    and all(self._no_edits(s, s.get("role", "")) for s in _steps(self.flow))):
+                    and all(self._no_edits(s, s.get("role", "")) for s in self.steps)):
                 return "read-only"
             return "mutating"
-        if all(self._no_edits(s, s.get("role", "")) for s in _steps(self.flow) if "role" in s):
+        if all(self._no_edits(s, s.get("role", "")) for s in self.steps if "role" in s):
             return "read-only"
         return "mutating"
 
@@ -698,7 +693,7 @@ class FlowRunner:
             tried = {}
             for r in existing:
                 tried[r["step"]] = max(tried.get(r["step"], 0), r.get("attempt", 0))
-            steps = _steps(self.flow)
+            steps = self.steps
             prior_approvals = ((await _settled_sync(self.store.load_meta, self.flow_session))
                                .get("review_approvals") if resume else None)
             self._review_approvals = prior_approvals if isinstance(prior_approvals, dict) else {}

@@ -16,6 +16,8 @@ import dataclasses
 import datetime as _dt
 import hashlib
 import os
+import stat
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -92,7 +94,10 @@ def plan(path: str | Path) -> Migration:
 
 def write(migration: Migration) -> Path:
     """Replace the file with its version 1 form; returns the backup path."""
-    current = hashlib.sha256(migration.path.read_bytes()).hexdigest()
+    with migration.path.open("rb") as source:
+        data = source.read()
+        mode = stat.S_IMODE(os.fstat(source.fileno()).st_mode)
+    current = hashlib.sha256(data).hexdigest()
     if current != migration.digest:
         raise spec.AgentSpecError("agent.migrate_conflict", "",
                                   f"{migration.path} changed since it was read; run again")
@@ -100,10 +105,19 @@ def write(migration: Migration) -> Path:
     backup = migration.path.with_name(f"{migration.path.name}.bak-{stamp}")
     fd = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
-        os.write(fd, migration.path.read_bytes())
+        with os.fdopen(fd, "wb", closefd=False) as stream:
+            stream.write(data)
     finally:
         os.close(fd)
-    tmp = migration.path.with_name(f".{migration.path.name}.{os.getpid()}.tmp")
-    tmp.write_text(migration.text, encoding="utf-8")
-    os.replace(tmp, migration.path)
+    fd, name = tempfile.mkstemp(prefix=f".{migration.path.name}.", suffix=".tmp",
+                                dir=migration.path.parent)
+    tmp = Path(name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(migration.text)
+            stream.flush()
+            os.fchmod(stream.fileno(), mode)
+        os.replace(tmp, migration.path)
+    finally:
+        tmp.unlink(missing_ok=True)
     return backup

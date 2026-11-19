@@ -22,6 +22,7 @@ from typing import Any
 from garuda.core.events import EventStore, EventType
 from garuda.model.protocol import count_request_tokens, estimate_tools_tokens, output_token_bounds
 from garuda.model.usage import (
+    TOKEN_FIELDS,
     is_definite_rejection,
     reported_prompt_tokens,
     unreported_attempts,
@@ -187,7 +188,8 @@ async def settle(gate: Any, reservation: Any, *, response: Any = None,
         if isinstance(attempt, dict) and isinstance(attempt.get("usage"), dict))
     missing = unreported_attempts(prior)
     per_attempt = reported_prompt_tokens(prior) or reservation.tokens
-    estimated_attempt_tokens = missing * per_attempt
+    missing_tokens = unreported_attempts(prior, fields=TOKEN_FIELDS)
+    estimated_attempt_tokens = missing_tokens * per_attempt
     if active is not None:
         active_tokens = usage_tokens(active.get("usage"))
         attempt_tokens += max(active_tokens, reservation.tokens)

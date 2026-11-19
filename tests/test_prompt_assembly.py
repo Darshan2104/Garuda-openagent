@@ -140,3 +140,24 @@ async def test_a_source_changed_after_inspection_shows_in_the_actual_digest(ws):
     (ws / "AGENTS.md").write_text("after a teammate edited it")
     _sent, actual = await _first_system(ws, bootstrap=False)
     assert actual[0]["payload"]["digest"] != static["digest"]
+
+
+@pytest.mark.parametrize("mode", ["first", "all"])
+def test_explicit_empty_project_memory_excludes_default_files(ws, mode):
+    (ws / "AGENTS.md").write_text("DISABLED-AGENTS-CONTENT")
+    (ws / "GARUDA.md").write_text("DISABLED-GARUDA-CONTENT")
+    profile = _agent(ws, f"memory: {{user: false, project: [], project_mode: {mode}}}\n")
+    assert profile.memory_project == []
+    assert all(kind != "project_memory" for kind, _, _ in system_prompt_sections(profile, ws))
+    prompt = resolve_system_prompt(profile, ws)
+    assert "DISABLED-AGENTS-CONTENT" not in prompt
+    assert "DISABLED-GARUDA-CONTENT" not in prompt
+    from garuda.agents import inspect
+
+    report = inspect.show("a", ws, raw=True, instruction_sources=True)
+    rows = {row["path"]: row for row in report["instruction_sources"]["sources"]}
+    for name in ("AGENTS.md", "GARUDA.md"):
+        row = rows[str(ws / name)]
+        assert row["loaded"] is False
+        assert row["configured_order"] is None
+        assert row["shadowed_by"] is None

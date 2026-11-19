@@ -324,3 +324,23 @@ def test_migrate_previews_writes_once_and_refuses_conflicts(tmp_path, monkeypatc
     code, out = _main(monkeypatch, capsys, "config", "migrate", "--write")
     assert code == 2 and "config.conflict" in out
     assert "max_parallel: 5" in gy.user_path().read_text()  # untouched
+
+
+def test_fallback_models_obey_harness_allowlists_during_config_resolution():
+    config = gy.parse({"version": 1, "harnesses": {"native": {"allowed_models": ["approved"]}},
+                       "roles": {"coder": {"harness": "codex", "fallback": [
+                           {"harness": "native", "model_id": "forbidden"}]}}})
+    with pytest.raises(GarudaConfigError) as error:
+        gy.resolve(config, None, cli_role="coder")
+    assert error.value.path == "roles.coder.fallback[0].model_id"
+
+
+@pytest.mark.parametrize("steps", [
+    [{"id": "coder-2", "role": "coder"}, {"role": "coder"}],
+    [{"role": "coder"}, {"id": "coder-1", "role": "coder"}],
+    [{"id": "group-2", "role": "coder"}, {"parallel": ["coder"]}],
+])
+def test_effective_flow_ids_reject_explicit_generated_collisions(steps):
+    with pytest.raises(GarudaConfigError, match="step ids must be unique") as error:
+        gy.parse({"version": 1, "flows": {"qa": {"steps": steps}}})
+    assert error.value.path == "flows.qa.steps"

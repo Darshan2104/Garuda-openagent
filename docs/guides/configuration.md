@@ -173,6 +173,8 @@ Garuda resolves `.agent/mcp.json` or YAML, `.garuda/` compatibility files,
   work; a value other than `true`/`false` counts as required. Optional servers
   (the default) that fail are skipped, and `garuda mcp list` shows each server's
   state and reason. An untrusted project server marked required also refuses.
+  Malformed required entries refuse before launch with a bounded named error;
+  malformed optional entries remain isolated and are skipped.
 - A stdio server whose process exits is relaunched up to 3 times per run with
   backoff (a server that keeps exiting after it reconnects ends failed), only while its entry is unchanged and, for a project server, still trusted.
   A call in flight when it exited fails and is never replayed; the run keeps
@@ -665,3 +667,17 @@ and why; if none can start, the run refuses and lists every reason.
 | `GARUDA_TOKEN_PRICES` | Reproducible price overrides |
 | `GARUDA_SERVE_TOKEN` | JSON-RPC server bearer token |
 | `GARUDA_TRACING` | Enable OTLP tracing |
+
+Harness `allowed_models` restrictions apply to every fallback candidate before
+discovery or selection. Runtime aliases must satisfy both their own configured
+allowlist and the canonical runtime's allowlist. Invalid candidates refuse the
+configuration even when an earlier candidate is available.
+
+A user role with `write_policy: no-edits` keeps that restriction when a project
+redefines it, whether the project omits the field or requests `edits`. A flow
+step also cannot remove its role's no-edits restriction. Project roles and steps
+can narrow editable roles to no-edits.
+
+Flow step IDs must be unique after unnamed steps receive `ROLE-N` (or
+`group-N`) IDs, where `N` is their one-based position. A collision with an
+explicit ID refuses configuration before any step launches.

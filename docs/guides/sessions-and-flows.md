@@ -361,3 +361,8 @@ build attempt, candidate version and reviewer receipt. Approval of an earlier
 build cannot approve a later build. Legacy or incomplete approval records
 without this binding refuse resume with `flow.review_unresolved`; start a new
 flow after inspecting the workspace.
+
+Acceptance checks recognize composed launchers such as `uv run python -m
+pytest`, `poetry run python -m pytest`, `pipenv run python -m pytest`, and
+`hatch run python -m pytest`. Changes to pytest infrastructure invalidate these
+checks just as they invalidate a direct pytest invocation.

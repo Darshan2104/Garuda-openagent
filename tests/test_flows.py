@@ -620,3 +620,29 @@ def test_artifact_rechecks_open_descriptor_type_after_path_swap(tmp_path, monkey
     with pytest.raises(art.ArtifactError) as caught:
         art.load(flow, ref, workspace_version=None)
     assert swapped and caught.value.code == 'flow.input_not_regular'
+
+
+async def test_unnamed_flow_ids_remain_distinct_in_receipts_and_resume(repo):
+    config = {"version": 1, "roles": {"coder": {"harness": "native"}},
+              "flows": {"qa": {"steps": [{"role": "coder"}, {"role": "coder"}]}}}
+    launches = []
+
+    async def launch(request):
+        launches.append(request.step_id)
+        return StepResult(str(uuid.uuid4()), True, "done")
+
+    runner = _runner(repo, launch, flow="qa", config=config)
+    await runner.run()
+    assert launches == ["coder-1", "coder-2"]
+    assert [receipt["step"] for receipt in engine.receipts(runner.store, runner.flow_session)] == launches
+    await runner.run(resume=True)
+    assert launches == ["coder-1", "coder-2"]
+
+
+def test_direct_flow_admission_rejects_colliding_ids_without_creating_session(repo):
+    store = SessionStore()
+    flow = {"steps": [{"id": "coder-2", "role": "coder"}, {"role": "coder"}]}
+    with pytest.raises(gy.GarudaConfigError, match="step ids must be unique"):
+        FlowRunner(store, repo, "qa", flow, _resolved(), task="qa", launcher=None,
+                   flow_session="ambiguous-flow")
+    assert not store.session_dir("ambiguous-flow").exists()

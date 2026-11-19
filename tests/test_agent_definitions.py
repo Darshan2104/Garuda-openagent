@@ -4,6 +4,7 @@ import dataclasses
 import json
 import os
 import shutil
+import stat
 
 import pytest
 
@@ -255,3 +256,24 @@ def test_resolution_activates_nothing(tmp_path, project):
 def test_the_profile_projection_matches_the_dataclass():
     fields = {f.name for f in dataclasses.fields(load_profile("build"))}
     assert "spec_version" in fields and os.environ.get("PYTEST_CURRENT_TEST")
+
+
+@pytest.mark.parametrize("mode", [0o600, 0o640, 0o644])
+@pytest.mark.parametrize("mask", [0o022, 0o077])
+def test_migration_preserves_source_mode_and_private_backup(project, mode, mask):
+    path = project / "explore.yaml"
+    shutil.copy(_defaults_dir() / "explore.yaml", path)
+    path.chmod(mode)
+    original = path.read_bytes()
+    migration = migrate.plan(path)
+    previous = os.umask(mask)
+    try:
+        backup = migrate.write(migration)
+    finally:
+        os.umask(previous)
+    assert stat.S_IMODE(path.stat().st_mode) == mode
+    assert path.read_text() == migration.text
+    assert backup.read_bytes() == original
+    assert stat.S_IMODE(backup.stat().st_mode) == 0o600
+    assert load_profile("explore", extra_dir=project).spec_version == 1
+    assert not list(project.glob("*.tmp"))
