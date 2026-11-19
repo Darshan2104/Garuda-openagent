@@ -1,5 +1,12 @@
 # Durable decisions
 
+## 2026-11-19 — LSP result source reads require ordinary permission approval (#525)
+
+A language-server location is a path reference, not permission to read its
+source. Definition and reference rendering evaluates lsp permission for each
+target through the shared approval path before excerpt reads or column
+conversion. ASK without approval withholds the location.
+
 ## 2026-11-19 — Required MCP configuration fails closed before launch (#527)
 
 Read required status before normalizing server fields. Malformed required
