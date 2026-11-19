@@ -7,6 +7,13 @@ classifying project model authority. Native aliases require the same hash-bound
 model grant as native itself. An unresolved identity cannot exempt a model from
 trust. Trust preview uses the same classification and runs no discovery probes.
 
+## 2026-11-19 — Output references stay inside validated schema nodes (#519)
+
+A local output-schema reference may target only a node traversed as a schema
+by the restricted compiler. JSON Pointer decoding matches runtime resolution.
+Annotation and instance-data objects cannot become schemas through a reference,
+so their unchecked keywords cannot trigger file or network retrieval.
+
 ## 2026-11-18 — Rigorous planning inherits run authority (#500)
 
 Rigorous mode resolves the packaged `garuda/plan` profile directly. Its read-only

@@ -4,10 +4,11 @@ from typing import Any
 
 from garuda.model.protocol import ContextOverflowError
 
-USAGE_FIELDS = ("prompt_tokens", "completion_tokens", "total_tokens", "cost_usd")
+TOKEN_FIELDS = ("prompt_tokens", "completion_tokens", "total_tokens")
+USAGE_FIELDS = (*TOKEN_FIELDS, "cost_usd")
 
 
-def unreported_attempts(attempts: list[dict]) -> int:
+def unreported_attempts(attempts: list[dict], *, fields: tuple[str, ...] = USAGE_FIELDS) -> int:
     """Count attempts without reported usage, excluding definite failed rejections."""
     missing = 0
     for attempt in attempts:
@@ -17,7 +18,7 @@ def unreported_attempts(attempts: list[dict]) -> int:
         usage = attempt.get("usage")
         if not isinstance(usage, dict) or not any(
             isinstance(usage.get(key), (int, float)) and not isinstance(usage[key], bool)
-            for key in USAGE_FIELDS
+            for key in fields
         ):
             missing += 1
     return missing

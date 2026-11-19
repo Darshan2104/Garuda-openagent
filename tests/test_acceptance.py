@@ -1,6 +1,7 @@
 """Attributed verification receipts (#158, plan task C.5)."""
 
 import os
+import shutil
 import subprocess
 import sys
 import uuid
@@ -166,3 +167,38 @@ def test_a_check_flag_verifies_an_acp_session(tmp_path, monkeypatch, capsys):
     (meta,) = SessionStore().list_sessions()
     assert meta["state"]["verification"] == {"status": "passed", "authority": "user-request"}
     assert meta["status"] == "completed"
+
+
+@pytest.mark.parametrize("wrapper", ["uv", "poetry", "pipenv", "hatch", "/opt/bin/uv"])
+@pytest.mark.parametrize("argv", [False, True])
+def test_composed_wrappers_invalidate_changed_pytest_infrastructure(wrapper, argv):
+    command = [wrapper, "run", "/usr/bin/python3.12", "-m", "pytest", "-q"]
+    receipt = ac.evaluate_receipt(
+        {"run": command if argv else " ".join(command), "authority": "user-request"},
+        before="candidate", after="candidate", exit_code=0, output="tests skipped",
+        changed=["tests/conftest.py"], duration_s=1)
+    assert receipt["status"] == "unverified"
+    assert receipt["infra_changed"] == ["tests/conftest.py"]
+    assert ac.verification_from([receipt])["status"] == "invalidated"
+
+
+@pytest.mark.skipif(shutil.which("uv") is None, reason="uv unavailable")
+def test_real_uv_pytest_cannot_verify_a_candidate_that_disabled_its_tests(ws, monkeypatch):
+    monkeypatch.setenv("UV_PYTHON", sys.executable)
+    monkeypatch.setenv("UV_PYTHON_DOWNLOADS", "never")
+    monkeypatch.setenv("PYTHONDONTWRITEBYTECODE", "1")
+    (ws / "test_example.py").write_text("def test_fails():\n    assert False\n")
+    (ws / "conftest.py").write_text("")
+    subprocess.run(["git", "add", "."], cwd=ws, check=True)
+    subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "tests"],
+                   cwd=ws, check=True)
+    (ws / "conftest.py").write_text(
+        "import pytest\ndef pytest_collection_modifyitems(items):\n"
+        "    for item in items: item.add_marker(pytest.mark.skip(reason='disabled'))\n")
+    receipt = ac.run_check({"run": [shutil.which("uv"), "run", sys.executable, "-m", "pytest",
+                                     "-q", "-p", "no:cacheprovider"]},
+                           "user-request", ws, ["conftest.py"])
+    assert receipt["exit_code"] == 0
+    assert "skipped" in receipt["output_tail"]
+    assert receipt["status"] == "unverified"
+    assert ac.verification_from([receipt])["status"] == "invalidated"

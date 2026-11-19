@@ -669,3 +669,7 @@ and why; if none can start, the run refuses and lists every reason.
 Project model trust follows the canonical runtime identity. A project alias
 for the native runtime needs the same model trust as `harness: native`, and
 `garuda config trust` displays that model choice before asking for trust.
+
+Flow step IDs must be unique after unnamed steps receive `ROLE-N` (or
+`group-N`) IDs, where `N` is their one-based position. A collision with an
+explicit ID refuses configuration before any step launches.

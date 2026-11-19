@@ -255,6 +255,19 @@ def _step(value, path) -> dict:
     return out
 
 
+def effective_flow_steps(flow: dict, *, path: str = "flow.steps") -> list[dict]:
+    """Freeze the IDs used by admission, execution, receipts and resume."""
+    steps = []
+    seen = set()
+    for index, step in enumerate(flow["steps"]):
+        sid = step.get("id") or (step.get("role") or "group") + f"-{index + 1}"
+        if sid in seen:
+            _fail(path, f"step ids must be unique (duplicate {sid!r})")
+        seen.add(sid)
+        steps.append({**step, "id": sid, "index": index})
+    return steps
+
+
 def _flow(value, path) -> dict:
     data = _mapping(value, path, ("steps", "description"))
     steps = data.get("steps")
@@ -263,9 +276,7 @@ def _flow(value, path) -> dict:
     if len(steps) > MAX_STEPS:
         _fail(f"{path}.steps", f"at most {MAX_STEPS} steps")
     out: dict[str, Any] = {"steps": [_step(s, f"{path}.steps[{i}]") for i, s in enumerate(steps)]}
-    ids = [s["id"] for s in out["steps"] if "id" in s]
-    if len(set(ids)) != len(ids):
-        _fail(f"{path}.steps", "step ids must be unique")
+    effective_flow_steps(out, path=f"{path}.steps")
     if "description" in data:
         out["description"] = _str(data["description"], f"{path}.description")
     return out

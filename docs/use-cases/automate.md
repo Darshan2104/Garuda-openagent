@@ -467,6 +467,12 @@ claimed; inspect recorded tick times after those transitions.
     asyncio.run(main())
     ```
 
+A conversation inherits the agent instance's registered tools and explicit
+`load_project_tools` choice. Tool registrations are snapshotted when you call
+`conversation()`; later registrations affect later conversations. Different
+agent instances keep separate tool registries.
+
+
 === "Your own tool"
 
     ```python
