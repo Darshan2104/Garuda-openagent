@@ -173,6 +173,8 @@ Garuda resolves `.agent/mcp.json` or YAML, `.garuda/` compatibility files,
   work; a value other than `true`/`false` counts as required. Optional servers
   (the default) that fail are skipped, and `garuda mcp list` shows each server's
   state and reason. An untrusted project server marked required also refuses.
+  Malformed required entries refuse before launch with a bounded named error;
+  malformed optional entries remain isolated and are skipped.
 - A stdio server whose process exits is relaunched up to 3 times per run with
   backoff (a server that keeps exiting after it reconnects ends failed), only while its entry is unchanged and, for a project server, still trusted.
   A call in flight when it exited fails and is never replayed; the run keeps

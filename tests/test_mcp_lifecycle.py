@@ -485,3 +485,32 @@ async def test_context_grant_scope_and_capabilities_are_checked_after_reconnect(
         assert _log(log) == before
     finally:
         await manager.close()
+
+
+@pytest.mark.parametrize("field,value", [("args", {}), ("env", []), ("headers", "secret-value")])
+@pytest.mark.parametrize("required", [True, "false", None])
+async def test_malformed_required_server_refuses_shared_toolkit(tmp_path, field, value, required):
+    from garuda.model.config import ConfigError
+
+    cfg = tmp_path / "mcp.json"
+    cfg.write_text(json.dumps({"mcpServers": {
+        "critical": {"command": "not-launched", "required": required, field: value},
+    }}))
+    with pytest.raises(ConfigError, match="critical") as refused:
+        await build_toolkit([], [str(cfg)])
+    assert field in str(refused.value)
+    assert "secret-value" not in str(refused.value)
+    assert len(str(refused.value)) < 400
+
+
+@pytest.mark.parametrize("field,value", [("args", {}), ("env", []), ("headers", "bad")])
+async def test_malformed_optional_server_stays_isolated_at_toolkit_start(tmp_path, field, value):
+    cfg = tmp_path / "mcp.json"
+    cfg.write_text(json.dumps({"mcpServers": {
+        "optional": {"command": "not-launched", "required": False, field: value},
+    }}))
+    tools, manager = await build_toolkit([], [str(cfg)])
+    assert tools == []
+    assert manager is None or manager.server_states() == []
+    if manager is not None:
+        await manager.close()

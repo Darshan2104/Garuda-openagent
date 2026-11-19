@@ -1,5 +1,11 @@
 # Durable decisions
 
+## 2026-11-19 — Required MCP configuration fails closed before launch (#527)
+
+Read required status before normalizing server fields. Malformed required
+entries, including entries with ambiguous non-boolean required flags, refuse
+toolkit startup. Invalid optional entries retain per-entry isolation.
+
 ## 2026-11-18 — Rigorous planning inherits run authority (#500)
 
 Rigorous mode resolves the packaged `garuda/plan` profile directly. Its read-only
