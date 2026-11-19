@@ -213,6 +213,21 @@ def test_linked_worktree_git_reads_do_not_trip_guard(repo, linked):
     assert guard.check().unchanged
 
 
+def test_guard_observes_separate_git_directory(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    metadata = tmp_path / "metadata"
+    _git(workspace, "init", "-q", "--separate-git-dir", str(metadata))
+    _git(workspace, "commit", "--allow-empty", "-qm", "base")
+    guard = NoEditsGuard(workspace)
+    _git(workspace, "status", "--porcelain")
+    assert guard.check().unchanged
+
+    _git(workspace, "commit", "--allow-empty", "-qm", "metadata-only change")
+
+    assert any(path.startswith(".git/admin/refs/") for path in guard.check().changed)
+
+
 def test_broken_linked_git_marker_cannot_report_unchanged(linked):
     (linked / ".git").write_text("gitdir: /missing/garuda-git-metadata\n")
     result = NoEditsGuard(linked).check()
