@@ -71,7 +71,7 @@ the effective value of each.
 | Instructions | `instructions.text`, `instructions.files` | Text, or files relative to the definition |
 | | `instructions.mode` | `append` (default) or `replace` |
 | Memory | `memory.user` | Load `~/.agent/AGENTS.md` (default on) |
-| | `memory.project`, `memory.project_mode` | Project memory files (default `[AGENTS.md, GARUDA.md]`), `first` or `all` |
+| | `memory.project`, `memory.project_mode` | Project memory files (default `[AGENTS.md, GARUDA.md]`; `[]` disables them), `first` or `all` |
 | | `memory.max_chars`, `memory.max_total_chars` | Per-file cap (8,000) and whole-prompt cap (32,000) |
 | | `memory.context_pack` | Add the `.context/` architecture, decisions, discoveries and conventions |
 | | `memory.notes` | `propose` gives the agent a `remember` tool ([below](#memory-notes)) |
