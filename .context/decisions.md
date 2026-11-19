@@ -6,6 +6,13 @@ User no-edits is a ceiling alongside permissions and grants. Project role
 replacement cannot remove it, and flow step policy can only add a no-edits
 restriction. CLI and flow launches use that effective restriction.
 
+## 2026-11-19 — Output references stay inside validated schema nodes (#519)
+
+A local output-schema reference may target only a node traversed as a schema
+by the restricted compiler. JSON Pointer decoding matches runtime resolution.
+Annotation and instance-data objects cannot become schemas through a reference,
+so their unchecked keywords cannot trigger file or network retrieval.
+
 ## 2026-11-18 — Rigorous planning inherits run authority (#500)
 
 Rigorous mode resolves the packaged `garuda/plan` profile directly. Its read-only

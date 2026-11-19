@@ -400,6 +400,10 @@ garuda run --max-run-tokens 400000 --max-run-cost-usd 2 -t "Refactor the cache m
   flags), prior spend is unknown: a dollar-only budget then refuses to admit
   calls, and a token budget starts from zero and says so.
 - Capped runs checkpoint each reservation before sending and each settlement.
+  Failed calls that report dollars without token counts retain the known price
+  and charge estimated tokens. Definite rejections and explicitly reported zero
+  tokens keep their existing accounting behavior.
+
   After a crash, resume charges interrupted calls their reserved token estimate
   and records their cost as unknown (`spend_inherited.source: spend_checkpoint`).
   Cancelled or unknown-outcome failed calls are also charged their reservation

@@ -10,6 +10,7 @@ from garuda.context.manager import ContextManager
 from garuda.core.events import EventStore
 from garuda.core.run_state import reserved_output_tokens
 from garuda.model.config import CollectionPolicy, ModelBindings, ResolvedField
+from garuda.tools.protocol import Tool
 from garuda.types import AgentConfig, Message, Role
 
 ApprovalHandler = Callable[[str], Awaitable[bool]]
@@ -53,6 +54,8 @@ class AgentSession:
         collection_model: str | Any | None = None,
         no_collection: bool = False,
         model_binding: str | None = None,
+        extra_tools: list[Tool] | None = None,
+        load_project_tools: bool | None = None,
     ) -> "AgentSession":
         from garuda.config.agent_home import resolve_agents_dirs
 
@@ -72,6 +75,8 @@ class AgentSession:
             collection_model=collection_model,
             no_collection=no_collection,
             model_binding=model_binding,
+            extra_tools=extra_tools,
+            load_project_tools=load_project_tools,
         )
         prepared.config.workspace_kind = workspace_kind
         prepared.config.docker_image = docker_image
