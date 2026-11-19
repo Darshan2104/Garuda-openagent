@@ -298,7 +298,8 @@ class SpendGate:
         async with self._lock:
             self.reserved_tokens = max(0, self.reserved_tokens - reservation.tokens)
             self.reserved_calls = max(0, self.reserved_calls - 1)
-            if failed and not reports_tokens(usage) and not isinstance(cost, (int, float)):
+            if (failed and not tokens and not isinstance(cost, (int, float))
+                    and (rejected or not reports_tokens(usage))):
                 if rejected:
                     self.failed_without_usage += 1
                 else:

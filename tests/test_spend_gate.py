@@ -1398,3 +1398,14 @@ async def test_mixed_attempts_charge_cost_only_failure_without_losing_success_to
     assert gate.estimated_token_calls == 1
     assert gate.settled_cost_usd == 0.03
     assert gate.cost_unknown_calls == 0
+
+
+async def test_definite_rejection_with_reported_zero_does_not_make_dollar_spend_unknown():
+    error = RuntimeError("rate limited")
+    error.status_code = 429
+    error.usage = {"total_tokens": 0}
+    gate = SpendGate(max_cost_usd=1.0)
+    await accounting.settle(gate, await gate.admit("main", estimate_tokens=100), error=error)
+    assert gate.settled_tokens == gate.cost_unknown_calls == gate.estimated_token_calls == 0
+    assert gate.failed_without_usage == 1
+    await gate.admit("retry", estimate_tokens=100)
