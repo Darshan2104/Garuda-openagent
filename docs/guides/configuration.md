@@ -668,6 +668,12 @@ and why; if none can start, the run refuses and lists every reason.
 | `GARUDA_SERVE_TOKEN` | JSON-RPC server bearer token |
 | `GARUDA_TRACING` | Enable OTLP tracing |
 
+Project model trust follows the canonical runtime identity. A project alias
+for the native runtime needs the same model trust as `harness: native`, and
+`garuda config trust` displays that model choice before asking for trust. If a
+runtime reference changes from external to native during planning, the run
+refuses the external-only model. Retry to resolve the current configuration.
+
 Harness `allowed_models` restrictions apply to every fallback candidate before
 discovery or selection. Runtime aliases must satisfy both their own configured
 allowlist and the canonical runtime's allowlist. Invalid candidates refuse the

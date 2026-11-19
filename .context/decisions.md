@@ -1,5 +1,14 @@
 # Durable decisions
 
+## 2026-11-19 — Project model trust follows runtime identity (#520)
+
+Resolve role harness aliases through the static trusted registry before
+classifying project model authority. Native aliases require the same hash-bound
+model grant as native itself. An unresolved identity cannot exempt a model from
+trust. Planning refuses to use a model admitted only for an external runtime
+if the same reference now resolves to native. Trust preview runs no discovery
+probes.
+
 ## 2026-11-19 — Held conversations own resumable checkpoints and final outcomes (#528)
 
 SDK and dashboard conversations share ConversationRecord for message/working

@@ -1122,8 +1122,10 @@ def run_config_trust(args) -> int:
     """`garuda config trust`: an interactive, hash-bound grant (C.2)."""
     import sys
 
+    from garuda.agents.setup import prepare_runtime_catalog
     from garuda.config import project_trust as pt
-    from garuda.config.garuda_yaml import GarudaConfigError, load_text
+    from garuda.config.garuda_yaml import load_text
+    from garuda.model.config import ConfigError
 
     try:
         if not (sys.stdin.isatty() and sys.stderr.isatty()):
@@ -1138,10 +1140,11 @@ def run_config_trust(args) -> int:
             print("No garuda.yaml in this project.")
             return 0
         doc = load_text(project.data.decode("utf-8"), source=str(project.path))
-    except (GarudaConfigError, UnicodeDecodeError) as exc:
+        registry = prepare_runtime_catalog(args.workspace).registry
+        paths = pt.needs_trust(doc, registry=registry)
+    except (ConfigError, UnicodeDecodeError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 2
-    paths = pt.needs_trust(doc)
     if not paths:
         print(f"[garuda] {project.path} asks for nothing that needs trust")
         return 0
@@ -1154,7 +1157,7 @@ def run_config_trust(args) -> int:
         print(f"  check: {run}" + (f"  (in {check['cwd']})" if check.get("cwd") else ""),
               file=sys.stderr)
     for name, role in doc.get("roles", {}).items():
-        if role.get("harness") == "native" and "model_id" in role:
+        if f"roles.{name}.model_id" in paths:
             print(f"  native model for role {name}: {role['model_id']}", file=sys.stderr)
     print("Trust exactly this file? Any later change needs trust again. [y/N] ", end="",
           file=sys.stderr, flush=True)
