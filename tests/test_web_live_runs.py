@@ -1158,3 +1158,25 @@ async def test_dashboard_streams_child_preview_through_route(live, ctx, monkeypa
             job._task.cancel()
         await asyncio.gather(job._task, return_exceptions=True)
         await live.aclose()
+
+
+async def test_failed_initial_checkpoint_does_not_leave_chat_busy(chatting, monkeypatch):
+    live, session, _ = chatting
+    opened = await live.start_chat(ChatSpec())
+    chat_id = opened["chat_id"]
+
+    def fail_checkpoint(*args):
+        raise OSError("fixture: checkpoint write failed")
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(live.store, "checkpoint_messages", fail_checkpoint)
+            with pytest.raises(OSError, match="checkpoint write failed"):
+                await live.chat_turn(chat_id, "First turn")
+        assert (await live.list_chats())["chats"][0]["busy"] is False
+        result = await live.chat_turn(chat_id, "Retry")
+        session.release.set()
+        await live.jobs.get(result["job_id"])._task
+        assert session.tasks == ["Retry"]
+    finally:
+        await live.aclose()

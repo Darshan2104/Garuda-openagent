@@ -347,10 +347,7 @@ class LiveRuns:
         # files alongside, or need a second conversation state for "files pending".
         prompt = grounding.announce(chat.take_new_sources()) + task
 
-        # Set before the await point, in the same tick as the submit: a gap here is the
-        # window in which a second request passes the check.
         chat.reset_preview()
-        chat.busy = True
         chat.turn_index += 1
         if chat.turn_index == 1:
             # A chat opens before there is anything to call it, so `store.begin` writes a
@@ -384,7 +381,10 @@ class LiveRuns:
             task=prompt,
             events=chat.session.events,
         )
+        # Submission and publication share one event-loop tick. If checkpointing
+        # fails above, no job was started and the chat must remain closable or retryable.
         chat.job_id = job.id
+        chat.busy = True
         if job._task is not None:
             job._task.add_done_callback(lambda task: chat.finish_turn(job.id, cancelled=task.cancelled()))
         return {
