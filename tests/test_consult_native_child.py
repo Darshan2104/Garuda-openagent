@@ -225,7 +225,8 @@ async def test_consult_settles_the_askers_gate_once_and_restores_parent_accounti
     response = call("task_complete", "done", summary="Inspect notes.txt before editing.")
     response.usage = {"total_tokens": 200, "cost_usd": 0.02}
     script([response])
-    gate = SpendGate(max_tokens=50_000, max_cost_usd=1)
+    snapshots = []
+    gate = SpendGate(max_tokens=50_000, max_cost_usd=1, checkpoint=snapshots.append)
     parent = EventStore(consult_world.asker)
     token = accounting.bind(parent, gate)
     try:
@@ -238,11 +239,13 @@ async def test_consult_settles_the_askers_gate_once_and_restores_parent_accounti
         assert "spend_gate" not in child
         assert gate.settled_tokens == 200 and gate.settled_cost_usd == 0.02
         assert gate.calls == 1 and gate.reserved_tokens == 0
+        assert snapshots[-1]["settled_tokens"] == 200
         replay = await engine.consult(req)
         assert replay.replay and replay.receipt == result.receipt
         assert gate.calls == 1 and gate.settled_tokens == 200
         await accounting.complete(ScriptModel([response]), [], purpose="parent-auxiliary")
         assert gate.settled_tokens == 400 and gate.settled_cost_usd == 0.04
+        assert snapshots[-1]["settled_tokens"] == 400
         assert [e["payload"]["call_purpose"] for e in parent.get_all()
                 if e["type"] == "model_response"] == ["parent-auxiliary"]
     finally:
