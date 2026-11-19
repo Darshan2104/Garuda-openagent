@@ -462,12 +462,33 @@ class LiveRuns:
         return chat.as_dict()
 
     async def close_chat(self, chat_id: str) -> dict[str, Any] | None:
-        """Tear a chat down: deny its pending asks, close the session, drop the workspace."""
+        """Deny asks, settle the active turn, then close and release its workspace."""
         chat = self.chats.pop(chat_id, None)
         if chat is None:
             return None
+        # The cleanup task outlives cancellation of the HTTP request. Hold the
+        # workspace until both the active turn and teardown have actually settled.
+        closing = asyncio.create_task(self._close_chat(chat))
+        cancelled = False
+        while not closing.done():
+            try:
+                await asyncio.shield(closing)
+            except asyncio.CancelledError:
+                cancelled = True
+        result = closing.result()
+        if cancelled:
+            raise asyncio.CancelledError
+        return result
+
+    async def _close_chat(self, chat: "LiveChat") -> dict[str, Any]:
+        chat_id = chat.chat_id
         denied = self.approvals.forget(chat_id)
         summary = chat.as_dict()
+        job = self.jobs.get(chat.job_id) if chat.job_id is not None else None
+        if job is not None and job._task is not None:
+            if not job._task.done() and not job._task.cancelling():
+                self.jobs.cancel(job.id)
+            await asyncio.gather(job._task, return_exceptions=True)
         try:
             await chat.session.close()
         except Exception:

@@ -130,7 +130,8 @@ def _truncated(name: str, path: Path, cap: int, diagnostics: list) -> str:
 
 
 def _project_memory(profile, root: Path, diagnostics: list) -> list[Section]:
-    names = profile.memory_project or ["AGENTS.md", "GARUDA.md"]
+    names = (profile.memory_project if profile.memory_project is not None
+                  else ["AGENTS.md", "GARUDA.md"])
     sections = []
     for rel in names:
         path = root / _relative(rel)

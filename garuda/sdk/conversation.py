@@ -13,6 +13,7 @@ from garuda.workspace.protocol import Environment
 
 if TYPE_CHECKING:
     from garuda.model.streaming import DeltaConsumer
+    from garuda.tools.protocol import Tool
 
 
 class Conversation:
@@ -36,6 +37,8 @@ class Conversation:
         collection_model: str | object | None = None,
         no_collection: bool = False,
         model_binding: str | None = None,
+        extra_tools: list["Tool"] | None = None,
+        load_project_tools: bool | None = None,
     ):
         self._workspace = str(workspace)
         self._model_name = model
@@ -54,6 +57,8 @@ class Conversation:
         self._collection_model = collection_model
         self._no_collection = no_collection
         self._model_binding = model_binding
+        self._extra_tools = list(extra_tools or [])
+        self._load_project_tools = load_project_tools
         self._session: AgentSession | None = None
         self._env: Environment | None = None
         self._acp: Any | None = None
@@ -80,6 +85,8 @@ class Conversation:
                 collection_model=self._collection_model,
                 no_collection=self._no_collection,
                 model_binding=self._model_binding,
+                extra_tools=self._extra_tools,
+                load_project_tools=self._load_project_tools,
                 workspace=self._workspace,
                 agents_dir=self._agents_dir,
                 mcp_config_path=self._mcp_config,

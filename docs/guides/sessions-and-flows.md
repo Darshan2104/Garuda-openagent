@@ -355,3 +355,14 @@ changing while the snapshot is taken, is refused with
 whose agent requires a final-output schema or a completion check can't answer
 a read-only question and is refused (`consult.target_unavailable`). This
 read-only profile is a guardrail, not a sandbox boundary.
+
+Resuming a reviewed flow requires a separate approval bound to each completed
+build attempt, candidate version and reviewer receipt. Approval of an earlier
+build cannot approve a later build. Legacy or incomplete approval records
+without this binding refuse resume with `flow.review_unresolved`; start a new
+flow after inspecting the workspace.
+
+Acceptance checks recognize composed launchers such as `uv run python -m
+pytest`, `poetry run python -m pytest`, `pipenv run python -m pytest`, and
+`hatch run python -m pytest`. Changes to pytest infrastructure invalidate these
+checks just as they invalidate a direct pytest invocation.

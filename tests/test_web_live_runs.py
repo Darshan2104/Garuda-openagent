@@ -1160,6 +1160,68 @@ async def test_dashboard_streams_child_preview_through_route(live, ctx, monkeypa
         await live.aclose()
 
 
+@pytest.mark.parametrize("cancel_close_request", [False, True])
+async def test_close_waits_for_model_cleanup_before_workspace_reuse(tmp_path, store, cancel_close_request):
+    from garuda.interfaces.web.live import WorkspaceBusy
+    from garuda.model.protocol import ModelResponse
+    from garuda.model.script_model import ScriptModel
+    from garuda.types import ToolCall
+
+    class GatedModel(ScriptModel):
+        def __init__(self):
+            super().__init__([ModelResponse(content="", tool_calls=[ToolCall(
+                "late-write", "write_file", {"path": "late.txt", "content": "late write"})])])
+            self.started, self.release = asyncio.Event(), asyncio.Event()
+            self.cancelled, self.cleanup = asyncio.Event(), asyncio.Event()
+
+        async def stream(self, *args, **kwargs):
+            self.started.set()
+            try:
+                await self.release.wait()
+                async for delta in super().stream(*args, **kwargs):
+                    yield delta
+            except asyncio.CancelledError:
+                self.cancelled.set()
+                await self.cleanup.wait()
+                raise
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    model = GatedModel()
+    live = LiveRuns(loop=asyncio.get_running_loop(), store=store,
+                    workspaces=(workspace,), default_model=model)
+    opened = await live.start_chat(ChatSpec())
+    turn = await live.chat_turn(opened["chat_id"], "Write late.txt")
+    await asyncio.wait_for(model.started.wait(), 5)
+    closing = asyncio.create_task(live.close_chat(opened["chat_id"]))
+    try:
+        await asyncio.wait_for(model.cancelled.wait(), 2)
+        if cancel_close_request:
+            closing.cancel()
+            await asyncio.sleep(0)
+        assert not closing.done()
+        with pytest.raises(WorkspaceBusy):
+            await live.start_chat(ChatSpec())
+        assert not (workspace / "late.txt").exists()
+        model.cleanup.set()
+        if cancel_close_request:
+            with pytest.raises(asyncio.CancelledError):
+                await closing
+        else:
+            assert (await closing)["closed"]
+        job = live.jobs.get(turn["job_id"])
+        assert job._task.done()
+        model.release.set()
+        replacement = await live.start_chat(ChatSpec())
+        assert replacement["session_id"] != opened["session_id"]
+        assert not (workspace / "late.txt").exists()
+    finally:
+        model.release.set()
+        model.cleanup.set()
+        await asyncio.gather(closing, return_exceptions=True)
+        await live.aclose()
+
+
 async def test_failed_initial_checkpoint_does_not_leave_chat_busy(chatting, monkeypatch):
     live, session, _ = chatting
     opened = await live.start_chat(ChatSpec())

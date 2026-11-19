@@ -208,14 +208,6 @@ def recover(store, flow_session: str) -> list[str]:
     return quarantined
 
 
-def _steps(flow: dict) -> list[dict]:
-    out = []
-    for index, step in enumerate(flow["steps"]):
-        sid = step.get("id") or (step.get("role") or "group") + f"-{index + 1}"
-        out.append({**step, "id": sid, "index": index})
-    return out
-
-
 class FlowRunner:
     """Run one flow. ``launcher`` starts a step's session (see :class:`StepLaunch`)."""
 
@@ -244,6 +236,9 @@ class FlowRunner:
         self.store = store
         self.workspace = str(Path(workspace).resolve())
         self.name = name
+        from garuda.config.garuda_yaml import effective_flow_steps
+
+        self.steps = effective_flow_steps(flow)
         self.flow = flow
         self.resolved = resolved
         self.task = task
@@ -257,6 +252,7 @@ class FlowRunner:
         self.prepared_roles = dict(prepared_roles) if prepared_roles is not None else None
         self.prepared_fallbacks = dict(prepared_fallbacks or {})
         self._fallback_probes = {}
+        self._review_approvals = {}
         self.runtime_catalog = runtime_catalog
         self.authority_sources = tuple(authority_sources)
         self.configuration_sources = (self.authority_sources if configuration_sources is None
@@ -356,7 +352,7 @@ class FlowRunner:
 
     def _no_edits(self, step: dict, role: str) -> bool:
         spec = self.resolved.config.get("roles", {}).get(role, {})
-        return (step.get("write_policy") or spec.get("write_policy")) == "no-edits"
+        return "no-edits" in (step.get("write_policy"), spec.get("write_policy"))
 
     def _closed_step(self, outcome: StepResult, step: dict, attempt: int, role_record=None) -> dict:
         """Keep only bound lifetime facts, never raw process output tails."""
@@ -416,7 +412,7 @@ class FlowRunner:
                                        for entry in actual}
                 or any(entry.get("event") not in {"intent", "receipt"} for entry in entries)):
             raise FlowStopped("flow.evidence_incomplete", "step attempt coverage is incomplete")
-        by_id = {step["id"]: step for step in _steps(self.flow)}
+        by_id = {step["id"]: step for step in self.steps}
         coverage = []
         for intent, recorded, receipt in zip(intents, settled, done, strict=True):
             key = (intent.get("step"), intent.get("attempt"))
@@ -564,11 +560,11 @@ class FlowRunner:
         self.dir.mkdir(mode=0o700)
         self.store.update_meta(self.flow_session, {
             "kind": "flow", "flow": {"name": self.name, "steps": [s["id"] for s in
-                                                                 _steps(self.flow)]},
+                                                                 self.steps]},
             "flow_state": "running",
             "review_policies": [{"step": s["id"], "reviewer": s["review"]["by"],
                                  "policy": "required" if s["review"].get("independent", True) else "waived"}
-                                for s in _steps(self.flow) if "review" in s],
+                                for s in self.steps if "review" in s],
             **({"starter": self.starter_record} if self.starter_record is not None else {}),
             **({"flow_operation": self.operation_binding}
                if self.operation_binding is not None else {}),
@@ -592,10 +588,10 @@ class FlowRunner:
     def _lease_mode(self) -> str:
         if self.require_owned:
             if (self.launch_kind == "run" and self.verification_request is None
-                    and all(self._no_edits(s, s.get("role", "")) for s in _steps(self.flow))):
+                    and all(self._no_edits(s, s.get("role", "")) for s in self.steps)):
                 return "read-only"
             return "mutating"
-        if all(self._no_edits(s, s.get("role", "")) for s in _steps(self.flow) if "role" in s):
+        if all(self._no_edits(s, s.get("role", "")) for s in self.steps if "role" in s):
             return "read-only"
         return "mutating"
 
@@ -697,9 +693,10 @@ class FlowRunner:
             tried = {}
             for r in existing:
                 tried[r["step"]] = max(tried.get(r["step"], 0), r.get("attempt", 0))
-            steps = _steps(self.flow)
-            prior_review = ((await _settled_sync(self.store.load_meta, self.flow_session))
-                            .get("review") if resume else None) or {}
+            steps = self.steps
+            prior_approvals = ((await _settled_sync(self.store.load_meta, self.flow_session))
+                               .get("review_approvals") if resume else None)
+            self._review_approvals = prior_approvals if isinstance(prior_approvals, dict) else {}
             for step in steps:
                 if step["id"] in completed_steps:
                     # A receipt says the step ran, not that its reviewer approved it.
@@ -709,7 +706,7 @@ class FlowRunner:
                         await self._review_loop(step, steps[-1], done, lease, tried)
                         completed_steps.add(steps[-1]["id"])
                         continue
-                    if step.get("review") and prior_review.get("status") != "review_approved":
+                    if step.get("review") and not self._review_approved(step, steps[-1], done):
                         raise FlowStopped(
                             "flow.review_unresolved",
                             f"{step['id']} has no approved review; a resume never treats it "
@@ -945,6 +942,38 @@ class FlowRunner:
                              "launched": ordered(launched), "consulted": ordered(consulted)},
                 "consults": len(consults)}
 
+    def _review_approved(self, step: dict, terminal: dict, done: list[dict]) -> bool:
+        """A resume needs approval for this exact build attempt and candidate."""
+        approval = self._review_approvals.get(step["id"])
+        if not isinstance(approval, dict) or approval.get("policy") != step["review"]:
+            return False
+        build = next((r for r in reversed(done) if r.get("step") == step["id"]), None)
+        if build is None:
+            return False
+        candidate = {"step": step["id"], "session_id": build.get("session_id"),
+                     "attempt": build.get("attempt"),
+                     "workspace_version": build.get("workspace_version_after"),
+                     "workspace_version_before": build.get("workspace_version_before")}
+        if approval.get("candidate") != candidate:
+            return False
+        reviewer = approval.get("reviewer")
+        if not isinstance(reviewer, dict) or reviewer.get("step") != terminal["id"]:
+            return False
+        receipt = next((r for r in done if all(r.get(key) == reviewer.get(key)
+                       for key in ("step", "attempt", "session_id"))), None)
+        if receipt is None or receipt.get("workspace_version_after") != candidate["workspace_version"]:
+            return False
+        from garuda.core.acceptance_request import is_digest
+
+        digest = approval.get("packet_digest")
+        if not isinstance(digest, str) or not digest.startswith("sha256:") or not is_digest(digest[7:]):
+            return False
+        history = approval.get("history")
+        return (approval.get("status") == "review_approved" and isinstance(history, list)
+                and bool(history) and isinstance(history[-1], dict)
+                and history[-1].get("approved") is True
+                and history[-1].get("packet_digest") == approval.get("packet_digest"))
+
     async def _review_loop(self, step: dict, terminal: dict, done: list[dict], lease,
                            tried: dict) -> None:
         """Run ``step`` and its terminal reviewer until approval or the rounds run out."""
@@ -1038,9 +1067,15 @@ class FlowRunner:
                     "was consulted for the reviewed step")
                 raise FlowStopped("flow.review_not_independent", why, step=terminal["id"])
             if parsed.approved:
-                await self._publish(self.flow_session, {"review": {
-                    "status": "review_approved", "rounds": pair + 1, "history": history,
-                    "independence": independence}})
+                review = {"status": "review_approved", "rounds": pair + 1, "history": history,
+                          "independence": independence}
+                self._review_approvals[step["id"]] = {
+                    **review, "candidate": packet["candidate"], "packet_digest": packet["digest"],
+                    "policy": dict(spec), "reviewer": {
+                        "step": terminal["id"], "session_id": receipt["session_id"],
+                        "attempt": receipt["attempt"]}}
+                await self._publish(self.flow_session, {
+                    "review": review, "review_approvals": dict(self._review_approvals)})
                 if self.quota_recovery is not None:
                     self.quota_recovery.continuation = None
                     await self._publish(self.flow_session, {"flow_continuation": None})
