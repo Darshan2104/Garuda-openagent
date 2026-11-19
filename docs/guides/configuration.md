@@ -665,3 +665,8 @@ and why; if none can start, the run refuses and lists every reason.
 | `GARUDA_TOKEN_PRICES` | Reproducible price overrides |
 | `GARUDA_SERVE_TOKEN` | JSON-RPC server bearer token |
 | `GARUDA_TRACING` | Enable OTLP tracing |
+
+A user role with `write_policy: no-edits` keeps that restriction when a project
+redefines it, whether the project omits the field or requests `edits`. A flow
+step also cannot remove its role's no-edits restriction. Project roles and steps
+can narrow editable roles to no-edits.
