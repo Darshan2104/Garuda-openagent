@@ -383,3 +383,8 @@ Without a configured image, without Docker, or if the proof fails, the run
 refuses with `workspace.readonly_unenforced`. Garuda never runs such a role
 on the host instead, in a worktree or under the no-edits guardrail. This
 setting is user-only; a project file cannot add or change it.
+
+The no-edits manifest also follows a linked checkout's resolved Git
+administrative and common directories. It checks the active HEAD and staged
+entries plus shared refs, hooks and configuration. An unresolved Git pointer
+means attribution is unknown; it cannot report an unchanged workspace.

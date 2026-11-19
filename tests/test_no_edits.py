@@ -176,3 +176,45 @@ async def test_a_native_run_alone_trips_nothing(repo):
     ])
     await SoftwareAgent(workspace=str(repo), model=model, agent="explore").run("look")
     assert guard.check().unchanged
+
+
+@pytest.fixture
+def linked(repo, tmp_path):
+    path = tmp_path / "linked"
+    _git(repo, "worktree", "add", "-q", "-b", "linked", str(path))
+    return path
+
+
+@pytest.mark.parametrize("change", ["empty commit", "branch", "hook", "config", "index", "new detached worktree"])
+def test_linked_worktree_guard_tracks_external_git_metadata(repo, linked, change):
+    guard = NoEditsGuard(linked)
+    if change == "empty commit":
+        _git(linked, "commit", "--allow-empty", "-qm", "metadata-only change")
+    elif change == "branch":
+        _git(linked, "branch", "new-ref")
+    elif change == "hook":
+        (repo / ".git" / "hooks" / "post-commit").write_text("#!/bin/sh\n")
+    elif change == "config":
+        _git(linked, "config", "qa.changed", "yes")
+    elif change == "new detached worktree":
+        _git(linked, "worktree", "add", "--detach", "-q", str(linked.parent / "extra"))
+    else:
+        blob = subprocess.check_output(["git", "-C", str(linked), "rev-parse", "HEAD:.gitignore"])
+        _git(linked, "update-index", "--cacheinfo", "100644," + blob.decode().strip() + ",a.txt")
+    result = guard.check()
+    assert not result.unchanged
+    assert result.changed
+
+
+def test_linked_worktree_git_reads_do_not_trip_guard(repo, linked):
+    guard = NoEditsGuard(linked)
+    _git(linked, "status", "--porcelain")
+    _git(repo, "status", "--porcelain")
+    assert guard.check().unchanged
+
+
+def test_broken_linked_git_marker_cannot_report_unchanged(linked):
+    (linked / ".git").write_text("gitdir: /missing/garuda-git-metadata\n")
+    result = NoEditsGuard(linked).check()
+    assert not result.unchanged
+    assert "no baseline" in result.reason

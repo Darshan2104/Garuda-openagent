@@ -43,20 +43,48 @@ def _digest(path: Path) -> str:
     return h.hexdigest()
 
 
-def _index_digest(root: Path) -> str:
+def _index_digest(root: Path, index: Path | None = None) -> str:
     """The staged entries, not the index file's bytes: `git status` may rewrite
     the file's stat cache without changing what is staged."""
     from garuda.workspace.snapshot_proto import git
 
-    result = git(root, "ls-files", "-s", "-z", check=False)
+    result = git(root, "ls-files", "-s", "-z", index=index, check=False)
     if result.returncode != 0:
         raise ManifestIncomplete("cannot read the index")
     return hashlib.sha256(result.stdout).hexdigest()
 
 
 def _skip_git(rel: str) -> bool:
+    parts = Path(rel).parts
+    if len(parts) >= 4 and parts[1] == "worktrees" and parts[3] in {"logs", "objects"}:
+        return True
     return (rel in (".git/objects", ".git/logs") or rel.endswith(".lock")
             or rel.startswith((".git/objects/", ".git/logs/")))
+
+
+def _git_metadata(root: Path) -> list[tuple[Path, str]]:
+    """Resolve alternate administrative roots without trusting pointer-file text."""
+    marker = root / ".git"
+    if not (marker.is_file() or marker.is_symlink() or (marker / "commondir").is_file()):
+        return []
+    from garuda.workspace.snapshot_proto import git
+
+    try:
+        result = git(root, "rev-parse", "--show-toplevel", "--absolute-git-dir", "--git-common-dir",
+                     check=False)
+        if result.returncode != 0:
+            raise ValueError("Git cannot resolve the checkout")
+        top, admin, common = os.fsdecode(result.stdout).splitlines()
+        admin, common = ((root / path).resolve(strict=True) for path in (admin, common))
+        if Path(top).resolve() != root or any(
+                root.is_relative_to(path) or not path.is_dir() for path in (admin, common)):
+            raise ValueError("Git metadata does not describe this workspace")
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ManifestIncomplete("cannot resolve checkout Git metadata") from exc
+    roots = [(admin, ".git/admin")]
+    if common != admin:
+        roots.append((common, ".git/common"))
+    return roots
 
 
 def manifest(root, *, max_entries: int = MAX_ENTRIES) -> dict[str, tuple]:
@@ -68,11 +96,16 @@ def manifest(root, *, max_entries: int = MAX_ENTRIES) -> dict[str, tuple]:
     the index by its staged entries — and lock files, objects and reflogs are
     skipped (object writes surface through the refs).
     """
-    root = Path(root)
+    root = Path(root).resolve()
+    metadata = _git_metadata(root)
+    metadata_paths = {path for path, _prefix in metadata}
     out: dict[str, tuple] = {}
-    stack = [root]
+    stack = [(root, root, "", False)]
+    for path, prefix in metadata:
+        out[prefix] = ("git-directory", str(path))
+        stack.append((path, path, prefix, True))
     while stack:
-        current = stack.pop()
+        current, base, prefix, metadata_tree = stack.pop()
         try:
             entries = list(os.scandir(current))
         except OSError as exc:
@@ -81,9 +114,13 @@ def manifest(root, *, max_entries: int = MAX_ENTRIES) -> dict[str, tuple]:
             if len(out) >= max_entries:
                 raise ManifestIncomplete(f"more than {max_entries} entries")
             path = Path(entry.path)
-            rel = path.relative_to(root).as_posix()
-            in_git = rel == ".git" or rel.startswith(".git/")
-            if in_git and _skip_git(rel):
+            relative = path.relative_to(base).as_posix()
+            if not metadata_tree and path in metadata_paths:
+                continue
+            rel = f"{prefix}/{relative}" if prefix else relative
+            in_git = metadata_tree or rel == ".git" or rel.startswith(".git/")
+            git_relative = ".git/" + relative if metadata_tree else rel
+            if in_git and _skip_git(git_relative):
                 continue
             try:
                 info = entry.stat(follow_symlinks=False)
@@ -95,10 +132,12 @@ def manifest(root, *, max_entries: int = MAX_ENTRIES) -> dict[str, tuple]:
             elif stat.S_ISDIR(info.st_mode):
                 out[rel] = (kind, mode) if in_git else (kind, mode, info.st_ino,
                                                          info.st_ctime_ns)
-                stack.append(path)
+                stack.append((path, base, prefix, metadata_tree))
             elif in_git:
-                out[rel] = (kind, mode, _index_digest(root) if rel == ".git/index"
-                            else _digest(path))
+                parts = Path(git_relative).parts
+                is_index = (git_relative == ".git/index" or (
+                    len(parts) == 4 and parts[1] == "worktrees" and parts[3] == "index"))
+                out[rel] = (kind, mode, _index_digest(root, path) if is_index else _digest(path))
             else:
                 out[rel] = (kind, mode, info.st_ino, info.st_ctime_ns, info.st_size,
                             info.st_mtime_ns)
