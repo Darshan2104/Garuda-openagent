@@ -88,6 +88,27 @@ async def test_session_methods_require_the_handshake():
         await duplex.call("session/new", {})
 
 
+async def test_prompt_delivers_all_text_blocks_and_refuses_invalid_content():
+    _, duplex = _server()
+    await duplex.call("initialize", {"protocolVersion": ACP_VERSION})
+    session = await duplex.call("session/new")
+    first = {"type": "text", "text": "Summarize the files."}
+    second = {"type": "text", "text": "Include the test results."}
+    blocked = {"type": "text", "text": "Do not dispatch a truncated request."}
+    for invalid, diagnostic in [
+        ({"type": "image", "mimeType": "image/png", "data": "AA=="}, "unsupported"),
+        ({"type": "text", "text": 7}, "text"),
+    ]:
+        with pytest.raises(AssertionError, match=diagnostic):
+            await duplex.call("session/prompt", {**session, "prompt": [blocked, invalid]})
+    assert not duplex.notifications()
+
+    result = await duplex.call("session/prompt", {**session, "prompt": [first, second]})
+    assert result["stopReason"] == "end_turn"
+    texts = [note.get("content", {}).get("text", "") for note in duplex.notifications()]
+    assert "done: Summarize the files.\n\nInclude the test results." in texts
+
+
 async def test_native_is_the_product_default():
     assert _cli_parser().parse_args([]).driver == "native"
     assert _select_driver("echo", ".") is make_echo_runtime

@@ -194,13 +194,19 @@ class AcpServer:
         prompt = params.get("prompt")
         if not isinstance(prompt, list) or not prompt:
             raise AcpProtocolError("session/prompt needs content blocks")
-        first = prompt[0]
-        text = first.get("text") if isinstance(first, dict) and first.get("type") == "text" else None
-        if not isinstance(text, str) or not text:
+        texts: list[str] = []
+        for index, block in enumerate(prompt):
+            if not isinstance(block, dict) or block.get("type") != "text":
+                raise AcpProtocolError(f"session/prompt block {index + 1} has an unsupported type")
+            text = block.get("text")
+            if not isinstance(text, str):
+                raise AcpProtocolError(f"session/prompt block {index + 1} needs text")
+            texts.append(text)
+        if not any(texts):
             raise AcpProtocolError("session/prompt needs a non-empty text block")
         before, _ = await runtime.poll_events(0)
         seen = len(before)
-        prompt_task = asyncio.ensure_future(runtime.prompt(text))
+        prompt_task = asyncio.ensure_future(runtime.prompt("\n\n".join(texts)))
         deliveries: set[asyncio.Task] = set()
         try:
             while not prompt_task.done():
