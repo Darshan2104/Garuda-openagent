@@ -56,6 +56,8 @@ garuda recipe run fix-and-test.yaml --param issue="Login fails when the email ha
   heartbeats one workspace lease across the whole sequence, including MCP/tool
   setup and cleanup. Compatible readers can coexist; a conflicting writer is
   refused by the existing lease owner.
+  Step-owned MCP and language services close before that lease is released,
+  including when a step raises or is cancelled.
 - Each step can set `agent` (a profile) and `mode`.
 - The recipe stops at the first failed step and tells you how many later
   steps did not run.
