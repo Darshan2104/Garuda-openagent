@@ -188,7 +188,7 @@ class RigorousAgent:
                 self._end_on_spend(events, emit_session_events, plan_result)
                 return plan_result
             if _deadline_exceeded(deadline_at):
-                return self._end_on_deadline(events, emit_session_events, plan_result)
+                return self._end_on_deadline(events, emit_session_events, plan_result, plan_only=True)
             if not plan_result.success:
                 if emit_session_events:
                     events.append(
@@ -204,7 +204,9 @@ class RigorousAgent:
 
             for attempt in range(MAX_REPAIR_ROUNDS + 1):
                 if _deadline_exceeded(deadline_at):
-                    return self._end_on_deadline(events, emit_session_events, exec_result)
+                    return self._end_on_deadline(
+                        events, emit_session_events, exec_result, plan_only=exec_result is plan_result,
+                    )
                 build_agent = DefaultAgent(profile_name=self._profile_name)
                 # run() only seeds the task when it creates the context itself, so with a
                 # threaded-in context (resume / multi-turn chat / SDK) every round must
@@ -293,13 +295,22 @@ class RigorousAgent:
             accounting.reset(accounting_token)
 
     @staticmethod
-    def _end_on_deadline(events: EventStore, emit_session_events: bool, result: AgentResult) -> AgentResult:
+    def _end_on_deadline(
+        events: EventStore, emit_session_events: bool, result: AgentResult, *, plan_only: bool = False,
+    ) -> AgentResult:
         result.success = False
         result.metadata["termination_reason"] = "deadline"
+        if plan_only:
+            # Only the read-only planner ran: its output is a plan, not an answer to
+            # the task. Keep it for the user, labelled, and do not report it as offered.
+            plan = (result.final_message or "").strip()
+            result.final_message = "Deadline reached before execution started; the plan was not carried out." + (
+                f"\n\n## Unexecuted plan\n{plan}" if plan else ""
+            )
         if emit_session_events:
             events.append(EventType.SESSION_END, {
                 "success": False, "reason": "deadline", "turns": result.turns,
-                "final_answer_offered": bool(result.final_message),
+                "final_answer_offered": not plan_only and bool(result.final_message),
             })
         return result
 
