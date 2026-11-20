@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from garuda.eval.costs import duration_ms, estimate_cost
-from garuda.model.usage import TOKEN_FIELDS
+from garuda.model.usage import TOKEN_FIELDS, USAGE_FIELDS
 from garuda.types import AgentResult
 
 # Release thresholds from the approved design. A dual-model rollout passes only
@@ -424,6 +424,17 @@ def _cost(model: object, usage: object, explicit: object = None) -> float | None
     return estimate_cost(str(model) if model else None, usage if isinstance(usage, dict) else None)
 
 
+def _definitely_rejected(usage: object, attempts: object) -> bool:
+    """Whether a failed call's attempts were all definite provider rejections without usage."""
+    if isinstance(usage, dict) and any(
+            isinstance(usage.get(name), (int, float)) and not isinstance(usage[name], bool)
+            and usage[name] for name in USAGE_FIELDS):
+        return False
+    return isinstance(attempts, list) and bool(attempts) and all(
+        isinstance(attempt, dict) and attempt.get("outcome") == "failed"
+        and attempt.get("rejected") is True for attempt in attempts)
+
+
 def paired_result_from_agent_result(
     result: AgentResult,
     *,
@@ -467,6 +478,7 @@ def paired_result_from_agent_result(
                     "usage": payload.get("usage") or {},
                     "usage_unknown": payload.get("usage_unknown") or (),
                     "failed": event_type == "model_call_failed",
+                    "attempts": payload.get("attempt_usage"),
                     "cost": None,
                     "duration_ms": payload.get("duration_ms", 0),
                 }
@@ -513,8 +525,16 @@ def paired_result_from_agent_result(
     for call in calls:
         usage = call["usage"]
         unknown = call.get("usage_unknown", ())
-        cost = None if "cost_usd" in unknown else _cost(call["model"], usage, call["cost"])
-        if call.get("failed") and (
+        rejected = call.get("failed") and _definitely_rejected(usage, call.get("attempts"))
+        if rejected:
+            # Every attempt was refused by the provider and none reported usage:
+            # proven zero spend, as spend settlement already treats it.
+            cost = 0.0
+        elif "cost_usd" in unknown:
+            cost = None
+        else:
+            cost = _cost(call["model"], usage, call["cost"])
+        if call.get("failed") and not rejected and (
                 cost is None
                 or any(name in unknown for name in TOKEN_FIELDS)
                 or not isinstance(usage, dict)
