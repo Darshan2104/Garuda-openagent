@@ -80,6 +80,7 @@ def test_a_failed_claim_publication_cannot_authorize_the_ordinary_launch_guard(t
 
 def test_pending_admission_is_visible_but_cannot_be_rebound_or_activated(tmp_path, monkeypatch):
     queue, capacity = stores(tmp_path)
+    (waiting,) = queue.entries()
     interrupt_publication(monkeypatch, queue, claimed=True, message="claim interrupted")
     with pytest.raises(QueueError):
         queue.try_claim("u:native", "job")
@@ -89,6 +90,8 @@ def test_pending_admission_is_visible_but_cannot_be_rebound_or_activated(tmp_pat
         ("job", True, "claim")]
     assert {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in files} == files
     assert {p for p in tmp_path.rglob("*") if p.is_file()} == set(files)
+    assert not queue.retire_waiting(waiting)
+    assert capacity.holders("native") == ["job"]
     assert queue.cancel("u:native", "job")
     with pytest.raises(QueueError, match="unresolved transaction"):
         queue.enqueue("u:native", "job", user="u", harness="native",

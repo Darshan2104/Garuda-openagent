@@ -37,7 +37,9 @@ ID         NAME                     STATE      QUEUE    UPDATED                 
 **What happens**
 
 - The run waits in a queue for a free slot, then a detached worker runs it.
-  You can close the terminal.
+  You can close the terminal. If the runtime or role changes before dispatch,
+  the worker records a refusal and retires the queued entry when its original
+  admission can be verified.
 - A session moves through these states:
 
     ```mermaid

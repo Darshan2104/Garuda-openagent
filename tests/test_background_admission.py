@@ -52,23 +52,54 @@ def test_a_runtime_alias_cannot_claim_a_second_lane_while_canonical_capacity_is_
     assert queue.release(scope_for(target), session)
 
 
-async def test_an_alias_retargeted_while_waiting_cannot_dispatch_under_another_harness(tmp_path):
+@pytest.mark.parametrize("runtime_refs", [[{"alias": "quick", "runtime_id": "codex"}], []])
+async def test_changed_alias_refusal_allows_the_next_job_to_use_its_original_lane(tmp_path, runtime_refs):
     settings, capacity, queue, store, args = _environment(tmp_path, "native")
     session = _launch(queue, store, args)
-    settings.write_text(yaml.safe_dump({"runtime_refs": [{"alias": "quick", "runtime_id": "codex"}]}))
-    source = queue.root / "state.json"
-    before = source.read_bytes()
+    follower = _launch(queue, store, argparse.Namespace(**{**vars(args), "runtime": "native"}))
+    settings.write_text(yaml.safe_dump({"runtime_refs": runtime_refs}))
     called = []
 
     async def runner(args):
-        called.append(args)
+        called.append((args._session_id, capacity.holders("native")))
         return 0
 
     with pytest.raises(bg_sessions.BackgroundRefused):
         await bg_sessions.run_worker_async(session, queue=queue, store=store, runner=runner)
     assert not called
-    assert source.read_bytes() == before
-    assert not capacity.root.exists()
+    assert [row["id"] for row in queue.entries()] == [follower]
+    refused = store.load_meta(session)
+    assert refused["state"]["outcome"] == "refused" and refused["state"]["work"] == "stopped"
+    assert refused["state"]["verification"] == {"status": "unavailable"}
+    assert await bg_sessions.run_worker_async(follower, queue=queue, store=store, runner=runner) == 0
+    assert called == [(follower, [follower])]
+    assert queue.entries() == [] and capacity.holders("native") == []
+
+
+@pytest.mark.parametrize("ambiguity", ["worker", "args", "claimed"])
+async def test_changed_alias_preserves_an_unproved_or_claimed_admission(tmp_path, ambiguity):
+    settings, _, queue, store, args = _environment(tmp_path, "native")
+    session = _launch(queue, store, args)
+    if ambiguity == "worker":
+        worker = store.load_meta(session)["worker"]
+        store.update_meta(session, {"worker": {**worker, "identity": "different-start"}})
+    elif ambiguity == "args":
+        path = store.session_dir(session) / bg_sessions.LAUNCH_FILE
+        launch = json.loads(path.read_text())
+        launch["args"]["task"] = "different task"
+        bg_sessions._write_private(path, launch)
+    else:
+        assert queue.try_claim(scope_for("native"), session)
+    settings.write_text(yaml.safe_dump({"runtime_refs": []}))
+    before = (queue.root / "state.json").read_bytes()
+
+    async def runner(_):
+        pytest.fail("this admission must never dispatch")
+
+    with pytest.raises(bg_sessions.BackgroundRefused):
+        await bg_sessions.run_worker_async(session, queue=queue, store=store, runner=runner)
+    assert (queue.root / "state.json").read_bytes() == before
+    assert store.load_meta(session)["state"]["work"] == "queued"
 
 
 async def test_an_unchanged_alias_dispatches_through_its_canonical_shared_reservation(tmp_path):
