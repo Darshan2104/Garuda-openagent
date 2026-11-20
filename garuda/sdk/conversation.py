@@ -313,28 +313,35 @@ class Conversation:
             )
             self._acp = adapter
             self._sdk_session_id = events.session_id
-            store.ensure_unified(events.session_id)
-            await adapter.start(task=task, session_id=events.session_id)
-            self._record_baseline(store, events.session_id)
-            attach_acp_segment(store, events.session_id, adapter)
-            from garuda.acp.broker import ApprovalBroker
-            from garuda.core.permissions import PermissionEngine
+            try:
+                store.ensure_unified(events.session_id)
+                await adapter.start(task=task, session_id=events.session_id)
+                self._record_baseline(store, events.session_id)
+                attach_acp_segment(store, events.session_id, adapter)
+                from garuda.acp.broker import ApprovalBroker
+                from garuda.core.permissions import PermissionEngine
 
-            self._approval_broker = ApprovalBroker(
-                engine=PermissionEngine(), store=store
-            )
+                self._approval_broker = ApprovalBroker(
+                    engine=PermissionEngine(), store=store
+                )
 
-            if self._approval_handler is not None:
-                async def _answer(request) -> bool:
-                    try:
-                        return bool(await self._approval_handler(request.action))
-                    except Exception:
-                        return False
+                if self._approval_handler is not None:
+                    async def _answer(request) -> bool:
+                        try:
+                            return bool(await self._approval_handler(request.action))
+                        except Exception:
+                            return False
 
-                self._approval_broker.set_answerer(_answer)
-            else:
-                self._approval_broker.set_answerer(lambda request: False)
-            self._approval_task = self._launch_approval_responder()
+                    self._approval_broker.set_answerer(_answer)
+                else:
+                    self._approval_broker.set_answerer(lambda request: False)
+                self._approval_task = self._launch_approval_responder()
+            except BaseException as exc:
+                # A failed or cancelled start must not leave a half-built
+                # adapter held: close it and settle this session's record so
+                # the next turn starts a fresh runtime.
+                await self._abandon_acp_start(cancelled=isinstance(exc, asyncio.CancelledError))
+                raise
         self._acp_turn_count += 1
         try:
             turn = await self._acp.prompt(task)
@@ -512,8 +519,6 @@ class Conversation:
             raise
 
     async def _settle_acp(self) -> None:
-        from garuda.runtime.session_state import finished, interrupted
-
         turn = self._acp_turn
         if turn is not None and not turn.done():
             self._acp_cancelled = True
@@ -531,20 +536,38 @@ class Conversation:
             await self._acp.close()
             self._acp = None
             self._acp_trail = []
-        if self._sdk_session_id is not None:
-            result = self._acp_result
-            state = (finished(success=result.success) if result is not None
-                     else interrupted(cancelled=self._acp_cancelled))
-            # The legacy status matches SessionStore.finish and the CLI/bg writers.
-            status = "success" if state["outcome"] == "completed" else state["outcome"]
-            self._store.update_meta(self._sdk_session_id, {
-                "status": status, "state": state, "turns": self._acp_turn_count,
-                "verified": False, "final_message": result.final_message[:2000] if result else "",
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-            })
-            self._sdk_session_id = None
-            self._acp_result = None
-            self._acp_turn_count = 0
+        self._finish_acp_record()
+
+    async def _abandon_acp_start(self, *, cancelled: bool) -> None:
+        if cancelled:
+            self._acp_cancelled = True
+        adapter, self._acp = self._acp, None
+        self._approval_broker = None
+        try:
+            if adapter is not None:
+                await adapter.close()
+        finally:
+            self._acp_trail = []
+            self._finish_acp_record()
+
+    def _finish_acp_record(self) -> None:
+        from garuda.runtime.session_state import finished, interrupted
+
+        if self._sdk_session_id is None:
+            return
+        result = self._acp_result
+        state = (finished(success=result.success) if result is not None
+                 else interrupted(cancelled=self._acp_cancelled))
+        # The legacy status matches SessionStore.finish and the CLI/bg writers.
+        status = "success" if state["outcome"] == "completed" else state["outcome"]
+        self._store.update_meta(self._sdk_session_id, {
+            "status": status, "state": state, "turns": self._acp_turn_count,
+            "verified": False, "final_message": result.final_message[:2000] if result else "",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        })
+        self._sdk_session_id = None
+        self._acp_result = None
+        self._acp_turn_count = 0
 
     async def _close_native(self) -> None:
         turn = self._native_turn

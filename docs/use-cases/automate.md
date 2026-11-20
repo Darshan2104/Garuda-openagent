@@ -475,6 +475,8 @@ A conversation inherits the agent instance's registered tools and explicit
 agent instances keep separate tool registries.
 Closing a conversation backed by an ACP harness saves the last turn's outcome
 and final message. The ACP result has no independent verification by default.
+If the harness fails to start, Garuda closes it and records that session as
+failed; the next `run` starts a new harness session.
 
 
 === "Your own tool"

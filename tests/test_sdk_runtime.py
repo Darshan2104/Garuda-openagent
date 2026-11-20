@@ -394,3 +394,51 @@ class _FakeHomeSettings:
         self.global_settings = settings
         self.settings = {}
         self.workspace = Path(".")
+
+
+async def test_failed_acp_start_closes_the_adapter_and_retries_cleanly(tmp_path, monkeypatch):
+    from garuda.acp.protocol import AcpProtocolError
+    from garuda.config import agent_home
+    from garuda.core.sessions import SessionStore
+    from garuda.interfaces import runtime_cli
+
+    monkeypatch.setattr(agent_home, "resolve_agent_home", lambda workspace: _FakeHome(_fake_extra()))
+    real_factory = runtime_cli.acp_adapter_for_workspace
+    adapters = []
+
+    def failing_once(*args, **kwargs):
+        name, adapter = real_factory(*args, **kwargs)
+        adapters.append(adapter)
+        if len(adapters) == 1:
+            closed = []
+            real_close = adapter.close
+
+            async def record_close():
+                closed.append(True)
+                await real_close()
+
+            adapter._argv = [*FAKE_ARGV[:-1], "version-mismatch"]
+            adapter.close = record_close
+            adapter.closed = closed
+        return name, adapter
+
+    monkeypatch.setattr(runtime_cli, "acp_adapter_for_workspace", failing_once)
+    store = SessionStore()
+    conversation = Conversation(workspace=tmp_path, runtime="faketest", store=store)
+    try:
+        with pytest.raises(AcpProtocolError, match="version mismatch"):
+            await conversation.run("turn one")
+        (failed,) = store.list_sessions()
+        assert adapters[0].closed == [True]
+        failed_meta = store.load_meta(failed["session_id"])
+        assert failed_meta["state"]["outcome"] == "failed"
+        assert failed_meta["turns"] == 0
+
+        retried = await conversation.run("turn two")
+        assert retried.success is True and "turn two" in retried.final_message
+        assert retried.metadata["session_id"] != failed["session_id"]
+        assert len(adapters) == 2
+    finally:
+        await conversation.close()
+    assert store.load_meta(retried.metadata["session_id"])["state"]["outcome"] == "completed"
+    assert store.load_meta(failed["session_id"]) == failed_meta
