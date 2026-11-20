@@ -122,7 +122,9 @@ requests Python AST metadata from `context/outline.py` after the same
 `Environment.read_file` call. It never launches an interpreter in the workspace.
 Outline and offset/limit are mutually exclusive; unsupported syntax/languages or
 an oversized outline return an explicit fallback without source or partial outline.
-Reading: `documents.py`, `image_read.py`.
+Reading: `documents.py`, `image_read.py`. CSV spreadsheet reads count complete
+records, preserve quoted cells in tab-separated output, and mark omitted rows
+after the positive `max_rows` limit.
 Network: `web.py` — SSRF guard, redirect re-validation, and pinned-IP connect.
 `web_fetch` heads its text with the delivered response's provenance (final
 URL after redirects, status, charset and its source, retrieval time,
