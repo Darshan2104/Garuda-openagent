@@ -127,6 +127,7 @@ async def test_conversation_holds_and_settles_acp_session(tmp_path, monkeypatch,
 
     meta = store.load_meta(session_id)
     assert meta["state"]["outcome"] == last_turn
+    assert meta["status"] == ("success" if last_turn == "completed" else last_turn)
     assert meta["state"]["work"] == ("stopped" if last_turn == "cancelled" else "done")
     assert meta["state"]["process"] == "exited"
     assert meta["state"]["verification"] == {"status": "unavailable"}

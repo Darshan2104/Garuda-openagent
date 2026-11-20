@@ -536,8 +536,10 @@ class Conversation:
             result = self._acp_result
             state = (finished(success=result.success) if result is not None
                      else interrupted(cancelled=self._acp_cancelled))
+            # The legacy status matches SessionStore.finish and the CLI/bg writers.
+            status = "success" if state["outcome"] == "completed" else state["outcome"]
             self._store.update_meta(self._sdk_session_id, {
-                "status": state["outcome"], "state": state, "turns": self._acp_turn_count,
+                "status": status, "state": state, "turns": self._acp_turn_count,
                 "verified": False, "final_message": result.final_message[:2000] if result else "",
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             })
