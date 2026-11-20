@@ -84,22 +84,92 @@ async def test_sdk_unknown_runtime_fails_actionably(monkeypatch):
         await agent.run("x")
 
 
-async def test_conversation_holds_acp_session(monkeypatch):
-    from garuda.config import agent_home
+@pytest.mark.parametrize("last_turn", ["completed", "failed", "cancelled"])
+async def test_conversation_holds_and_settles_acp_session(tmp_path, monkeypatch, last_turn):
+    import os
+    import signal
 
+    from garuda.acp.protocol import AcpCancelledError, AcpError
+    from garuda.config import agent_home
+    from garuda.core.sessions import SessionStore
+
+    runtimes = _fake_extra()
+    if last_turn == "cancelled":
+        runtimes[0]["command"] = [*FAKE_ARGV[:-1], "cancel-stop"]
     monkeypatch.setattr(
-        agent_home, "resolve_agent_home", lambda workspace: _FakeHome(_fake_extra())
+        agent_home, "resolve_agent_home", lambda workspace: _FakeHome(runtimes)
     )
-    conversation = Conversation(workspace=".", runtime="faketest")
-    first = await conversation.run("turn one")
-    second = await conversation.run("turn two")
-    assert first.turns == 1
-    assert second.turns == 2
-    assert len(conversation.trail()) > 0
-    assert "turn two" in second.final_message or second.final_message
-    assert conversation._acp.native_session_id
+    store = SessionStore()
+    conversation = Conversation(workspace=tmp_path, runtime="faketest", store=store)
+    final_message = ""
+    try:
+        if last_turn == "cancelled":
+            with pytest.raises(AcpCancelledError):
+                await conversation.run("cancel this turn")
+            (record,) = store.list_sessions()
+            session_id = record["session_id"]
+        else:
+            first = await conversation.run("turn one")
+            session_id = first.metadata["session_id"]
+            assert first.turns == 1 and conversation.trail()
+            if last_turn == "failed":
+                (child,) = store.load_meta(session_id)["runtime_children"]
+                os.kill(child["pid"], signal.SIGTERM)
+                with pytest.raises(AcpError):
+                    await conversation.run("turn two")
+            else:
+                second = await conversation.run("turn two")
+                assert second.turns == 2 and second.metadata["session_id"] == session_id
+                final_message = second.final_message
+                assert "turn two" in final_message
+    finally:
+        await conversation.close()
+
+    meta = store.load_meta(session_id)
+    assert meta["state"]["outcome"] == last_turn
+    assert meta["state"]["work"] == ("stopped" if last_turn == "cancelled" else "done")
+    assert meta["state"]["process"] == "exited"
+    assert meta["state"]["verification"] == {"status": "unavailable"}
+    assert meta["final_message"] == final_message
+    assert meta["turns"] == (1 if last_turn == "cancelled" else 2)
     await conversation.close()
-    assert conversation._acp is None
+    assert store.load_meta(session_id) == meta
+
+
+async def test_closing_a_pending_acp_turn_records_cancellation(tmp_path, monkeypatch):
+    import asyncio
+
+    from garuda.config import agent_home
+    from garuda.core.sessions import SessionStore
+
+    runtimes = _fake_extra()
+    runtimes[0]["command"] = [*FAKE_ARGV[:-1], "approval"]
+    monkeypatch.setattr(agent_home, "resolve_agent_home", lambda workspace: _FakeHome(runtimes))
+    approval_seen = asyncio.Event()
+
+    async def await_approval(_action):
+        approval_seen.set()
+        await asyncio.Event().wait()
+
+    store = SessionStore()
+    conversation = Conversation(workspace=tmp_path, runtime="faketest", store=store,
+                                approval_handler=await_approval)
+    turn = asyncio.create_task(conversation.run("List the README files"))
+    try:
+        await asyncio.wait_for(approval_seen.wait(), 5)
+        (record,) = store.list_sessions()
+        await asyncio.wait_for(asyncio.gather(conversation.close(), conversation.close()), 5)
+        with pytest.raises(asyncio.CancelledError):
+            await turn
+        updated = store.load_meta(record["session_id"])
+        assert updated["state"]["outcome"] == "cancelled"
+        (child,) = updated["runtime_children"]
+        assert child["state"] == "exited"
+    finally:
+        if not turn.done():
+            turn.cancel()
+        await asyncio.gather(turn, return_exceptions=True)
+        await conversation.close()
 
 
 class _FakeHome:
