@@ -171,14 +171,9 @@ class TmuxEnvironment:
         timeout: float | None = 120.0,
         cwd: str | None = None,
     ) -> ExecResult:
-        await self.start()
         if cwd:
             workdir = self._workspace_root / cwd
-            changed = await self.send_command(
-                f"cd -- {shlex.quote(str(workdir))}", timeout=10.0, marker_polling=True,
-            )
-            if changed.exit_code != 0:
-                return changed
+            command = f"cd -- {shlex.quote(str(workdir))} && eval -- {shlex.quote(command)}"
         return await self.send_command(command, timeout=timeout or 120.0, marker_polling=True)
 
     async def send_command(

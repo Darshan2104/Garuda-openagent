@@ -1,5 +1,6 @@
 """Real tmux pane semantics on a private test server."""
 
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -127,5 +128,32 @@ async def test_tmux_explicit_cwd_requires_a_successful_change_from_workspace_roo
         assert entered.stdout.strip() == str((tmp_path / "second").resolve())
         pane = await env.execute("pwd", timeout=3)
         assert pane.stdout.strip() == entered.stdout.strip()
+    finally:
+        await env.stop()
+
+
+async def test_tmux_command_runs_in_its_requested_directory_before_the_next_pane_input(
+    tmp_path, private_tmux_server, monkeypatch,
+):
+    private_tmux_server("bash")
+    requested = tmp_path / "requested directory"
+    requested.mkdir()
+    other = tmp_path / "other"
+    other.mkdir()
+    env = TmuxEnvironment(tmp_path)
+    original = env._poll_until_marker
+
+    async def interleave_after_first_result(seq, timeout, start):
+        captured = await original(seq, timeout, start)
+        if seq == 1:
+            assert (await env.send_command(f"cd {shlex.quote(str(other))}", timeout=3)).exit_code == 0
+        return captured
+
+    monkeypatch.setattr(env, "_poll_until_marker", interleave_after_first_result)
+    try:
+        result = await env.execute("pwd # report execution directory", cwd=requested.name, timeout=3)
+        assert result.exit_code == 0, result.stderr
+        assert result.stdout.strip() == str(requested.resolve())
+        assert (await env.execute("pwd", timeout=3)).stdout.strip() == str(other.resolve())
     finally:
         await env.stop()
