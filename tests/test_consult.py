@@ -675,15 +675,18 @@ async def test_a_timeout_reaps_the_child_before_anything_is_released(world, monk
 
 async def test_parent_cancellation_propagates_and_reaps(world):
     reaped = []
+    started = asyncio.Event()
 
     async def slow(child):
+        started.set()
         try:
             await asyncio.sleep(30)
         finally:
             reaped.append(True)
 
     task = asyncio.ensure_future(service(world, slow).consult(request(world)))
-    await asyncio.sleep(0.5)
+    # Cancel once the child is running, however long dispatch takes under load.
+    await asyncio.wait_for(started.wait(), 30)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
