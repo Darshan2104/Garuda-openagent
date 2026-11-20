@@ -394,6 +394,45 @@ def test_run_runtime_acp_json_keeps_diagnostics_off_stdout(tmp_path, monkeypatch
         assert "not verified" in output.err
 
 
+def test_run_runtime_acp_json_survives_an_unserializable_event_payload(tmp_path, monkeypatch, capsys):
+    from garuda.acp.adapter import AcpRuntime
+
+    ws = _git_workspace(tmp_path)
+    _on_path(monkeypatch, tmp_path / "bin")
+    _install_shim(tmp_path / "bin", profile="streaming")
+    _trusted_settings(tmp_path, monkeypatch)
+    poll = AcpRuntime.poll_events
+
+    async def poisoned(self, cursor):
+        events, end = await poll(self, cursor)
+        for event in events:
+            if event.kind.value == "message":
+                event.payload.update(score=float("nan"), limit=float("inf"), blob=object())
+        return events, end
+
+    monkeypatch.setattr(AcpRuntime, "poll_events", poisoned)
+    monkeypatch.setattr(sys, "argv", [
+        "garuda", "run", "-t", "hello via CLI", "--workspace", str(ws), "--runtime", "fakeacp", "--json",
+    ])
+
+    with pytest.raises(SystemExit) as exited:
+        main()
+    output = capsys.readouterr()
+    assert exited.value.code == 0, output.err
+
+    def no_constants(token):
+        raise AssertionError(f"non-standard JSON token {token} on stdout")
+
+    rows = [json.loads(line, parse_constant=no_constants) for line in output.out.splitlines()]
+    chunks = [row for row in rows if row["kind"] == "message" and "chunk" in row["payload"]]
+    assert "".join(row["payload"]["chunk"] for row in chunks) == "hello, world"
+    assert all(row["payload"]["score"] is None and row["payload"]["limit"] is None
+               and isinstance(row["payload"]["blob"], str) for row in chunks)
+    (meta,) = SessionStore().list_sessions()
+    assert meta["status"] == "completed"
+    assert meta["final_message"] == "hello, world"
+
+
 def test_run_runtime_acp_headless_approvals_are_denied_and_audited(
     tmp_path, monkeypatch, capsys
 ):
