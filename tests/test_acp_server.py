@@ -109,6 +109,30 @@ async def test_prompt_delivers_all_text_blocks_and_refuses_invalid_content():
     assert "done: Summarize the files.\n\nInclude the test results." in texts
 
 
+async def test_prompt_accepts_baseline_resource_links_and_refuses_unadvertised_content():
+    _, duplex = _server()
+    init = await duplex.call("initialize", {"protocolVersion": ACP_VERSION})
+    prompt_caps = init["agentCapabilities"].get("promptCapabilities", {})
+    assert not any(prompt_caps.get(key) for key in ("image", "audio", "embeddedContext"))
+    session = await duplex.call("session/new")
+    text = {"type": "text", "text": "Review this file."}
+    for invalid, diagnostic in [
+        ({"type": "resource", "resource": {"uri": "file:///repo/a.py", "text": "x"}}, "unsupported"),
+        ({"type": "audio", "mimeType": "audio/wav", "data": "AA=="}, "unsupported"),
+        ({"type": "resource_link", "name": "a.py"}, "uri"),
+        ({"type": "resource_link", "uri": "file:///repo/a.py"}, "name"),
+    ]:
+        with pytest.raises(AssertionError, match=diagnostic):
+            await duplex.call("session/prompt", {**session, "prompt": [text, invalid]})
+    assert not duplex.notifications()
+
+    link = {"type": "resource_link", "uri": "file:///repo/a.py", "name": "a.py"}
+    result = await duplex.call("session/prompt", {**session, "prompt": [text, link]})
+    assert result["stopReason"] == "end_turn"
+    texts = [note.get("content", {}).get("text", "") for note in duplex.notifications()]
+    assert "done: Review this file.\n\nResource link: a.py <file:///repo/a.py>" in texts
+
+
 async def test_native_is_the_product_default():
     assert _cli_parser().parse_args([]).driver == "native"
     assert _select_driver("echo", ".") is make_echo_runtime

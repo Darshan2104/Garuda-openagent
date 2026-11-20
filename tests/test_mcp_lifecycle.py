@@ -89,7 +89,9 @@ def test_required_flag_parses_and_defaults_to_optional(tmp_path: Path):
 async def test_required_server_not_ready_by_deadline_refuses_and_stops_everything(
     tmp_path: Path, monkeypatch
 ):
-    monkeypatch.setattr(client_mod, "MCP_STARTUP_DEADLINE", 1.0)
+    # Well under the 10s handshake timeout, with headroom for the healthy
+    # server to start on a loaded (parallel) runner.
+    monkeypatch.setattr(client_mod, "MCP_STARTUP_DEADLINE", 4.0)
     log = tmp_path / "hang.log"
     manager = McpClientManager()
     started = time.monotonic()

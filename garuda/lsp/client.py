@@ -55,6 +55,7 @@ MAX_SYMBOLS = 2000
 MAX_HOVER_CHARS = 20_000
 STDERR_TAIL_BYTES = 4096
 SHUTDOWN_TIMEOUT = 2.0
+WRITE_FAILURE_EXIT_GRACE = 1.0
 
 # Inherited by the server process; anything else (provider keys included) is
 # passed only when the trusted configuration names it under ``env``.
@@ -464,7 +465,15 @@ class StdioLanguageServer:
                 process.stdin.write(b"Content-Length: %d\r\n\r\n" % len(body) + body)
                 await process.stdin.drain()
             except (BrokenPipeError, ConnectionResetError) as exc:
-                self._fail(f"server stopped reading its input ({type(exc).__name__})")
+                # A crash is usually seen here before the reader reaches EOF;
+                # give the process a moment to exit so the exit code is kept.
+                code = None
+                with contextlib.suppress(Exception):
+                    code = await asyncio.wait_for(process.wait(), WRITE_FAILURE_EXIT_GRACE)
+                if code is not None:
+                    self._fail(f"server exited (exit code {code})")
+                else:
+                    self._fail(f"server stopped reading its input ({type(exc).__name__})")
                 raise self._unavailable() from exc
 
     async def _notify(self, method: str, params) -> None:

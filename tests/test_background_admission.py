@@ -102,6 +102,30 @@ async def test_changed_alias_preserves_an_unproved_or_claimed_admission(tmp_path
     assert store.load_meta(session)["state"]["work"] == "queued"
 
 
+@pytest.mark.parametrize("failure", ["load_meta", "retire_waiting"])
+async def test_a_retirement_failure_keeps_the_refusal_and_its_admission(tmp_path, monkeypatch, capsys, failure):
+    from garuda.runtime.strict_store import StorageError
+
+    settings, _, queue, store, args = _environment(tmp_path, "native")
+    session = _launch(queue, store, args)
+    settings.write_text(yaml.safe_dump({"runtime_refs": []}))
+    before = (queue.root / "state.json").read_bytes()
+
+    def unavailable(*_args, **_kwargs):
+        raise StorageError("storage unavailable")
+
+    monkeypatch.setattr(store if failure == "load_meta" else queue, failure, unavailable)
+
+    async def runner(_):
+        pytest.fail("this admission must never dispatch")
+
+    with pytest.raises(bg_sessions.BackgroundRefused, match="unknown runtime .quick."):
+        await bg_sessions.run_worker_async(session, queue=queue, store=store, runner=runner)
+    assert (queue.root / "state.json").read_bytes() == before
+    assert "StorageError: storage unavailable" in capsys.readouterr().err
+    assert type(store).load_meta(store, session)["state"]["work"] == "queued"
+
+
 async def test_an_unchanged_alias_dispatches_through_its_canonical_shared_reservation(tmp_path):
     _, capacity, queue, store, args = _environment(tmp_path, "native")
     session = _launch(queue, store, args)

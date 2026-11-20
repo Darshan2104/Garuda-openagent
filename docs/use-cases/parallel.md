@@ -39,7 +39,8 @@ ID         NAME                     STATE      QUEUE    UPDATED                 
 - The run waits in a queue for a free slot, then a detached worker runs it.
   You can close the terminal. If the runtime or role changes before dispatch,
   the worker records a refusal and retires the queued entry when its original
-  admission can be verified.
+  admission can be verified. If retirement cannot complete, the worker log keeps
+  the refusal reason and the queued entry stays for recovery.
 - A session moves through these states:
 
     ```mermaid
