@@ -174,6 +174,8 @@ sequenceDiagram
   answer.
 - Read-only steps (`write_policy: no-edits`) are checked afterwards; if one
   changed the workspace, the flow stops and its output is withheld.
+- The terminal reviewer runs immediately after each reviewed build. Its
+  input artifacts must come from that build or a step that already ran.
 - A reviewer that finds a `blocker` or `major` problem sends the coder back,
   with the findings, for up to `max_rounds` more rounds. The flow ends
   `review_approved` or `review_changes_requested`. A review is not
