@@ -530,7 +530,13 @@ def paired_result_from_agent_result(
             # Every attempt was refused by the provider and none reported usage:
             # proven zero spend, as spend settlement already treats it.
             cost = 0.0
-        elif "cost_usd" in unknown:
+        elif "cost_usd" in unknown and (
+                call.get("failed")
+                # A success without a provider bill is priced from the table,
+                # but only when its token counts are complete and no attempt
+                # reported a partial bill that would be read as the whole cost.
+                or (isinstance(usage, dict) and "cost_usd" in usage)
+                or any(name in unknown for name in ("prompt_tokens", "completion_tokens"))):
             cost = None
         else:
             cost = _cost(call["model"], usage, call["cost"])
