@@ -478,9 +478,11 @@ python -m garuda.acp.server --workspace /path/to/workspace
 ```
 
 Point an ACP-capable editor at this command to use Garuda's native agent from
-the editor. A prompt can contain multiple text blocks. Garuda delivers the
-blocks in order and refuses a prompt containing unsupported content before
-starting a turn.
+the editor. A prompt can contain multiple text and `resource_link` blocks, the
+ACP baseline every agent accepts. Garuda delivers the blocks in order, renders
+each resource link as its name and URI, and does not read the linked resource.
+It advertises no image, audio, or embedded-context prompt capability, so it
+refuses a prompt containing those blocks before starting a turn.
 
 The stdio transport buffers split writes and frames larger than 64 KiB until
 their newline arrives, with a 16 MiB limit per frame. Blank lines are ignored.
