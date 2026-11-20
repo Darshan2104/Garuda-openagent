@@ -122,6 +122,8 @@ class DefaultAgent:
         collection_policy=None,
         allowed_tool_effects=None,
         model_delta_consumer=None,
+        *,
+        deadline_at: float | None = None,
     ) -> AgentResult:
         """Drive one task to a result.
 
@@ -158,6 +160,7 @@ class DefaultAgent:
                 collection_policy=collection_policy,
                 allowed_tool_effects=allowed_tool_effects,
                 model_delta_consumer=model_delta_consumer,
+                deadline_at=deadline_at,
             )
             state.delta_consumer = model_delta_consumer
 

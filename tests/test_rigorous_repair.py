@@ -76,6 +76,93 @@ async def test_critic_rejection_triggers_repair_then_approves(tmp_path):
     assert any("did not run the tests" in content for content in user_messages)
 
 
+@pytest.mark.parametrize("expires_in", ["planning", "repair"])
+async def test_rigorous_stops_admitting_phases_at_one_deadline(tmp_path, monkeypatch, expires_in):
+    from types import SimpleNamespace
+
+    from garuda.core import rigorous, run_state, steering
+
+    now = 100.0
+    clock = SimpleNamespace(monotonic=lambda: now)
+    for owner in (rigorous, run_state, steering):
+        monkeypatch.setattr(owner, "time", clock, raising=False)
+
+    finish = "The in-flight phase returned its substantive output."
+    plan = ModelResponse(content="Plan", tool_calls=[])
+    packing = ModelResponse(content=finish, tool_calls=[])
+    probe = ModelResponse(content=None, tool_calls=[ToolCall("probe", "read_file", {"path": "fixture.txt"})])
+    if expires_in == "planning":
+        responses = [probe, packing]
+        elapsed = [0.1, 3.0]
+    else:
+        responses = [plan, ModelResponse(content="Initial build", tool_calls=[]),
+                     ModelResponse(content="REJECTED: revise it", tool_calls=[]), probe, packing]
+        elapsed = [0.5, 1.0, 0.5, 0.2, 0.9]
+    responses += [ModelResponse(content="Unexpected additional phase", tool_calls=[])] * 5
+
+    class TimedModel(ScriptModel):
+        async def complete(self, *args, **kwargs):
+            nonlocal now
+            self.calls += 1
+            if elapsed:
+                now += elapsed.pop(0)
+            return await super().complete(*args, **kwargs)
+
+    observed_deadlines = []
+
+    class Reader(ReadFileTool):
+        async def execute(self, arguments, env, ctx):
+            observed_deadlines.append(ctx.deadline_monotonic)
+            return ToolResult(tool_call_id="", content="fixture contents")
+
+    (tmp_path / "fixture.txt").write_text("fixture contents\n")
+    model = TimedModel(responses)
+    model.calls = 0
+    events = EventStore()
+    config = AgentConfig(deadline_sec=3.0, enable_verifier=False)
+    result = await RigorousAgent().run(
+        task="complete a fixture", model=model, env=LocalEnvironment(tmp_path),
+        tools=[Reader()], config=config, events=events,
+    )
+    assert observed_deadlines == [103.0]
+    assert model.calls == (2 if expires_in == "planning" else 5)
+    assert not result.success and result.final_message == finish
+    assert result.metadata["termination_reason"] == "deadline"
+    (ending,) = [row["payload"] for row in events.get_all() if row["type"] == "session_end"]
+    assert ending["reason"] == "deadline" and not ending["success"]
+    assert config.deadline_sec == 3.0
+
+
+@pytest.mark.parametrize(("inherited", "own", "expected"), [
+    (103.0, 60.0, 103.0), (1000.0, 5.0, 105.0), (103.0, None, 103.0),
+], ids=["inherited-earlier", "own-earlier", "inherited-only"])
+async def test_inherited_deadline_never_widens_a_phase_limit(tmp_path, monkeypatch, inherited, own, expected):
+    from types import SimpleNamespace
+
+    from garuda.core import run_state, steering
+    from garuda.core.loop import DefaultAgent
+
+    clock = SimpleNamespace(monotonic=lambda: 100.0)
+    for owner in (run_state, steering):
+        monkeypatch.setattr(owner, "time", clock, raising=False)
+    observed = []
+
+    class Reader(ReadFileTool):
+        async def execute(self, arguments, env, ctx):
+            observed.append(ctx.deadline_monotonic)
+            return ToolResult(tool_call_id="", content="fixture contents")
+
+    model = ScriptModel([
+        ModelResponse(content=None, tool_calls=[ToolCall("probe", "read_file", {"path": "f.txt"})]),
+        ModelResponse(content="done", tool_calls=[]),
+    ])
+    await DefaultAgent().run(
+        task="read", model=model, env=LocalEnvironment(tmp_path), tools=[Reader()],
+        config=AgentConfig(deadline_sec=own, enable_verifier=False), deadline_at=inherited,
+    )
+    assert observed == [expected]
+
+
 @pytest.mark.parametrize("restrict_effects", [False, True])
 async def test_planner_uses_the_admitted_tools_and_parent_policy(tmp_path, restrict_effects):
     expected_tools = {"read_file", "bash"}

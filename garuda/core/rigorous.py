@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from copy import deepcopy
 
 from garuda.agents.loader import load_profile
@@ -27,6 +28,10 @@ logger = logging.getLogger(__name__)
 
 # How many times the executor is re-run with critic feedback after a rejection.
 MAX_REPAIR_ROUNDS = 2
+
+
+def _deadline_exceeded(deadline_at: float | None) -> bool:
+    return deadline_at is not None and time.monotonic() >= deadline_at
 
 
 def create_agent(profile_name: str, mode: str | None = None) -> DefaultAgent | RigorousAgent:
@@ -102,8 +107,12 @@ class RigorousAgent:
         collection_policy=None,
         allowed_tool_effects=None,
         model_delta_consumer=None,
+        *,
+        deadline_at: float | None = None,
     ) -> AgentResult:
         config = config or apply_mode_preset(AgentConfig(mode="rigorous"))
+        if deadline_at is None and config.deadline_sec:
+            deadline_at = time.monotonic() + config.deadline_sec
         events = events or EventStore()
         permissions = permissions or PermissionEngine(mode=config.permission_mode)
         if emit_session_events:
@@ -171,13 +180,17 @@ class RigorousAgent:
                 emit_session_events=False,  # rigorous emits its own single session span
                 allowed_tool_effects=allowed_tool_effects,
                 model_delta_consumer=model_delta_consumer,
+                deadline_at=deadline_at,
             )
             events.append(EventType.USER_MESSAGE, {"content": f"[rigorous:plan] {plan_result.final_message}"})
 
+            if plan_result.metadata.get("spend_limit"):
+                self._end_on_spend(events, emit_session_events, plan_result)
+                return plan_result
+            if _deadline_exceeded(deadline_at):
+                return self._end_on_deadline(events, emit_session_events, plan_result)
             if not plan_result.success:
-                if plan_result.metadata.get("spend_limit"):
-                    self._end_on_spend(events, emit_session_events, plan_result)
-                elif emit_session_events:
+                if emit_session_events:
                     events.append(
                         EventType.SESSION_END, {"success": False, "reason": "plan_failed"}
                     )
@@ -185,11 +198,13 @@ class RigorousAgent:
 
             exec_task = f"{task}\n\n## Approved plan\n{plan_result.final_message}"
             current_task = exec_task
-            exec_result: AgentResult | None = None
+            exec_result = plan_result
             approved = False
             feedback = ""
 
             for attempt in range(MAX_REPAIR_ROUNDS + 1):
+                if _deadline_exceeded(deadline_at):
+                    return self._end_on_deadline(events, emit_session_events, exec_result)
                 build_agent = DefaultAgent(profile_name=self._profile_name)
                 # run() only seeds the task when it creates the context itself, so with a
                 # threaded-in context (resume / multi-turn chat / SDK) every round must
@@ -227,6 +242,7 @@ class RigorousAgent:
                     collection_policy=collection_policy,
                     allowed_tool_effects=allowed_tool_effects,
                     model_delta_consumer=model_delta_consumer,
+                    deadline_at=deadline_at,
                 )
 
                 if exec_result.metadata.get("spend_limit"):
@@ -234,9 +250,11 @@ class RigorousAgent:
                     # its rejection would hide why the run stopped.
                     self._end_on_spend(events, emit_session_events, exec_result)
                     return exec_result
+                if _deadline_exceeded(deadline_at):
+                    return self._end_on_deadline(events, emit_session_events, exec_result)
                 try:
-                    approved, feedback = await self._critic_review(
-                        task, plan_result.final_message, exec_result, model, env
+                    verdict = await self._critic_review(
+                        task, plan_result.final_message, exec_result, model, env, deadline_at=deadline_at,
                     )
                 except SpendLimitExceeded as exc:
                     exec_result.success = False
@@ -244,6 +262,9 @@ class RigorousAgent:
                     exec_result.metadata["spend_limit"] = exc.cause
                     self._end_on_spend(events, emit_session_events, exec_result)
                     return exec_result
+                if verdict is None:
+                    return self._end_on_deadline(events, emit_session_events, exec_result)
+                approved, feedback = verdict
                 events.append(
                     EventType.VERIFICATION,
                     {"approved": approved, "feedback": feedback, "phase": "critic", "attempt": attempt},
@@ -253,6 +274,8 @@ class RigorousAgent:
                 current_task = f"{exec_task}\n\n## Critic feedback on previous attempt\n{feedback}"
 
             if not approved:
+                if _deadline_exceeded(deadline_at):
+                    return self._end_on_deadline(events, emit_session_events, exec_result)
                 if emit_session_events:
                     events.append(
                         EventType.SESSION_END, {"success": False, "reason": "critic_rejected"}
@@ -268,6 +291,17 @@ class RigorousAgent:
             return exec_result
         finally:
             accounting.reset(accounting_token)
+
+    @staticmethod
+    def _end_on_deadline(events: EventStore, emit_session_events: bool, result: AgentResult) -> AgentResult:
+        result.success = False
+        result.metadata["termination_reason"] = "deadline"
+        if emit_session_events:
+            events.append(EventType.SESSION_END, {
+                "success": False, "reason": "deadline", "turns": result.turns,
+                "final_answer_offered": bool(result.final_message),
+            })
+        return result
 
     @staticmethod
     def _end_on_spend(events: EventStore, emit_session_events: bool, result: AgentResult) -> None:
@@ -286,7 +320,9 @@ class RigorousAgent:
         result: AgentResult,
         model: Model,
         env: Environment,
-    ) -> tuple[bool, str]:
+        *,
+        deadline_at: float | None,
+    ) -> tuple[bool, str] | None:
         """Run a lightweight critic pass before accepting rigorous-mode completion."""
         git_evidence = await gather_git_evidence(env)
         user_parts = [
@@ -296,6 +332,8 @@ class RigorousAgent:
         ]
         if git_evidence:
             user_parts.append(f"Git evidence from the workspace:\n{git_evidence}")
+        if _deadline_exceeded(deadline_at):
+            return None
         try:
             response = await accounting.tagged(model, "critic").complete(
                 [
