@@ -25,6 +25,7 @@ import asyncio
 import logging
 import os
 import sys
+import unicodedata
 import uuid
 from collections.abc import Awaitable, Callable
 from contextlib import contextmanager
@@ -56,6 +57,18 @@ class _OutputUnavailable(OSError):
     """Output cannot accept further protocol frames."""
 
 
+def _breaks_line(value: str) -> bool:
+    """True when ``value`` holds a control character or a line/paragraph separator."""
+    return any(unicodedata.category(char) in {"Cc", "Zl", "Zp"} for char in value)
+
+
+def _render_resource_link(name: str, uri: str) -> str:
+    """One inert line; ``<``/``>`` are neutralised so the ``<uri>`` framing holds."""
+    name = name.replace("<", "‹").replace(">", "›")
+    uri = uri.replace("<", "%3C").replace(">", "%3E")
+    return f"Resource link: {name} <{uri}>"
+
+
 def _prompt_block_text(index: int, block: Any) -> str:
     """Render one ACP prompt block, accepting only the baseline types.
 
@@ -73,7 +86,12 @@ def _prompt_block_text(index: int, block: Any) -> str:
         for field in ("uri", "name"):
             if not isinstance(block.get(field), str) or not block[field]:
                 raise AcpProtocolError(f"session/prompt block {index + 1} needs a resource_link {field}")
-        return f"Resource link: {block['name']} <{block['uri']}>"
+            if _breaks_line(block[field]):
+                raise AcpProtocolError(
+                    f"session/prompt block {index + 1} has a resource_link {field} "
+                    "containing control characters or line breaks"
+                )
+        return _render_resource_link(block["name"], block["uri"])
     raise AcpProtocolError(f"session/prompt block {index + 1} has an unsupported type")
 
 
