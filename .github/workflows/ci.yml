@@ -5,11 +5,15 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  schedule:
+    # Nightly run of the non-blocking jobs, which do not run on pull requests.
+    - cron: "17 3 * * *"
 
 concurrency:
-  # A newer push to the same ref makes the in-flight run redundant.
+  # A newer push to a pull request makes its in-flight run redundant. Runs on
+  # main are not cancelled, so every merge gets a complete record.
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
@@ -68,7 +72,8 @@ jobs:
         run: python scripts/check_docs.py --commands
 
       - name: Test
-        run: pytest -q
+        # Parallel across the runner's cores; the suite is verified worker-safe.
+        run: pytest -q -n auto
 
   wheel-install:
     # Issue #145: a non-editable install must import and run without the
@@ -151,6 +156,9 @@ jobs:
     # an upstream release should not block an unrelated PR, it should open an
     # issue. Cost of getting this backwards is on record — a live pricing table
     # broke the suite and the failure looked like ours.
+    # Runs on main, nightly and on demand, not on pull requests: three full
+    # suites per OS per PR exhausted the hosted macOS runner pool.
+    if: github.event_name != 'pull_request'
     name: latest dependencies (${{ matrix.os }}, non-blocking)
     runs-on: ${{ matrix.os }}
     continue-on-error: true
@@ -191,13 +199,15 @@ jobs:
         run: pip freeze
 
       - name: Test
-        run: pytest -q
+        run: pytest -q -n auto
 
   live-sandbox:
     # Deliberately NOT a required gate. Live Seatbelt/bwrap confinement behaves
     # differently across OS image versions, which is why these tests are opt-in
     # (see commit 029fa77). Running them here keeps the coverage visible without
     # letting an image upgrade break every PR.
+    # Same schedule as latest-deps: main, nightly and on demand.
+    if: github.event_name != 'pull_request'
     name: live sandbox (${{ matrix.os }}, non-blocking)
     runs-on: ${{ matrix.os }}
     continue-on-error: true
@@ -236,4 +246,4 @@ jobs:
       - name: Test with real OS sandbox confinement
         env:
           GARUDA_LIVE_SANDBOX: "1"
-        run: pytest -q
+        run: pytest -q -n auto
