@@ -164,6 +164,27 @@ def test_list_marks_shadowing(ws):
     assert rows["garuda/build"]["shadowed_by"] == "project/build"
 
 
+def test_yml_agent_is_listed_and_uses_resolver_precedence(ws, monkeypatch, capsys):
+    agents = ws / ".agent" / "agents"
+    (agents / "review-notes.yml").write_text(
+        "version: 1\nextends: garuda/explore\nlimits: {max_turns: 7}\n"
+    )
+    code, out = _main(monkeypatch, capsys, "agent", "list", "--workspace", str(ws), "--json")
+    assert code == 0
+    (listed,) = [row for row in json.loads(out) if row["qualified"] == "project/review-notes"]
+    assert listed["path"].endswith("review-notes.yml")
+    assert any(row["qualified"] == listed["qualified"] for row in inspect.dashboard_rows(ws))
+
+    code, out = _main(monkeypatch, capsys, "agent", "show", listed["qualified"],
+                      "--workspace", str(ws), "--json")
+    assert code == 0 and json.loads(out)["fields"]["limits.max_turns"]["value"] == 7
+
+    _write(ws, "review-notes", "version: 1\nextends: garuda/explore\nlimits: {max_turns: 3}\n")
+    rows = [row for row in inspect.list_agents(ws) if row["qualified"] == listed["qualified"]]
+    assert len(rows) == 1 and rows[0]["path"].endswith("review-notes.yaml")
+    assert load_profile(listed["qualified"], extra_dir=agents).max_turns == 3
+
+
 def test_check_reports_each_problem_by_code(ws, monkeypatch, capsys):
     _write(ws, "bad", "version: 1\nlimits: {max_tunrs: 2}\n")
     code, out = _main(monkeypatch, capsys, "agent", "check", "bad", "--json",
