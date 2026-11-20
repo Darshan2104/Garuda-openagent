@@ -399,3 +399,46 @@ async def test_sdk_close_settles_a_live_turn_before_releasing_ownership(repo):
             cleanup_started.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         await conversation.close()
+
+
+async def test_sdk_close_from_a_callback_task_can_run_after_its_turn(repo):
+    from garuda.sdk.conversation import Conversation
+
+    agents = repo / ".agent" / "agents"
+    agents.mkdir(parents=True)
+    (agents / "qa.yaml").write_text("version: 1\nextends: garuda/build\nlimits: {max_turns: 1}\n")
+    store = SessionStore()
+    text = "The README contains the short greeting we were asked to find."
+    model = ScriptModel([ModelResponse(content=text, tool_calls=[ToolCall(
+        "done", "task_complete", {"summary": text},
+    )])])
+    conversation = Conversation(workspace=repo, agent="qa", model=model, store=store)
+    turn_finished = asyncio.Event()
+    callback_seen = asyncio.Event()
+    deferred_close = None
+
+    async def after_turn():
+        await turn_finished.wait()
+        await conversation.close()
+
+    async def on_delta(_delta):
+        nonlocal deferred_close
+        if deferred_close is None:
+            with pytest.raises(RuntimeError, match="outside its active turn"):
+                await conversation.close()
+            deferred_close = asyncio.create_task(after_turn())
+            callback_seen.set()
+
+    try:
+        result = await asyncio.wait_for(conversation.run("Read the README", on_delta=on_delta), 5)
+        assert result.success and callback_seen.is_set()
+        session_id = conversation.events.session_id
+        turn_finished.set()
+        await asyncio.wait_for(deferred_close, 5)
+        assert LeaseStore().holders_of(repo) == []
+        assert store.load_meta(session_id)["state"]["outcome"] == "completed"
+    finally:
+        if deferred_close is not None and not deferred_close.done():
+            deferred_close.cancel()
+            await asyncio.gather(deferred_close, return_exceptions=True)
+        await conversation.close()

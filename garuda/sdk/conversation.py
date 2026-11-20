@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from garuda.tools.protocol import Tool
 
 
-_native_turn_owner: ContextVar[object] = ContextVar("_native_turn_owner", default=None)
+_native_turn_keys: ContextVar[frozenset[object]] = ContextVar("_native_turn_keys", default=frozenset())
 
 
 class Conversation:
@@ -75,6 +75,7 @@ class Conversation:
         self._live: Any | None = None
         self._record: Any | None = None
         self._native_turn: asyncio.Task[AgentResult] | None = None
+        self._active_native_turn_key: object | None = None
         self._native_close: asyncio.Task[None] | None = None
 
     async def _ensure_session(self) -> AgentSession:
@@ -133,8 +134,9 @@ class Conversation:
         if self._native_turn is not None and not self._native_turn.done():
             raise RuntimeError("The native conversation already has an active turn")
         self._native_close = None
+        key = self._active_native_turn_key = object()
         owner_context = copy_context()
-        owner_context.run(_native_turn_owner.set, self)
+        owner_context.run(_native_turn_keys.set, _native_turn_keys.get() | {key})
         turn = self._native_turn = asyncio.create_task(
             self._run_native(task, on_delta=on_delta, subagent_deltas=subagent_deltas),
             context=owner_context,
@@ -154,6 +156,7 @@ class Conversation:
         finally:
             if self._native_turn is turn:
                 self._native_turn = None
+                self._active_native_turn_key = None
 
     async def _run_native(
         self, task: str, *, on_delta: "DeltaConsumer | None", subagent_deltas: bool,
@@ -448,7 +451,8 @@ class Conversation:
 
     async def close(self) -> None:
         if self._runtime_name == "native":
-            if _native_turn_owner.get() is self:
+            turn = self._native_turn
+            if turn is not None and not turn.done() and self._active_native_turn_key in _native_turn_keys.get():
                 raise RuntimeError("Close the native conversation from outside its active turn")
             if self._native_close is None:
                 self._native_close = asyncio.create_task(self._close_native())

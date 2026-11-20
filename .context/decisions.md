@@ -4135,4 +4135,5 @@ The native SDK conversation owns at most one active turn, including its
 startup. Concurrent close callers await one teardown. It cancels and awaits
 the turn before reaping processes, closing resources, publishing the terminal
 outcome and releasing the lease. Cancellation of a close caller waits for the
-same teardown. Callbacks must initiate close from outside the active turn.
+same teardown. Callbacks can schedule a close after their turn returns. An
+active turn cannot await its own close.
