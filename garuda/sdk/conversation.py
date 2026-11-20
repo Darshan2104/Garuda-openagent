@@ -1,6 +1,7 @@
 """Stateful conversation wrapper around Garuda agent runs."""
 
 import asyncio
+import logging
 from contextvars import ContextVar, copy_context
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,6 +19,8 @@ if TYPE_CHECKING:
     from garuda.model.streaming import DeltaConsumer
     from garuda.tools.protocol import Tool
 
+
+logger = logging.getLogger(__name__)
 
 _native_turn_keys: ContextVar[frozenset[object]] = ContextVar("_native_turn_keys", default=frozenset())
 
@@ -545,10 +548,29 @@ class Conversation:
         self._approval_broker = None
         try:
             if adapter is not None:
-                await adapter.close()
+                await self._reap_failed_start(adapter)
         finally:
             self._acp_trail = []
             self._finish_acp_record()
+
+    @staticmethod
+    async def _reap_failed_start(adapter) -> None:
+        """Close a half-started adapter through cancellation and close failure.
+
+        The caller re-raises the original start error, so a close failure is
+        logged rather than raised, and a cancellation (e.g. a concurrent
+        ``close()``) waits for the harness to be reaped instead of abandoning it.
+        """
+        closing = asyncio.create_task(adapter.close())
+        try:
+            await asyncio.shield(closing)
+        except asyncio.CancelledError:
+            try:
+                await settle_task(closing)
+            except Exception:
+                logger.warning("Closing the ACP runtime after a failed start failed", exc_info=True)
+        except Exception:
+            logger.warning("Closing the ACP runtime after a failed start failed", exc_info=True)
 
     def _finish_acp_record(self) -> None:
         from garuda.runtime.session_state import finished, interrupted
