@@ -115,6 +115,9 @@ same fixed checkers (up to 64 KiB). Per-diagnostic attribution is introduced,
 preexisting or unknown; incomplete/failed baselines and ambiguous locations stay
 unknown. Whole-file writes have no baseline. External commands still use
 `Environment.execute`; JSON/YAML retain their existing in-process parsers.
+Python compiles source bytes for both the current file and the retained
+baseline. It accepts source encodings recognized by Python and reports
+compiler-only syntax errors without executing the file or writing bytecode.
 These results are advisory ToolResult metadata, not persisted acceptance receipts;
 project commands and verification remain with their existing trusted owners.
 `files.py::ReadFileTool` keeps raw/range reads as the default; `outline=true`
