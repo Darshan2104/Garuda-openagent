@@ -62,6 +62,8 @@ def test_shadowed_copies_are_listed(ws):
 
 
 async def test_disabled_skills_ignore_malformed_frontmatter(ws):
+    from yaml import YAMLError
+
     from garuda.agents.setup import prepare_agent_run
     from garuda.model.script_model import ScriptModel
 
@@ -76,6 +78,9 @@ async def test_disabled_skills_ignore_malformed_frontmatter(ws):
     finally:
         if prepared.mcp_manager is not None:
             await prepared.mcp_manager.close()
+
+    with pytest.raises(YAMLError, match="mapping values are not allowed"):
+        _show(ws, "{from: [project], include: [alpha]}")
 
 
 @pytest.mark.parametrize("load, expect, absent", [
