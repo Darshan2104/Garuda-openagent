@@ -298,6 +298,34 @@ async def test_write_without_baseline_has_unknown_attribution(tmp_path: Path):
     assert state["baseline_source_version"] is None
 
 
+async def test_python_syntax_checks_bom_and_compiler_only_errors_in_edits(tmp_path: Path):
+    env = LocalEnvironment(workspace_root=tmp_path)
+    source = "\ufeffx = 1\n"
+    written = await WriteFileTool().execute({"path": "app.py", "content": source}, env, CTX_NO_LINT)
+    syntax = written.metadata["diagnostics"]["checkers"]["syntax"]
+    assert not written.is_error and syntax["status"] == "clean"
+    assert syntax["source_version"] == hashlib.sha256(source.encode()).hexdigest()
+
+    edited = await EditTool().execute(
+        {"path": "app.py", "old_string": "x = 1", "new_string": "return 1"}, env, CTX_NO_LINT,
+    )
+    syntax = edited.metadata["diagnostics"]["checkers"]["syntax"]
+    assert not edited.is_error and syntax["status"] == "violations"
+    assert "outside function" in edited.content
+    assert syntax["baseline_source_version"] == hashlib.sha256(source.encode()).hexdigest()
+    assert syntax["baseline_status"] == "clean"
+    (issue,) = syntax["diagnostics"]
+    assert (issue["line"], issue["attribution"]) == (1, "introduced")
+    assert not (tmp_path / "__pycache__").exists()
+
+
+async def test_python_syntax_uses_the_declared_file_encoding(tmp_path: Path):
+    path = tmp_path / "app.py"
+    path.write_bytes("# coding: latin-1\nx = 'café'\nreturn 1\n".encode("latin-1"))
+    issue = await check_syntax(LocalEnvironment(workspace_root=tmp_path), path.name)
+    assert issue and "outside function" in issue
+
+
 @pytest.mark.skipif(not HAS_RUFF, reason="ruff not installed")
 async def test_lint_attributes_mixed_diagnostics_and_bounds_output(tmp_path: Path):
     env = LocalEnvironment(workspace_root=tmp_path)

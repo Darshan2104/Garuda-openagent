@@ -167,11 +167,12 @@ class AgentSpec:
     def narrow(self, **sections: dict) -> AgentSpec:
         """A stricter copy: ``spec.narrow(limits={"max_turns": 40}, tools={"remove": ["bash"]})``.
 
-        Raises ``agent.narrow_refused`` for anything that is not at least as strict."""
+        Raises ``agent.narrow_refused`` for widening and a definition error
+        for invalid values."""
         for section, value in sections.items():
             if section not in spec.SECTIONS or not isinstance(value, dict):
                 raise _refused(section, "narrow takes a section name and a mapping")
-        leaves = spec.flatten(sections)
+        leaves = spec.validate({"version": spec.VERSION, **sections}, source="AgentSpec.narrow")
         agent = self.resolved()
         current = agent.to_profile()
         applied = []
@@ -190,8 +191,8 @@ class AgentSpec:
             if PERMISSION_ORDER.index(value) > PERMISSION_ORDER.index(have or "yolo"):
                 raise _refused(path, f"{value} is looser than {have}")
         elif path in _CAPS:
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                raise _refused(path, "must be a number")
+            if value is None:
+                raise _refused(path, "cannot clear a cap")
             if have is not None and value > have:
                 raise _refused(path, f"{value} is more than the current {have}")
         elif path in _ONLY_OFF:
@@ -201,12 +202,14 @@ class AgentSpec:
             if not value and have:
                 raise _refused(path, "a required check cannot be turned off")
         elif path in _SUBSETS:
-            if have is not None and not set(value) <= set(have):
+            if have is not None and (value is None or not set(value) <= set(have)):
                 raise _refused(path, f"may only keep entries of {sorted(have)}")
         elif path in _ONLY_GROW:
             if not set(have or []) <= set(value):
                 raise _refused(path, "may only add exclusions")
         elif path.startswith("permissions.rules."):
+            if value is None:
+                raise _refused(path, "cannot clear permission rules")
             agent.leaves[path] = self._narrow_rules(path, have, value)
             return
         elif path in ("tools.remove",):
@@ -223,9 +226,12 @@ class AgentSpec:
             agent.tools = [t for t in base if t in keep]
             return
         elif path == "tools.options":
+            resolve._check_options(value, "AgentSpec.narrow")
             self._narrow_options(agent, have, value)
             return
         elif path == "instructions.text":
+            if value is None:
+                raise _refused(path, "expected instruction text to append")
             agent.instructions = (agent.instructions or "").rstrip() + "\n\n" + value
             return
         else:

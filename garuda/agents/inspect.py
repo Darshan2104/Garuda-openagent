@@ -93,7 +93,7 @@ def _target(target: str, workspace) -> resolve.ResolvedAgent:
     """A name, or a path to a definition file (``--agent-file``), resolved purely."""
     # A qualified name (`garuda/build`, `project/x`) has a separator too: it is a file only when
     # it carries a definition extension or names a file that exists.
-    if target.endswith((".yaml", ".yml", ".md")) or (os.sep in target and os.path.isfile(target)):
+    if target.endswith(resolve.SINGLE_FILE_SUFFIXES) or (os.sep in target and os.path.isfile(target)):
         from garuda.agents.spec_api import AgentSpec
 
         return AgentSpec.from_file(target, workspace).resolved()
