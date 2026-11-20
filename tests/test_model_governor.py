@@ -175,3 +175,64 @@ async def test_stream_holds_provider_slot_until_iterator_cleanup(monkeypatch, ca
         finish_reading.set()
         finish_cleanup.set()
         await asyncio.gather(first, *([second] if second is not None else []), return_exceptions=True)
+
+
+async def test_failed_stream_attempt_releases_slot_during_backoff(monkeypatch):
+    import litellm
+
+    from garuda.model import governor, litellm_model
+    from garuda.model.litellm_model import LitellmModel
+
+    class Retryable(Exception):
+        status_code = 503
+
+    first_failed = asyncio.Event()
+    second_dispatched = asyncio.Event()
+    release_second = asyncio.Event()
+    first_calls = 0
+
+    class Stream:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            await release_second.wait()
+            raise StopAsyncIteration
+
+    async def empty_stream():
+        for item in ():
+            yield item
+
+    async def provider(**request):
+        nonlocal first_calls
+        if request["model"].endswith("/first"):
+            first_calls += 1
+            if first_calls == 1:
+                first_failed.set()
+                raise Retryable("unavailable")
+            return empty_stream()
+        second_dispatched.set()
+        return Stream()
+
+    monkeypatch.setattr(litellm, "acompletion", provider)
+    monkeypatch.setattr(litellm_model, "_MAX_RETRY_SLEEP", 0.5)
+    monkeypatch.setattr(governor, "_governor", ModelGovernor(limit=1))
+
+    async def consume(name):
+        async for _ in LitellmModel(model_name=f"openai/{name}", max_retries=2).stream([]):
+            pass
+
+    first = asyncio.create_task(consume("first"))
+    second = None
+    try:
+        await asyncio.wait_for(first_failed.wait(), 3)
+        second = asyncio.create_task(consume("second"))
+        # The first stream is sleeping on backoff, so the second gets the slot.
+        await asyncio.wait_for(second_dispatched.wait(), 3)
+        assert first_calls == 1
+        release_second.set()
+        await asyncio.wait_for(asyncio.gather(first, second), 5)
+        assert first_calls == 2
+    finally:
+        release_second.set()
+        await asyncio.gather(first, *([second] if second is not None else []), return_exceptions=True)
