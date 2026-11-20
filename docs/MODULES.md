@@ -800,6 +800,9 @@ before; supervised recovery receipts remain separate work).
 working-state checkpoints plus final outcomes. It publishes each requested turn
 before queue execution, records one outer session span, and suppresses inner
 turn delimiters so multi-turn recovery stays unambiguous.
+The native SDK conversation owns one active turn and shares one close task
+among concurrent callers. Close waits through caller cancellation until turn
+cleanup and the terminal session record have settled.
 
 `terminal_approval.py` owns `TerminalApprover`: request-aware worker, agent,
 depth and waiting-count labels, plus one shielded stdin reader per event loop.
