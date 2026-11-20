@@ -21,7 +21,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from garuda.observability.ledger import Ledger
+from garuda.observability.ledger import Ledger, cost_is_unknown
 from garuda.observability.limits import (
     FALLBACK_TTL,
     PROVED_SOURCES,
@@ -50,7 +50,7 @@ def observed_use(records: list[dict], now: float) -> dict[str, Any]:
                                                            + (r.get("output_tokens") or 0)))
                                 for r in counted),
             "cost_usd": round(sum(known), 8) if known else None,
-            "cost_unknown_records": len(counted) - len(known),
+            "cost_unknown_records": sum(cost_is_unknown(record) for record in counted),
         }
     return {"label": THROUGH_GARUDA, "windows": out}
 
