@@ -427,6 +427,53 @@ async def test_consult_evidence_allows_the_event_loop_to_advance(world, monkeypa
     assert result.outcome == "answered"
 
 
+async def test_a_slow_snapshot_times_out_without_dispatch_and_cleans_up_after_it_settles(
+        world, monkeypatch):
+    from threading import Event
+
+    from garuda.runtime.capacity import CapacityStore
+    from garuda.workspace import snapshot_proto as snap
+
+    settings = Path(os.environ["GARUDA_GLOBAL_SETTINGS"])
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text("capacity: {native: 1}\n")
+    loop = asyncio.get_running_loop()
+    entered, settled = asyncio.Event(), asyncio.Event()
+    release = Event()
+    original = snap.detached_repository
+
+    def slow_snapshot(*args, **kwargs):
+        loop.call_soon_threadsafe(entered.set)
+        try:
+            release.wait(5)
+            return original(*args, **kwargs)
+        finally:
+            loop.call_soon_threadsafe(settled.set)
+
+    monkeypatch.setattr(snap, "detached_repository", slow_snapshot)
+    resolved = make_resolved({**DOC, "consults": {"timeout_sec": 1}})
+    runner = Recorder()
+    pending = asyncio.create_task(ConsultService(world.store, resolved, runner=runner).consult(
+        request(world, request_id="slow")))
+    scratch_root = Path(world.store.root) / ".consult" / world.asker / "scratch"
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        await asyncio.sleep(1.3)  # the loop stays live past the deadline
+        assert not pending.done()  # the expired preparation is still owned, not abandoned
+        assert any(scratch_root.iterdir()) and len(CapacityStore().holders("native")) == 1
+        release.set()
+        with pytest.raises(ConsultRefused) as caught:
+            await asyncio.wait_for(pending, 5)
+    finally:
+        release.set()
+    assert caught.value.code == "consult.timeout" and settled.is_set()
+    assert runner.calls == []
+    assert list(scratch_root.iterdir()) == []
+    state = ConsultState(world.store, world.asker).snapshot()
+    assert state["active"] is None and state["count"] == 0
+    assert CapacityStore().holders("native") == []
+
+
 async def test_unsettled_snapshot_keeps_its_scratch_and_capacity_after_cancellation(world, monkeypatch):
     from threading import Event
 
