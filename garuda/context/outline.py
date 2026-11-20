@@ -131,8 +131,11 @@ class PythonOutlineCache:
             reason = f"source exceeds the {MAX_SOURCE_BYTES}-byte host parsing limit"
         else:
             try:
-                tree = ast.parse(source)
-                normalized = source.replace("\r\n", "\n").replace("\r", "\n")
+                # Python accepts a leading UTF-8 BOM on disk. Parse and tokenize
+                # without it while retaining the original text for the digest.
+                python_source = source.removeprefix("\ufeff")
+                tree = ast.parse(python_source)
+                normalized = python_source.replace("\r\n", "\n").replace("\r", "\n")
                 declarations = _Declarations(normalized)
                 declarations.visit(tree)
                 total = len(source.splitlines())
