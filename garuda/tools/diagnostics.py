@@ -1,5 +1,6 @@
 """Bounded, advisory post-edit diagnostics through the workspace environment."""
 
+import base64
 import hashlib
 import json
 import re
@@ -110,9 +111,13 @@ async def _syntax(env: Environment, path: str, source: str, *, baseline: bool = 
         state["duration_ms"] = int((time.monotonic() - start) * 1000)
         return state
     if ext == "py":
-        operand = shlex.quote(source) if baseline else quoted
-        expression = "sys.argv[1]" if baseline else "open(sys.argv[1]).read()"
-        command = f'python3 -c "import ast,sys; ast.parse({expression})" {operand}'
+        if baseline:
+            operand = base64.b64encode(source.encode("utf-8")).decode("ascii")
+            script = 'import base64,sys; compile(base64.b64decode(sys.argv[1]), "<unknown>", "exec")'
+        else:
+            operand = path
+            script = 'import sys; compile(open(sys.argv[1], "rb").read(), "<unknown>", "exec")'
+        command = f"python3 -c {shlex.quote(script)} {shlex.quote(operand)}"
     elif ext in {"sh", "bash"}:
         command = f"bash -n {quoted}"
         if baseline:
@@ -223,7 +228,9 @@ async def _collect(
         return states
     try:
         raw = await env.read_bytes(path)
-        source = raw.decode("utf-8")
+        # Python's compiler reads bytes and handles its own source encoding.
+        # The decoded text here is used only for diagnostic attribution.
+        source = raw.decode("utf-8", errors="surrogateescape" if _ext(path) == "py" else "strict")
     except Exception as exc:
         for name in active:
             states[name].update(status="error", reason="source_unreadable", details=_trim(str(exc)))

@@ -1696,7 +1696,8 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - Garuda's inbound stdio ACP server uses the same newline-delimited JSON-RPC
   framing and content-block prompt shape as the outbound adapter; it refuses
   missing or mismatched initialize versions before session methods.
-- Prompt turns stream normalized events while the runtime is active. Permission
+- Prompt turns stream normalized events with the owning session id on every
+  update, including cancellation. Permission
   requests are bidirectional JSON-RPC requests, so a client can answer an
   approval before the turn completes; cancellation remains concurrently
   dispatchable.
@@ -4131,3 +4132,12 @@ rejected evidence. Hook and judge failures leave the commands unexamined even
 when execution already succeeded; a later attempt may reuse the same commands.
 Actual failed checks and explicit judge `REJECTED` verdicts remain judged
 rejections and require new evidence on resubmission.
+
+## 2026-11-20: Native SDK close settles the active turn before release (#579)
+
+The native SDK conversation owns at most one active turn, including its
+startup. Concurrent close callers await one teardown. It cancels and awaits
+the turn before reaping processes, closing resources, publishing the terminal
+outcome and releasing the lease. Cancellation of a close caller waits for the
+same teardown. Callbacks can schedule a close after their turn returns. An
+active turn cannot await its own close.

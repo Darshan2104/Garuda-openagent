@@ -1,5 +1,7 @@
 """Read PDF and spreadsheet files from the workspace."""
 
+import csv
+from io import StringIO
 from pathlib import Path
 
 from garuda.tools.protocol import ToolContext, ToolEffect
@@ -46,6 +48,18 @@ def _read_xlsx_bytes(data: bytes, max_rows: int = 200) -> str:
     return "\n\n".join(parts)
 
 
+def _read_csv_text(source: str, max_rows: int) -> str:
+    reader = csv.reader(StringIO(source.removeprefix("\ufeff"), newline=""), strict=True)
+    output = StringIO(newline="")
+    writer = csv.writer(output, delimiter="\t")
+    for index, row in enumerate(reader):
+        if index >= max_rows:
+            writer.writerow(["...[truncated rows]"])
+            break
+        writer.writerow(row)
+    return output.getvalue().removesuffix("\r\n")
+
+
 class ReadPdfTool:
     effect = ToolEffect.READ_ONLY
     name = "read_pdf"
@@ -83,19 +97,24 @@ class ReadSpreadsheetTool:
         "type": "object",
         "properties": {
             "path": {"type": "string", "description": "Path to .xlsx or .csv file"},
-            "max_rows": {"type": "integer", "description": "Max rows per sheet", "default": 200},
+            "max_rows": {"type": "integer", "minimum": 1, "description": "Max rows per sheet", "default": 200},
         },
         "required": ["path"],
     }
 
     async def execute(self, arguments: dict, env: Environment, ctx: ToolContext) -> ToolResult:
         path = arguments["path"]
-        max_rows = int(arguments.get("max_rows", 200))
+        max_rows = arguments.get("max_rows", 200)
+        if type(max_rows) is not int or max_rows < 1:
+            return ToolResult(tool_call_id="", content="max_rows must be a positive integer", is_error=True)
         suffix = Path(path).suffix.lower()
         if suffix == ".csv":
             content = await env.read_file(path)
-            lines = content.splitlines()[:max_rows]
-            return ToolResult(tool_call_id="", content="\n".join(lines))
+            try:
+                text = _read_csv_text(content, max_rows)
+            except csv.Error as exc:
+                return ToolResult(tool_call_id="", content=f"Invalid CSV: {exc}", is_error=True)
+            return ToolResult(tool_call_id="", content=text)
         try:
             import openpyxl  # noqa: F401
         except ImportError:

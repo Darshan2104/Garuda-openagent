@@ -56,6 +56,8 @@ garuda recipe run fix-and-test.yaml --param issue="Login fails when the email ha
   heartbeats one workspace lease across the whole sequence, including MCP/tool
   setup and cleanup. Compatible readers can coexist; a conflicting writer is
   refused by the existing lease owner.
+  Step-owned MCP and language services close before that lease is released,
+  including when a step raises or is cancelled.
 - Each step can set `agent` (a profile) and `mode`.
 - The recipe stops at the first failed step and tells you how many later
   steps did not run.
@@ -512,7 +514,8 @@ agent instances keep separate tool registries.
 
     `AgentSpec.load` resolves a name exactly as `garuda run --agent NAME` does.
     `narrow(...)` returns a stricter copy (fewer turns, fewer tools, a tighter
-    permission mode); anything looser is refused with `agent.narrow_refused`.
+    permission mode). It validates values against the agent definition schema
+    and refuses looser settings with `agent.narrow_refused`.
     See [structured JSON output](customize.md#get-structured-json-back).
 
 Custom environments implement `read_bytes(path)` alongside `read_file(path)` and

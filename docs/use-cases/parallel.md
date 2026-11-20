@@ -357,6 +357,8 @@ Open **Usage** (`#/usage`) and **Providers** (`#/providers`).
   last login check, and limit readings with their source and age. A limit
   Garuda can't read from a documented source reads *unknown*. **Refresh**
   re-reads the status without sending a prompt.
+  A partially known cost window shows the known subtotal and the number of
+  unpriced records.
 - A run's own page lists the **models used** for that run, and **consults** if
   it asked other roles questions.
 - The ledger is one owner-only file per month in `~/.agent/usage/`, kept for
