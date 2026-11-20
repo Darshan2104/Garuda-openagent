@@ -512,7 +512,8 @@ agent instances keep separate tool registries.
 
     `AgentSpec.load` resolves a name exactly as `garuda run --agent NAME` does.
     `narrow(...)` returns a stricter copy (fewer turns, fewer tools, a tighter
-    permission mode); anything looser is refused with `agent.narrow_refused`.
+    permission mode). It validates values against the agent definition schema
+    and refuses looser settings with `agent.narrow_refused`.
     See [structured JSON output](customize.md#get-structured-json-back).
 
 Custom environments implement `read_bytes(path)` alongside `read_file(path)` and
