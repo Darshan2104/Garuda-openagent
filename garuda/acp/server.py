@@ -86,9 +86,10 @@ class AcpServer:
             )
         )
 
-    async def _notify(self, update: dict[str, Any]) -> None:
+    async def _notify(self, session_id: str, update: dict[str, Any]) -> None:
         await self._send(
-            encode_frame({"jsonrpc": "2.0", "method": "session/update", "params": {"update": update}})
+            encode_frame({"jsonrpc": "2.0", "method": "session/update",
+                          "params": {"sessionId": session_id, "update": update}})
         )
 
     async def _request_client(self, method: str, params: dict[str, Any]) -> dict[str, Any] | None:
@@ -193,13 +194,19 @@ class AcpServer:
         prompt = params.get("prompt")
         if not isinstance(prompt, list) or not prompt:
             raise AcpProtocolError("session/prompt needs content blocks")
-        first = prompt[0]
-        text = first.get("text") if isinstance(first, dict) and first.get("type") == "text" else None
-        if not isinstance(text, str) or not text:
+        texts: list[str] = []
+        for index, block in enumerate(prompt):
+            if not isinstance(block, dict) or block.get("type") != "text":
+                raise AcpProtocolError(f"session/prompt block {index + 1} has an unsupported type")
+            text = block.get("text")
+            if not isinstance(text, str):
+                raise AcpProtocolError(f"session/prompt block {index + 1} needs text")
+            texts.append(text)
+        if not any(texts):
             raise AcpProtocolError("session/prompt needs a non-empty text block")
         before, _ = await runtime.poll_events(0)
         seen = len(before)
-        prompt_task = asyncio.ensure_future(runtime.prompt(text))
+        prompt_task = asyncio.ensure_future(runtime.prompt("\n\n".join(texts)))
         deliveries: set[asyncio.Task] = set()
         try:
             while not prompt_task.done():
@@ -220,7 +227,7 @@ class AcpServer:
                 if event.kind.value != "approval_request":
                     await self._deliver_event(runtime, event)
         except (AcpCancelledError, RuntimeCancelledError):
-            await self._notify({"sessionUpdate": "error", "message": "cancelled by client"})
+            await self._notify(params["sessionId"], {"sessionUpdate": "error", "message": "cancelled by client"})
             await self._reply(call_id, {"stopReason": "cancelled"})
             return
         finally:
@@ -273,7 +280,7 @@ class AcpServer:
             return
         update = _to_update(event)
         if update is not None:
-            await self._notify(update)
+            await self._notify(event.session_id, update)
 
     async def _on_cancel(self, call_id: Any, params: dict) -> None:
         runtime = self._session(params)

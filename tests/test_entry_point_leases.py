@@ -86,6 +86,69 @@ async def test_a_recipe_is_refused_while_another_session_edits(tmp_path):
                          workspace=str(tmp_path))
 
 
+@pytest.mark.parametrize("failure", ["cancelled", "exception"])
+async def test_recipe_closes_step_mcp_after_an_interrupted_model(tmp_path, monkeypatch, failure):
+    import json
+    import os
+    import sys
+    from pathlib import Path
+
+    from garuda.config import recipes
+
+    log = tmp_path / "mcp-launch.log"
+    fixture = Path(__file__).parent / "fixtures" / "mcp_lifecycle_server.py"
+    config = tmp_path / "mcp.json"
+    config.write_text(json.dumps({"mcpServers": {"fixture": {
+        "command": sys.executable, "args": [str(fixture)], "required": True,
+        "env": {"MCP_LIFECYCLE_LOG": str(log)},
+    }}}))
+    workflow = Recipe("two-steps", steps=[RecipeStep("plan", "First step"), RecipeStep("plan", "Later step")])
+    entered = asyncio.Event()
+
+    class BrokenModel(ScriptModel):
+        async def complete(self, *args, **kwargs):
+            entered.set()
+            await asyncio.Event().wait()
+
+    # Remember the real manager only for fixture cleanup if the test fails.
+    managers = []
+    prepare = recipes.prepare_agent_run
+
+    async def remember_manager(*args, **kwargs):
+        result = await prepare(*args, **kwargs)
+        managers.append(result.mcp_manager)
+        return result
+
+    monkeypatch.setattr(recipes, "prepare_agent_run", remember_manager)
+    if failure == "exception":
+        def unreadable_prompt(*args):
+            raise RuntimeError("scripted prompt assembly failure")
+
+        monkeypatch.setattr(recipes, "resolve_system_prompt", unreadable_prompt)
+    task = asyncio.create_task(run_recipe(
+        workflow, {}, model=BrokenModel([]), env=LocalEnvironment(tmp_path),
+        workspace=str(tmp_path), mcp_config_path=str(config),
+    ))
+    try:
+        if failure == "cancelled":
+            await asyncio.wait_for(entered.wait(), 10)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            with pytest.raises(RuntimeError, match="scripted prompt assembly failure"):
+                await task
+        (launch,) = log.read_text().splitlines()
+        with pytest.raises(ProcessLookupError):
+            os.kill(int(launch.split()[1]), 0)
+        assert _holders(tmp_path) == []
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        for manager in managers:
+            await manager.close()
+
 async def test_garuda_chat_refuses_before_any_environment_when_the_workspace_is_held(
     tmp_path, monkeypatch, capsys
 ):

@@ -155,6 +155,26 @@ def test_narrow_applies_what_is_stricter_and_leaves_the_original_alone():
     assert narrow.digest != base.digest and narrow.narrowed
 
 
+@pytest.mark.parametrize(("override", "path"), [
+    ({"limits": {"max_turns": 1.5}}, "limits.max_turns"),
+    ({"permissions": {"mode": "custom"}}, "permissions.mode"),
+    ({"tools": {"options": {"bash": {"max_output_bytes": 2.5}}}}, "tools.options.bash.max_output_bytes"),
+    ({"skills": {"include": "some-skill"}}, "skills.include"),
+])
+def test_narrow_checks_field_types_before_applying_them(override, path):
+    from garuda.agents.spec import AgentSpecError
+
+    base = AgentSpec.from_dict({
+        "extends": "garuda/explore", "limits": {"max_turns": 10, "deadline_sec": 30},
+    })
+    with pytest.raises(AgentSpecError) as caught:
+        base.narrow(**override)
+    assert (caught.value.code, caught.value.path) == ("agent.invalid_value", path)
+    narrowed = base.narrow(limits={"max_turns": 5, "deadline_sec": 1.5})
+    assert (narrowed.profile().max_turns, narrowed.profile().deadline_sec) == (5, 1.5)
+    assert base.profile().max_turns == 10 and narrowed.digest != base.digest
+
+
 def test_narrowing_at_random_never_ends_up_wider():
     rng = random.Random(166)
     base = AgentSpec.load("build", workspace=".")
