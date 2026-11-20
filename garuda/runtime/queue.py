@@ -298,6 +298,21 @@ class QueueStore:
             entry["waiting"] = kept
         return removed
 
+    def retire_waiting(self, admission: dict) -> bool:
+        """Remove the observed waiting record only if its entire binding still agrees."""
+        scope, item_id = admission["scope"], admission["id"]
+        with self._locked() as state:
+            entry = state["scopes"].get(scope)
+            if (admission.get("state") != "queued" or entry is None
+                    or item_id in entry["claims"]
+                    or any(record["entry"]["id"] == item_id for record in state.get("pending", {}).values())):
+                return False
+            for index, waiting in enumerate(entry["waiting"]):
+                if waiting["id"] == item_id and all(waiting.get(k) == admission.get(k) for k in ENTRY_FIELDS):
+                    del entry["waiting"][index]
+                    return True
+        return False
+
     def try_claim(self, scope: str, item_id: str, owner: Owner | None = None) -> bool:
         """Select work only after durable queue intent, reservation and commit."""
         owner = owner or current_owner()

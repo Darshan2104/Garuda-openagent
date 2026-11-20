@@ -1279,7 +1279,10 @@ the original cancellation, with any cleanup failure retained as its cause.
   original harness reference, preserving role permissions and the alias for downstream capability resolution.
 - Admission hashes the serialized launch arguments and effective garuda.yaml
   configuration; workers recompute the binding before identity publication or
-  selection. Role runtime/model changes refuse without changing queue bytes.
+  selection. A refusal can retire a still-waiting admission after proving the
+  launched worker's identity and matching the original receipt. A changed
+  role or alias never selects a new lane for existing work. A pending claim or
+  an unprovable launch leaves the queue untouched.
   This is a pre-selection configuration check, not a snapshot of all referenced
   runtime/agent/MCP files or protection against later concurrent configuration edits.
 - Dynamic role fallback is refused for background admission until its selected

@@ -125,6 +125,7 @@ def _write_private(path: Path, data: dict) -> None:
 
 
 def _runtime_binding(args):
+    from garuda.acp.catalog import RuntimeSettingsError
     from garuda.agents.setup import prepare_background_runtime
     from garuda.config.garuda_yaml import GarudaConfigError
     from garuda.runtime.registry import RegistryError
@@ -132,7 +133,7 @@ def _runtime_binding(args):
 
     try:
         return prepare_background_runtime(args)
-    except (RegistryError, GarudaConfigError, RoleRefused) as exc:
+    except (RegistryError, GarudaConfigError, RoleRefused, RuntimeSettingsError) as exc:
         raise BackgroundRefused(f"background runtime refused: {exc}") from exc
 
 
@@ -140,9 +141,9 @@ def harness_of(args) -> str:
     return _runtime_binding(args).runtime_id
 
 
-def _admission_digest(description: dict, binding) -> str:
-    return (_digest(description) if binding.config_digest is None else
-            _digest({"args": description, "configuration": binding.config_digest}))
+def _admission_digest(description: dict, configuration_digest: str | None) -> str:
+    return (_digest(description) if configuration_digest is None else
+            _digest({"args": description, "configuration": configuration_digest}))
 
 
 def scope_of(args) -> str:
@@ -205,9 +206,10 @@ def launch(args: argparse.Namespace | None = None, *, store=None, queue=None, sp
     directory = store.session_dir(session_id)
     if getattr(args, "starter_record", None) is not None:
         store.update_meta(session_id, {"starter": args.starter_record})
-    digest = _admission_digest(description, binding)
+    digest = _admission_digest(description, binding.config_digest)
     _write_private(directory / LAUNCH_FILE, {"version": 1, "args": description,
-                                             "config_digest": digest})
+                                             "config_digest": digest,
+                                             "configuration_digest": binding.config_digest})
     store.update_meta(session_id, {"status": "queued", "state": session_state.queued(),
                                    "background": True, "config_digest": digest})
     scope = scope_for(harness)
@@ -294,6 +296,63 @@ async def _heartbeat(queue, scope, session_id, owner, interval):
         queue.heartbeat(scope, session_id, owner)
 
 
+async def _retire_refused_admission(store, queue, session_id: str, document: dict, admission: dict) -> None:
+    from garuda.runtime import session_state
+    from garuda.runtime.queue import current_user, scope_for
+    from garuda.runtime.recovery import ProcessIdentityUnavailable, _process_identity, same_process
+
+    digest = admission.get("config_digest")
+    if (admission["state"] != "queued" or admission.get("quarantined")
+            or admission.get("session_id") != session_id or admission.get("user") != current_user()
+            or admission["scope"] != scope_for(admission["harness"])
+            or digest != document.get("config_digest")
+            or digest != _admission_digest(document["args"], document.get("configuration_digest"))):
+        return
+    pid = os.getpid()
+    try:
+        identity = _process_identity(pid)
+    except ProcessIdentityUnavailable:
+        return
+    if not identity:
+        return
+
+    def queued_for_this_launch(meta):
+        state = meta.get("state")
+        return (meta.get("background") is True and meta.get("config_digest") == digest
+                and isinstance(state, dict) and state.get("work") == "queued")
+
+    try:
+        # The launcher records the process after spawn. A fast worker may
+        # detect drift before that record is visible.
+        async with asyncio.timeout(2):
+            while True:
+                meta = store.load_meta(session_id)
+                if not queued_for_this_launch(meta):
+                    return
+                if meta.get("worker") is not None:
+                    break
+                await asyncio.sleep(0.05)
+    except TimeoutError:
+        return
+
+    def settle(meta):
+        worker = meta.get("worker")
+        recorded = worker.get("identity") if isinstance(worker, dict) else None
+        if (not queued_for_this_launch(meta) or not isinstance(worker, dict)
+                or worker.get("pid") != pid or not isinstance(recorded, str) or not recorded
+                or not same_process(recorded, identity)
+                or not queue.retire_waiting(admission)):
+            raise BackgroundRefused("the refused admission no longer belongs to this waiting worker")
+        state = {**session_state.interrupted(), "work": "stopped", "outcome": "refused"}
+        return {"status": "refused", "state": session_state.validate(state),
+                "background_refusal": "background.admission_changed"}
+
+    try:
+        store.mutate_meta(session_id, settle)
+    except BackgroundRefused:
+        return
+
+
 async def run_worker_async(session_id: str, *, store=None, queue=None, runner=None,
                            poll_max: float = POLL_MAX) -> int:
     from garuda.core.sessions import SessionStore
@@ -319,12 +378,16 @@ async def run_worker_async(session_id: str, *, store=None, queue=None, runner=No
         return 0  # A queued cancellation removed the admission before this worker started.
     from garuda.runtime.queue import scope_for
 
-    binding = _runtime_binding(args)
-    scope = scope_for(binding.runtime_id)
-    if (admission["scope"] != scope or admission.get("session_id") != session_id
-            or admission.get("config_digest") != _admission_digest(document["args"], binding)
-            or document.get("config_digest") != admission.get("config_digest")):
-        raise BackgroundRefused("background launch disagrees with its frozen queue admission")
+    try:
+        binding = _runtime_binding(args)
+        scope = scope_for(binding.runtime_id)
+        if (admission["scope"] != scope or admission.get("session_id") != session_id
+                or admission.get("config_digest") != _admission_digest(document["args"], binding.config_digest)
+                or document.get("config_digest") != admission.get("config_digest")):
+            raise BackgroundRefused("background launch disagrees with its frozen queue admission")
+    except BackgroundRefused:
+        await _retire_refused_admission(store, queue, session_id, document, admission)
+        raise
     owner = current_owner()
 
     # 1. Identity first: before the queue, a lease, or any change to the workspace.

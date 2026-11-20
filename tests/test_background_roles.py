@@ -59,7 +59,6 @@ async def test_a_role_changed_while_queued_refuses_before_selection(tmp_path, ch
     user_file.write_text("version: 1\ndefaults: {role: worker}\nroles:\n"
                          + ("  worker: {harness: native}\n" if change == "runtime" else
                             "  worker: {harness: codex, model_id: changed-model}\n"))
-    before = (queue.root / "state.json").read_bytes()
     called = []
 
     async def runner(args):
@@ -69,7 +68,8 @@ async def test_a_role_changed_while_queued_refuses_before_selection(tmp_path, ch
     with pytest.raises(bg_sessions.BackgroundRefused):
         await bg_sessions.run_worker_async(session, queue=queue, store=store, runner=runner)
     assert not called
-    assert (queue.root / "state.json").read_bytes() == before
+    assert queue.entries() == []
+    assert store.load_meta(session)["state"]["outcome"] == "refused"
     assert not capacity.root.exists()
 
 
