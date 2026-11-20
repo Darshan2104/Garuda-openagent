@@ -502,6 +502,57 @@ async def test_a_slow_snapshot_times_out_without_dispatch_and_cleans_up_after_it
     assert CapacityStore().holders("native") == []
 
 
+class SkewedClock:
+    """Wall time plus a jump, so a test can place work exactly at the deadline."""
+
+    def __init__(self):
+        self.skew = 0.0
+
+    def __call__(self):
+        return time.time() + self.skew
+
+
+def _late_answer_and_slow_comparison(world, monkeypatch, comparison_sec):
+    from garuda.workspace.no_edits import NoEditsGuard
+
+    clock, started = SkewedClock(), []
+    original = NoEditsGuard.check
+
+    def slow_check(self, *args, **kwargs):
+        clock.skew += comparison_sec  # the comparison takes this long
+        return original(self, *args, **kwargs)
+
+    async def late_runner(child):
+        clock.skew += started[0] + 10 - 0.2 - clock()  # answer 0.2s before the deadline
+        return ChildOutcome(child.child_id, True, "Looks fine.", denied_operations=0)
+
+    monkeypatch.setattr(NoEditsGuard, "check", slow_check)
+    resolved = make_resolved({**DOC, "consults": {"timeout_sec": 10}})
+    engine = ConsultService(world.store, resolved, runner=late_runner, clock=clock)
+    started.append(clock())
+    return engine
+
+
+async def test_an_answer_near_the_deadline_survives_a_slow_comparison(world, monkeypatch):
+    # #611: the child may use the whole deadline, so the comparison has a bounded grace.
+    engine = _late_answer_and_slow_comparison(world, monkeypatch, 1.0)
+    result = await engine.consult(request(world, request_id="late"))
+    assert result.outcome == "answered" and "> Looks fine." in result.text
+    assert result.receipt["observed_changes"]["unchanged"] is True
+
+
+async def test_a_comparison_that_outlives_its_grace_withholds_the_answer(world, monkeypatch):
+    engine = _late_answer_and_slow_comparison(world, monkeypatch, svc.COMPARISON_GRACE + 1)
+    with pytest.raises(ConsultRefused) as caught:
+        await engine.consult(request(world, request_id="overrun"))
+    assert caught.value.code == "consult.timeout"
+    record = ConsultState(world.store, world.asker).snapshot()["requests"]["overrun"]
+    assert record["state"] != "quarantined" and record["result"]["code"] == "consult.timeout"
+    assert "text" not in record["result"]
+    scratch_root = Path(world.store.root) / ".consult" / world.asker / "scratch"
+    assert list(scratch_root.iterdir()) == []
+
+
 async def test_unsettled_snapshot_keeps_its_scratch_and_capacity_after_cancellation(world, monkeypatch):
     from threading import Event
 
