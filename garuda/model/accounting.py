@@ -15,6 +15,7 @@ call behaves exactly as before.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from contextvars import ContextVar
 from typing import Any
@@ -78,7 +79,8 @@ def record(purpose: str, model: Any, response: Any, duration_ms: float, *, faile
         "model": getattr(model, "model_name", None),
         "accounting": "auxiliary",
         **usage_metadata(response, failed=failed),
-        **({"outcome": "failed"} if failed else {}),
+        **({"outcome": "interrupted" if isinstance(response, asyncio.CancelledError) else "failed"}
+           if failed else {}),
     })
 
 
@@ -116,7 +118,9 @@ async def complete(model: Any, messages: list, *args: Any, purpose: str, **kwarg
     try:
         response = await model.complete(messages, *args, **kwargs)
     except BaseException as exc:
-        if isinstance(exc, Exception):
+        has_interrupted_usage = isinstance(exc, asyncio.CancelledError) and (
+            getattr(exc, "attempt_usage", None) or getattr(exc, "usage", None))
+        if isinstance(exc, Exception) or has_interrupted_usage:
             record(purpose, model, exc, (time.monotonic() - started) * 1000, failed=True)
         if reservation is not None:
             await settle(gate, reservation, error=exc, model=model)
