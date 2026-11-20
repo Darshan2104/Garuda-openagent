@@ -352,6 +352,48 @@ def test_run_runtime_acp_refuses_a_foreign_mutating_lease(tmp_path, monkeypatch,
     assert [h.session_id for h in LeaseStore().holders_of(ws)] == ["someone-else"]
 
 
+@pytest.mark.parametrize(("profile", "expected_exit"), [
+    ("streaming", 0), ("remote-error", 1), ("streaming", 3),
+], ids=["success", "remote-error", "no-edits-refusal"])
+def test_run_runtime_acp_json_keeps_diagnostics_off_stdout(tmp_path, monkeypatch, capsys, profile, expected_exit):
+    ws = _git_workspace(tmp_path)
+    _on_path(monkeypatch, tmp_path / "bin")
+    _install_shim(tmp_path / "bin", profile=profile)
+    _trusted_settings(tmp_path, monkeypatch)
+    argv = [
+        "garuda", "run", "-t", "hello via CLI", "--workspace", str(ws), "--runtime", "fakeacp", "--json",
+    ]
+    if expected_exit == 3:
+        from garuda.interfaces import main as interface
+
+        check = interface._finish_no_edits
+
+        def file_changed_before_check(*args):
+            (ws / "a.txt").write_text("concurrent edit\n", encoding="utf-8")
+            return check(*args)
+
+        monkeypatch.setattr(interface, "_finish_no_edits", file_changed_before_check)
+        argv.append("--no-edits")
+    monkeypatch.setattr(sys, "argv", argv)
+
+    with pytest.raises(SystemExit) as exited:
+        main()
+    assert exited.value.code == expected_exit
+    output = capsys.readouterr()
+    rows = [json.loads(line) for line in output.out.splitlines()]
+    if expected_exit:
+        assert ("synthetic internal failure" if expected_exit == 1 else "changed: a.txt") in output.err
+        assert not rows
+    else:
+        (meta,) = SessionStore().list_sessions()
+        assert {row["session_id"] for row in rows} == {meta["session_id"]}
+        assert [row["seq"] for row in rows] == list(range(len(rows)))
+        chunks = [row for row in rows if row["kind"] == "message" and "chunk" in row["payload"]]
+        assert {row["turn"] for row in chunks} == {1}
+        assert "".join(row["payload"]["chunk"] for row in chunks) == "hello, world"
+        assert "not verified" in output.err
+
+
 def test_run_runtime_acp_headless_approvals_are_denied_and_audited(
     tmp_path, monkeypatch, capsys
 ):

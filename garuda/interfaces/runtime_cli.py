@@ -638,6 +638,7 @@ async def run_acp_task(
     approval=None,
     prompt_timeout: float | None = None,
     emit=print,
+    format_event=None,
     initial_selection=None,
     initial_plan=None,
     attached=None,
@@ -922,7 +923,8 @@ async def run_acp_task(
         )
         events, _ = await runtime.poll_events(0)
         for event in events:
-            emit(f"[{event.kind.value} t{event.turn}] {event.payload}")
+            emit(format_event(event) if format_event is not None
+                 else f"[{event.kind.value} t{event.turn}] {event.payload}")
         # The agent's own words, bounded: what a brief of this session reports
         # as its output (B.7). Never a transcript.
         reply = "".join(

@@ -2096,14 +2096,27 @@ async def _run_runtime_command(args) -> int:
     return 1
 
 
+def _acp_event_json(event) -> str:
+    import json
+
+    return json.dumps({
+        "session_id": event.session_id, "kind": event.kind.value, "turn": event.turn,
+        "seq": event.seq, "payload": event.payload,
+    }, allow_nan=False)
+
+
 async def run_acp_command(args, task: str, catalog) -> int:
     """Run one task on a named ACP runtime via loud, explicit selection."""
+    import sys
+
     from garuda.interfaces.run_guard import interactive_approval
     from garuda.interfaces.runtime_cli import NativeStartupFallback, run_acp_task
     from garuda.workspace.no_edits import NoEditsGuard, deny_all
 
     no_edits = _no_edits_requested(args)
     guard = NoEditsGuard(args.workspace) if no_edits else None
+    json_output = getattr(args, "json", False)
+    summary_output = sys.stderr if json_output else sys.stdout
     held: list[str] = []
     try:
         summary = await run_acp_task(
@@ -2117,6 +2130,7 @@ async def run_acp_command(args, task: str, catalog) -> int:
             no_edits=no_edits,
             permission_ceiling=getattr(args, "permission_mode", None),
             emit=held.append if no_edits else print,
+            format_event=_acp_event_json if json_output else None,
             initial_selection=getattr(args, "_initial_selection", None),
             initial_plan=getattr(args, "_initial_plan", None),
             attached=getattr(args, "_attached", None),
@@ -2132,7 +2146,7 @@ async def run_acp_command(args, task: str, catalog) -> int:
     except NativeStartupFallback:
         raise
     except Exception as exc:
-        print(f"Error: {exc}")
+        print(f"Error: {exc}", file=summary_output)
         return 1
     args._completed_session_id = summary["session_id"]
     if guard is not None:
@@ -2145,7 +2159,8 @@ async def run_acp_command(args, task: str, catalog) -> int:
     print(
         f"session {summary['session_id']}: {summary['status']} "
         f"(turn {summary['turn']}, {summary['events']} normalized events; "
-        "the ACP result is not verified by Garuda)"
+        "the ACP result is not verified by Garuda)",
+        file=summary_output,
     )
     _accept_session(args, summary.get("session_id"))
     return 0 if summary["status"] == "completed" else 1
