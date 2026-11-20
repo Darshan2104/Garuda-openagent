@@ -659,6 +659,7 @@ async def prepare_run(
     collection_policy=None,
     allowed_tool_effects: frozenset[ToolEffect] | None = None,
     model_delta_consumer=None,
+    deadline_at: float | None = None,
 ) -> RunState:
     """Assemble everything a run needs and return the state the loop drives."""
     config = config or AgentConfig()
@@ -766,7 +767,8 @@ async def prepare_run(
     # gone", which is the condition that actually matters when a single
     # command can block for minutes.
     started_at = time.monotonic()
-    deadline_at = started_at + config.deadline_sec if config.deadline_sec else None
+    if deadline_at is None and config.deadline_sec:
+        deadline_at = started_at + config.deadline_sec
     # One spend gate per run tree: created at the root, inherited by children.
     from garuda.core.spend import gate_for
 
