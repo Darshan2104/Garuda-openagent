@@ -154,13 +154,13 @@ def _defaults_dir() -> Path:
 
 
 def _profile_names_in_dir(directory: Path) -> set[str]:
+    from garuda.agents.resolve import SINGLE_FILE_SUFFIXES
+
     names: set[str] = set()
     if not directory.exists():
         return names
-    for path in directory.glob("*.yaml"):
-        names.add(path.stem)
-    for path in directory.glob("*.md"):
-        names.add(path.stem)
+    for suffix in SINGLE_FILE_SUFFIXES:
+        names.update(path.stem for path in directory.glob(f"*{suffix}"))
     if (directory / "agent.md").is_file():
         names.add(directory.name)
     for path in directory.glob("**/agent.md"):

@@ -143,6 +143,22 @@ def test_observed_use_is_per_window_and_labelled(world):
     assert provider["rate_limits"]["status"] == "unknown"
 
 
+@pytest.mark.parametrize(("reported_cost", "unknown_fields", "unpriced"), [
+    (0.01, [], 0),
+    (0.01, ["cost_usd"], 1),
+    (None, [], 1),
+], ids=["known", "partial", "unknown"])
+def test_provider_and_harness_windows_keep_cost_coverage(world, reported_cost, unknown_fields, unpriced):
+    ledger, limits = world
+    _rec(ledger, "call", NOW - 1, harness="native", cost_usd=reported_cost, usage_unknown=unknown_fields)
+
+    result = providers.cards([entry("native")], {}, ledger=ledger, limits=limits, now=NOW)
+    assert len(result["harnesses"]) == len(result["providers"]) == 1
+    for card in result["harnesses"] + result["providers"]:
+        recent = card["observed_use"]["windows"]["5h"]
+        assert (recent["cost_usd"], recent["cost_unknown_records"]) == (reported_cost, unpriced)
+
+
 def test_the_route_serves_cards_and_refresh_is_write_mode_only(world, tmp_path, monkeypatch):
     from garuda.core.sessions import SessionStore
     from garuda.interfaces.web.routes import DashboardContext

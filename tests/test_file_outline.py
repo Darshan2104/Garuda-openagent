@@ -22,8 +22,9 @@ CTX = ToolContext(session_id="outline", post_edit_diagnostics=False)
 FIXTURE = Path(__file__).parent / "fixtures/outline/structure.py.txt"
 
 
-async def test_python_outline_definitions_signatures_imports_and_hidden_ranges(tmp_path):
-    source = FIXTURE.read_text()
+@pytest.mark.parametrize("prefix", ["", "\ufeff"], ids=["utf8", "utf8-bom"])
+async def test_python_outline_definitions_signatures_imports_and_hidden_ranges(tmp_path, prefix):
+    source = prefix + FIXTURE.read_text()
     (tmp_path / "structure.py").write_text(source)
     result = await ReadFileTool().execute(
         {"path": "structure.py", "outline": True}, LocalEnvironment(tmp_path), CTX,

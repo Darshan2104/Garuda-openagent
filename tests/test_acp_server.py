@@ -88,6 +88,27 @@ async def test_session_methods_require_the_handshake():
         await duplex.call("session/new", {})
 
 
+async def test_prompt_delivers_all_text_blocks_and_refuses_invalid_content():
+    _, duplex = _server()
+    await duplex.call("initialize", {"protocolVersion": ACP_VERSION})
+    session = await duplex.call("session/new")
+    first = {"type": "text", "text": "Summarize the files."}
+    second = {"type": "text", "text": "Include the test results."}
+    blocked = {"type": "text", "text": "Do not dispatch a truncated request."}
+    for invalid, diagnostic in [
+        ({"type": "image", "mimeType": "image/png", "data": "AA=="}, "unsupported"),
+        ({"type": "text", "text": 7}, "text"),
+    ]:
+        with pytest.raises(AssertionError, match=diagnostic):
+            await duplex.call("session/prompt", {**session, "prompt": [blocked, invalid]})
+    assert not duplex.notifications()
+
+    result = await duplex.call("session/prompt", {**session, "prompt": [first, second]})
+    assert result["stopReason"] == "end_turn"
+    texts = [note.get("content", {}).get("text", "") for note in duplex.notifications()]
+    assert "done: Summarize the files.\n\nInclude the test results." in texts
+
+
 async def test_native_is_the_product_default():
     assert _cli_parser().parse_args([]).driver == "native"
     assert _select_driver("echo", ".") is make_echo_runtime
@@ -143,6 +164,33 @@ async def test_inbound_outbound_isolation():
     second = await duplex.call("session/new", {})
     assert first["sessionId"] != second["sessionId"]
     assert server.session_count() == 2
+
+
+async def test_parallel_prompts_send_updates_for_the_owning_session():
+    _, duplex = _server()
+    await duplex.call("initialize", {"protocolVersion": ACP_VERSION})
+    first = await duplex.call("session/new")
+    second = await duplex.call("session/new")
+
+    async def prompt(session, text):
+        return await duplex.call("session/prompt", {
+            **session, "prompt": [{"type": "text", "text": text}],
+        })
+
+    replies = await asyncio.gather(prompt(first, "first task"), prompt(second, "second task"))
+    assert replies == [{"stopReason": "end_turn"}, {"stopReason": "end_turn"}]
+    routed = {}
+    for frame in duplex.sent:
+        message, _ = decode_frame(frame)
+        if message.get("method") == "session/update":
+            params = message["params"]
+            content = params["update"].get("content", {})
+            if content.get("type") == "text":
+                routed[params["sessionId"]] = content["text"]
+    assert routed == {
+        first["sessionId"]: "done: first task",
+        second["sessionId"]: "done: second task",
+    }
 
 
 async def _read_reply(stdout, call_id: int) -> dict:
@@ -431,12 +479,17 @@ async def test_cancel_processed_while_prompt_blocked():
     )
     await asyncio.wait_for(prompt_task, 10)
     replies = {}
+    updates = []
     for frame in sent:
         message, _ = decode_frame(frame)
         if "id" in message and message["id"] in (3, 4):
             replies[message["id"]] = message
+        if message.get("method") == "session/update":
+            updates.append(message["params"])
     assert replies[4]["result"] == {"cancelled": True}
     assert replies[3]["result"] == {"stopReason": "cancelled"}
+    assert any(update.get("sessionId") == session_id and update["update"]["sessionUpdate"] == "error"
+               for update in updates)
 
 
 async def test_permission_request_roundtrip_streams_mid_turn():
