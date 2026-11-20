@@ -236,3 +236,75 @@ async def test_failed_stream_attempt_releases_slot_during_backoff(monkeypatch):
     finally:
         release_second.set()
         await asyncio.gather(first, *([second] if second is not None else []), return_exceptions=True)
+
+
+async def test_cancelled_stream_releases_slot_when_close_hangs(monkeypatch, caplog):
+    import litellm
+
+    from garuda.model import governor, litellm_model
+    from garuda.model.litellm_model import LitellmModel
+
+    reading = asyncio.Event()
+    cleaning = asyncio.Event()
+    finish_cleanup = asyncio.Event()
+    second_dispatched = asyncio.Event()
+
+    class Stream:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            reading.set()
+            await asyncio.Event().wait()
+
+        async def aclose(self):
+            cleaning.set()
+            await finish_cleanup.wait()
+            raise RuntimeError("late close failure")
+
+    async def empty_stream():
+        for item in ():
+            yield item
+
+    async def provider(**request):
+        if request["model"].endswith("/first"):
+            return Stream()
+        second_dispatched.set()
+        return empty_stream()
+
+    monkeypatch.setattr(litellm, "acompletion", provider)
+    monkeypatch.setattr(litellm_model, "_STREAM_CLOSE_GRACE", 0.2)
+    monkeypatch.setattr(governor, "_governor", ModelGovernor(limit=1))
+
+    async def consume(name):
+        async for _ in LitellmModel(model_name=f"openai/{name}").stream([]):
+            pass
+
+    first = asyncio.create_task(consume("first"))
+    second = None
+    try:
+        await asyncio.wait_for(reading.wait(), 3)
+        second = asyncio.create_task(consume("second"))
+        await asyncio.sleep(0.05)
+        assert not second_dispatched.is_set()
+        first.cancel()
+        await asyncio.wait_for(cleaning.wait(), 3)
+        # Inside the grace period the slot stays held.
+        await asyncio.sleep(0.05)
+        assert not second_dispatched.is_set() and not first.done()
+        # A close that hangs past the grace period gives up the slot.
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(asyncio.shield(first), 3)
+        await asyncio.wait_for(second, 3)
+        assert second_dispatched.is_set()
+        background = set(litellm_model._background_closes)
+        assert len(background) == 1
+        with caplog.at_level("WARNING", logger=litellm_model.__name__):
+            finish_cleanup.set()
+            await asyncio.gather(*background, return_exceptions=True)
+            await asyncio.sleep(0)
+        assert not litellm_model._background_closes
+        assert "late close failure" in caplog.text
+    finally:
+        finish_cleanup.set()
+        await asyncio.gather(first, *([second] if second is not None else []), return_exceptions=True)
