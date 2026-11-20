@@ -309,6 +309,11 @@ class Ledger:
 # --- totals ---------------------------------------------------------------------------
 
 
+def cost_is_unknown(record: dict) -> bool:
+    """Whether all or part of a record's cost is unreported."""
+    return record.get("cost_usd") is None or "cost_usd" in (record.get("usage_unknown") or [])
+
+
 def totals(records: list[dict]) -> dict:
     """Sum what may be summed: native calls and *proved* ACP deltas.
 
@@ -333,7 +338,7 @@ def totals(records: list[dict]) -> dict:
         for field in ("input_tokens", "output_tokens", "total_tokens", "cache_tokens"):
             out[field] += record.get(field) or 0
         unknown = record.get("usage_unknown") or []
-        if record.get("cost_usd") is None or "cost_usd" in unknown:
+        if cost_is_unknown(record):
             out["cost_unknown_records"] += 1
         if record.get("cost_usd") is not None:
             out["cost_usd"] = round(out["cost_usd"] + record["cost_usd"], 8)

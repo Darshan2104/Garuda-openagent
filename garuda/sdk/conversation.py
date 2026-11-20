@@ -1,6 +1,7 @@
 """Stateful conversation wrapper around Garuda agent runs."""
 
 import asyncio
+from contextvars import ContextVar, copy_context
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -16,6 +17,9 @@ from garuda.workspace.settlement import settle_task
 if TYPE_CHECKING:
     from garuda.model.streaming import DeltaConsumer
     from garuda.tools.protocol import Tool
+
+
+_native_turn_keys: ContextVar[frozenset[object]] = ContextVar("_native_turn_keys", default=frozenset())
 
 
 class Conversation:
@@ -76,6 +80,9 @@ class Conversation:
         self._lease: Any | None = None
         self._live: Any | None = None
         self._record: Any | None = None
+        self._native_turn: asyncio.Task[AgentResult] | None = None
+        self._active_native_turn_key: object | None = None
+        self._native_close: asyncio.Task[None] | None = None
 
     async def _ensure_session(self) -> AgentSession:
         if self._session is None:
@@ -128,6 +135,38 @@ class Conversation:
             raise ValueError("live deltas are only available for the native runtime")
         if self._runtime_name != "native":
             return await self._run_acp(task)
+        if self._native_close is not None and not self._native_close.done():
+            raise RuntimeError("The native conversation is closing")
+        if self._native_turn is not None and not self._native_turn.done():
+            raise RuntimeError("The native conversation already has an active turn")
+        self._native_close = None
+        key = self._active_native_turn_key = object()
+        owner_context = copy_context()
+        owner_context.run(_native_turn_keys.set, _native_turn_keys.get() | {key})
+        turn = self._native_turn = asyncio.create_task(
+            self._run_native(task, on_delta=on_delta, subagent_deltas=subagent_deltas),
+            context=owner_context,
+        )
+        try:
+            return await asyncio.shield(turn)
+        except asyncio.CancelledError as cancelled:
+            if not turn.done() and not turn.cancelling():
+                turn.cancel()
+            try:
+                await settle_task(turn)
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                raise cancelled from exc
+            raise
+        finally:
+            if self._native_turn is turn:
+                self._native_turn = None
+                self._active_native_turn_key = None
+
+    async def _run_native(
+        self, task: str, *, on_delta: "DeltaConsumer | None", subagent_deltas: bool,
+    ) -> AgentResult:
         session = await self._ensure_session()
         session.config.stream_subagent_deltas = subagent_deltas
         live = await self._ensure_live(session, task)
@@ -451,24 +490,19 @@ class Conversation:
         self._approval_task = self._launch_approval_responder()
 
     async def close(self) -> None:
-        if self._runtime_name != "native":
-            await self._close_acp()
-            return
-        if self._session is not None:
-            await self._session.close()
-        if self._live is not None:
-            # Reap, tear the environment down, record the delta, then release
-            # the lease last (or quarantine) — the shared close (B.6).
-            live, self._live, self._lease, self._env = self._live, None, None, None
-            await live.close(lambda: self._finish_native(live.workspace))
-        self._session = None
-
-    async def _close_acp(self) -> None:
-        if asyncio.current_task() is self._approval_task:
-            raise RuntimeError("Close the ACP conversation from outside its approval handler")
-        if self._acp_close is None or (self._acp_close.done() and self._sdk_session_id is not None):
-            self._acp_close = asyncio.create_task(self._settle_acp())
-        closing = self._acp_close
+        if self._runtime_name == "native":
+            turn = self._native_turn
+            if turn is not None and not turn.done() and self._active_native_turn_key in _native_turn_keys.get():
+                raise RuntimeError("Close the native conversation from outside its active turn")
+            if self._native_close is None:
+                self._native_close = asyncio.create_task(self._close_native())
+            closing = self._native_close
+        else:
+            if asyncio.current_task() is self._approval_task:
+                raise RuntimeError("Close the ACP conversation from outside its approval handler")
+            if self._acp_close is None or (self._acp_close.done() and self._sdk_session_id is not None):
+                self._acp_close = asyncio.create_task(self._settle_acp())
+            closing = self._acp_close
         try:
             await asyncio.shield(closing)
         except asyncio.CancelledError as cancelled:
@@ -510,6 +544,22 @@ class Conversation:
             self._sdk_session_id = None
             self._acp_result = None
             self._acp_turn_count = 0
+
+    async def _close_native(self) -> None:
+        turn = self._native_turn
+        if turn is not None:
+            if not turn.done() and not turn.cancelling():
+                turn.cancel()
+            await asyncio.gather(turn, return_exceptions=True)
+        session, self._session = self._session, None
+        live, self._live, self._lease, self._env = self._live, None, None, None
+        try:
+            if session is not None:
+                await session.close()
+        finally:
+            if live is not None:
+                # Persist the settled outcome and release the workspace lease last.
+                await live.close(lambda: self._finish_native(live.workspace))
 
     async def _finish_native(self, workspace: str) -> None:
         await self._record.finish(workspace)

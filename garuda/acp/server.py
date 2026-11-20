@@ -86,9 +86,10 @@ class AcpServer:
             )
         )
 
-    async def _notify(self, update: dict[str, Any]) -> None:
+    async def _notify(self, session_id: str, update: dict[str, Any]) -> None:
         await self._send(
-            encode_frame({"jsonrpc": "2.0", "method": "session/update", "params": {"update": update}})
+            encode_frame({"jsonrpc": "2.0", "method": "session/update",
+                          "params": {"sessionId": session_id, "update": update}})
         )
 
     async def _request_client(self, method: str, params: dict[str, Any]) -> dict[str, Any] | None:
@@ -220,7 +221,7 @@ class AcpServer:
                 if event.kind.value != "approval_request":
                     await self._deliver_event(runtime, event)
         except (AcpCancelledError, RuntimeCancelledError):
-            await self._notify({"sessionUpdate": "error", "message": "cancelled by client"})
+            await self._notify(params["sessionId"], {"sessionUpdate": "error", "message": "cancelled by client"})
             await self._reply(call_id, {"stopReason": "cancelled"})
             return
         finally:
@@ -273,7 +274,7 @@ class AcpServer:
             return
         update = _to_update(event)
         if update is not None:
-            await self._notify(update)
+            await self._notify(event.session_id, update)
 
     async def _on_cancel(self, call_id: Any, params: dict) -> None:
         runtime = self._session(params)
