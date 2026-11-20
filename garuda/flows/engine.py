@@ -236,9 +236,11 @@ class FlowRunner:
         self.store = store
         self.workspace = str(Path(workspace).resolve())
         self.name = name
-        from garuda.config.garuda_yaml import effective_flow_steps
+        from garuda.config.garuda_yaml import effective_flow_steps, validate_flow_reviews
 
-        self.steps = effective_flow_steps(flow)
+        steps_path = f"flows.{name}.steps"
+        self.steps = effective_flow_steps(flow, path=steps_path)
+        validate_flow_reviews(self.steps, path=steps_path)
         self.flow = flow
         self.resolved = resolved
         self.task = task

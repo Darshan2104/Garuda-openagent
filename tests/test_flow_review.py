@@ -215,6 +215,44 @@ def test_review_by_must_be_the_terminal_reviewer():
         gy.parse(config)
 
 
+@pytest.mark.parametrize("builder", ["config", "runner"])
+def test_terminal_review_refuses_inputs_from_after_the_reviewed_build(repo, builder):
+    config = _config()
+    resolved = gy.resolve(gy.parse(config), None)
+    flow = config["flows"]["pbr"]
+    flow["steps"].insert(2, {"id": "test", "role": "planner", "outputs": ["notes"]})
+    flow["steps"][-1]["inputs"].append("notes")
+    store = SessionStore()
+    script = Script([APPROVE])
+
+    with pytest.raises(gy.GarudaConfigError, match=r"steps\[3\]\.inputs.*notes.*build"):
+        if builder == "config":
+            gy.parse(config)
+        else:
+            FlowRunner(store, repo, "pbr", flow, resolved, task="t", launcher=script)
+    assert store.list_sessions() == []
+    assert script.sequence == []
+
+
+async def test_terminal_review_receives_notes_from_an_earlier_step(repo):
+    config = _config()
+    steps = config["flows"]["pbr"]["steps"]
+    steps[0]["outputs"].append("notes")
+    steps[-1]["inputs"].append("notes")
+
+    class ScriptWithNotes(Script):
+        async def __call__(self, launch):
+            result = await super().__call__(launch)
+            if launch.step_id == "plan":
+                result.output += "\n" + _block("notes", "Earlier fixture notes")
+            return result
+
+    script = ScriptWithNotes([APPROVE])
+    result = await _run(repo, script, config).run()
+    assert result.completed
+    assert "Earlier fixture notes" in script.prompts["review", 1]
+
+
 @pytest.mark.parametrize('origin,model', [('fallback', 'r/1'), ('consult', 'r/1'),
                                          ('fallback', None), ('consult', None), ('unresolved', 'r/1')])
 async def test_unprovable_review_identity_refuses_before_reviewed_runtime(repo, origin, model):

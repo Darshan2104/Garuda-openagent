@@ -268,6 +268,33 @@ def effective_flow_steps(flow: dict, *, path: str = "flow.steps") -> list[dict]:
     return steps
 
 
+def validate_flow_reviews(steps: list[dict], *, path: str) -> None:
+    """Validate the terminal review at each point the engine invokes it."""
+    available: set[str] = set()
+    for i, step in enumerate(steps):
+        available.update(step.get("outputs", []))
+        review = step.get("review")
+        if not review:
+            continue
+        if "parallel" in step:
+            _fail(f"{path}[{i}].review", "a parallel group cannot be reviewed")
+        if review["by"] == step.get("role"):
+            _fail(f"{path}[{i}].review.by", "a step cannot review itself")
+        terminal = steps[-1]
+        if i == len(steps) - 1 or terminal.get("role") != review["by"]:
+            _fail(f"{path}[{i}].review.by",
+                  "must name the flow's terminal reviewer (the role of its last step)")
+        terminal_outputs = terminal.get("outputs", [])
+        if "review" not in terminal_outputs:
+            _fail(f"{path}[{len(steps) - 1}].outputs", "the terminal reviewer must output a review")
+        missing = set(terminal.get("inputs", [])) - available
+        if missing:
+            _fail(f"{path}[{len(steps) - 1}].inputs",
+                  f"{', '.join(sorted(missing))} must be produced before or by step {step['id']!r}, "
+                  "which the terminal reviewer reviews immediately")
+        available.update(terminal_outputs)
+
+
 def _flow(value, path) -> dict:
     data = _mapping(value, path, ("steps", "description"))
     steps = data.get("steps")
@@ -276,7 +303,9 @@ def _flow(value, path) -> dict:
     if len(steps) > MAX_STEPS:
         _fail(f"{path}.steps", f"at most {MAX_STEPS} steps")
     out: dict[str, Any] = {"steps": [_step(s, f"{path}.steps[{i}]") for i, s in enumerate(steps)]}
-    effective_flow_steps(out, path=f"{path}.steps")
+    steps_path = f"{path}.steps"
+    steps = effective_flow_steps(out, path=steps_path)
+    validate_flow_reviews(steps, path=steps_path)
     if "description" in data:
         out["description"] = _str(data["description"], f"{path}.description")
     return out
@@ -374,23 +403,6 @@ def parse(data: Any, *, source: str = "") -> dict:
 
 def _check_references(doc: dict) -> None:
     roles = doc.get("roles", {})
-    for name, flow in doc.get("flows", {}).items():
-        steps = flow["steps"]
-        for i, step in enumerate(steps):
-            review = step.get("review")
-            if not review:
-                continue
-            if "parallel" in step:
-                _fail(f"flows.{name}.steps[{i}].review", "a parallel group cannot be reviewed")
-            if review["by"] == step.get("role"):
-                _fail(f"flows.{name}.steps[{i}].review.by", "a step cannot review itself")
-            terminal = steps[-1]
-            if i == len(steps) - 1 or terminal.get("role") != review["by"]:
-                _fail(f"flows.{name}.steps[{i}].review.by",
-                      "must name the flow's terminal reviewer (the role of its last step)")
-            if "review" not in terminal.get("outputs", []):
-                _fail(f"flows.{name}.steps[{len(steps) - 1}].outputs",
-                      "the terminal reviewer must output a review")
     for name, role in roles.items():
         for consulted in role.get("consult", []):
             if consulted == name:
