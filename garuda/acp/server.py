@@ -56,6 +56,27 @@ class _OutputUnavailable(OSError):
     """Output cannot accept further protocol frames."""
 
 
+def _prompt_block_text(index: int, block: Any) -> str:
+    """Render one ACP prompt block, accepting only the baseline types.
+
+    ACP requires every agent to accept ``text`` and ``resource_link`` blocks.
+    The server advertises no ``promptCapabilities``, so image, audio, and
+    embedded ``resource`` blocks are refused rather than silently dropped.
+    """
+    kind = block.get("type") if isinstance(block, dict) else None
+    if kind == "text":
+        text = block.get("text")
+        if not isinstance(text, str):
+            raise AcpProtocolError(f"session/prompt block {index + 1} needs text")
+        return text
+    if kind == "resource_link":
+        for field in ("uri", "name"):
+            if not isinstance(block.get(field), str) or not block[field]:
+                raise AcpProtocolError(f"session/prompt block {index + 1} needs a resource_link {field}")
+        return f"Resource link: {block['name']} <{block['uri']}>"
+    raise AcpProtocolError(f"session/prompt block {index + 1} has an unsupported type")
+
+
 class AcpServer:
     """One stdio ACP server. `send` sinks framed replies and notifications."""
 
@@ -196,12 +217,7 @@ class AcpServer:
             raise AcpProtocolError("session/prompt needs content blocks")
         texts: list[str] = []
         for index, block in enumerate(prompt):
-            if not isinstance(block, dict) or block.get("type") != "text":
-                raise AcpProtocolError(f"session/prompt block {index + 1} has an unsupported type")
-            text = block.get("text")
-            if not isinstance(text, str):
-                raise AcpProtocolError(f"session/prompt block {index + 1} needs text")
-            texts.append(text)
+            texts.append(_prompt_block_text(index, block))
         if not any(texts):
             raise AcpProtocolError("session/prompt needs a non-empty text block")
         before, _ = await runtime.poll_events(0)
