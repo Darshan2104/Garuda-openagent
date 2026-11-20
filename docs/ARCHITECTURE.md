@@ -167,6 +167,9 @@ single-quoted, it needs no history approval. Raw-key requests
 unquoted or double-quoted history references require approval, even behind an
 allow prefix. Pane start refuses a reported tmux older than 3.2
 (`new-session -e`); an unparsable version such as `tmux master` is accepted.
+An explicit relative tmux working directory is interpreted from the workspace
+root. The directory change and command run in one pane operation. If the pane
+cannot enter the directory, Garuda returns that failure without running the command.
 A JSON-RPC server with an explicit agent allowlist or permission ceiling refuses
 request overrides of workspace, backend, Docker host/image, agent directory and
 MCP configuration before activation. These settings remain operator-owned.
@@ -249,8 +252,8 @@ If that checkpoint fails, the dashboard retains the pending attachments for
 retry. Loop progress and settlement update the same shared history.
 One outer session span covers all turns, allowing strict
 recovery audit and resume. Closing persists the actual last result, failure or
-cancellation. Dashboard close first settles its active job before session and
-workspace teardown or lease release.
+cancellation. The SDK and dashboard cancel and await the active turn before
+session or workspace teardown and lease release.
 
 ## The run path
 
