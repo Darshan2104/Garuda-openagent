@@ -115,14 +115,20 @@ same fixed checkers (up to 64 KiB). Per-diagnostic attribution is introduced,
 preexisting or unknown; incomplete/failed baselines and ambiguous locations stay
 unknown. Whole-file writes have no baseline. External commands still use
 `Environment.execute`; JSON/YAML retain their existing in-process parsers.
+Python compiles source bytes for both the current file and the retained
+baseline. It accepts source encodings recognized by Python and reports
+compiler-only syntax errors without executing the file or writing bytecode.
 These results are advisory ToolResult metadata, not persisted acceptance receipts;
 project commands and verification remain with their existing trusted owners.
 `files.py::ReadFileTool` keeps raw/range reads as the default; `outline=true`
 requests Python AST metadata from `context/outline.py` after the same
 `Environment.read_file` call. It never launches an interpreter in the workspace.
+A leading UTF-8 byte-order mark is accepted for parsing and stays in the source digest.
 Outline and offset/limit are mutually exclusive; unsupported syntax/languages or
 an oversized outline return an explicit fallback without source or partial outline.
-Reading: `documents.py`, `image_read.py`.
+Reading: `documents.py`, `image_read.py`. CSV spreadsheet reads count complete
+records, preserve quoted cells in tab-separated output, and mark omitted rows
+after the positive `max_rows` limit.
 Network: `web.py` — SSRF guard, redirect re-validation, and pinned-IP connect.
 `web_fetch` heads its text with the delivered response's provenance (final
 URL after redirects, status, charset and its source, retrieval time,
@@ -800,6 +806,9 @@ before; supervised recovery receipts remain separate work).
 working-state checkpoints plus final outcomes. It publishes each requested turn
 before queue execution, records one outer session span, and suppresses inner
 turn delimiters so multi-turn recovery stays unambiguous.
+The native SDK conversation owns one active turn and shares one close task
+among concurrent callers. Close waits through caller cancellation until turn
+cleanup and the terminal session record have settled.
 
 `terminal_approval.py` owns `TerminalApprover`: request-aware worker, agent,
 depth and waiting-count labels, plus one shielded stdin reader per event loop.
