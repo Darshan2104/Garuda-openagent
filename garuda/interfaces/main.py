@@ -2096,12 +2096,33 @@ async def _run_runtime_command(args) -> int:
     return 1
 
 
+def _strict_json_key(key) -> str:
+    """Convert a dict key the way `json.dumps` does, so coercion keeps key names."""
+    if isinstance(key, str):
+        return key
+    if key is None:
+        return "null"
+    if key is True:
+        return "true"
+    if key is False:
+        return "false"
+    if isinstance(key, int):
+        return int.__repr__(key)
+    if isinstance(key, float):
+        if key != key:
+            return "NaN"
+        if key in (float("inf"), float("-inf")):
+            return "Infinity" if key > 0 else "-Infinity"
+        return float.__repr__(key)
+    return str(key)
+
+
 def _strict_json_value(value):
     """Coerce a value to strict JSON: non-finite floats become null, unknown types strings."""
     import math
 
     if isinstance(value, dict):
-        return {str(key): _strict_json_value(item) for key, item in value.items()}
+        return {_strict_json_key(key): _strict_json_value(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_strict_json_value(item) for item in value]
     if isinstance(value, float):

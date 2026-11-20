@@ -433,6 +433,18 @@ def test_run_runtime_acp_json_survives_an_unserializable_event_payload(tmp_path,
     assert meta["final_message"] == "hello, world"
 
 
+def test_strict_json_value_coerces_keys_the_way_json_dumps_does():
+    from garuda.interfaces.main import _strict_json_value
+
+    keys = {None: 1, True: 2, False: 3, 7: 4, 1.5: 5, 1e20: 6, "s": 7}
+    expected = json.loads(json.dumps(keys))
+    assert _strict_json_value(keys) == expected
+    assert _strict_json_value({**keys, "blob": object()}).keys() == {*expected, "blob"}
+    non_finite = _strict_json_value({float("nan"): 1, float("inf"): 2, float("-inf"): 3})
+    assert non_finite == {"NaN": 1, "Infinity": 2, "-Infinity": 3}
+    json.dumps(non_finite, allow_nan=False)
+
+
 def test_run_runtime_acp_headless_approvals_are_denied_and_audited(
     tmp_path, monkeypatch, capsys
 ):
