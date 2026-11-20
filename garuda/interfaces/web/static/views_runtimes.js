@@ -280,7 +280,7 @@ function useRowHtml(use) {
     return "<tr><td>" + esc(name) + '</td><td class="num">' + esc(w.sessions) + '</td><td class="num">' + esc(w.native_calls) +
       '</td><td class="num">' + esc(w.acp_turns) + '</td><td class="num">' + esc(fmt.tokens(w.total_tokens)) +
       '</td><td class="num">' + (w.cost_usd === null ? "unknown" : esc(fmt.cost(w.cost_usd))) +
-      (w.cost_unknown_records && w.cost_usd !== null ? " + " + esc(w.cost_unknown_records) + " unpriced" : "") + "</td></tr>";
+      (w.cost_unknown_records && w.cost_usd !== null ? " known + " + esc(w.cost_unknown_records) + " unpriced" : "") + "</td></tr>";
   }).join("");
 }
 

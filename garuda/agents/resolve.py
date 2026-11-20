@@ -157,8 +157,11 @@ def _locations(namespace: str | None, project_dirs: list[Path]) -> list[tuple[st
     return [(a, d) for a, d in order if wanted is None or a == wanted]
 
 
+SINGLE_FILE_SUFFIXES = (".yaml", ".yml", ".md")
+
+
 def _candidates(directory: Path, name: str) -> list[Path]:
-    return [directory / f"{name}.yaml", directory / f"{name}.yml", directory / f"{name}.md",
+    return [*(directory / f"{name}{suffix}" for suffix in SINGLE_FILE_SUFFIXES),
             directory / name / "agent.md"]
 
 
