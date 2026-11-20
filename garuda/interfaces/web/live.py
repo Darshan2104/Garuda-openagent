@@ -44,6 +44,7 @@ from garuda.interfaces.web.approvals import ApprovalBroker
 from garuda.model.config import ConfigError
 from garuda.model.protocol import DEFAULT_MODEL
 from garuda.model.streaming import CHILD_CALL_END, PARENT_CLEARS_CHILDREN
+from garuda.runtime.strict_store import StorageError
 
 logger = logging.getLogger(__name__)
 
@@ -361,7 +362,7 @@ class LiveRuns:
             title = task[:200]
             try:
                 self.store.update_meta(chat.session_id, {"task": title})
-            except OSError:
+            except (OSError, StorageError):
                 logger.warning("Could not name dashboard session %s", chat.session_id, exc_info=True)
             else:
                 chat.session_task = title
