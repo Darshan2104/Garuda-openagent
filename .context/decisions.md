@@ -1693,7 +1693,8 @@ Architecture, decisions, discoveries, and conventions are committed. Current tas
 - Garuda's inbound stdio ACP server uses the same newline-delimited JSON-RPC
   framing and content-block prompt shape as the outbound adapter; it refuses
   missing or mismatched initialize versions before session methods.
-- Prompt turns stream normalized events while the runtime is active. Permission
+- Prompt turns stream normalized events with the owning session id on every
+  update, including cancellation. Permission
   requests are bidirectional JSON-RPC requests, so a client can answer an
   approval before the turn completes; cancellation remains concurrently
   dispatchable.
