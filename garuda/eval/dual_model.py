@@ -18,7 +18,7 @@ from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
-from garuda.eval.costs import duration_ms, estimate_cost
+from garuda.eval.costs import PRICED_TOKEN_FIELDS, duration_ms, estimate_cost
 from garuda.model.usage import TOKEN_FIELDS, USAGE_FIELDS
 from garuda.types import AgentResult
 
@@ -533,10 +533,11 @@ def paired_result_from_agent_result(
         elif "cost_usd" in unknown and (
                 call.get("failed")
                 # A success without a provider bill is priced from the table,
-                # but only when its token counts are complete and no attempt
-                # reported a partial bill that would be read as the whole cost.
+                # but only when every token count the table reads (cache
+                # counts included) is complete and no attempt reported a
+                # partial bill that would be read as the whole cost.
                 or (isinstance(usage, dict) and "cost_usd" in usage)
-                or any(name in unknown for name in ("prompt_tokens", "completion_tokens"))):
+                or any(name in unknown for name in PRICED_TOKEN_FIELDS)):
             cost = None
         else:
             cost = _cost(call["model"], usage, call["cost"])

@@ -122,6 +122,10 @@ def provider_cost(usage: dict[str, Any] | None) -> float | None:
     return None
 
 
+# Token counts the pricing-table fallback reads; see ``_split_tokens``.
+PRICED_TOKEN_FIELDS = ("prompt_tokens", "completion_tokens", "cache_read_tokens", "cache_creation_tokens")
+
+
 def _split_tokens(usage: dict[str, Any]) -> tuple[int, int, int, int]:
     """(fresh_input, cache_read, cache_write, output) from a usage dict.
 

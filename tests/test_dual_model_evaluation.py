@@ -448,7 +448,16 @@ def test_paired_trial_prices_failed_call_without_usage_from_its_evidence(error, 
     ({"prompt_tokens": 180, "completion_tokens": 20, "cost_usd": 0.05},
      [{"usage": {"prompt_tokens": 90, "completion_tokens": 10, "cost_usd": 0.05}, "outcome": "failed"},
       {"usage": {"prompt_tokens": 90, "completion_tokens": 10}, "outcome": "success"}], None),
-], ids=["table-priced", "unknown-retry-tokens", "partial-provider-cost"])
+    ({"prompt_tokens": 180, "completion_tokens": 20, "cache_creation_tokens": 50000},
+     [{"usage": {"prompt_tokens": 90, "completion_tokens": 10, "cache_creation_tokens": 50000},
+       "outcome": "failed"},
+      {"usage": {"prompt_tokens": 90, "completion_tokens": 10}, "outcome": "success"}], None),
+    ({"prompt_tokens": 180, "completion_tokens": 20, "cache_read_tokens": 80},
+     [{"usage": {"prompt_tokens": 90, "completion_tokens": 10}, "outcome": "failed"},
+      {"usage": {"prompt_tokens": 90, "completion_tokens": 10, "cache_read_tokens": 80},
+       "outcome": "success"}], None),
+], ids=["table-priced", "unknown-retry-tokens", "partial-provider-cost",
+        "unknown-cache-creation-tokens", "unknown-cache-read-tokens"])
 def test_paired_trial_prices_successful_call_without_provider_cost(monkeypatch, usage, attempts, cost):
     """A success with known tokens and no provider bill falls back to the pricing table."""
     monkeypatch.setattr("garuda.eval.dual_model.estimate_cost", lambda _model, _usage: 0.42)
