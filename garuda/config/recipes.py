@@ -1,6 +1,9 @@
 """YAML recipe loader and multi-step workflow runner."""
 
+import asyncio
+import logging
 import re
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -13,7 +16,9 @@ from garuda.core.events import EventStore
 from garuda.model.protocol import Model
 from garuda.types import AgentResult
 from garuda.workspace.protocol import Environment
+from garuda.workspace.settlement import settle_task
 
+logger = logging.getLogger(__name__)
 _TEMPLATE_PATTERN = re.compile(r"\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}")
 
 
@@ -146,6 +151,32 @@ async def run_recipe(
         await lease.release()
 
 
+@asynccontextmanager
+async def _settle_step_resources(resources):
+    if resources is None:
+        yield
+        return
+    step_failed = True
+    try:
+        yield
+        step_failed = False
+    finally:
+        closing = asyncio.create_task(resources.close())
+        try:
+            try:
+                await asyncio.shield(closing)
+            except asyncio.CancelledError as cancelled:
+                try:
+                    await settle_task(closing)
+                except Exception as exc:
+                    raise cancelled from exc
+                raise
+        except (Exception, asyncio.CancelledError):
+            if not step_failed:
+                raise
+            logger.warning("Closing recipe step resources failed", exc_info=True)
+
+
 async def _run_steps(
     recipe, resolved, lease, results, prior_context, *, workspace, agents_dir,
     mcp_config_path, run_reasoning, collection_model, no_collection, model_binding,
@@ -168,24 +199,22 @@ async def _run_steps(
             model_binding=model_binding,
         )
         profile, config, permissions, tools, agent, mcp_manager = prepared
-        config.enable_verifier = step.agent != "plan"
-        config.system_prompt = resolve_system_prompt(profile, workspace)
-
-        result = await lease.race(agent.run(
-            task=prompt,
-            model=prepared.reasoning,
-            env=env,
-            tools=tools,
-            config=config,
-            events=events,
-            permissions=permissions,
-            hooks=hooks,
-            agents_dir=agents_dir,
-            collection_model=prepared.collection,
-            collection_policy=prepared.collection_policy,
-        ))
-        if mcp_manager is not None:
-            await mcp_manager.close()
+        async with _settle_step_resources(mcp_manager):
+            config.enable_verifier = step.agent != "plan"
+            config.system_prompt = resolve_system_prompt(profile, workspace)
+            result = await lease.race(agent.run(
+                task=prompt,
+                model=prepared.reasoning,
+                env=env,
+                tools=tools,
+                config=config,
+                events=events,
+                permissions=permissions,
+                hooks=hooks,
+                agents_dir=agents_dir,
+                collection_model=prepared.collection,
+                collection_policy=prepared.collection_policy,
+            ))
 
         results.append(result)
         prior_context = result.final_message

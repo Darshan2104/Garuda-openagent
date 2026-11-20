@@ -330,3 +330,115 @@ async def test_conversations_checkpoint_history_and_keep_the_real_last_outcome(r
         history = [message.content for message in resumed.messages if message.role == Role.USER]
         assert "FIRST-TURN-COLOR is blue" in history
         assert "SECOND-TURN remembers the first" in history
+
+
+async def test_sdk_close_settles_a_live_turn_before_releasing_ownership(repo):
+    from garuda.core.events import EventStore, EventType
+    from garuda.sdk.conversation import Conversation
+
+    entered = asyncio.Event()
+    cleaning = asyncio.Event()
+    release = asyncio.Event()
+
+    class PausedModel(ScriptModel):
+        async def pause(self):
+            entered.set()
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                cleaning.set()
+                await release.wait()
+                raise
+
+        async def complete(self, *args, **kwargs):
+            await self.pause()
+            return await super().complete(*args, **kwargs)
+
+        async def stream(self, *args, **kwargs):
+            await self.pause()
+            async for delta in super().stream(*args, **kwargs):
+                yield delta
+
+    store = SessionStore()
+    conversation = Conversation(workspace=repo, model=PausedModel([]), store=store)
+    turn = asyncio.create_task(conversation.run("Read the README"))
+    tasks = [turn]
+    cleanup_started = None
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        session_id = conversation.events.session_id
+        first_close = asyncio.create_task(conversation.close())
+        cleanup_started = asyncio.create_task(cleaning.wait())
+        tasks.extend((first_close, cleanup_started))
+        done, _ = await asyncio.wait(
+            {first_close, cleanup_started}, timeout=5, return_when=asyncio.FIRST_COMPLETED,
+        )
+        assert done == {cleanup_started}, "close must wait for the interrupted model to settle"
+
+        other_close = asyncio.create_task(conversation.close())
+        tasks.append(other_close)
+        first_close.cancel()
+        await asyncio.sleep(0)
+        assert not first_close.done() and not other_close.done()
+        assert [holder.session_id for holder in LeaseStore().holders_of(repo)] == [session_id]
+        assert store.load_meta(session_id)["state"]["work"] == "working"
+
+        release.set()
+        outcomes = await asyncio.gather(turn, first_close, other_close, return_exceptions=True)
+        assert isinstance(outcomes[0], asyncio.CancelledError)
+        assert isinstance(outcomes[1], asyncio.CancelledError)
+        assert outcomes[2] is None
+        assert LeaseStore().holders_of(repo) == []
+        assert store.load_meta(session_id)["state"]["outcome"] == "cancelled"
+        events = EventStore.load(store.events_path(session_id)).get_all()
+        assert sum(event["type"] == EventType.SESSION_END.value for event in events) == 1
+        assert events[-1]["payload"]["reason"] == "cancelled"
+    finally:
+        release.set()
+        if cleanup_started is not None:
+            cleanup_started.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await conversation.close()
+
+
+async def test_sdk_close_from_a_callback_task_can_run_after_its_turn(repo):
+    from garuda.sdk.conversation import Conversation
+
+    agents = repo / ".agent" / "agents"
+    agents.mkdir(parents=True)
+    (agents / "qa.yaml").write_text("version: 1\nextends: garuda/build\nlimits: {max_turns: 1}\n")
+    store = SessionStore()
+    text = "The README contains the short greeting we were asked to find."
+    model = ScriptModel([ModelResponse(content=text, tool_calls=[ToolCall(
+        "done", "task_complete", {"summary": text},
+    )])])
+    conversation = Conversation(workspace=repo, agent="qa", model=model, store=store)
+    turn_finished = asyncio.Event()
+    callback_seen = asyncio.Event()
+    deferred_close = None
+
+    async def after_turn():
+        await turn_finished.wait()
+        await conversation.close()
+
+    async def on_delta(_delta):
+        nonlocal deferred_close
+        if deferred_close is None:
+            with pytest.raises(RuntimeError, match="outside its active turn"):
+                await conversation.close()
+            deferred_close = asyncio.create_task(after_turn())
+            callback_seen.set()
+
+    try:
+        result = await asyncio.wait_for(conversation.run("Read the README", on_delta=on_delta), 5)
+        assert result.success and callback_seen.is_set()
+        session_id = conversation.events.session_id
+        turn_finished.set()
+        await asyncio.wait_for(deferred_close, 5)
+        assert LeaseStore().holders_of(repo) == []
+        assert store.load_meta(session_id)["state"]["outcome"] == "completed"
+    finally:
+        if deferred_close is not None and not deferred_close.done():
+            deferred_close.cancel()
+            await asyncio.gather(deferred_close, return_exceptions=True)
+        await conversation.close()
