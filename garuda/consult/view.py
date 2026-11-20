@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from garuda.consult.errors import WITHHELD_CODES
 from garuda.consult.state import ConsultState
 
 UNKNOWN = "unknown"
@@ -64,7 +65,7 @@ def _status(state: str | None, receipt: dict | None, result: dict | None) -> tup
         return "answered", None
     if code == "consult.timeout":
         return "timeout", code
-    if outcome == "withheld" or code == "consult.unexpected_changes":
+    if outcome == "withheld" or code in WITHHELD_CODES:
         return "withheld", code
     if outcome == "failed":
         return "failed", code

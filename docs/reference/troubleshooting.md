@@ -240,8 +240,14 @@ Click a problem to see the fix.
 ??? question "A `consult` call is refused (`consult.*`)"
 
     The code says why, and a refused consult never runs the other role or
-    spends its budget (except `consult.timeout`, `consult.failed` and
-    `consult.unexpected_changes`, which did run and say so in the receipt).
+    spends its budget (except `consult.timeout`, `consult.failed`,
+    `consult.unexpected_changes` and `consult.comparison_timeout`, which did run
+    and say so in the receipt).
+
+    - `consult.comparison_timeout`: the consulted role answered, but the
+      read-only snapshot check that runs afterwards did not finish within its
+      grace period, so the answer is withheld. This usually means a very large
+      or slow workspace; retry, or consult on a smaller checkout.
 
     - `consult.not_granted`: the asking role's `consult:` list (user
       `garuda.yaml`) does not include the target. Projects cannot grant it.

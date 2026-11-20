@@ -316,7 +316,8 @@ to those roles. Each call:
 - runs the target role as its own session, **read-only, in a separate snapshot
   of the workspace**: it can't edit your files, run commands or call other
   tools, and the snapshot is checked afterwards (`consult.unexpected_changes`
-  withholds the answer);
+  withholds the answer, as does `consult.comparison_timeout` when that check
+  does not finish in time);
 - is bounded by `consults:` limits (questions per session, timeout, question and
   answer size, child turns), with a deadline from admission to cleanup;
 - can't be nested: a consulted role can't consult;

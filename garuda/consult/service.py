@@ -45,7 +45,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from garuda.consult import envelope
-from garuda.consult.errors import ConsultRefused
+from garuda.consult.errors import WITHHELD_CODES, ConsultRefused
 from garuda.consult.limits import Limits, from_config
 from garuda.consult.state import ConsultState
 from garuda.workspace.settlement import settle_task
@@ -271,7 +271,15 @@ class ConsultService:
             raise ConsultRefused("consult.quarantined", "consult capacity cleanup is unconfirmed")
         # 7. validate, persist, then release
         compare_by = max(deadline, self._clock() + COMPARISON_GRACE)
-        check = await self._wait_evidence(guard.check, compare_by, held)
+        try:
+            check = await self._wait_evidence(guard.check, compare_by, held)
+        except ConsultRefused as exc:
+            if exc.code != "consult.timeout":
+                raise
+            # The answer arrived; only the comparison overran. Still withhold the answer.
+            raise ConsultRefused("consult.comparison_timeout",
+                                 "the consulted role answered, but the snapshot comparison did "
+                                 "not finish in time; the answer is withheld") from None
         elapsed_ms = round((self._clock() - started) * 1000)
         receipt = self._receipt(req, role, request_id, child_id, plan, snapshot, outcome, check,
                                 elapsed_ms)
@@ -439,7 +447,8 @@ class ConsultService:
         if held.dispatched:
             receipt = {"version": 1, "request_id": request_id, "asker_session": req.asker_session,
                        "root_session": req.root_session, "child_session": child_id,
-                       "role": req.target, "admission": "accepted", "outcome": "failed",
+                       "role": req.target, "admission": "accepted",
+                       "outcome": ("withheld" if exc.code in WITHHELD_CODES else "failed"),
                        "diagnostic": exc.code, "policy": self.limits.to_dict(),
                        "elapsed_ms": round((self._clock() - started) * 1000),
                        "answer_chars": 0, "usage_refs": [child_id],
