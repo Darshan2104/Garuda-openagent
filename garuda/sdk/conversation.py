@@ -2,6 +2,7 @@
 
 import asyncio
 from contextvars import ContextVar, copy_context
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -68,6 +69,11 @@ class Conversation:
         self._env: Environment | None = None
         self._acp: Any | None = None
         self._acp_trail: list = []
+        self._acp_turn: asyncio.Task[AgentResult] | None = None
+        self._acp_close: asyncio.Task[None] | None = None
+        self._acp_result: AgentResult | None = None
+        self._acp_cancelled = False
+        self._acp_turn_count = 0
         self._sdk_session_id: str | None = None
         self._approval_task: Any | None = None
         self._approval_broker: Any | None = None
@@ -246,6 +252,32 @@ class Conversation:
             pass
 
     async def _run_acp(self, task: str) -> AgentResult:
+        if self._acp_close is not None and (not self._acp_close.done() or self._sdk_session_id is not None):
+            raise RuntimeError("The ACP conversation is closing")
+        if self._acp_turn is not None and not self._acp_turn.done():
+            raise RuntimeError("The ACP conversation already has an active turn")
+        self._acp_close = None
+        self._acp_result = None
+        self._acp_cancelled = False
+        turn = self._acp_turn = asyncio.create_task(self._prompt_acp(task))
+        try:
+            return await asyncio.shield(turn)
+        except asyncio.CancelledError as cancelled:
+            if not turn.done() and not turn.cancelling():
+                self._acp_cancelled = True
+                turn.cancel()
+            try:
+                await settle_task(turn)
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                raise cancelled from exc
+            raise
+        finally:
+            if self._acp_turn is turn:
+                self._acp_turn = None
+
+    async def _prompt_acp(self, task: str) -> AgentResult:
         """One turn on the held ACP runtime; the harness keeps the session.
 
         The harness resolves through the shared registry (unknown and
@@ -253,6 +285,7 @@ class Conversation:
         unified session. Human answers to agent approval requests flow
         through the optional approval handler.
         """
+        from garuda.acp.protocol import AcpCancelledError
         from garuda.core.events import EventStore
         from garuda.core.sessions import SessionStore
         from garuda.interfaces.runtime_cli import (
@@ -278,10 +311,10 @@ class Conversation:
                 agent=getattr(self._agent_name, 'name', self._agent_name),
                 workspace=self._workspace,
             )
-            store.ensure_unified(events.session_id)
-            await adapter.start(task=task, session_id=events.session_id)
             self._acp = adapter
             self._sdk_session_id = events.session_id
+            store.ensure_unified(events.session_id)
+            await adapter.start(task=task, session_id=events.session_id)
             self._record_baseline(store, events.session_id)
             attach_acp_segment(store, events.session_id, adapter)
             from garuda.acp.broker import ApprovalBroker
@@ -302,7 +335,12 @@ class Conversation:
             else:
                 self._approval_broker.set_answerer(lambda request: False)
             self._approval_task = self._launch_approval_responder()
-        turn = await self._acp.prompt(task)
+        self._acp_turn_count += 1
+        try:
+            turn = await self._acp.prompt(task)
+        except AcpCancelledError:
+            self._acp_cancelled = True
+            raise
         events, _ = await self._acp.poll_events(len(self._acp_trail))
         self._acp_trail.extend(events)
         assert self._store is not None and self._sdk_session_id is not None
@@ -311,7 +349,7 @@ class Conversation:
             for e in events
             if e.kind.value == "message"
         ]
-        return AgentResult(
+        result = AgentResult(
             success=True,
             final_message="".join(t for t in texts if isinstance(t, str)),
             messages=[],
@@ -322,6 +360,8 @@ class Conversation:
                 "session_id": self._sdk_session_id,
             },
         )
+        self._acp_result = result
+        return result
 
     def _launch_approval_responder(self):
         """Relay agent approval requests to the human handler, if any."""
@@ -456,15 +496,30 @@ class Conversation:
             if self._native_close is None:
                 self._native_close = asyncio.create_task(self._close_native())
             closing = self._native_close
+        else:
+            if asyncio.current_task() is self._approval_task:
+                raise RuntimeError("Close the ACP conversation from outside its approval handler")
+            if self._acp_close is None or (self._acp_close.done() and self._sdk_session_id is not None):
+                self._acp_close = asyncio.create_task(self._settle_acp())
+            closing = self._acp_close
+        try:
+            await asyncio.shield(closing)
+        except asyncio.CancelledError as cancelled:
             try:
-                await asyncio.shield(closing)
-            except asyncio.CancelledError as cancelled:
-                try:
-                    await settle_task(closing)
-                except Exception as exc:
-                    raise cancelled from exc
-                raise
-            return
+                await settle_task(closing)
+            except Exception as exc:
+                raise cancelled from exc
+            raise
+
+    async def _settle_acp(self) -> None:
+        from garuda.runtime.session_state import finished, interrupted
+
+        turn = self._acp_turn
+        if turn is not None and not turn.done():
+            self._acp_cancelled = True
+            if not turn.cancelling():
+                turn.cancel()
+            await asyncio.gather(turn, return_exceptions=True)
         if self._approval_task is not None:
             self._approval_task.cancel()
             try:
@@ -476,6 +531,20 @@ class Conversation:
             await self._acp.close()
             self._acp = None
             self._acp_trail = []
+        if self._sdk_session_id is not None:
+            result = self._acp_result
+            state = (finished(success=result.success) if result is not None
+                     else interrupted(cancelled=self._acp_cancelled))
+            # The legacy status matches SessionStore.finish and the CLI/bg writers.
+            status = "success" if state["outcome"] == "completed" else state["outcome"]
+            self._store.update_meta(self._sdk_session_id, {
+                "status": status, "state": state, "turns": self._acp_turn_count,
+                "verified": False, "final_message": result.final_message[:2000] if result else "",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            })
+            self._sdk_session_id = None
+            self._acp_result = None
+            self._acp_turn_count = 0
 
     async def _close_native(self) -> None:
         turn = self._native_turn

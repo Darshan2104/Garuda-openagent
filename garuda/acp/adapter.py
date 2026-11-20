@@ -649,6 +649,10 @@ class AcpRuntime:
                     result = await asyncio.wait_for(self._drain_until_done(prompt_task), timeout)
                 else:
                     result = await self._drain_until_done(prompt_task)
+        except asyncio.CancelledError:
+            prompt_task.cancel()
+            await asyncio.gather(prompt_task, return_exceptions=True)
+            raise
         except TimeoutError as exc:
             prompt_task.cancel()
             timeout_error = AcpTimeoutError("prompt exceeded its deadline")

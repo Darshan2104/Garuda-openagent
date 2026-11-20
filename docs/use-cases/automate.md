@@ -473,6 +473,8 @@ A conversation inherits the agent instance's registered tools and explicit
 `load_project_tools` choice. Tool registrations are snapshotted when you call
 `conversation()`; later registrations affect later conversations. Different
 agent instances keep separate tool registries.
+Closing a conversation backed by an ACP harness saves the last turn's outcome
+and final message. The ACP result has no independent verification by default.
 
 
 === "Your own tool"
