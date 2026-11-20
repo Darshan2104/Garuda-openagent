@@ -2,6 +2,8 @@
 
 import asyncio
 
+import pytest
+
 from garuda.model.governor import ModelGovernor, provider_of
 
 
@@ -97,3 +99,79 @@ async def test_complete_with_retries_respects_governor(monkeypatch):
         assert peak == 2
     finally:
         gov_mod.set_max_concurrency(0)
+
+
+@pytest.mark.parametrize("cancel", [False, True], ids=["complete", "cancel"])
+async def test_stream_holds_provider_slot_until_iterator_cleanup(monkeypatch, cancel):
+    import litellm
+
+    from garuda.model import governor
+    from garuda.model.litellm_model import LitellmModel
+
+    reading = asyncio.Event()
+    finish_reading = asyncio.Event()
+    cleaning = asyncio.Event()
+    finish_cleanup = asyncio.Event()
+    second_attempted = asyncio.Event()
+    second_dispatched = asyncio.Event()
+
+    class Stream:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            reading.set()
+            await finish_reading.wait()
+            raise StopAsyncIteration
+
+        async def aclose(self):
+            cleaning.set()
+            await finish_cleanup.wait()
+
+    async def empty_stream():
+        for item in ():
+            yield item
+
+    async def provider(**request):
+        if request["model"].endswith("/first"):
+            return Stream()
+        second_dispatched.set()
+        return empty_stream()
+
+    monkeypatch.setattr(litellm, "acompletion", provider)
+    monkeypatch.setattr(governor, "_governor", ModelGovernor(limit=1))
+
+    async def consume(name):
+        if name == "second":
+            second_attempted.set()
+        async for _ in LitellmModel(model_name=f"openai/{name}").stream([]):
+            pass
+
+    first = asyncio.create_task(consume("first"))
+    second = None
+    try:
+        await asyncio.wait_for(reading.wait(), 3)
+        second = asyncio.create_task(consume("second"))
+        await asyncio.wait_for(second_attempted.wait(), 3)
+        assert not second_dispatched.is_set()
+        if cancel:
+            first.cancel()
+        else:
+            finish_reading.set()
+        await asyncio.wait_for(cleaning.wait(), 3)
+        if cancel:
+            first.cancel()
+            await asyncio.sleep(0)
+        assert not second_dispatched.is_set() and not first.done()
+        finish_cleanup.set()
+        await asyncio.wait_for(second, 3)
+        assert second_dispatched.is_set()
+        if cancel:
+            with pytest.raises(asyncio.CancelledError):
+                await first
+        else:
+            await first
+    finally:
+        finish_reading.set()
+        finish_cleanup.set()
+        await asyncio.gather(first, *([second] if second is not None else []), return_exceptions=True)

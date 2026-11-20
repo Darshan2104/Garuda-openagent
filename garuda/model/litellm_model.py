@@ -8,6 +8,7 @@ import random
 import time
 import uuid
 from collections.abc import AsyncIterator
+from contextlib import AsyncExitStack
 
 import litellm
 
@@ -20,8 +21,22 @@ from garuda.model.protocol import (
 )
 from garuda.model.usage import attach_usage, is_definite_rejection, sum_usage, usage_attempt
 from garuda.types import Message, Role, ToolCall
+from garuda.workspace.settlement import settle_task
 
 logger = logging.getLogger(__name__)
+
+
+async def _close_provider_stream(close) -> None:
+    closing = asyncio.create_task(close())
+    try:
+        await asyncio.shield(closing)
+    except asyncio.CancelledError as cancelled:
+        try:
+            await settle_task(closing)
+        except Exception as exc:
+            raise cancelled from exc
+        raise
+
 
 TOOL_ARG_PARSE_ERROR_KEY = "__tool_arg_parse_error__"
 
@@ -564,11 +579,13 @@ class LitellmModel:
             attempt_usage=attempts,
         )
 
-    async def _complete_with_retries(self, kwargs: dict, attempts: list[dict] | None = None):
+    async def _complete_with_retries(
+        self, kwargs: dict, attempts: list[dict] | None = None, *, stream_scope: AsyncExitStack | None = None,
+    ):
         if attempts is None:
             attempts = []
         try:
-            return await self._attempt_with_retries(kwargs, attempts)
+            return await self._attempt_with_retries(kwargs, attempts, stream_scope=stream_scope)
         except asyncio.CancelledError as exc:
             attach_usage(exc, list(attempts))
             raise
@@ -581,9 +598,9 @@ class LitellmModel:
             attach_usage(error, attempts)
             raise error from exc
 
-    async def _attempt_with_retries(self, kwargs: dict, attempt_usage: list[dict] | None = None):
-        if attempt_usage is None:
-            attempt_usage = []
+    async def _attempt_with_retries(
+        self, kwargs: dict, attempt_usage: list[dict], *, stream_scope: AsyncExitStack | None,
+    ):
         # At least one attempt even if max_retries is 0 (otherwise the loop body
         # never runs and we would `raise None`).
         attempts = max(1, self._max_retries)
@@ -595,12 +612,16 @@ class LitellmModel:
             try:
                 # Acquire the slot per attempt so a request sleeping on backoff
                 # releases its slot instead of starving the rest of the fleet.
-                async with governor.slot(provider):
+                async with AsyncExitStack() as slot:
+                    await slot.enter_async_context(governor.slot(provider))
                     try:
                         response = await litellm.acompletion(**kwargs)
                     except asyncio.CancelledError:
                         attempt_usage.append({**usage_attempt({}, "interrupted"), "rejected": False})
                         raise
+                    if stream_scope is not None:
+                        # The stream owner releases the slot after iterator cleanup.
+                        stream_scope.push_async_callback(slot.pop_all().aclose)
                 if not kwargs.get("stream"):
                     attempt_usage.append(usage_attempt(_extract_usage(response), "success"))
                 return response
@@ -656,38 +677,43 @@ class LitellmModel:
         # token/cost accounting (otherwise usage is lost for TUI sessions).
         kwargs["stream_options"] = {"include_usage": True}
         attempts: list[dict] = []
-        response_stream = await self._complete_with_retries(kwargs, attempts)
         usage: dict = {}
         terminal = False
         received_anything = False
+        response_stream = None
         try:
-            async for chunk in response_stream:
-                # Publish earlier attempts before yielding content. A consumer
-                # can be cancelled while handling the first text fragment.
-                first_chunk_after_retry = not received_anything and bool(attempts)
-                received_anything = True
-                # Usage chunks are cumulative snapshots of this attempt, not deltas.
-                reported = _extract_usage(chunk)
-                usage.update(reported)
-                current = attempts + [usage_attempt(usage, "success")]
-                if reported or first_chunk_after_retry:
-                    yield StreamDelta(usage=sum_usage(current), attempt_usage=current)
-                for delta in _stream_deltas_from_chunk(chunk):
-                    terminal = terminal or delta.finish_reason is not None or delta.status in _TERMINAL_STATUSES
-                    yield delta
+            async with AsyncExitStack() as stream_scope:
+                response_stream = await self._complete_with_retries(kwargs, attempts, stream_scope=stream_scope)
+                close = getattr(response_stream, "aclose", None)
+                if close is not None:
+                    stream_scope.push_async_callback(_close_provider_stream, close)
+                async for chunk in response_stream:
+                    # Give consumers earlier attempts before any text can be interrupted.
+                    first_chunk_after_retry = not received_anything and bool(attempts)
+                    received_anything = True
+                    # Usage chunks are cumulative snapshots of this attempt, not deltas.
+                    reported = _extract_usage(chunk)
+                    usage.update(reported)
+                    current = attempts + [usage_attempt(usage, "success")]
+                    if reported or first_chunk_after_retry:
+                        yield StreamDelta(usage=sum_usage(current), attempt_usage=current)
+                    for delta in _stream_deltas_from_chunk(chunk):
+                        terminal = terminal or delta.finish_reason is not None or delta.status in _TERMINAL_STATUSES
+                        yield delta
+                # LiteLLM may synthesize a stop when the provider closed mid-stream.
+                if hasattr(response_stream, "received_finish_reason"):
+                    terminal = terminal and bool(response_stream.received_finish_reason
+                                                 or getattr(response_stream, "intermittent_finish_reason", None))
         except asyncio.CancelledError as exc:
-            attach_usage(exc, attempts + [{**usage_attempt(usage, "interrupted"), "rejected": False}])
+            if response_stream is not None:
+                attach_usage(exc, attempts + [{**usage_attempt(usage, "interrupted"), "rejected": False}])
             raise
         except Exception as exc:
-            usage.update(_error_usage(exc))
-            attach_usage(exc, attempts + [{**usage_attempt(usage, "failed"),
-                                          "rejected": is_definite_rejection(exc) and not received_anything}])
+            if response_stream is not None:
+                usage.update(_error_usage(exc))
+                attach_usage(exc, attempts + [{**usage_attempt(usage, "failed"),
+                                              "rejected": is_definite_rejection(exc) and not received_anything}])
             raise
-        # LiteLLM's stream wrapper appends a synthetic ``stop`` chunk when the
-        # provider closed without a finish reason; only one the provider sent counts.
-        if hasattr(response_stream, "received_finish_reason"):
-            terminal = terminal and bool(response_stream.received_finish_reason
-                                         or getattr(response_stream, "intermittent_finish_reason", None))
         current = attempts + [usage_attempt(usage, "success")]
         # Without a terminal chunk the stream ends without ``done``: a connection
         # closed cleanly mid-answer is incomplete, not an answer.
