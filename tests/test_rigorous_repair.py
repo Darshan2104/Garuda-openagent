@@ -420,3 +420,26 @@ async def test_threaded_context_receives_approved_plan_on_first_attempt(tmp_path
     ]
     assert plan_carrying, "the approved plan never reached the executor's context"
     assert "Write marker.txt" in plan_carrying[0]
+
+
+async def test_a_failed_planner_is_not_labelled_as_an_unexecuted_plan(tmp_path, monkeypatch):
+    # #633: the deadline passed after a planner model error. Its output is not a plan.
+    from garuda.core import rigorous
+
+    monkeypatch.setattr(rigorous, "_deadline_exceeded", lambda _deadline: True)
+
+    class FailingModel(ScriptModel):
+        async def complete(self, *args, **kwargs):
+            raise RuntimeError("provider unavailable")
+
+    events = EventStore()
+    result = await RigorousAgent().run(
+        task="fix the bug", model=FailingModel([]), env=LocalEnvironment(tmp_path), tools=[],
+        config=AgentConfig(deadline_sec=3.0, enable_verifier=False), events=events,
+    )
+    assert not result.success and result.metadata["termination_reason"] == "deadline"
+    assert "## Unexecuted plan" not in result.final_message
+    assert "no plan was produced" in result.final_message
+    assert "Model call failed: RuntimeError: provider unavailable" in result.final_message
+    (ending,) = [row["payload"] for row in events.get_all() if row["type"] == "session_end"]
+    assert ending["reason"] == "deadline" and ending["final_answer_offered"] is False
