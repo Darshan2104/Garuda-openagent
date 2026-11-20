@@ -47,6 +47,7 @@ from garuda.consult import envelope
 from garuda.consult.errors import ConsultRefused
 from garuda.consult.limits import Limits, from_config
 from garuda.consult.state import ConsultState
+from garuda.workspace.settlement import settle_task
 
 REAP_GRACE = 15.0
 
@@ -227,13 +228,15 @@ class ConsultService:
                 raise ConsultRefused("consult.snapshot_unstable",
                                      "workspace quiescence failed; no snapshot was captured") from exc
         self._check_deadline(deadline)
-        scratch = Path(self.store.root) / ".consult" / req.root_session / "scratch" / child_id
-        held.scratch = scratch
-        snapshot = self._snapshot(req.workspace, scratch / "snapshot")
-        self._check_isolation(plan, scratch / "snapshot")
         from garuda.workspace.no_edits import NoEditsGuard
 
-        guard = NoEditsGuard(scratch / "snapshot")
+        scratch = Path(self.store.root) / ".consult" / req.root_session / "scratch" / child_id
+        held.scratch = scratch
+        snapshot_path = scratch / "snapshot"
+        snapshot = await self._wait_evidence(self._snapshot, deadline, held, req.workspace, snapshot_path)
+        if plan.kind == "acp":
+            await self._wait_evidence(self._check_isolation, deadline, held, plan, snapshot_path)
+        guard = await self._wait_evidence(NoEditsGuard, deadline, held, snapshot_path)
         prompt = envelope.question_prompt(req.question, req.brief or "", asker=role or "asker",
                                           target=req.target)
         loan = None
@@ -249,7 +252,7 @@ class ConsultService:
                                      "consult admission could not be delegated") from exc
             held.capacity_loan = loan
         child = ChildRequest(
-            prompt=prompt, workspace=str(scratch / "snapshot"), plan=plan, limits=self.limits,
+            prompt=prompt, workspace=str(snapshot_path), plan=plan, limits=self.limits,
             deadline_sec=max(1.0, deadline - self._clock()), child_id=child_id,
             asker_session=req.asker_session, root_session=req.root_session,
             request_id=request_id, store=self.store, source_workspace=req.workspace,
@@ -262,7 +265,7 @@ class ConsultService:
         if held.quarantined:
             raise ConsultRefused("consult.quarantined", "consult capacity cleanup is unconfirmed")
         # 7. validate, persist, then release
-        check = guard.check()
+        check = await self._wait_evidence(guard.check, deadline, held)
         elapsed_ms = round((self._clock() - started) * 1000)
         receipt = self._receipt(req, role, request_id, child_id, plan, snapshot, outcome, check,
                                 elapsed_ms)
@@ -310,8 +313,6 @@ class ConsultService:
     def _check_isolation(self, plan, snapshot: Path) -> None:
         """An external child runs only in the proven Docker read-only confinement. Checked
         before anything is dispatched, so a refusal here costs nothing."""
-        if getattr(plan, "kind", "native") != "acp":
-            return
         from garuda.workspace.confined_acp import Confinement, ConfinementRefused, preflight
 
         try:
@@ -322,9 +323,11 @@ class ConsultService:
     def _snapshot(self, workspace: str, dest: Path):
         from garuda.workspace import snapshot_proto as snap
 
-        dest.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         try:
+            dest.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
             return snap.detached_repository(workspace, dest)
+        except OSError as exc:
+            raise ConsultRefused("consult.snapshot_unsupported", "snapshot evidence is unavailable") from exc
         except snap.SnapshotRefused as exc:
             code = ("consult.snapshot_unstable" if exc.code == "snapshot.changed"
                     else "consult.snapshot_unsupported")
@@ -357,21 +360,39 @@ class ConsultService:
             await self._reap(task, held)
             raise
 
-    async def _reap(self, task: asyncio.Future, held: _Held) -> None:
-        """Cancel asynchronous work and confirm it stopped; otherwise quarantine."""
-        task.cancel()
+    async def _wait_evidence(self, work, deadline: float, held: _Held, *args):
+        self._check_deadline(deadline)
+        task = held.task = asyncio.create_task(asyncio.to_thread(work, *args))
         try:
-            await asyncio.wait_for(asyncio.shield(task), timeout=REAP_GRACE)
+            done, _ = await asyncio.wait({task}, timeout=max(0, deadline - self._clock()))
         except asyncio.CancelledError:
-            pass
-        except asyncio.TimeoutError:
-            held.quarantined = True
-        except Exception:  # the work failed while closing: it is no longer running
-            pass
-        if not task.done():
-            held.quarantined = True
-            if held.capacity_loan is not None:
-                held.capacity_loan.quarantine()
+            await self._reap(task, held, cancel=False)
+            raise
+        if not done or self._clock() >= deadline:
+            await self._reap(task, held, cancel=False)
+            raise ConsultRefused("consult.timeout", f"no answer within {self.limits.timeout_sec}s")
+        return task.result()
+
+    async def _reap(self, task: asyncio.Future, held: _Held, *, cancel: bool = True) -> None:
+        """Confirm settlement before releasing ownership, even if the caller cancels again."""
+        if cancel:
+            task.cancel()
+        # Cancelling a to_thread wrapper does not stop the worker. Keep it alive
+        # until the work completes or its scratch directory is quarantined.
+        reaper = asyncio.create_task(asyncio.wait({task}, timeout=REAP_GRACE))
+        try:
+            await asyncio.shield(reaper)
+        except asyncio.CancelledError:
+            await settle_task(reaper)
+            raise
+        finally:
+            if task.done():
+                _retrieve_task_error(task)
+            else:
+                task.add_done_callback(_retrieve_task_error)
+                held.quarantined = True
+                if held.capacity_loan is not None:
+                    held.capacity_loan.quarantine()
 
     def _receipt(self, req, role, request_id, child_id, plan, snapshot, outcome, check,
                  elapsed_ms) -> dict:
@@ -448,6 +469,11 @@ class _Held:
     dispatched: bool = False
     quiesce: object = None
     quarantined: bool = False
+
+
+def _retrieve_task_error(task: asyncio.Future) -> None:
+    if not task.cancelled():
+        task.exception()
 
 
 # --- the default child runners ---------------------------------------------------------------

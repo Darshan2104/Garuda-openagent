@@ -349,7 +349,8 @@ garuda run --role coder -t "Use the consult tool to ask the planner which edge c
   commands, and the snapshot is checked afterwards.
 - The answer comes back as labelled, untrusted advice. It isn't verification.
 - Limits in `consults:` cap questions per session, time, and question and
-  answer size. A consulted role can't consult in turn.
+  answer size. The time limit includes snapshot capture and comparison. A
+  consulted role can't consult in turn.
 - `garuda sessions show` lists each consult (who asked whom, the outcome,
   how long it took) but never the question or answer text.
   For a capped run, inspect the asker's session for the shared spend snapshot;
