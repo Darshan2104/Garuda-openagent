@@ -124,8 +124,7 @@ class Conversation:
         session = await self._ensure_session()
         session.config.stream_subagent_deltas = subagent_deltas
         live = await self._ensure_live(session, task)
-        context = session.prepare_context(task)
-        self._record.begin_turn(context, task=task, session=session)
+        context = self._record.begin_turn(task=task, session=session)
         return await live.turn(self._record.turn(session.agent.run(
             task=task,
             model=session.model,

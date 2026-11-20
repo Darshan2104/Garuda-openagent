@@ -96,10 +96,13 @@ class AgentSession:
             collection_policy=prepared.collection_policy,
         )
 
-    def prepare_context(self, task: str) -> ContextManager:
-        """Seed or extend the shared LLM context for a new user turn."""
+    def prepare_context(
+        self, task: str, *, checkpoint: Callable[[list[Message]], None] | None = None,
+    ) -> ContextManager:
+        """Seed or extend the context after any required initial checkpoint."""
+        user_message = Message(role=Role.USER, content=task)
         if self.context is None:
-            self.context = ContextManager(
+            context = ContextManager(
                 model=self.model,
                 max_output_bytes=self.config.max_output_bytes,
                 proactive_threshold=self.config.proactive_summarize_threshold,
@@ -111,14 +114,19 @@ class AgentSession:
                 adaptive_output=self.config.enable_adaptive_output,
                 min_output_bytes=self.config.min_output_bytes,
             )
-            self.context.seed(
+            context.seed(
                 [
                     Message(role=Role.SYSTEM, content=self.config.system_prompt or ""),
-                    Message(role=Role.USER, content=task),
+                    user_message,
                 ]
             )
+            if checkpoint is not None:
+                checkpoint(context.get_messages())
+            self.context = context
         else:
-            self.context.append(Message(role=Role.USER, content=task))
+            if checkpoint is not None:
+                checkpoint([*self.context.get_messages(), user_message])
+            self.context.append(user_message)
         return self.context
 
     async def close(self) -> None:

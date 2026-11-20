@@ -358,7 +358,9 @@ class _FakeSession:
         self.tasks = []
         self.run_kwargs = []
 
-    def prepare_context(self, task):
+    def prepare_context(self, task, *, checkpoint=None):
+        if checkpoint is not None:
+            checkpoint([])
         self.contexts.append(task)
         from types import SimpleNamespace
 
@@ -1222,23 +1224,62 @@ async def test_close_waits_for_model_cleanup_before_workspace_reuse(tmp_path, st
         await live.aclose()
 
 
-async def test_failed_initial_checkpoint_does_not_leave_chat_busy(chatting, monkeypatch):
-    live, session, _ = chatting
+@pytest.mark.parametrize("prior_turn", [False, True])
+async def test_failed_initial_checkpoint_preserves_accepted_chat_state(tmp_path, store, monkeypatch, prior_turn):
+    from garuda.core.events import EventStore, EventType
+    from garuda.model.protocol import ModelResponse
+    from garuda.model.script_model import ScriptModel
+    from garuda.types import Role, ToolCall
+
+    class CapturingModel(ScriptModel):
+        def __init__(self):
+            done = ModelResponse(content=None, tool_calls=[
+                ToolCall("done", "task_complete", {"summary": "Finished reading the example."}),
+            ])
+            super().__init__([done, done])
+            self.user_messages = []
+
+        async def stream(self, messages, **kwargs):
+            self.user_messages.append([message.content for message in messages if message.role == Role.USER])
+            async for delta in super().stream(messages, **kwargs):
+                yield delta
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    model = CapturingModel()
+    live = LiveRuns(loop=asyncio.get_running_loop(), store=store, workspaces=(workspace,), default_model=model)
     opened = await live.start_chat(ChatSpec())
-    chat_id = opened["chat_id"]
+    chat_id, session_id = opened["chat_id"], opened["session_id"]
 
     def fail_checkpoint(*args):
         raise OSError("fixture: checkpoint write failed")
 
     try:
+        if prior_turn:
+            turn = await live.chat_turn(chat_id, "Earlier accepted turn")
+            await live.jobs.get(turn["job_id"])._task
+        await live.add_source(chat_id, {"kind": "file", "name": "sample.txt", "content_b64": "c2FtcGxl"})
+        saved_task = store.load_meta(session_id)["task"]
         with monkeypatch.context() as patch:
             patch.setattr(live.store, "checkpoint_messages", fail_checkpoint)
             with pytest.raises(OSError, match="checkpoint write failed"):
-                await live.chat_turn(chat_id, "First turn")
-        assert (await live.list_chats())["chats"][0]["busy"] is False
+                await live.chat_turn(chat_id, "Rejected prompt")
+        (chat,) = (await live.list_chats())["chats"]
+        assert not chat["busy"] and chat["turns"] == int(prior_turn)
+        assert store.load_meta(session_id)["task"] == saved_task
+        assert (await live.list_sources(chat_id))["pending"] == ["grounding/sample.txt"]
+
         result = await live.chat_turn(chat_id, "Retry")
-        session.release.set()
         await live.jobs.get(result["job_id"])._task
-        assert session.tasks == ["Retry"]
+        assert result["turn_index"] == 1 + int(prior_turn)
+        assert (await live.list_sources(chat_id))["pending"] == []
+        texts = model.user_messages[-1]
+        assert len(texts) == 1 + int(prior_turn)
+        assert all("Rejected prompt" not in text for text in texts)
+        assert "grounding/sample.txt" in texts[-1] and texts[-1].endswith("Retry")
+        starts = [event for event in EventStore.load(store.events_path(session_id)).get_all()
+                  if event["type"] == EventType.SESSION_START.value]
+        assert len(starts) == 1
+        assert "Rejected prompt" not in starts[0]["payload"]["task"]
     finally:
         await live.aclose()
