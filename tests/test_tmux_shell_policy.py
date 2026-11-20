@@ -105,3 +105,27 @@ async def test_framed_commands_stay_literal_after_history_expansion_is_reenabled
         assert "DENIED-HISTORY-CANARY" not in result.stdout
     finally:
         await env.stop()
+
+
+async def test_tmux_explicit_cwd_requires_a_successful_change_from_workspace_root(
+    tmp_path, private_tmux_server,
+):
+    private_tmux_server("bash")
+    (tmp_path / "first").mkdir()
+    (tmp_path / "second").mkdir()
+    env = TmuxEnvironment(tmp_path)
+    try:
+        assert (await env.execute("cd first", timeout=3)).exit_code == 0
+        refused = await env.execute("printf should-not-run > ran.txt", cwd="missing", timeout=3)
+        assert refused.exit_code != 0
+        assert not list(tmp_path.rglob("ran.txt"))
+        pane = await env.execute("pwd", timeout=3)
+        assert pane.stdout.strip() == str((tmp_path / "first").resolve())
+
+        entered = await env.execute("pwd", cwd="second", timeout=3)
+        assert entered.exit_code == 0
+        assert entered.stdout.strip() == str((tmp_path / "second").resolve())
+        pane = await env.execute("pwd", timeout=3)
+        assert pane.stdout.strip() == entered.stdout.strip()
+    finally:
+        await env.stop()

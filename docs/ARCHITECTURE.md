@@ -167,6 +167,9 @@ single-quoted, it needs no history approval. Raw-key requests
 unquoted or double-quoted history references require approval, even behind an
 allow prefix. Pane start refuses a reported tmux older than 3.2
 (`new-session -e`); an unparsable version such as `tmux master` is accepted.
+An explicit relative tmux working directory is interpreted from the workspace
+root. If the pane cannot enter it, Garuda returns the directory change failure
+before sending the requested command.
 A JSON-RPC server with an explicit agent allowlist or permission ceiling refuses
 request overrides of workspace, backend, Docker host/image, agent directory and
 MCP configuration before activation. These settings remain operator-owned.
