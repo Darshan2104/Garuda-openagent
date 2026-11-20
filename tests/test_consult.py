@@ -88,6 +88,34 @@ async def test_an_authorized_caller_gets_the_scoped_childs_labelled_answer(world
     assert child.asker_session == world.asker and child.root_session == world.asker
 
 
+async def test_consult_catalog_uses_the_request_workspace_and_refunds_a_missing_target(world, monkeypatch):
+    monkeypatch.chdir(world.tmp)
+    (world.ws / ".agent").mkdir()
+    (world.ws / ".agent" / "settings.yaml").write_text(
+        "runtime_refs: [{alias: local-review, runtime_id: native}]\n")
+    resolved = make_resolved({
+        "version": 1,
+        "roles": {
+            "coder": {"harness": "native", "consult": ["reviewer", "unavailable"]},
+            "reviewer": {"harness": "local-review", "model_id": "m2"},
+            "unavailable": {"harness": "missing-runtime", "model_id": "m3"},
+        },
+    })
+    runner = Recorder()
+    engine = service(world, runner, resolved=resolved)
+    with pytest.raises(ConsultRefused) as error:
+        await engine.consult(request(world, target="unavailable", request_id="unavailable"))
+    assert error.value.code == "consult.target_unavailable"
+    assert not runner.calls
+    state = ConsultState(world.store, world.asker).snapshot()
+    assert state["active"] is None and state["count"] == 0
+
+    result = await engine.consult(request(world, request_id="available"))
+    assert result.outcome == "answered"
+    (child,) = runner.calls
+    assert (child.plan.role, child.plan.runtime_id) == ("reviewer", "native")
+
+
 @pytest.mark.parametrize("override, code", [
     ({"target": "lonely"}, "consult.not_granted"),       # a real role the asker was not granted
     ({"target": "ghost"}, "consult.not_granted"),        # a forged target

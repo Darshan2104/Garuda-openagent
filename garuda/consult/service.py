@@ -292,19 +292,21 @@ class ConsultService:
     # --- pieces ---------------------------------------------------------------------------
 
     def _resolve_target(self, target: str, workspace: str = "."):
+        from garuda.acp.catalog import RuntimeSettingsError
         from garuda.agents import role_agent
         from garuda.agents.fallbacks import choose
         from garuda.agents.setup import prepare_runtime_catalog
+        from garuda.runtime.registry import RegistryError
         from garuda.runtime.roles import RoleRefused, plan_role
 
         resolved = replace(self.resolved, role=target)
         try:
-            catalog = self._catalog or prepare_runtime_catalog(".")
+            catalog = self._catalog or prepare_runtime_catalog(workspace)
             plan = plan_role(resolved, catalog)
             if plan is None:
                 raise ConsultRefused("consult.target_unavailable", "no such role")
             return role_agent.bind(choose(plan, resolved, catalog), workspace)
-        except RoleRefused as exc:
+        except (RegistryError, RoleRefused, RuntimeSettingsError) as exc:
             raise ConsultRefused("consult.target_unavailable", str(exc)) from exc
 
     def _check_isolation(self, plan, snapshot: Path) -> None:
