@@ -128,6 +128,10 @@ def _discover(root: Path) -> list[Skill]:
 def select(profile, workspace) -> Selection:
     """The skills this agent gets, with every winner's source and shadowed copy."""
     selection = Selection(skills=[])
+    include = profile.skills
+    if include is not None and not include:
+        return selection
+
     winners: dict[str, Skill] = {}
     for source, directory in source_dirs(profile, workspace):
         for skill in _discover(directory):
@@ -138,7 +142,7 @@ def select(profile, workspace) -> Selection:
                 continue
             winners[skill.name] = skill
             selection.sources[skill.name] = source
-    include, exclude = profile.skills, set(profile.skills_exclude or [])
+    exclude = set(profile.skills_exclude or [])
     names = sorted(winners) if include is None else [n for n in include if n in winners]
     if include is not None:
         selection.unknown = [n for n in include if n not in winners]
