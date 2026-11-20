@@ -205,14 +205,9 @@ async def test_exit_becomes_typed_error_with_stderr():
         "-c",
         "import sys; sys.stderr.write('boom detail\\n'); sys.exit(3)",
     ]
-    process = await _launched(argv)
-    try:
-        with pytest.raises(AcpExitError) as exc:
-            await asyncio.wait_for(process.initialize(), 10)
-        assert exc.value.exit_code == 3
-        assert "boom detail" in exc.value.stderr_tail
-    finally:
-        await process.close()
+    error = await _handshake_exit(argv)
+    assert error.exit_code == 3
+    assert "boom detail" in error.stderr_tail
 
 
 async def test_preexited_agent_keeps_stderr_in_typed_error():
@@ -221,14 +216,87 @@ async def test_preexited_agent_keeps_stderr_in_typed_error():
         "-c",
         "import sys; sys.stderr.write('pre-exit detail\\n'); sys.exit(4)",
     ]
-    process = await _launched(argv)
+    error = await _handshake_exit(argv, wait_for_exit=True)
+    assert error.exit_code == 4
+    assert "pre-exit detail" in error.stderr_tail
+
+
+async def _handshake_exit(argv: list[str], *, wait_for_exit: bool = False) -> AcpExitError:
+    """A fast exit is typed whether launch (leader gone before binding) or the
+    handshake notices it first; which one wins is an OS scheduling race."""
+    process = AcpProcess(argv)
     try:
-        assert process._process is not None
-        await process._process.wait()
         with pytest.raises(AcpExitError) as exc:
-            await process.initialize()
-        assert exc.value.exit_code == 4
-        assert "pre-exit detail" in exc.value.stderr_tail
+            await process.launch()
+            if wait_for_exit:
+                assert process._process is not None
+                await process._process.wait()
+            await asyncio.wait_for(process.initialize(), 10)
+        return exc.value
+    finally:
+        await process.close()
+
+
+def _spawn_reaped(monkeypatch) -> None:
+    """Return the child only after it was reaped, and make the group lookup
+    report ESRCH as macOS does for an exited leader (#644)."""
+    import garuda.acp.client as client_module
+
+    real_exec = asyncio.create_subprocess_exec
+
+    async def exec_and_reap(*args, **kwargs):
+        child = await real_exec(*args, **kwargs)
+        await child.wait()
+        return child
+
+    def getpgid_gone(pid):
+        raise ProcessLookupError(3, "No such process")
+
+    monkeypatch.setattr(client_module.asyncio, "create_subprocess_exec", exec_and_reap)
+    monkeypatch.setattr(client_module.os, "getpgid", getpgid_gone)
+
+
+async def test_leader_exited_before_bind_reports_exit_code_and_stderr(monkeypatch):
+    _spawn_reaped(monkeypatch)
+    argv = [
+        sys.executable,
+        "-c",
+        "import sys; sys.stderr.write('startup failed\\n'); sys.exit(3)",
+    ]
+    process = AcpProcess(argv)
+    try:
+        with pytest.raises(AcpExitError) as exc:
+            await process.launch()
+        assert exc.value.exit_code == 3
+        assert "startup failed" in exc.value.stderr_tail
+        assert "cannot bind" not in str(exc.value)
+        assert not process.is_running
+    finally:
+        await process.close()
+
+
+async def test_live_child_with_failed_group_lookup_is_still_refused(monkeypatch):
+    import garuda.acp.client as client_module
+
+    real_getpgid = os.getpgid
+    calls = []
+
+    def getpgid_gone_once(pid):
+        # Only the bind lookup fails; the refusal path then finds the live group.
+        calls.append(pid)
+        if len(calls) == 1:
+            raise ProcessLookupError(3, "No such process")
+        return real_getpgid(pid)
+
+    monkeypatch.setattr(client_module, "EARLY_EXIT_REAP_TIMEOUT", 0.2)
+    monkeypatch.setattr(client_module.os, "getpgid", getpgid_gone_once)
+    process = AcpProcess([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        with pytest.raises(AcpProtocolError, match="cannot bind ACP process group"):
+            await process.launch()
+        assert process._process is not None
+        assert process._process.returncode is not None
+        assert process._process.returncode < 0  # reaped by our kill, not an exit
     finally:
         await process.close()
 
