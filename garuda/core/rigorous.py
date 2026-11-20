@@ -188,7 +188,10 @@ class RigorousAgent:
                 self._end_on_spend(events, emit_session_events, plan_result)
                 return plan_result
             if _deadline_exceeded(deadline_at):
-                return self._end_on_deadline(events, emit_session_events, plan_result, plan_only=True)
+                return self._end_on_deadline(
+                    events, emit_session_events, plan_result, plan_only=True,
+                    planned=plan_result.success,
+                )
             if not plan_result.success:
                 if emit_session_events:
                     events.append(
@@ -297,16 +300,25 @@ class RigorousAgent:
     @staticmethod
     def _end_on_deadline(
         events: EventStore, emit_session_events: bool, result: AgentResult, *, plan_only: bool = False,
+        planned: bool = True,
     ) -> AgentResult:
         result.success = False
         result.metadata["termination_reason"] = "deadline"
         if plan_only:
             # Only the read-only planner ran: its output is a plan, not an answer to
             # the task. Keep it for the user, labelled, and do not report it as offered.
+            # A planner that failed (e.g. a model error) produced no plan; its output
+            # is kept as what it is, not labelled as a plan.
             plan = (result.final_message or "").strip()
-            result.final_message = "Deadline reached before execution started; the plan was not carried out." + (
-                f"\n\n## Unexecuted plan\n{plan}" if plan else ""
-            )
+            if planned:
+                result.final_message = "Deadline reached before execution started; the plan was not carried out." + (
+                    f"\n\n## Unexecuted plan\n{plan}" if plan else ""
+                )
+            else:
+                result.final_message = (
+                    "Deadline reached before execution started; planning did not complete, "
+                    "so no plan was produced."
+                ) + (f"\n\n## Planner output\n{plan}" if plan else "")
         if emit_session_events:
             events.append(EventType.SESSION_END, {
                 "success": False, "reason": "deadline", "turns": result.turns,
