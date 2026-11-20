@@ -7,8 +7,11 @@ CODES = (
     "consult.isolation_unavailable", "consult.timeout", "consult.cancelled",
     "consult.failed", "consult.unexpected_changes", "consult.interrupted", "consult.quarantined",
     "consult.transport_unsupported", "consult.unauthenticated",
-    "consult.spend_unsupported",
+    "consult.spend_unsupported", "consult.comparison_timeout",
 )
+
+# The consulted role answered, but the answer was not released.
+WITHHELD_CODES = frozenset({"consult.unexpected_changes", "consult.comparison_timeout"})
 
 
 class ConsultRefused(Exception):

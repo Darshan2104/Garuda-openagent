@@ -545,10 +545,19 @@ async def test_a_comparison_that_outlives_its_grace_withholds_the_answer(world, 
     engine = _late_answer_and_slow_comparison(world, monkeypatch, svc.COMPARISON_GRACE + 1)
     with pytest.raises(ConsultRefused) as caught:
         await engine.consult(request(world, request_id="overrun"))
-    assert caught.value.code == "consult.timeout"
+    # #632: the answer arrived; the comparison overran, so say so and withhold it.
+    assert caught.value.code == "consult.comparison_timeout"
+    assert "comparison" in caught.value.message and "no answer" not in caught.value.message
     record = ConsultState(world.store, world.asker).snapshot()["requests"]["overrun"]
-    assert record["state"] != "quarantined" and record["result"]["code"] == "consult.timeout"
-    assert "text" not in record["result"]
+    result = record["result"]
+    assert record["state"] != "quarantined" and result["code"] == "consult.comparison_timeout"
+    assert "text" not in result
+    assert result["receipt"]["diagnostic"] == "consult.comparison_timeout"
+    assert result["receipt"]["outcome"] == "withheld" and result["receipt"]["answer_chars"] == 0
+    from garuda.consult import view
+
+    row = {r["request_id"]: r for r in view.entries(world.store, world.asker)}["overrun"]
+    assert (row["status"], row["code"]) == ("withheld", "consult.comparison_timeout")
     scratch_root = Path(world.store.root) / ".consult" / world.asker / "scratch"
     assert list(scratch_root.iterdir()) == []
 
