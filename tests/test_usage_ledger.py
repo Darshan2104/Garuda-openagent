@@ -414,6 +414,54 @@ async def test_retry_call_is_one_persisted_accounting_event(
     assert used["rows"][0]["cost_unknown"] == int(incomplete_cost)
 
 
+async def test_cancelled_auxiliary_retry_reaches_the_persisted_ledger_once(tmp_path, ledger):
+    from garuda.core.spend import SpendGate
+    from garuda.model.usage import attach_usage
+
+    store = SessionStore(tmp_path / "sessions")
+    events = EventStore()
+    events.attach_persistence(store.begin(events.session_id, task="t", model="m", agent="a",
+                                          workspace=str(tmp_path)))
+    usage.attach(events, store, ledger=ledger)
+    started = asyncio.Event()
+    reported = {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120, "cost_usd": 0.01}
+
+    class InterruptedModel(ScriptModel):
+        async def complete(self, *args, **kwargs):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError as exc:
+                attach_usage(exc, [{"outcome": "failed", "usage": reported},
+                                   {"outcome": "interrupted", "usage": {}}])
+                raise
+
+    gate = SpendGate(max_tokens=10_000)
+    token = accounting.bind(events, gate)
+    try:
+        work = asyncio.create_task(accounting.complete(InterruptedModel([]), [],
+                                                        max_tokens=50, purpose="summarizer"))
+        await asyncio.wait_for(started.wait(), 5)
+        work.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await work
+    finally:
+        accounting.reset(token)
+
+    assert gate.snapshot()["settled_cost_usd"] == 0.01
+    assert gate.snapshot()["reserved_tokens"] == 0
+    [event] = events.get_all()
+    assert event["type"] == EventType.MODEL_CALL_FAILED.value
+    assert event["payload"]["usage"] == reported
+    assert [entry["outcome"] for entry in event["payload"]["attempt_usage"]] == ["failed", "interrupted"]
+    [row] = ledger.records()
+    assert (row["call_purpose"], row["outcome"], row["total_tokens"], row["cost_usd"]) == (
+        "summarizer", "interrupted", 120, 0.01)
+    assert "cost_usd" in row["usage_unknown"]
+    assert usage.reconcile(store, events.session_id, ledger=ledger) == 0
+    assert list(ledger.records()) == [row]
+
+
 async def test_interrupted_stream_records_usage_as_a_lower_bound(tmp_path, ledger):
     from garuda.core import conversation, usage_stats
     from garuda.core.loop import DefaultAgent

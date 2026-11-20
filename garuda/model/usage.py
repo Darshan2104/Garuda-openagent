@@ -1,5 +1,6 @@
 """Reported usage subtotals and coverage for one logical inference call."""
 
+import asyncio
 from typing import Any
 
 from garuda.model.protocol import ContextOverflowError
@@ -82,7 +83,10 @@ def usage_metadata(value: Any, *, failed: bool = False) -> dict:
     """Add attempt provenance and unknown coverage without changing legacy payloads."""
     if not failed and not getattr(value, "attempt_usage", None):
         return {}
-    attempts = attempts_for(value, "failed" if failed else "success")
+    outcome = "failed" if failed else "success"
+    if isinstance(value, asyncio.CancelledError):
+        outcome = "interrupted"
+    attempts = attempts_for(value, outcome)
     fields = set(USAGE_FIELDS).union(*(a["usage"] for a in attempts))
     unknown = {name for name in fields if any(name not in a["usage"] for a in attempts)}
     if attempts[-1].get("outcome") == "interrupted":
