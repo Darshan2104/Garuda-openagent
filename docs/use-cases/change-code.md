@@ -353,7 +353,9 @@ garuda run --deadline-sec 900 --max-turns 30 -t "Fix the flaky test in tests/tes
 
 - `--deadline-sec` sets a wall-clock budget. The agent paces itself against it
   and keeps turns in reserve to finish cleanly. Rigorous mode shares one
-  deadline across planning, execution, critique, and any repairs.
+  deadline across planning, execution, critique, and any repairs. If it passes
+  before execution starts, the run reports the unexecuted plan, labelled as
+  such, rather than as an answer.
 - `--max-turns` caps the number of agent turns.
 - `--max-run-tokens` caps tokens across the whole native run tree: the main
   calls, summaries, the verifier, collection workers, rigorous mode's plan and

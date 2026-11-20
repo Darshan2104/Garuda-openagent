@@ -126,11 +126,37 @@ async def test_rigorous_stops_admitting_phases_at_one_deadline(tmp_path, monkeyp
     )
     assert observed_deadlines == [103.0]
     assert model.calls == (2 if expires_in == "planning" else 5)
-    assert not result.success and result.final_message == finish
+    assert not result.success
+    if expires_in == "planning":
+        assert result.final_message.startswith("Deadline reached before execution started")
+        assert result.final_message.endswith(finish)
+    else:
+        assert result.final_message == finish
     assert result.metadata["termination_reason"] == "deadline"
     (ending,) = [row["payload"] for row in events.get_all() if row["type"] == "session_end"]
     assert ending["reason"] == "deadline" and not ending["success"]
+    assert ending["final_answer_offered"] is (expires_in == "repair")
     assert config.deadline_sec == 3.0
+
+
+@pytest.mark.parametrize("expired_checks", [[True], [False, True]], ids=["after-plan", "before-first-build"])
+async def test_plan_only_deadline_end_does_not_offer_the_plan_as_the_answer(tmp_path, monkeypatch, expired_checks):
+    from garuda.core import rigorous
+
+    checks = list(expired_checks)
+    monkeypatch.setattr(rigorous, "_deadline_exceeded", lambda _deadline: checks.pop(0) if checks else True)
+    model = ScriptModel([ModelResponse(content="1. Edit the file. 2. Run the tests.", tool_calls=[])])
+    events = EventStore()
+    result = await RigorousAgent().run(
+        task="fix the bug", model=model, env=LocalEnvironment(tmp_path), tools=[],
+        config=AgentConfig(deadline_sec=3.0, enable_verifier=False), events=events,
+    )
+    assert not checks, "both deadline checks before the first build must be reached"
+    assert not result.success and result.metadata["termination_reason"] == "deadline"
+    assert result.final_message.startswith("Deadline reached before execution started")
+    assert "1. Edit the file. 2. Run the tests." in result.final_message
+    (ending,) = [row["payload"] for row in events.get_all() if row["type"] == "session_end"]
+    assert ending["reason"] == "deadline" and ending["final_answer_offered"] is False
 
 
 @pytest.mark.parametrize(("inherited", "own", "expected"), [
