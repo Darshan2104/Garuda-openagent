@@ -250,8 +250,8 @@ message/working-state checkpoints and final outcomes. A new user turn is
 checkpointed before queued work starts; loop progress and settlement update the
 same shared history. One outer session span covers all turns, allowing strict
 recovery audit and resume. Closing persists the actual last result, failure or
-cancellation. Dashboard close first settles its active job before session and
-workspace teardown or lease release.
+cancellation. The SDK and dashboard cancel and await the active turn before
+session or workspace teardown and lease release.
 
 ## The run path
 

@@ -4129,3 +4129,12 @@ rejected evidence. Hook and judge failures leave the commands unexamined even
 when execution already succeeded; a later attempt may reuse the same commands.
 Actual failed checks and explicit judge `REJECTED` verdicts remain judged
 rejections and require new evidence on resubmission.
+
+## 2026-11-20: Native SDK close settles the active turn before release (#579)
+
+The native SDK conversation owns at most one active turn, including its
+startup. Concurrent close callers await one teardown. It cancels and awaits
+the turn before reaping processes, closing resources, publishing the terminal
+outcome and releasing the lease. Cancellation of a close caller waits for the
+same teardown. Callbacks can schedule a close after their turn returns. An
+active turn cannot await its own close.
