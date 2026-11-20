@@ -767,8 +767,10 @@ async def prepare_run(
     # gone", which is the condition that actually matters when a single
     # command can block for minutes.
     started_at = time.monotonic()
-    if deadline_at is None and config.deadline_sec:
-        deadline_at = started_at + config.deadline_sec
+    if config.deadline_sec:
+        # An inherited run deadline (rigorous phases) never widens this run's own limit.
+        own = started_at + config.deadline_sec
+        deadline_at = own if deadline_at is None else min(deadline_at, own)
     # One spend gate per run tree: created at the root, inherited by children.
     from garuda.core.spend import gate_for
 
