@@ -442,3 +442,82 @@ async def test_failed_acp_start_closes_the_adapter_and_retries_cleanly(tmp_path,
         await conversation.close()
     assert store.load_meta(retried.metadata["session_id"])["state"]["outcome"] == "completed"
     assert store.load_meta(failed["session_id"]) == failed_meta
+
+
+class _StartFailingAdapter:
+    """An adapter whose start fails and whose close fails or is slow (#629)."""
+
+    def __init__(self, close_error=None):
+        import asyncio
+
+        self.close_error = close_error
+        self.close_entered = asyncio.Event()
+        self.release_close = asyncio.Event()
+        self.release_close.set()
+        self.reaped = False
+
+    async def start(self, **_kwargs):
+        from garuda.acp.protocol import AcpProtocolError
+
+        raise AcpProtocolError("version mismatch")
+
+    async def close(self):
+        self.close_entered.set()
+        await self.release_close.wait()
+        if self.close_error is not None:
+            raise self.close_error
+        self.reaped = True
+
+
+def _serve_adapter(monkeypatch, adapter):
+    from garuda.config import agent_home
+    from garuda.interfaces import runtime_cli
+
+    monkeypatch.setattr(agent_home, "resolve_agent_home", lambda workspace: _FakeHome(_fake_extra()))
+    monkeypatch.setattr(runtime_cli, "acp_adapter_for_workspace", lambda *a, **k: ("faketest", adapter))
+
+
+async def test_failed_acp_start_keeps_the_start_error_when_close_fails(tmp_path, monkeypatch, caplog):
+    from garuda.acp.protocol import AcpProtocolError
+    from garuda.core.sessions import SessionStore
+
+    _serve_adapter(monkeypatch, _StartFailingAdapter(close_error=BrokenPipeError("harness gone")))
+    store = SessionStore()
+    conversation = Conversation(workspace=tmp_path, runtime="faketest", store=store)
+    with caplog.at_level("WARNING", logger="garuda.sdk.conversation"):
+        with pytest.raises(AcpProtocolError, match="version mismatch"):
+            await conversation.run("turn one")
+    assert "harness gone" in caplog.text
+    (failed,) = store.list_sessions()
+    assert store.load_meta(failed["session_id"])["state"]["outcome"] == "failed"
+    await conversation.close()
+
+
+async def test_close_during_failed_acp_start_still_reaps_the_harness(tmp_path, monkeypatch):
+    import asyncio
+
+    from garuda.acp.protocol import AcpProtocolError
+    from garuda.core.sessions import SessionStore
+
+    adapter = _StartFailingAdapter()
+    adapter.release_close.clear()
+    _serve_adapter(monkeypatch, adapter)
+    store = SessionStore()
+    conversation = Conversation(workspace=tmp_path, runtime="faketest", store=store)
+    turn = asyncio.create_task(conversation.run("turn one"))
+    try:
+        await asyncio.wait_for(adapter.close_entered.wait(), 5)
+        closing = asyncio.create_task(conversation.close())
+        await asyncio.sleep(0.05)
+        adapter.release_close.set()
+        await asyncio.wait_for(closing, 5)
+        assert adapter.reaped is True
+        with pytest.raises(AcpProtocolError, match="version mismatch"):
+            await turn
+        (record,) = store.list_sessions()
+        assert store.load_meta(record["session_id"])["state"]["outcome"] == "cancelled"
+    finally:
+        if not turn.done():
+            turn.cancel()
+        await asyncio.gather(turn, return_exceptions=True)
+        await conversation.close()
