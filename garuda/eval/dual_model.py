@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from garuda.eval.costs import duration_ms, estimate_cost
+from garuda.model.usage import TOKEN_FIELDS
 from garuda.types import AgentResult
 
 # Release thresholds from the approved design. A dual-model rollout passes only
@@ -433,7 +434,7 @@ def paired_result_from_agent_result(
 ) -> PairedResult:
     """Convert one native run into a lossless paired-evaluation trial record.
 
-    Parent model responses live in ``AgentResult.metadata['events']``. Collection
+    Parent model responses and failed calls live in ``AgentResult.metadata['events']``. Collection
     children retain separate trails, so the coordinator's terminal lifecycle event
     carries an ``attempt_metrics`` summary; consuming both sources avoids silently
     dropping child spend or making a fallback look free. This function does not
@@ -456,13 +457,16 @@ def paired_result_from_agent_result(
         if isinstance(timestamp, str):
             timestamps.append(timestamp)
         event_type = event.get("type")
-        if event_type == "model_response" and not payload.get("truncated"):
+        if event_type in ("model_response", "model_call_failed") and (
+                not payload.get("truncated") or payload.get("usage")):
             calls.append(
                 {
                     "role": payload.get("model_binding_role"),
                     "purpose": payload.get("call_purpose"),
                     "model": payload.get("model"),
                     "usage": payload.get("usage") or {},
+                    "usage_unknown": payload.get("usage_unknown") or (),
+                    "failed": event_type == "model_call_failed",
                     "cost": None,
                     "duration_ms": payload.get("duration_ms", 0),
                 }
@@ -502,12 +506,19 @@ def paired_result_from_agent_result(
         "collection": {"tokens": 0, "input": 0, "costs": [], "calls": 0},
     }
     unattributed = 0
+    incomplete_failure_usage = False
     model_ms = 0
     total_call_tokens = 0
     total_call_costs: list[float | None] = []
     for call in calls:
         usage = call["usage"]
-        cost = _cost(call["model"], usage, call["cost"])
+        unknown = call.get("usage_unknown", ())
+        cost = None if "cost_usd" in unknown else _cost(call["model"], usage, call["cost"])
+        if call.get("failed") and (
+                any(name in unknown for name in TOKEN_FIELDS)
+                or not isinstance(usage, dict)
+                or not any(usage.get(name) is not None for name in TOKEN_FIELDS)):
+            incomplete_failure_usage = True
         total_call_tokens += _token_total(usage)
         total_call_costs.append(cost)
         try:
@@ -541,7 +552,7 @@ def paired_result_from_agent_result(
         wall = None
     cost_unknown_reason = None
     if total_cost is None:
-        cost_unknown_reason = "one or more model calls reported usage without a price"
+        cost_unknown_reason = "one or more model calls have incomplete cost evidence"
     return PairedResult(
         task_id=task_id,
         trial=trial,
@@ -568,7 +579,7 @@ def paired_result_from_agent_result(
         collection_mutations=0,
         reasoning_input_tokens=by_role["reasoning"]["input"],
         evidence_score=evidence_score,
-        attribution_complete=(bool(calls) and unattributed == 0) if calls else None,
+        attribution_complete=(unattributed == 0 and not incomplete_failure_usage) if calls else None,
         cost_unknown_reason=cost_unknown_reason,
     )
 

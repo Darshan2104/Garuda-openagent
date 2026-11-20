@@ -15,7 +15,9 @@ counts, and collection job/fallback/stale-report counts.
 record into `classifier_tokens`/`classifier_cost_usd` values for a trial. A run
 with no classifier call counts as a known zero. An unpriced call keeps the
 trial total unknown. `paired_result_from_agent_result` materializes native
-event trails (including collection attempt summaries), and `save_paired_results`
+event trails, including reported usage and duration from failed parent calls
+and collection attempt summaries. Incomplete failed-call telemetry prevents
+a complete attribution claim. `save_paired_results`
 refuses to persist a report without immutable model-version, price-source, and
 prompt-revision metadata. It provides the reproducible result-to-report path;
 an operator still has to run the configured baseline and candidate models.
