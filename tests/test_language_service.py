@@ -370,6 +370,53 @@ async def test_crash_seen_by_a_write_still_reports_the_exit_code(tmp_path):
     assert "exit code 3" in status.detail
 
 
+async def test_write_failure_is_recorded_when_the_caller_is_cancelled(tmp_path, monkeypatch):
+    # Cancelling the caller during the exit grace must still fail the service
+    # and reject pending requests, and the cancellation must propagate (#631).
+    service = StdioLanguageServer(_config(tmp_path, "normal"))
+    waiting = asyncio.Event()
+    killed = []
+
+    def _no_group(*args):
+        raise ProcessLookupError
+
+    monkeypatch.setattr("garuda.lsp.client.os.killpg", _no_group)
+
+    class _Stdin:
+        def write(self, data):
+            pass
+
+        async def drain(self):
+            raise BrokenPipeError
+
+    class _Process:
+        stdin = _Stdin()
+        returncode = None
+        pid = -1
+
+        async def wait(self):
+            waiting.set()
+            await asyncio.Event().wait()
+
+        def kill(self):
+            killed.append("kill")
+
+    service._process = _Process()
+    service._state = ServiceState.READY
+    pending = asyncio.get_running_loop().create_future()
+    service._pending[99] = pending
+    send = asyncio.create_task(
+        service._send({"jsonrpc": "2.0", "method": "initialized", "params": {}}))
+    await waiting.wait()
+    send.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await send
+    status = service.status()
+    assert status.state is ServiceState.FAILED
+    assert "stopped reading its input (BrokenPipeError)" in status.detail
+    assert isinstance(pending.exception(), LanguageServiceError)
+    assert "kill" in killed
+
 async def test_request_timeout_cancels_and_keeps_the_server(ws, tmp_path, lsp):
     service, tool = lsp("slow", request_timeout=1.5)
     slow = await _call(tool, ws, action="definition", path="lib.py", line=2, column=1)

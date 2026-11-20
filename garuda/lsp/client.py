@@ -467,13 +467,17 @@ class StdioLanguageServer:
             except (BrokenPipeError, ConnectionResetError) as exc:
                 # A crash is usually seen here before the reader reaches EOF;
                 # give the process a moment to exit so the exit code is kept.
+                # Record the failure even if the caller is cancelled during
+                # the grace; the cancellation still propagates.
                 code = None
-                with contextlib.suppress(Exception):
-                    code = await asyncio.wait_for(process.wait(), WRITE_FAILURE_EXIT_GRACE)
-                if code is not None:
-                    self._fail(f"server exited (exit code {code})")
-                else:
-                    self._fail(f"server stopped reading its input ({type(exc).__name__})")
+                try:
+                    with contextlib.suppress(Exception):
+                        code = await asyncio.wait_for(process.wait(), WRITE_FAILURE_EXIT_GRACE)
+                finally:
+                    if code is not None:
+                        self._fail(f"server exited (exit code {code})")
+                    else:
+                        self._fail(f"server stopped reading its input ({type(exc).__name__})")
                 raise self._unavailable() from exc
 
     async def _notify(self, method: str, params) -> None:
