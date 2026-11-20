@@ -12,7 +12,7 @@ from garuda.core.permissions import PermissionDecision, PermissionEngine
 from garuda.lsp.client import StdioLanguageServer
 from garuda.lsp.config import LanguageServerConfig, load_language_servers
 from garuda.lsp.positions import from_utf16, lsp_lines, path_to_uri, to_utf16, uri_to_path
-from garuda.lsp.protocol import ServiceState
+from garuda.lsp.protocol import LanguageServiceError, ServiceState
 from garuda.tools.language import LanguageServerTool
 from garuda.tools.protocol import ToolContext
 from garuda.workspace.health import monitored
@@ -339,6 +339,35 @@ async def test_crash_moves_to_failed_and_is_not_restarted(ws, tmp_path, lsp):
     again = await _call(tool, ws, action="symbols", path="lib.py")
     assert again.is_error and "not restarted" in again.content
     assert sum(m.get("method") == "initialize" for m in _log(tmp_path)) == 1
+
+
+async def test_crash_seen_by_a_write_still_reports_the_exit_code(tmp_path):
+    # The writer can notice a crash before the reader reaches EOF; the exit
+    # code must survive either ordering (issue #623).
+    service = StdioLanguageServer(_config(tmp_path, "normal"))
+
+    class _Stdin:
+        def write(self, data):
+            pass
+
+        async def drain(self):
+            raise ConnectionResetError
+
+    class _Process:
+        stdin = _Stdin()
+        returncode = 3
+        pid = -1
+
+        async def wait(self):
+            return 3
+
+    service._process = _Process()
+    service._state = ServiceState.READY
+    with pytest.raises(LanguageServiceError):
+        await service._send({"jsonrpc": "2.0", "method": "initialized", "params": {}})
+    status = service.status()
+    assert status.state is ServiceState.FAILED
+    assert "exit code 3" in status.detail
 
 
 async def test_request_timeout_cancels_and_keeps_the_server(ws, tmp_path, lsp):
