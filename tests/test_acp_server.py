@@ -145,6 +145,33 @@ async def test_inbound_outbound_isolation():
     assert server.session_count() == 2
 
 
+async def test_parallel_prompts_send_updates_for_the_owning_session():
+    _, duplex = _server()
+    await duplex.call("initialize", {"protocolVersion": ACP_VERSION})
+    first = await duplex.call("session/new")
+    second = await duplex.call("session/new")
+
+    async def prompt(session, text):
+        return await duplex.call("session/prompt", {
+            **session, "prompt": [{"type": "text", "text": text}],
+        })
+
+    replies = await asyncio.gather(prompt(first, "first task"), prompt(second, "second task"))
+    assert replies == [{"stopReason": "end_turn"}, {"stopReason": "end_turn"}]
+    routed = {}
+    for frame in duplex.sent:
+        message, _ = decode_frame(frame)
+        if message.get("method") == "session/update":
+            params = message["params"]
+            content = params["update"].get("content", {})
+            if content.get("type") == "text":
+                routed[params["sessionId"]] = content["text"]
+    assert routed == {
+        first["sessionId"]: "done: first task",
+        second["sessionId"]: "done: second task",
+    }
+
+
 async def _read_reply(stdout, call_id: int) -> dict:
     """Read framed output until the reply with `call_id` arrives."""
     buffer = b""
@@ -431,12 +458,17 @@ async def test_cancel_processed_while_prompt_blocked():
     )
     await asyncio.wait_for(prompt_task, 10)
     replies = {}
+    updates = []
     for frame in sent:
         message, _ = decode_frame(frame)
         if "id" in message and message["id"] in (3, 4):
             replies[message["id"]] = message
+        if message.get("method") == "session/update":
+            updates.append(message["params"])
     assert replies[4]["result"] == {"cancelled": True}
     assert replies[3]["result"] == {"stopReason": "cancelled"}
+    assert any(update.get("sessionId") == session_id and update["update"]["sessionUpdate"] == "error"
+               for update in updates)
 
 
 async def test_permission_request_roundtrip_streams_mid_turn():
