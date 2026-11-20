@@ -49,6 +49,9 @@ TERM_GRACE = 5.0
 KILL_GRACE = 3.0
 GROUP_POLL_INTERVAL = 0.05
 PIPE_DRAIN_TIMEOUT = 2.0
+# Bound on confirming that a leader whose group lookup found no process really
+# exited on its own. A child still running after this is refused and reaped.
+EARLY_EXIT_REAP_TIMEOUT = 2.0
 STDERR_RING = 50
 _MISSING = object()
 _PS_CANDIDATES = ("/bin/ps", "/usr/bin/ps")
@@ -117,6 +120,10 @@ def _live_group_members(process_group: int) -> tuple[int, ...]:
     return tuple(members)
 
 
+class _LeaderGone(AcpProtocolError):
+    """The group lookup found no process; the leader may have exited already."""
+
+
 class AcpProcess:
     """One managed ACP agent subprocess."""
 
@@ -176,7 +183,17 @@ class AcpProcess:
         )
         try:
             self._bind_process_group()
-        except Exception:
+        except Exception as bind_error:
+            if isinstance(bind_error, _LeaderGone) and await self._exited_unsignalled(
+                self._process
+            ):
+                # The leader exited on its own before binding. No live process
+                # is handed back; report the exit as the typed error callers
+                # already handle, with the diagnostics the user needs.
+                await self._collect_early_stderr()
+                raise self._exit_error(
+                    "agent exited before its process group could be bound"
+                ) from bind_error
             try:
                 await self._abort_unbound_launch(self._process)
             except Exception as cleanup_error:
@@ -193,6 +210,10 @@ class AcpProcess:
         pid = self._process.pid
         try:
             process_group = os.getpgid(pid)
+        except ProcessLookupError as exc:
+            raise _LeaderGone(
+                f"cannot bind ACP process group for pid {pid}: {exc}"
+            ) from exc
         except OSError as exc:
             raise AcpProtocolError(
                 f"cannot bind ACP process group for pid {pid}: {exc}"
@@ -210,9 +231,36 @@ class AcpProcess:
                 f"cannot bind ACP process identity for pid {pid}: {exc}"
             ) from exc
         if not identity:
-            raise AcpProtocolError(f"cannot bind ACP process identity for pid {pid}")
+            raise _LeaderGone(f"cannot bind ACP process identity for pid {pid}")
         self._process_group = process_group
         self._leader_identity = identity
+
+    async def _exited_unsignalled(self, process: asyncio.subprocess.Process) -> bool:
+        """Confirm, without signalling, that the leader exited and was reaped.
+
+        A child still running after the bound is not confirmed and goes through
+        the ordinary refuse-and-reap path. Cancellation during the wait reaps
+        the child before propagating, so no unbound process is left behind.
+        """
+        if process.returncode is not None:
+            return True
+        try:
+            await asyncio.wait_for(
+                asyncio.shield(process.wait()), EARLY_EXIT_REAP_TIMEOUT
+            )
+        except TimeoutError:
+            return False
+        except BaseException:
+            await self._abort_unbound_launch(process)
+            raise
+        return process.returncode is not None
+
+    async def _collect_early_stderr(self) -> None:
+        """Keep a bounded stderr tail for an agent that exited before binding."""
+        try:
+            await asyncio.wait_for(self._drain_stderr(), PIPE_DRAIN_TIMEOUT)
+        except TimeoutError:
+            logger.debug("ACP stderr of an early-exited agent did not close")
 
     @staticmethod
     async def _abort_unbound_launch(process: asyncio.subprocess.Process) -> None:
