@@ -61,6 +61,23 @@ def test_shadowed_copies_are_listed(ws):
         ("shared", "user", "project"), ("shared", "packaged", "project")}
 
 
+async def test_disabled_skills_ignore_malformed_frontmatter(ws):
+    from garuda.agents.setup import prepare_agent_run
+    from garuda.model.script_model import ScriptModel
+
+    broken = ws / ".agent" / "skills" / "alpha" / "SKILL.md"
+    broken.write_text("---\nname: alpha\ndescription: Review: notes\n---\nUnused text\n")
+    assert _show(ws, "{from: [project], include: []}")["selected"] == []
+    assert all(section["section"] != "skills" for section in inspect.prompt("a", ws)["sections"])
+
+    prepared = await prepare_agent_run("a", workspace=str(ws), model=ScriptModel([]))
+    try:
+        assert "Unused text" not in prepared.config.system_prompt
+    finally:
+        if prepared.mcp_manager is not None:
+            await prepared.mcp_manager.close()
+
+
 @pytest.mark.parametrize("load, expect, absent", [
     ("index", "- alpha (", "alpha body from skills"),
     ("full", "alpha body from skills", "To use a skill, read its file"),
