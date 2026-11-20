@@ -386,7 +386,13 @@ async def run_worker_async(session_id: str, *, store=None, queue=None, runner=No
                 or document.get("config_digest") != admission.get("config_digest")):
             raise BackgroundRefused("background launch disagrees with its frozen queue admission")
     except BackgroundRefused:
-        await _retire_refused_admission(store, queue, session_id, document, admission)
+        try:
+            await _retire_refused_admission(store, queue, session_id, document, admission)
+        except Exception:
+            # The refusal is the outcome; a failed retirement keeps the queue
+            # entry for recovery and must not replace the refusal reason.
+            print("could not retire the refused admission; its queue entry is kept:\n"
+                  + traceback.format_exc(), file=sys.stderr)
         raise
     owner = current_owner()
 
