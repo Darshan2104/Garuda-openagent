@@ -385,8 +385,10 @@ def test_native_result_fails_closed_for_unattributed_or_unpriced_calls():
      [], 300, 0.35, True),
     ({"prompt_tokens": 150, "completion_tokens": 50, "total_tokens": 200, "cost_usd": 0.25},
      ["total_tokens", "cost_usd"], 300, None, False),
+    ({"prompt_tokens": 150, "completion_tokens": 50, "total_tokens": 200},
+     ["cost_usd"], 300, None, False),
     ({}, ["prompt_tokens", "completion_tokens", "total_tokens", "cost_usd"], 100, None, False),
-], ids=["billed-failure", "partial-interruption", "unknown-failure"])
+], ids=["billed-failure", "partial-interruption", "unpriced-failure", "unknown-failure"])
 def test_paired_trial_keeps_failed_call_spend_and_coverage(failed_usage, unknown, tokens, cost, complete):
     identity = {"model": "provider/fixture", "model_binding_role": "reasoning", "call_purpose": "controller"}
     result = AgentResult(

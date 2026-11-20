@@ -515,7 +515,8 @@ def paired_result_from_agent_result(
         unknown = call.get("usage_unknown", ())
         cost = None if "cost_usd" in unknown else _cost(call["model"], usage, call["cost"])
         if call.get("failed") and (
-                any(name in unknown for name in TOKEN_FIELDS)
+                cost is None
+                or any(name in unknown for name in TOKEN_FIELDS)
                 or not isinstance(usage, dict)
                 or not any(usage.get(name) is not None for name in TOKEN_FIELDS)):
             incomplete_failure_usage = True
