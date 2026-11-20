@@ -423,6 +423,131 @@ async def test_a_full_harness_refuses_at_once_and_gives_the_reservation_back(wor
     assert CapacityStore().holders("native") == []  # released after the answer
 
 
+@pytest.mark.parametrize("phase", ["snapshot", "comparison"])
+async def test_consult_evidence_allows_the_event_loop_to_advance(world, monkeypatch, phase):
+    from threading import Event
+
+    from garuda.workspace import snapshot_proto
+    from garuda.workspace.no_edits import NoEditsGuard
+
+    loop = asyncio.get_running_loop()
+    started = asyncio.Event()
+    release = Event()
+    blocked_the_loop = Event()
+    owner, method = ((snapshot_proto, "detached_repository") if phase == "snapshot"
+                     else (NoEditsGuard, "check"))
+    original = getattr(owner, method)
+
+    def wait_for_the_event_loop(*args, **kwargs):
+        loop.call_soon_threadsafe(started.set)
+        if not release.wait(timeout=3):
+            blocked_the_loop.set()
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(owner, method, wait_for_the_event_loop)
+    pending = asyncio.create_task(service(world, Recorder()).consult(request(world)))
+    try:
+        await asyncio.wait_for(started.wait(), 7)
+        assert not blocked_the_loop.is_set()
+    finally:
+        release.set()
+        result = await asyncio.wait_for(pending, 7)
+    assert result.outcome == "answered"
+
+
+async def test_a_slow_snapshot_times_out_without_dispatch_and_cleans_up_after_it_settles(
+        world, monkeypatch):
+    from threading import Event
+
+    from garuda.runtime.capacity import CapacityStore
+    from garuda.workspace import snapshot_proto as snap
+
+    settings = Path(os.environ["GARUDA_GLOBAL_SETTINGS"])
+    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings.write_text("capacity: {native: 1}\n")
+    loop = asyncio.get_running_loop()
+    entered, settled = asyncio.Event(), asyncio.Event()
+    release = Event()
+    original = snap.detached_repository
+
+    def slow_snapshot(*args, **kwargs):
+        loop.call_soon_threadsafe(entered.set)
+        try:
+            release.wait(5)
+            return original(*args, **kwargs)
+        finally:
+            loop.call_soon_threadsafe(settled.set)
+
+    monkeypatch.setattr(snap, "detached_repository", slow_snapshot)
+    resolved = make_resolved({**DOC, "consults": {"timeout_sec": 1}})
+    runner = Recorder()
+    pending = asyncio.create_task(ConsultService(world.store, resolved, runner=runner).consult(
+        request(world, request_id="slow")))
+    scratch_root = Path(world.store.root) / ".consult" / world.asker / "scratch"
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        await asyncio.sleep(1.3)  # the loop stays live past the deadline
+        assert not pending.done()  # the expired preparation is still owned, not abandoned
+        assert any(scratch_root.iterdir()) and len(CapacityStore().holders("native")) == 1
+        release.set()
+        with pytest.raises(ConsultRefused) as caught:
+            await asyncio.wait_for(pending, 5)
+    finally:
+        release.set()
+    assert caught.value.code == "consult.timeout" and settled.is_set()
+    assert runner.calls == []
+    assert list(scratch_root.iterdir()) == []
+    state = ConsultState(world.store, world.asker).snapshot()
+    assert state["active"] is None and state["count"] == 0
+    assert CapacityStore().holders("native") == []
+
+
+async def test_unsettled_snapshot_keeps_its_scratch_and_capacity_after_cancellation(world, monkeypatch):
+    from threading import Event
+
+    from garuda.runtime.capacity import CapacityStore
+    from garuda.workspace import snapshot_proto as snap
+
+    settings = Path(os.environ["GARUDA_GLOBAL_SETTINGS"])
+    settings.write_text("capacity: {native: 1}\n")
+    loop = asyncio.get_running_loop()
+    entered, settled = asyncio.Event(), asyncio.Event()
+    release = Event()
+    original = snap.detached_repository
+
+    def held_snapshot(*args, **kwargs):
+        snapshot = original(*args, **kwargs)
+        loop.call_soon_threadsafe(entered.set)
+        try:
+            release.wait(5)
+            return snapshot
+        finally:
+            loop.call_soon_threadsafe(settled.set)
+
+    monkeypatch.setattr(snap, "detached_repository", held_snapshot)
+    monkeypatch.setattr(svc, "REAP_GRACE", 0.1)
+    runner = Recorder()
+    pending = asyncio.create_task(service(world, runner).consult(request(world, request_id="held")))
+    try:
+        await asyncio.wait_for(entered.wait(), 5)
+        pending.cancel()
+        await asyncio.sleep(0)
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(pending, 2)
+        state = ConsultState(world.store, world.asker).snapshot()
+        record = state["requests"]["held"]
+        assert record["state"] == "quarantined"
+        assert CapacityStore().holders("native") == [record["child_id"]]
+        scratch = Path(world.store.root) / ".consult" / world.asker / "scratch" / record["child_id"]
+        assert (scratch / "snapshot" / "notes.txt").read_text() == "original\n"
+        assert not runner.calls and not settled.is_set()
+    finally:
+        release.set()
+        await asyncio.gather(pending, return_exceptions=True)
+        await asyncio.wait_for(settled.wait(), 5)
+
+
 # --- crash, restart, timeout, cancellation ------------------------------------------------------
 
 
