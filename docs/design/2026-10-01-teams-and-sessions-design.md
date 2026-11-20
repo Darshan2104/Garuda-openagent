@@ -931,7 +931,9 @@ normal permissions, never less restricted.
   does not wait for a slot its parent or flow holds; no slot means
   `consult.capacity_unavailable` immediately, before dispatch.
 - `timeout_sec` is the wall-clock budget from admission through preparation
-  and child work; bounded reap grace may follow expiration. Native children also have finite turn/output-token
+  and child work; bounded reap grace may follow expiration, and the post-run
+  snapshot comparison has its own bounded grace (15 s) so an answer that
+  arrives near the deadline is not withheld only for that reason. Native children also have finite turn/output-token
   caps. Answer clipping bounds returned text, not generation cost. ACP token
   budgets are enforced only when exercised adapter support exists; otherwise
   request count and runtime deadline are the available bounds and preflight

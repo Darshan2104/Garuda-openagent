@@ -147,7 +147,7 @@ successful preview can still be refused by those steps after admission.
     | `--deadline-sec N` | Wall-clock budget; the agent paces itself and reserves turns to finish |
     | `--max-run-tokens N` | Token budget (N ≥ 1) shared by the whole native run tree (main, auxiliary, collection worker, rigorous plan/critic and subagent calls); calls reserve before sending. Refused on an ACP runtime |
     | `--max-run-cost-usd X` | Stop admitting calls once reported spend reaches X (finite, > 0); unreported cost stops admission unless `--max-run-tokens` is set. Refused on an ACP runtime |
-    | `--json` | Print JSONL events to stdout. Disables native live text. ACP summaries and errors go to stderr |
+    | `--json` | Print JSONL events to stdout. Disables native live text. ACP summaries and errors go to stderr; an ACP payload that is not strict JSON is coerced (non-finite numbers become `null`, other values strings) and marked `payload_coerced` |
     | `--no-stream` | Disable live assistant and subagent previews in a terminal; pipes automatically use ordinary output |
     | `--quiet` | Print the native final message without startup notices or live output |
     | `--trajectory PATH` | Also save the run's events to a JSONL file; for an external harness, the trail Garuda recorded (event kinds, turns, request digests) |
@@ -205,7 +205,7 @@ isolation boundary.
     | `--max-jobs N` | Concurrent jobs (default `4`) |
     | `--allow-agent NAME` | An agent a request may select by name; repeatable (unset: any the operator defines). A request never supplies a definition |
     | `--permission-ceiling MODE` | Loosest permission mode a requested agent may run with (default: that of `--agent`) |
-    | `--model-max-concurrency N` | Cap concurrent model calls per provider across jobs (`0` = unlimited). A stream holds its slot until closed |
+    | `--model-max-concurrency N` | Cap concurrent model calls per provider across jobs (`0` = unlimited). A stream holds its slot until closed (a close that hangs past 5 s releases it) |
 
     Plus the model, `--agent`, workspace, `--agents-dir`, and `--mcp-config`
     flags. Methods are listed in

@@ -6,7 +6,8 @@ labelled data. It is not a connection to a live session: it cannot steer, stop, 
 or control anyone.
 
 Order, each step before the next and all of it inside one wall-clock deadline that runs from
-admission through preparation and child work (bounded reap grace follows expiration):
+admission through preparation and child work (bounded reap grace follows expiration). The
+post-run snapshot comparison may extend past it by at most ``COMPARISON_GRACE``:
 
 1. **Authorize and bound** — the asker is an authenticated session of this root task (never
    itself a consult); the target is granted to the asker's role *in the user's file* (a
@@ -50,6 +51,10 @@ from garuda.consult.state import ConsultState
 from garuda.workspace.settlement import settle_task
 
 REAP_GRACE = 15.0
+# The child may use the whole deadline, so the post-run snapshot comparison gets a bounded
+# window of its own: an answer that arrives near the deadline is not withheld only because
+# the comparison started late. Overrunning this window still refuses (and reaps or quarantines).
+COMPARISON_GRACE = 15.0
 
 
 @dataclass
@@ -265,7 +270,8 @@ class ConsultService:
         if held.quarantined:
             raise ConsultRefused("consult.quarantined", "consult capacity cleanup is unconfirmed")
         # 7. validate, persist, then release
-        check = await self._wait_evidence(guard.check, deadline, held)
+        compare_by = max(deadline, self._clock() + COMPARISON_GRACE)
+        check = await self._wait_evidence(guard.check, compare_by, held)
         elapsed_ms = round((self._clock() - started) * 1000)
         receipt = self._receipt(req, role, request_id, child_id, plan, snapshot, outcome, check,
                                 elapsed_ms)

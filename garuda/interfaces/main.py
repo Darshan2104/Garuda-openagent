@@ -2096,13 +2096,38 @@ async def _run_runtime_command(args) -> int:
     return 1
 
 
+def _strict_json_value(value):
+    """Coerce a value to strict JSON: non-finite floats become null, unknown types strings."""
+    import math
+
+    if isinstance(value, dict):
+        return {str(key): _strict_json_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_strict_json_value(item) for item in value]
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if value is None or isinstance(value, (str, int, bool)):
+        return value
+    return str(value)
+
+
 def _acp_event_json(event) -> str:
+    """One strict JSONL record; an unserializable payload never loses the run."""
     import json
 
-    return json.dumps({
+    record = {
         "session_id": event.session_id, "kind": event.kind.value, "turn": event.turn,
         "seq": event.seq, "payload": event.payload,
-    }, allow_nan=False)
+    }
+    try:
+        return json.dumps(record, allow_nan=False)
+    except (TypeError, ValueError, RecursionError):
+        pass
+    try:
+        payload = _strict_json_value(event.payload)
+        return json.dumps({**record, "payload": payload, "payload_coerced": True}, allow_nan=False)
+    except (TypeError, ValueError, RecursionError):
+        return json.dumps({**record, "payload": None, "payload_coerced": True}, allow_nan=False)
 
 
 async def run_acp_command(args, task: str, catalog) -> int:
