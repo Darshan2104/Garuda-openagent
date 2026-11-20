@@ -205,7 +205,7 @@ isolation boundary.
     | `--max-jobs N` | Concurrent jobs (default `4`) |
     | `--allow-agent NAME` | An agent a request may select by name; repeatable (unset: any the operator defines). A request never supplies a definition |
     | `--permission-ceiling MODE` | Loosest permission mode a requested agent may run with (default: that of `--agent`) |
-    | `--model-max-concurrency N` | Cap concurrent model calls per provider across jobs (`0` = unlimited). A stream holds its slot until closed |
+    | `--model-max-concurrency N` | Cap concurrent model calls per provider across jobs (`0` = unlimited). A stream holds its slot until closed (a close that hangs past 5 s releases it) |
 
     Plus the model, `--agent`, workspace, `--agents-dir`, and `--mcp-config`
     flags. Methods are listed in

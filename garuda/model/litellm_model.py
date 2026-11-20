@@ -21,21 +21,49 @@ from garuda.model.protocol import (
 )
 from garuda.model.usage import attach_usage, is_definite_rejection, sum_usage, usage_attempt
 from garuda.types import Message, Role, ToolCall
-from garuda.workspace.settlement import settle_task
 
 logger = logging.getLogger(__name__)
 
 
+# How long a stream keeps its provider slot while ``aclose`` runs.
+_STREAM_CLOSE_GRACE = 5.0
+# Closes that outlived the grace period; referenced until they finish.
+_background_closes: set[asyncio.Task] = set()
+
+
+def _finish_background_close(task: asyncio.Task) -> None:
+    _background_closes.discard(task)
+    if not task.cancelled() and task.exception() is not None:
+        logger.warning("Provider stream close failed after release: %r", task.exception())
+
+
 async def _close_provider_stream(close) -> None:
+    """Close a provider stream before its slot is released, within a grace period.
+
+    The close settles through repeated caller cancellation so the slot is held
+    until cleanup finishes. A close that outlives ``_STREAM_CLOSE_GRACE`` keeps
+    running in the background so a hung provider cannot starve the slot.
+    """
     closing = asyncio.create_task(close())
-    try:
-        await asyncio.shield(closing)
-    except asyncio.CancelledError as cancelled:
+    cancelled: asyncio.CancelledError | None = None
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _STREAM_CLOSE_GRACE
+    while not closing.done() and (remaining := deadline - loop.time()) > 0:
         try:
-            await settle_task(closing)
-        except Exception as exc:
+            await asyncio.wait({closing}, timeout=remaining)
+        except asyncio.CancelledError as exc:
+            cancelled = cancelled or exc
+    if not closing.done():
+        logger.warning("Provider stream close exceeded %.1fs; releasing its slot", _STREAM_CLOSE_GRACE)
+        _background_closes.add(closing)
+        closing.add_done_callback(_finish_background_close)
+    elif cancelled is None:
+        closing.result()
+        return
+    if cancelled is not None:
+        if closing.done() and not closing.cancelled() and (exc := closing.exception()) is not None:
             raise cancelled from exc
-        raise
+        raise cancelled
 
 
 TOOL_ARG_PARSE_ERROR_KEY = "__tool_arg_parse_error__"
