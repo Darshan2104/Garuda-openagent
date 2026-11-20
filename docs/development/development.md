@@ -9,7 +9,11 @@ ruff check garuda tests
 python scripts/check_docs.py
 ```
 
-Run narrow tests before broad tests. Live integrations are intentionally opt-in: Harbor needs `.[eval]`, tmux needs the system binary (3.2 or newer), Docker needs a reachable daemon, and macOS Seatbelt checks need `GARUDA_LIVE_SANDBOX=1`.
+Run narrow tests before broad tests. The full suite is safe to run in parallel with `pytest -q -n auto` (pytest-xdist, part of `.[dev]`); CI runs it that way.
+
+On pull requests, CI gates on the pinned `test` job (Ubuntu and macOS), the wheel install, the docs contract, and the contract matrix. The non-blocking `latest dependencies` and `live sandbox` jobs run on every push to `main`, nightly, and on manual dispatch, not on pull requests, so hosted macOS runners are not exhausted when several pull requests are open. Trigger them for a branch with `gh workflow run CI --ref <branch>`.
+
+Live integrations are intentionally opt-in: Harbor needs `.[eval]`, tmux needs the system binary (3.2 or newer), Docker needs a reachable daemon, and macOS Seatbelt checks need `GARUDA_LIVE_SANDBOX=1`.
 
 The autouse test isolation gives settings, sessions, leases, and the derived
 recovery store a fresh owner for every test. It removes an inherited
