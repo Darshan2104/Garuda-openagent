@@ -19,6 +19,8 @@ from garuda.eval.dual_model import (
     role_cost_total,
     save_paired_results,
 )
+from garuda.model.protocol import ContextOverflowError
+from garuda.model.usage import usage_metadata
 from garuda.types import AgentResult
 
 
@@ -378,6 +380,63 @@ def test_native_result_fails_closed_for_unattributed_or_unpriced_calls():
     assert trial.total_tokens == 3
     assert trial.total_cost_usd is None
     assert trial.cost_unknown_reason is not None
+
+
+@pytest.mark.parametrize(("failed_usage", "unknown", "tokens", "cost", "complete"), [
+    ({"prompt_tokens": 150, "completion_tokens": 50, "total_tokens": 200, "cost_usd": 0.25},
+     [], 300, 0.35, True),
+    ({"prompt_tokens": 150, "completion_tokens": 50, "total_tokens": 200, "cost_usd": 0.25},
+     ["total_tokens", "cost_usd"], 300, None, False),
+    ({"prompt_tokens": 150, "completion_tokens": 50, "total_tokens": 200},
+     ["cost_usd"], 300, None, False),
+    ({}, ["prompt_tokens", "completion_tokens", "total_tokens", "cost_usd"], 100, None, False),
+], ids=["billed-failure", "partial-interruption", "unpriced-failure", "unknown-failure"])
+def test_paired_trial_keeps_failed_call_spend_and_coverage(failed_usage, unknown, tokens, cost, complete):
+    identity = {"model": "provider/fixture", "model_binding_role": "reasoning", "call_purpose": "controller"}
+    result = AgentResult(
+        success=True, final_message="", messages=[], turns=2,
+        metadata={"events": [
+            {"type": "model_call_failed", "payload": {
+                **identity, "usage": failed_usage, "duration_ms": 25,
+                "outcome": "interrupted" if unknown else "failed", "usage_unknown": unknown,
+            }},
+            {"type": "model_response", "payload": {
+                **identity, "usage": {"prompt_tokens": 90, "completion_tokens": 10, "cost_usd": 0.1},
+                "duration_ms": 15,
+            }},
+        ]},
+    )
+    trial = paired_result_from_agent_result(result, task_id="paired", trial="candidate")
+    assert trial.total_tokens == trial.reasoning_tokens == tokens
+    assert trial.model_ms == 40
+    assert trial.total_cost_usd == trial.reasoning_cost_usd == cost
+    assert trial.attribution_complete is complete
+    assert (trial.cost_unknown_reason is not None) is (cost is None)
+
+
+@pytest.mark.parametrize(("error", "cost", "complete"), [
+    (ContextOverflowError("prompt too long"), 0.1, True),
+    (RuntimeError("connection reset"), None, False),
+], ids=["definite-rejection", "unknown-outcome"])
+def test_paired_trial_prices_failed_call_without_usage_from_its_evidence(error, cost, complete):
+    identity = {"model": "provider/fixture", "model_binding_role": "reasoning", "call_purpose": "controller"}
+    result = AgentResult(
+        success=True, final_message="", messages=[], turns=2,
+        metadata={"events": [
+            {"type": "model_call_failed", "payload": {
+                **identity, "usage": {}, "duration_ms": 5, "outcome": "failed",
+                **usage_metadata(error, failed=True),
+            }},
+            {"type": "model_response", "payload": {
+                **identity, "usage": {"prompt_tokens": 90, "completion_tokens": 10, "cost_usd": 0.1},
+                "duration_ms": 15,
+            }},
+        ]},
+    )
+    trial = paired_result_from_agent_result(result, task_id="paired", trial="candidate")
+    assert trial.total_tokens == 100
+    assert trial.total_cost_usd == trial.reasoning_cost_usd == cost
+    assert trial.attribution_complete is complete
 
 
 def test_paired_report_requires_reproducibility_metadata(tmp_path):
