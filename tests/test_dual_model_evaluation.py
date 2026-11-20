@@ -439,6 +439,35 @@ def test_paired_trial_prices_failed_call_without_usage_from_its_evidence(error, 
     assert trial.attribution_complete is complete
 
 
+@pytest.mark.parametrize(("usage", "attempts", "cost"), [
+    ({"prompt_tokens": 90, "completion_tokens": 10},
+     [{"usage": {"prompt_tokens": 90, "completion_tokens": 10}, "outcome": "success"}], 0.42),
+    ({"prompt_tokens": 90, "completion_tokens": 10},
+     [{"usage": {}, "outcome": "failed", "rejected": False},
+      {"usage": {"prompt_tokens": 90, "completion_tokens": 10}, "outcome": "success"}], None),
+    ({"prompt_tokens": 180, "completion_tokens": 20, "cost_usd": 0.05},
+     [{"usage": {"prompt_tokens": 90, "completion_tokens": 10, "cost_usd": 0.05}, "outcome": "failed"},
+      {"usage": {"prompt_tokens": 90, "completion_tokens": 10}, "outcome": "success"}], None),
+], ids=["table-priced", "unknown-retry-tokens", "partial-provider-cost"])
+def test_paired_trial_prices_successful_call_without_provider_cost(monkeypatch, usage, attempts, cost):
+    """A success with known tokens and no provider bill falls back to the pricing table."""
+    monkeypatch.setattr("garuda.eval.dual_model.estimate_cost", lambda _model, _usage: 0.42)
+
+    class _Response:
+        attempt_usage = attempts
+
+    identity = {"model": "provider/fixture", "model_binding_role": "reasoning", "call_purpose": "controller"}
+    result = AgentResult(
+        success=True, final_message="", messages=[], turns=1,
+        metadata={"events": [{"type": "model_response", "payload": {
+            **identity, "usage": usage, "duration_ms": 15, **usage_metadata(_Response()),
+        }}]},
+    )
+    trial = paired_result_from_agent_result(result, task_id="paired", trial="candidate")
+    assert trial.total_cost_usd == trial.reasoning_cost_usd == cost
+    assert (trial.cost_unknown_reason is not None) is (cost is None)
+
+
 def test_paired_report_requires_reproducibility_metadata(tmp_path):
     result = _result("read-1", "baseline")
     destination = tmp_path / "reports" / "paired.json"

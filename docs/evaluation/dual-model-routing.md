@@ -24,7 +24,9 @@ an operator still has to run the configured baseline and candidate models.
 
 Unknown cost is recorded as `null` with a reason and excluded from savings —
 never compared as zero. This is what keeps an external subscription harness
-from reading as free.
+from reading as free. A successful call without a provider-reported cost is
+still priced from the pricing table when its token counts are complete; a
+failed or interrupted call without a reported cost stays unknown.
 
 ## Build a paired report from sessions
 
