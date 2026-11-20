@@ -44,6 +44,7 @@ from garuda.interfaces.web.approvals import ApprovalBroker
 from garuda.model.config import ConfigError
 from garuda.model.protocol import DEFAULT_MODEL
 from garuda.model.streaming import CHILD_CALL_END, PARENT_CLEARS_CHILDREN
+from garuda.runtime.strict_store import StorageError
 
 logger = logging.getLogger(__name__)
 
@@ -345,8 +346,12 @@ class LiveRuns:
         # *this* turn rather than at upload time, because an upload is not a turn: injecting
         # one would either take a model call to acknowledge a file the user is still choosing
         # files alongside, or need a second conversation state for "files pending".
-        prompt = grounding.announce(chat.take_new_sources()) + task
+        prompt = grounding.announce(chat.new_sources) + task
+        record = chat.record or ConversationRecord(self.store, chat.session_id, chat.session.events)
+        context = record.begin_turn(task=prompt, session=chat.session)
 
+        chat.record = record
+        chat.new_sources.clear()
         chat.reset_preview()
         chat.turn_index += 1
         if chat.turn_index == 1:
@@ -354,12 +359,13 @@ class LiveRuns:
             # placeholder. Naming it after the first message is what makes the run list
             # readable — a column of "(dashboard chat)" rows is a list you cannot use.
             # The raw message, not `prompt`: the grounding preamble is scaffolding.
-            chat.session_task = task[:200]
-            self.store.update_meta(chat.session_id, {"task": chat.session_task})
-        context = chat.session.prepare_context(prompt)
-        if chat.record is None:
-            chat.record = ConversationRecord(self.store, chat.session_id, chat.session.events)
-        chat.record.begin_turn(context, task=prompt, session=chat.session)
+            title = task[:200]
+            try:
+                self.store.update_meta(chat.session_id, {"task": title})
+            except (OSError, StorageError):
+                logger.warning("Could not name dashboard session %s", chat.session_id, exc_info=True)
+            else:
+                chat.session_task = title
         chat.session.config.stream_subagent_deltas = True
         job = self.jobs.submit(
             lambda job: chat.guarded(chat.record.turn(chat.session.agent.run(
@@ -693,12 +699,6 @@ class LiveChat:
     @property
     def session_id(self) -> str:
         return self.session.events.session_id
-
-    def take_new_sources(self) -> list[Any]:
-        """The sources to announce on this turn, clearing the queue."""
-        pending = list(self.new_sources)
-        self.new_sources.clear()
-        return pending
 
     def as_dict(self) -> dict[str, Any]:
         return {

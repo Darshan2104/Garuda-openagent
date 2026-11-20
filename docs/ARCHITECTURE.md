@@ -247,8 +247,10 @@ excluded.
 
 SDK and dashboard conversations share `session_service.ConversationRecord` for
 message/working-state checkpoints and final outcomes. A new user turn is
-checkpointed before queued work starts; loop progress and settlement update the
-same shared history. One outer session span covers all turns, allowing strict
+checkpointed before it updates the live conversation or starts queued work.
+If that checkpoint fails, the dashboard retains the pending attachments for
+retry. Loop progress and settlement update the same shared history.
+One outer session span covers all turns, allowing strict
 recovery audit and resume. Closing persists the actual last result, failure or
 cancellation. The SDK and dashboard cancel and await the active turn before
 session or workspace teardown and lease release.

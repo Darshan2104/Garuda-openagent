@@ -151,7 +151,10 @@ class ConversationRecord:
             "state_checkpoint": lambda state: self.store.checkpoint_state(self.session_id, state),
         }
 
-    def begin_turn(self, context, *, task: str, session) -> None:
+    def begin_turn(self, *, task: str, session):
+        # A queued turn can stop before execution. Persist the candidate first
+        # without changing the accepted context or its outcome on failure.
+        context = session.prepare_context(task, checkpoint=self.checkpoints["checkpoint"])
         if not self.attempted:
             from garuda.core.events import EventType
             from garuda.core.modes import describe_config
@@ -165,8 +168,7 @@ class ConversationRecord:
             })
         self.context, self.last_result = context, None
         self.attempted, self.cancelled = True, False
-        # Publish the new user turn even if cancellation precedes job execution.
-        self.store.checkpoint_messages(self.session_id, context.get_messages())
+        return context
 
     async def turn(self, work: Awaitable[Any]) -> Any:
         try:
