@@ -155,8 +155,14 @@ def read_capture():
                     raise ValueError('capture log was truncated')
                 data.extend(block)
                 remaining -= len(block)
-            if snapshot(os.fstat(fd)) != snapshot(before):
-                raise ValueError('capture log changed during reading')
+            after = snapshot(os.fstat(fd))
+            if after != snapshot(before):
+                # A running capture appends to its own log, so growth of the
+                # bound file is expected; the bytes already read are unchanged.
+                # Any other change, or any change once a receipt exists, is not.
+                if (commitment is not None or after[:2] != snapshot(before)[:2]
+                        or after[2] <= before.st_size):
+                    raise ValueError('capture log changed during reading')
             if commitment is not None:
                 if commitment['snapshot'] != snapshot(before):
                     raise ValueError('capture log does not match its receipt')
