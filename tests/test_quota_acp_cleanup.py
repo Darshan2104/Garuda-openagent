@@ -256,6 +256,10 @@ async def test_cancelled_final_close_quarantines_unproved_group_cleanup(
         if not running.done():
             running.cancel()
             await asyncio.gather(running, return_exceptions=True)
+        if leader is None:
+            sessions = store.list_sessions()
+            if sessions:
+                leader = _child(store, sessions[0]["session_id"])["pid"]
         if leader is not None:
             try:
                 os.killpg(leader, signal.SIGKILL)
