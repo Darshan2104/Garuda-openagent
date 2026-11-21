@@ -145,6 +145,41 @@ async def test_running_background_capture_retains_its_launch_identity(tmp_path, 
         background._TASKS.pop((ctx.session_id, task_id), None)
 
 
+@pytest.mark.parametrize("transport_kind", ["local", "portable"])
+async def test_running_background_capture_tolerates_its_own_appends(tmp_path, monkeypatch, transport_kind):
+    """A running task appends to its own bound log; that is not tampering (#646)."""
+    from garuda.tools import background
+
+    local = LocalEnvironment(workspace_root=tmp_path)
+
+    class ExecuteTransport:
+        async def execute(self, command, timeout=None):
+            return await local.execute(command, timeout=timeout)
+
+    env = local if transport_kind == "local" else ExecuteTransport()
+    monkeypatch.setattr(background, "TASKS_DIR", str(tmp_path / "chatty-logs"))
+    ctx = ToolContext(session_id="chatty-capture")
+    started = await BashBackgroundTool().execute({
+        "command": "while [ ! -e release-output ]; do echo CHATTY; done",
+    }, env, ctx)
+    assert not started.is_error
+    task_id = started.content.split("task ")[1].split(" ")[0]
+    task = background._TASKS[(ctx.session_id, task_id)]
+    try:
+        # Before the fix nearly every poll of a continuously writing task
+        # raced the probe's before/after fstat and reported capture_failed.
+        for _ in range(30):
+            polled = await TaskOutputTool().execute({"task_id": task_id, "tail_bytes": 64}, env, ctx)
+            assert not polled.is_error, polled.content
+            assert polled.metadata["artifact_source"]["completeness"] == "partial"
+    finally:
+        (tmp_path / "release-output").touch()
+        await background._deliver_kill(env, task.pid, "KILL")
+        if task.process is not None:
+            await asyncio.wait_for(task.process.wait(), timeout=5)
+        background._TASKS.pop((ctx.session_id, task_id), None)
+
+
 async def test_portable_background_launcher_uses_the_environment_transport(tmp_path, monkeypatch):
     from garuda.tools import background
 
