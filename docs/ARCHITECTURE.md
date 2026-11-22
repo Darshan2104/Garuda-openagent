@@ -668,7 +668,11 @@ fastest way to learn the system.
     retained lease before any step and owns the check phase.
     New flows acquire the engine's workspace lease before creating their parent
     session and refuse every pre-existing parent ID, including an incomplete
-    directory without metadata. The private launch-intent store reserves one
+    directory without metadata. Admission checks configured confinement images
+    for statically resolved ACP steps that need confinement. Launch still proves
+    confinement on the step's workspace. If that proof is refused, the engine
+    settles the step intent and records a stopped flow.
+    The private launch-intent store reserves one
     operation identity under a strict cross-process lock; the dashboard gateway
     described below is the only component that may turn that intent into a run.
     `core/acceptance_runner.py` accepts already-frozen

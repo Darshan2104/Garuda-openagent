@@ -1,5 +1,6 @@
 """Packaged flows and onboarding (#158, plan task C.6b)."""
 
+import json
 import os
 from pathlib import Path
 
@@ -8,7 +9,7 @@ import pytest
 from garuda.config import garuda_yaml as gy
 from garuda.core.sessions import SessionStore
 from garuda.flows import artifacts as art
-from garuda.flows import packaged
+from garuda.flows import engine, packaged
 
 ROLES = """\
 version: 1
@@ -95,10 +96,65 @@ def test_acp_artifacts_longer_than_the_stored_summary_reach_the_next_step(
     assert "[garuda] scout: done" in out and "[garuda] plan: done" in out
 
 
+@pytest.mark.parametrize("flow_name, step, role, harness", [
+    ("plan-only", "scout", "scout", "fakea"),
+    ("plan-build-review", "review", "reviewer", "fakeb"),
+])
+def test_missing_readonly_acp_image_stops_flow_before_any_launch(
+        repo, harnesses, monkeypatch, capsys, flow_name, step, role, harness):
+    gy.user_path().write_text(ROLES.replace(
+        f"{role}: {{harness: {harness},", f"{role}: {{harness: {harness}, permissions: readonly,"))
+
+    code, out = _main(monkeypatch, capsys, "flow", "run", flow_name, "-t", "x",
+                      "--workspace", str(repo))
+
+    assert code == 3, out
+    assert "Traceback" not in out
+    assert "[garuda] flow stopped: workspace.readonly_unenforced: this harness has no confinement image" in out
+    stopped = next(json.loads(line) for line in out.splitlines() if line.startswith('{"flow_session"'))
+    store = SessionStore()
+    (meta,) = store.list_sessions()
+    assert stopped == {"flow_session": meta["session_id"], "state": "stopped",
+                       "code": "workspace.readonly_unenforced"}
+    assert meta["flow_state"] == "stopped"
+    assert meta["flow_stop"]["code"] == "workspace.readonly_unenforced"
+    assert meta["flow_stop"]["step"] == step
+    assert engine.journal(store, meta["session_id"]) == []
+
+
+def test_acp_confinement_refusal_during_launch_settles_step_intent(repo, harnesses, monkeypatch, capsys):
+    from garuda.workspace import confined_acp
+
+    gy.user_path().write_text(ROLES.replace(
+        "scout: {harness: fakea,", "scout: {harness: fakea, permissions: readonly,")
+        + "harnesses:\n  fakea: {confinement: {image: test-image}}\n")
+
+    def refuse(workspace, confinement):
+        assert Path(workspace) == repo
+        assert confinement.image == "test-image"
+        raise confined_acp.ConfinementRefused("the confinement probe failed:\nDocker is not available")
+
+    monkeypatch.setattr(confined_acp, "preflight", refuse)
+
+    code, out = _main(monkeypatch, capsys, "flow", "run", "plan-only", "-t", "x",
+                      "--workspace", str(repo))
+
+    assert code == 3, out
+    assert "Traceback" not in out
+    assert ("[garuda] flow stopped: workspace.readonly_unenforced: "
+            "the confinement probe failed: Docker is not available") in out
+    store = SessionStore()
+    (meta,) = store.list_sessions()
+    flow_id = meta["session_id"]
+    assert meta["flow_state"] == "stopped"
+    (receipt,) = engine.receipts(store, flow_id)
+    assert (receipt["step"], receipt["status"], receipt["stop"]["code"]) == (
+        "scout", "stopped", "workspace.readonly_unenforced")
+    assert engine.recover(store, flow_id) == []
+
+
 def test_an_agent_that_ends_its_turn_fails_the_step_instead_of_interrupting_the_flow(
         repo, harnesses, tmp_path, monkeypatch, capsys):
-    from garuda.flows import engine
-
     shim = tmp_path / "bin" / "fake-acp-shim"
     shim.write_text(shim.read_text().replace("--profile artifacts", "--profile cancel-stop"))
 
