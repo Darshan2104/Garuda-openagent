@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+from garuda.runtime.roles import MODE_AUTHORITY, PROVEN_OPTIONS
+
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "fixtures" / "acp"
 STATUSES = {"supported", "declared", "unknown"}
@@ -65,12 +67,14 @@ def test_committed_captures_are_redacted_and_promptless(path):
     assert set(data["capabilities"].values()) <= STATUSES
     assert "/Users/" not in text and "/home/" not in text
     assert "garuda-acp-capture-" not in text  # the scratch workspace never leaks
+    assert _script().redact(data, {}) == data
 
 
 # What docs/guides/external-harnesses.md states for each captured version.
 EXPECTED = {
     "claude-0.85.0": {"model": "model", "effort": "effort"},
     "codex-2.1.1": {"model": "model", "effort": "reasoning_effort"},
+    "codex-2.9.0": {"model": "model", "effort": "reasoning_effort"},
 }
 
 
@@ -83,6 +87,7 @@ def test_captures_match_the_documented_capability_table(path):
 
     assert caps["model_selection"] == "supported"
     assert caps["effort_selection"] == "supported"
+    assert caps["mode_selection"] == "supported"
     assert caps["close_session"] == "supported"
     assert caps["load_session"] == "declared"
     assert caps["resume_session"] == "declared"
@@ -90,3 +95,12 @@ def test_captures_match_the_documented_capability_table(path):
     assert options["model"]["id"] == expected["model"]
     assert options["thought_level"]["id"] == expected["effort"]
     assert options["model"]["current"] in options["model"]["values"]
+
+    runtime = path.parent.name
+    version = data["initialize"]["agentInfo"]["version"]
+    assert PROVEN_OPTIONS[runtime, version] == {
+        "model_id": expected["model"], "effort": expected["effort"],
+        "harness_mode": options["mode"]["id"],
+    }
+    assert data["exercised"]["mode_selection"]["selected"] == dict.fromkeys(
+        MODE_AUTHORITY[runtime], True)

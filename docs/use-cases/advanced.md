@@ -56,10 +56,14 @@ never reads, copies, stores, or proxies your vendor login.
     npm install -g @openai/codex
     codex login   # sign in with ChatGPT
     codex login status
-    npm install -g @agentclientprotocol/codex-acp@2.1.1
+    npm install -g @agentclientprotocol/codex-acp@2.9.0
     codex-acp --version
     garuda runtime inspect codex
     ```
+
+    Codex ACP 2.9.0 supports role options and offers `gpt-6.2-sol`. Version
+    2.1.1 remains proven for role options. Codex quota-bound recovery and
+    consult forwarding are proven only on 2.1.1.
 
 === "OpenCode"
 
@@ -115,20 +119,16 @@ never reads, copies, stores, or proxies your vendor login.
 Node 22+ is recommended for both examples. In primary npm package metadata
 checked on 2026-10-23, [Claude Code 2.1.309](https://registry.npmjs.org/%40anthropic-ai%2Fclaude-code/2.1.309)
 and the [Claude adapter 0.85.0](https://registry.npmjs.org/%40agentclientprotocol%2Fclaude-agent-acp/0.85.0)
-both declare Node 22+. The [Codex CLI 0.164.0](https://registry.npmjs.org/%40openai%2Fcodex/0.164.0)
-declares Node 16+, while the [Codex adapter 2.1.1](https://registry.npmjs.org/%40agentclientprotocol%2Fcodex-acp/2.1.1)
-does not declare `engines.node`; its `open` `^11.0.1` runtime dependency
-currently resolves to [open 11.0.4](https://registry.npmjs.org/open/11.0.4),
-which declares Node 20+. Node 20+ is therefore the highest published direct
-runtime requirement for that checked Codex path, rather than a minimum declared
-by the adapter itself. Newer CLI or dependency releases can raise these requirements.
+both declare Node 22+. In the Codex ACP 2.9.0 installation used for the
+capability capture, the bundled Codex CLI 0.171.0 declares Node 16+ and
+`open` 11.0.4 declares Node 20+. The adapter has no `engines.node` field.
+Newer CLI or dependency releases can raise these requirements.
 
-The pinned Claude Code and Codex adapter versions are the ones on which Garuda
-has proven a role's `model_id`, `effort`, and `harness_mode`. Garuda refuses
-roles that set these options on an unproven adapter (`role.options_unproven`)
-before sending a prompt. Omit the version pin only if your roles leave all
-three unset. Run `garuda doctor --runtime claude` (or `--runtime codex`) to
-check the install and login.
+Use a proven adapter version to set a role's `model_id`, `effort`, and
+`harness_mode`. Garuda refuses roles that set these options on an unproven
+adapter before sending a prompt (`role.options_unproven`). Omit the version pin
+only if your roles leave all three unset. Run `garuda doctor --runtime claude`
+(or `--runtime codex`) to check the install and login.
 
 Details and limits for each vendor are in the
 [External harnesses guide](../guides/external-harnesses.md#vendor-setup).

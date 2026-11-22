@@ -263,6 +263,8 @@ Add `--trajectory run.jsonl` to also save the events to a file after the run.
 proved subscription-quota reset even when the original Garuda process has
 exited.
 
+Quota-bound recovery requires the host Codex ACP adapter version 2.1.1.
+
 Enable the user-owned schedule once, before starting the flows you want it to
 cover:
 

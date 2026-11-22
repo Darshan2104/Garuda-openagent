@@ -330,6 +330,22 @@ def test_an_unproven_adapter_keeps_its_own_mode_unless_one_is_named():
     assert roles.acp_options(plan, "0.85.0") == {"mode": "acceptEdits"}
 
 
+@pytest.mark.parametrize("version, model", [("2.1.1", "gpt-6.1-sol"), ("2.9.0", "gpt-6.2-sol")])
+def test_codex_adapter_accepts_the_role_options_it_offers(version, model):
+    capture = REPO / "tests" / "fixtures" / "acp" / "codex" / f"codex-{version}.json"
+    offered = json.loads(capture.read_text())["session_new"]["configOptions"]
+    plan = roles.RolePlan(role="coder", runtime_id="codex", kind="acp", model_id=model,
+                          effort="high", harness_mode="workspace-write")
+
+    options = roles.acp_options(plan, version)
+
+    assert options == {"model": model, "reasoning_effort": "high", "mode": "workspace-write"}
+    roles.check_offered(options, offered)
+    with pytest.raises(RoleRefused) as caught:
+        roles.acp_options(plan, "2.9.0-unproven")
+    assert caught.value.code == "role.options_unproven"
+
+
 def test_check_offered():
     offered = [{"id": "model", "options": [{"value": "a"}]}]
     roles.check_offered({"model": "a"}, offered)

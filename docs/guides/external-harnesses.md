@@ -206,9 +206,10 @@ are proven for the exact adapter version:
 | Permission provenance: a tool-permission request names the server and tool in structured fields | Unknown: proving it needs a prompted call | Unknown |
 | Quiescence: a documented way to pause the caller's workspace operations while a snapshot is taken | Unknown: not documented | Unknown: not documented |
 
-Because two requirements are unknown, external harnesses can't start
-consults yet. They can still be consulted, and Garuda's native roles can
-consult any role. The opt-in check sends no prompt:
+Codex consult forwarding is proven only on adapter 2.1.1. Because two
+requirements are unknown, external harnesses can't start consults yet.
+They can still be consulted, and Garuda's native roles can consult any role.
+The opt-in check sends no prompt:
 
 ```bash
 python scripts/capture_consult_transport.py --name claude --out tests/fixtures/consult -- npx -y -p @agentclientprotocol/claude-agent-acp claude-agent-acp
@@ -233,12 +234,12 @@ python scripts/capture_consult_transport.py --name claude --out tests/fixtures/c
 
     - Launch command: `codex-acp` from `@agentclientprotocol/codex-acp`.
     - Install Node.js 22+ (recommended) and the Codex CLI
-      (`npm install -g @openai/codex`), run `codex login`, install the pinned ACP
-      package globally, and verify `codex-acp --version`. The checked package
-      path's highest published direct runtime requirement is Node 20+; the
-      adapter itself does not declare `engines.node`.
-    - Pin the ACP package to `@2.1.1` to use role model, effort, and harness
-      mode options; see [Install a harness](../use-cases/advanced.md#install-a-harness).
+      (`npm install -g @openai/codex`), run `codex login`, then run
+      `npm install -g @agentclientprotocol/codex-acp@2.9.0`, and verify with
+      `codex-acp --version`.
+    - Both 2.9.0 and 2.1.1 are proven for role model, effort, and harness mode.
+      Use 2.9.0 for `gpt-6.2-sol`. Codex quota-bound recovery is proven only
+      on 2.1.1.
     - Authentication stays in the Codex CLI login.
 
 === "Cursor Agent"
@@ -361,9 +362,9 @@ turn and no subscription quota was used). **Supported** means it was exercised
 and worked; **declared** means it is advertised but not proven here;
 **unknown** means it is not advertised or needs a prompt to prove.
 
-| Capability | Claude adapter `@agentclientprotocol/claude-agent-acp` 0.85.0 | Codex adapter `@agentclientprotocol/codex-acp` 2.1.1 | When not supported |
+| Capability | Claude adapter `@agentclientprotocol/claude-agent-acp` 0.85.0 | Codex adapter `@agentclientprotocol/codex-acp` 2.9.0 and 2.1.1 | When not supported |
 |---|---|---|---|
-| Model selection | Supported: `session/set_config_option` id `model`; values are aliases such as `opus`, `sonnet`, `haiku`, `default` | Supported: id `model`; values are exact model ids | Refuse before the prompt |
+| Model selection | Supported: `session/set_config_option` id `model`; values are aliases such as `opus`, `sonnet`, `haiku`, `default` | Supported: id `model`; values are exact model ids, including `gpt-6.2-sol` on 2.9.0 | Refuse before the prompt |
 | Effort selection | Supported: id `effort` (category `thought_level`): `default`, `low` … `max` | Supported: id `reasoning_effort`: `low` … `ultra` | Refuse before the prompt |
 | `session/close` | Supported | Supported | Close the process |
 | `session/load` | Declared; an unprompted session isn't persisted, so load is unproven | Declared; load of an unprompted session returned an internal error | Start a linked session from a brief |
@@ -371,7 +372,7 @@ and worked; **declared** means it is advertised but not proven here;
 | Stdio MCP servers in `session/new` | Supported (an `mcpServers` list is accepted) | Supported | No MCP tools for that session |
 | HTTP MCP servers | Declared | Declared | Not used |
 | Permission mode selection | Supported: id `mode`; every value (`default`, `acceptEdits`, `plan`, `auto`, `bypassPermissions`) selected and reported back | Supported: id `mode`; every value (`read-only`, `workspace-write`, `agent`, `agent-full-access`) selected and reported back | The harness keeps its own mode; a named mode refuses |
-| `usage_update` accounting | Context snapshot each turn: `used`, `size`, an estimated `cost` in USD and the model that ran (`_meta`), observed with a prompt | Context snapshot each turn: `used`, `size` | Recorded as snapshots, never summed or counted as turns |
+| `usage_update` accounting | Context snapshot each turn: `used`, `size`, an estimated `cost` in USD and the model that ran (`_meta`), observed with a prompt | Context snapshot each turn on 2.1.1: `used`, `size`. Unknown on 2.9.0. | Recorded as snapshots, never summed or counted as turns |
 
 Both adapters also advertise permission modes that bypass approval (Claude
 `bypassPermissions`, Codex `agent-full-access`). Garuda never selects these
@@ -391,11 +392,10 @@ Proving `session/load`, `session/resume` and usage reporting needs one small,
 separately approved prompted session per adapter version.
 
 `garuda run --resume S` on a session of an ACP runtime uses the agent's own
-`session/load` only for an adapter version on which it was exercised (none
-of the two above yet). Otherwise — or when the agent stops declaring
-`loadSession` at the handshake — it starts a new, linked session on the same
-runtime with `S`'s brief attached (`resume_mode: brief`). `--as RUNTIME`
-continues on another runtime the same way.
+`session/load` only for an adapter version with a successful load proof and a
+handshake that declares `loadSession`. For the versions above, Garuda starts
+a new, linked session on the same runtime with `S`'s brief attached
+(`resume_mode: brief`). `--as RUNTIME` continues on another runtime the same way.
 
 ## Custom ACP servers
 
