@@ -656,6 +656,7 @@ async def run_acp_task(
     admitted_runtime: dict | None = None,
     session_record: dict | None = None,
     external_approvals: bool = False,
+    mode: str | None = None,
     no_edits: bool = False,
     permission_ceiling: str | None = None,
     require_cleanup: bool = False,
@@ -676,6 +677,7 @@ async def run_acp_task(
     from garuda.core.events import EventStore
     from garuda.core.sessions import SessionStore
     from garuda.interfaces.run_guard import WorkspaceLeaseGuard, broker_approval_handler
+    from garuda.runtime.roles import RolePlan, acp_options, acp_permission, check_provable, harness_mode
     from garuda.runtime.session import RuntimeSegment
     from garuda.workspace.evidence import begin_session_evidence, finish_session_evidence
 
@@ -685,8 +687,10 @@ async def run_acp_task(
         raise ValueError("a quota-bound Codex executable must be an absolute Codex path")
     if catalog is None:
         catalog = configured_catalog(workspace)
-    # A read-only ACP role runs only in proven Docker confinement (C.8a); its
-    # adapter runs in the image, so no host executable is required or used.
+    permission = acp_permission(role_plan, mode=mode, no_edits=no_edits,
+                                ceiling=permission_ceiling)
+    readonly = permission == "readonly"
+    # Readonly ACP runs use the adapter in the confinement image.
     confinement = None
     if owned_container is not None or owned_docker is not None:
         import re
@@ -699,16 +703,15 @@ async def run_acp_task(
                 or re.fullmatch(r"[0-9a-f]{64}", owned_container) is None
                 or role_plan is None or role_plan.kind != "acp" or role_plan.permissions != "readonly"):
             raise ValueError("owned confinement requires the parent's role control and readonly role")
-    if role_plan is not None and role_plan.kind == "acp" and role_plan.permissions == "readonly":
+    if readonly:
         from garuda.acp.catalog import DiscoveredRuntime
-        from garuda.workspace.confined_acp import Confinement, preflight
+        from garuda.runtime.protocol import RuntimeKind
+        from garuda.workspace.confined_acp import ConfinementRefused, required_confinement
 
-        confinement = Confinement.from_config(role_plan.harness)
-        if owned_container is None:
-            preflight(workspace, confinement)
-        resolved_rt = catalog.registry.get(runtime_id)
-        manifest = next(m for m in catalog.registry.manifests
-                        if m.runtime_id == resolved_rt.runtime_id)
+        manifest = catalog.registry.manifest_for(runtime_id)
+        if manifest.kind is not RuntimeKind.ACP:
+            raise ConfinementRefused("the selected runtime is not an ACP harness")
+        confinement = required_confinement(manifest.runtime_id, role_plan)
         record = DiscoveredRuntime(runtime_id=manifest.runtime_id, kind="acp", available=True)
     elif admitted_runtime is not None:
         from garuda.acp.catalog import DiscoveredRuntime
@@ -727,14 +730,17 @@ async def run_acp_task(
                                    executable=admitted_runtime["executable"], version=admitted_runtime["version"])
     else:
         manifest, record = acp_launch_target(catalog, runtime_id)
-    # A role's exact model and effort must be settable on this adapter
-    # identity — decided before anything is launched (C.3).
-    role_options: dict[str, str] = {}
-    if role_plan is not None:
-        from garuda.runtime.roles import acp_options
-
-        role_options = acp_options(role_plan, getattr(record, "version", "unknown"),
-                                   no_edits=no_edits, ceiling=permission_ceiling)
+    option_plan = role_plan
+    if readonly and option_plan is None:
+        option_plan = RolePlan(role="", runtime_id=manifest.runtime_id, kind="acp")
+    options: dict[str, str] = {}
+    adapter_version = getattr(record, "version", "unknown")
+    if option_plan is not None:
+        if readonly:
+            harness_mode(option_plan, ceiling=permission)
+            check_provable(option_plan)
+        else:
+            options = acp_options(option_plan, adapter_version, ceiling=permission)
 
     store = store or SessionStore()
     if capacity_loan is not None and lease_capability is not None:
@@ -749,14 +755,20 @@ async def run_acp_task(
         store, workspace, session_id, isolation,
         resume=resume_plan.source if resume_plan is not None else None,
         resume_all_projects=True)
+    if confinement is not None and owned_container is None:
+        from garuda.workspace.confined_acp import preflight
+
+        try:
+            preflight(workspace, confinement)
+        except BaseException:
+            discard_new_worktree(worktree)
+            raise
     if lease_capability is not None:
         from garuda.interfaces.session_service import acquire_lease
 
         lease = acquire_lease(workspace, session_id, capacity_key=manifest.runtime_id,
                               capability=lease_capability, worktree_plan=worktree)
     else:
-        # A read-only role shares the workspace with other readers.
-        readonly = role_plan is not None and role_plan.permissions == "readonly"
         try:
             lease = WorkspaceLeaseGuard(workspace, session_id, capacity_key=manifest.runtime_id,
                                         mode="read-only" if readonly else "mutating",
@@ -811,13 +823,18 @@ async def run_acp_task(
             record_initial_selection(store, session_id, initial_selection)
         from garuda.agents.setup import resolve_and_record_routing
 
-        resolve_and_record_routing(
-            workspace=workspace,
-            store=store,
-            session_id=session_id,
-            pin=runtime_id,
-        )
+        if not readonly:
+            resolve_and_record_routing(
+                workspace=workspace,
+                store=store,
+                session_id=session_id,
+                pin=runtime_id,
+            )
         lease.start_heartbeat()
+        if readonly:
+            from garuda.workspace.no_edits import deny_all
+
+            approval, external_approvals = deny_all, False
         handler, _broker = broker_approval_handler(
             store, session_id, manifest.runtime_id, handler=approval, external=external_approvals
         )
@@ -870,7 +887,7 @@ async def run_acp_task(
             else:
                 info = await runtime.start(task=task, session_id=session_id)
         except Exception as start_error:
-            if initial_plan is None or resume_plan is not None:
+            if readonly or initial_plan is None or resume_plan is not None:
                 raise
             from garuda.runtime.selection import (
                 SelectionError,
@@ -900,12 +917,19 @@ async def run_acp_task(
             raise NativeStartupFallback(
                 store=store, events=events, selection=fallback
             ) from start_error
-        if role_plan is not None:
+        if option_plan is not None:
+            if readonly:
+                # The image's adapter version comes from its own handshake.
+                adapter_version = runtime.reported_adapter_version
+                options = acp_options(option_plan, adapter_version, ceiling=permission)
             applied = await runtime.set_config_options(
-                role_options, adapter_version=getattr(record, "version", "unknown"))
+                options, adapter_version=adapter_version)
+            if role_plan is None and applied:
+                store.update_meta(session_id, {"acp_options": applied})
+        if role_plan is not None:
             store.update_meta(session_id, {"role": role_plan.record(
                 adapter={"runtime_id": manifest.runtime_id,
-                         "version": getattr(record, "version", "unknown")},
+                         "version": adapter_version},
                 options=applied)})
             from garuda.observability import usage as usage_ledger
 

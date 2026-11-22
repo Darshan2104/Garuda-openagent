@@ -233,6 +233,7 @@ def build_parser():
             "attempt); this is the benchmark configuration. "
             "rigorous: eval gates plus a plan/execute/critic agent. "
             "readonly: interactive gates with permissions forced read-only. "
+            "Read-only ACP runs require Docker confinement. "
             "standard is an alias for interactive. Omit to honor the profile's own."
         ),
     )
@@ -346,8 +347,8 @@ def build_parser():
     run_parser.add_argument(
         "--no-edits",
         action="store_true",
-        help="Ask the run not to change the workspace: edits and commands are refused and any "
-        "change found afterwards withholds its output (a guardrail, not confinement)",
+        help="Run with read-only permissions and compare the workspace afterwards. "
+        "Changes withhold output. ACP runs require Docker confinement.",
     )
     run_parser.add_argument(
         "--check",
@@ -1333,7 +1334,7 @@ def _apply_role(args, resolved, catalog):
     import sys
 
     from garuda.config.garuda_yaml import PERMISSIONS
-    from garuda.runtime.roles import RoleRefused, harness_mode, plan_role
+    from garuda.runtime.roles import RoleRefused, acp_permission, harness_mode, plan_role
 
     plan = plan_role(resolved, catalog) if resolved is not None else None
     requested_mode = getattr(args, "harness_mode", None)
@@ -1348,7 +1349,9 @@ def _apply_role(args, resolved, catalog):
         plan = replace(plan, harness_mode=requested_mode)
     from garuda.agents.fallbacks import choose
 
-    plan = choose(plan, resolved, catalog)  # once, before anything starts (C.9)
+    plan = choose(plan, resolved, catalog, mode=getattr(args, "mode", None),
+                  no_edits=getattr(args, "no_edits", False),
+                  ceiling=getattr(args, "permission_mode", None))
     from garuda.agents import role_agent
 
     # The role's agent, resolved for the harness that will actually run (H.10): its digest joins
@@ -1369,9 +1372,13 @@ def _apply_role(args, resolved, catalog):
         given = getattr(args, "permission_mode", None)
         args.permission_mode = plan.permissions if given is None else min(
             given, plan.permissions, key=PERMISSIONS.index)
-    if requested_mode:  # refused here, before anything starts, against the run's own ceiling
-        harness_mode(plan, no_edits=bool(getattr(args, "no_edits", False)),
-                     ceiling=getattr(args, "permission_mode", None))
+    if requested_mode:
+        no_edits = bool(getattr(args, "no_edits", False))
+        ceiling = getattr(args, "permission_mode", None)
+        if plan.kind != "acp" or acp_permission(
+                plan, mode=getattr(args, "mode", None), no_edits=no_edits,
+                ceiling=ceiling) != "readonly":
+            harness_mode(plan, no_edits=no_edits, ceiling=ceiling)
     out = sys.stderr if getattr(args, "json", False) else sys.stdout
     detail = " · ".join(str(v) for v in (plan.model_id, plan.effort, plan.harness_mode) if v)
     print(f"[garuda] role {plan.role}: {plan.runtime_id}" + (f" ({detail})" if detail else ""),
@@ -2173,6 +2180,7 @@ async def run_acp_command(args, task: str, catalog) -> int:
             # A no-edits role's requests to edit or run commands are refused
             # (and recorded); its output is held until the workspace is checked.
             approval=deny_all if no_edits else interactive_approval(),
+            mode=getattr(args, "mode", None),
             no_edits=no_edits,
             permission_ceiling=getattr(args, "permission_mode", None),
             emit=held.append if no_edits else print,

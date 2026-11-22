@@ -242,7 +242,15 @@ removal (runtime and project-key recovery refuse before changes),
 corrupt/symlinked/future-version leases fail
 closed, user files never touched; storage through `runtime/strict_store.py`:
 owner-only, no-follow lock, atomic fsynced writes) plus worktree isolation
-keys. `confined_acp.py` (C.8a) — read-only ACP roles run only in Docker: a preflight proves the source and `.git` are unwritable, scratch is writable, the user is unprivileged and no socket, home or credential store is mounted; the adapter then runs in the user's image with the workspace mounted read-only at `/workspace`. No proof means `workspace.readonly_unenforced`, never a host substitute. `no_edits.py` (C.10) — the no-edits guardrail: a bounded, no-follow manifest of the workspace (ignored files, modes, symlinks, change times) and of the repository's refs, HEAD, hooks, config and staged entries by content, taken before a run and compared after every descendant exits; any difference or an incomplete manifest withholds outputs. `worktrees.py` (B.5) decides where a session edits — `shared`, its own
+keys. `confined_acp.py` (C.8a) proves the boundary for readonly ACP runs before adapter launch.
+The preflight checks the selected workspace and `.git` are unwritable, scratch is writable,
+the user is unprivileged and no socket, home or credential store is mounted. The adapter
+runs in the user's image with the workspace mounted read-only at `/workspace`.
+An absent image or failed proof returns `workspace.readonly_unenforced`.
+`no_edits.py` (C.10) builds a bounded, no-follow manifest of the workspace (ignored files,
+modes, symlinks, change times) and the repository's refs, HEAD, hooks, config and staged
+entries. Any difference or incomplete comparison withholds outputs.
+`worktrees.py` (B.5) decides where a session edits — `shared`, its own
 linked worktree on `garuda/<session>` (create-only branch, sanitized Git,
 source HEAD and dirty fingerprint recorded, uncommitted source edits not
 carried over) or `auto` — and `run_agent_task` calls it before the lease so the

@@ -130,10 +130,11 @@ def _runtime_binding(args):
     from garuda.config.garuda_yaml import GarudaConfigError
     from garuda.runtime.registry import RegistryError
     from garuda.runtime.roles import RoleRefused
+    from garuda.workspace.confined_acp import ConfinementRefused
 
     try:
         return prepare_background_runtime(args)
-    except (RegistryError, GarudaConfigError, RoleRefused, RuntimeSettingsError) as exc:
+    except (RegistryError, GarudaConfigError, RoleRefused, RuntimeSettingsError, ConfinementRefused) as exc:
         raise BackgroundRefused(f"background runtime refused: {exc}") from exc
 
 

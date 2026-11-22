@@ -109,8 +109,9 @@ def _run(monkeypatch, capsys, repo, *extra):
 
 
 def test_a_reviewer_that_writes_despite_the_denial_is_caught(repo, tmp_path, monkeypatch,
-                                                             capsys):
+                                                             capsys, fake_acp_confinement):
     _acp(tmp_path, monkeypatch, "write-anyway")
+    fake_acp_confinement("fakeacp")
 
     code, out = _run(monkeypatch, capsys, repo, "--no-edits")
 
@@ -124,8 +125,10 @@ def test_a_reviewer_that_writes_despite_the_denial_is_caught(repo, tmp_path, mon
     assert denials and all(d["outcome"] == "deny" for d in denials)
 
 
-def test_a_reviewer_that_does_not_write_continues(repo, tmp_path, monkeypatch, capsys):
+def test_a_reviewer_that_does_not_write_continues(
+        repo, tmp_path, monkeypatch, capsys, fake_acp_confinement):
     _acp(tmp_path, monkeypatch, "success")
+    fake_acp_confinement("fakeacp")
 
     code, out = _run(monkeypatch, capsys, repo, "--no-edits")
 

@@ -4155,3 +4155,13 @@ checkout check. It requires a readable Git directory with a `HEAD` file and
 `objects` and `refs` directories, using `commondir` for shared worktree data.
 Invalid or unreadable markers cannot assign an ancestor's identity to a workspace.
 Linked worktrees retain the main repository's identity.
+
+## 2026-11-22: Every readonly ACP request requires confinement (#663)
+
+An ACP run takes the strictest permission across its role, run mode, permission
+flag and no-edits policy. A readonly request, including one without a role,
+requires the user-configured Docker image and a passing confinement preflight
+before the harness starts. An absent image or failed proof returns
+`workspace.readonly_unenforced`. Known readonly harness modes require a
+proven adapter version and confirmation before the first prompt. The Docker
+mount enforces the workspace restriction for every admitted readonly harness.

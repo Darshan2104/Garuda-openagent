@@ -126,9 +126,8 @@ garuda run --no-edits -t "Explain how errors are reported to the user"
 
 **What happens**
 
-- Requests to edit files or run commands that change things are refused. A
-  native run gets the `readonly` ceiling; an external harness's approval
-  requests are denied and recorded.
+- Native runs screen tool requests with the `readonly` ceiling. ACP runs
+  require a proved Docker boundary and deny approval requests.
 - Before the run, Garuda records every file (ignored ones too) with its mode
   and change time, plus the Git refs, `HEAD`, hooks, config and index. After
   the run and everything it started have exited, it compares again.

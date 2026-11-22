@@ -86,13 +86,15 @@ def test_a_dynamic_role_fallback_refuses_before_creating_launch_state(tmp_path):
 
 
 @pytest.mark.parametrize("changed_default", [False, True])
-async def test_a_default_role_preserves_permissions_and_its_runtime_alias_at_dispatch(tmp_path, changed_default):
+async def test_a_default_role_preserves_permissions_and_its_runtime_alias_at_dispatch(
+        tmp_path, changed_default, fake_acp_confinement):
     from garuda.agents.setup import prepare_runtime_catalog
     from garuda.interfaces.main import _apply_role
 
     user_file, capacity, queue, store, args = environment(
         tmp_path, harness="quick", extra=", permissions: readonly")
     user_file.write_text(user_file.read_text() + "  other: {harness: native}\n")
+    fake_acp_confinement("quick")
     settings = Path(args.workspace) / ".agent" / "settings.yaml"
     settings.parent.mkdir()
     settings.write_text("runtime_refs: [{alias: quick, runtime_id: codex, capabilities: [prompt]}]\n")

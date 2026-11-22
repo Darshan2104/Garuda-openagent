@@ -179,6 +179,11 @@ class AcpRuntime:
         return ACP_VERSION
 
     @property
+    def reported_adapter_version(self) -> str:
+        version = self._agent_info.get("version")
+        return version if isinstance(version, str) else "unknown"
+
+    @property
     def state(self) -> LifecycleState:
         return self._state
 

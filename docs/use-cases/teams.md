@@ -488,7 +488,8 @@ From then on, every run ends with the check:
 - `write_policy: no-edits` on a role (or a flow step) refuses edits and
   commands and checks the workspace afterwards, like
   [`--no-edits`](explore.md#make-sure-a-run-changes-nothing).
-- A role on an **external** harness with `permissions: readonly` runs only
+- A role on an **external** harness with `permissions: readonly` or
+  `write_policy: no-edits` runs only
   inside a Docker container that Garuda first proves is confined: your
   workspace mounted read-only, a small writable scratch directory, a non-root
   user with no capabilities, and no Docker socket, home directory or

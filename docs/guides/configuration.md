@@ -563,8 +563,9 @@ version where that was proven (Claude Code adapter 0.85.0 and Codex adapters
 2.9.0 and 2.1.1). Install Codex ACP 2.9.0 for models such as `gpt-6.2-sol`.
 The agent must offer the exact id in its session. Garuda refuses before the
 prompt if the id is missing or changed, or if the adapter version is unproven.
-Roles that omit all three options can use other adapter versions. The session
-records the role, the ids set and the adapter version.
+Roles that omit all three options can use other adapter versions when the run
+requires no mapped readonly mode. The session records the role, the ids set
+and the adapter version.
 
 ### A role's harness mode
 
@@ -589,15 +590,22 @@ A role that names no mode gets one from what its step may do:
 | Edit with `permissions: smart` | `acceptEdits` | `workspace-write` |
 | Edit with `permissions: auto` or `yolo` | `auto` | `agent` |
 
-The mode follows the stricter of the role's `permissions` and the run's
-`--permission-mode`.
+The ACP permission ceiling follows the strictest setting. `--mode readonly`,
+`--permission-mode readonly`, `--no-edits`, role `permissions: readonly`, and
+role `write_policy: no-edits` all require a proven Docker container. Set
+`harnesses.<id>.confinement.image` in your user `garuda.yaml`, including for
+direct `--runtime <id>` runs. Garuda refuses missing or unproven confinement
+with `workspace.readonly_unenforced`.
+[Read-only external harnesses run in Docker](safety-and-workspaces.md#read-only-external-harnesses-run-in-docker).
 
-Garuda never chooses a mode that approves everything; you name it yourself
-under `permissions: yolo`. Defaults apply only on adapter versions where modes
-are proven (Claude Code adapter 0.85.0 and Codex adapters 2.9.0 and 2.1.1).
-Elsewhere the harness keeps its own default, and Garuda refuses a named mode.
-The session records the mode with the model and effort. Codex quota-bound
-recovery and consult forwarding have separate proofs, both limited to 2.1.1.
+Only an explicit mode under `permissions: yolo` can approve everything.
+Named modes and mapped readonly modes require a proven adapter version
+(Claude Code adapter 0.85.0 and Codex adapters 2.9.0 and 2.1.1). Other default
+modes apply on those proven versions, with the harness's own default elsewhere.
+For harnesses without a mapped readonly mode, the Docker mount enforces the
+workspace write restriction. The session records the selected mode with the
+model and effort. Codex quota-bound recovery and consult forwarding have
+separate proofs, both limited to 2.1.1.
 
 ```yaml
 roles:

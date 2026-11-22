@@ -26,7 +26,7 @@ from garuda.scenarios.launch_intents import (
     IntentStateError,
     LaunchIntentStore,
 )
-from garuda.scenarios.service import RESOLUTION_ERRORS, readiness
+from garuda.scenarios.service import RESOLUTION_ERRORS, readiness, readiness_refusal
 
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 logger = logging.getLogger(__name__)
@@ -224,8 +224,8 @@ class FlowStartGateway:
                                  "Dashboard authority changed; preview again.")
         state = readiness(context, starter_id=plan.starter_id, owned=True)
         if not state["can_run"]:
-            raise FlowStartError("starter.not_ready",
-                                 "Resolve the starter readiness diagnostics before starting.")
+            raise FlowStartError(*readiness_refusal(
+                state, "Resolve the starter readiness diagnostics before starting."))
         if not authority["can_start"]:
             first = authority["diagnostics"][0]
             raise FlowStartError(first["code"], first["message"])

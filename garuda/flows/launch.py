@@ -4,7 +4,7 @@ A native step runs through ``run_agent_task`` with the role's profile, exact
 model, effort and permissions; an ACP step through ``run_acp_task`` with the
 role's proven options. Both borrow the flow's lease through the step's
 capability, so neither takes or keeps the workspace itself. A ``no-edits``
-step runs native ``readonly`` or with every ACP approval denied.
+step runs native ``readonly`` or in ACP Docker confinement.
 """
 
 from __future__ import annotations

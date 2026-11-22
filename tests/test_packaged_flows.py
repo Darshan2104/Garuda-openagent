@@ -39,7 +39,7 @@ def repo(tmp_path):
 
 
 @pytest.fixture
-def harnesses(tmp_path, monkeypatch):
+def harnesses(tmp_path, monkeypatch, fake_acp_confinement):
     from tests.test_runtime_cli import _install_shim, _on_path
 
     _on_path(monkeypatch, tmp_path / "bin")
@@ -50,6 +50,7 @@ def harnesses(tmp_path, monkeypatch):
         f"  - runtime_id: {rid}\n    kind: acp\n    command: [fake-acp-shim]\n"
         "    version: '1'\n    setup: shim\n" for rid in ("fakea", "fakeb")))
     gy.user_path().write_text(ROLES)
+    fake_acp_confinement("fakea", "fakeb")
 
 
 def _main(monkeypatch, capsys, *argv):
@@ -96,16 +97,29 @@ def test_acp_artifacts_longer_than_the_stored_summary_reach_the_next_step(
     assert "[garuda] scout: done" in out and "[garuda] plan: done" in out
 
 
-@pytest.mark.parametrize("flow_name, step, role, harness", [
-    ("plan-only", "scout", "scout", "fakea"),
-    ("plan-build-review", "review", "reviewer", "fakeb"),
+@pytest.mark.parametrize("role_fields, step_fields", [
+    ({"permissions": "readonly"}, {}),
+    ({"write_policy": "no-edits"}, {}),
+    ({"agent": "readonly-reviewer"}, {}),
+    ({}, {"write_policy": "no-edits"}),
+    ({"fallback": [{"harness": "fakea"}]}, {"write_policy": "no-edits"}),
 ])
 def test_missing_readonly_acp_image_stops_flow_before_any_launch(
-        repo, harnesses, monkeypatch, capsys, flow_name, step, role, harness):
-    gy.user_path().write_text(ROLES.replace(
-        f"{role}: {{harness: {harness},", f"{role}: {{harness: {harness}, permissions: readonly,"))
+        repo, harnesses, monkeypatch, capsys, role_fields, step_fields):
+    definitions = repo / ".agent" / "agents"
+    definitions.mkdir(parents=True)
+    (definitions / "readonly-reviewer.yaml").write_text(
+        "version: 1\npermissions: {mode: readonly}\n")
+    config = gy.load_file(gy.user_path())
+    del config["harnesses"]["fakeb"]["confinement"]
+    config["roles"]["reviewer"] = {"harness": "fakeb", **role_fields}
+    config["flows"] = {"check-readonly": {"steps": [
+        {"id": "build", "role": "coder"},
+        {"id": "review", "role": "reviewer", **step_fields},
+    ]}}
+    gy.user_path().write_text(gy.dump(config))
 
-    code, out = _main(monkeypatch, capsys, "flow", "run", flow_name, "-t", "x",
+    code, out = _main(monkeypatch, capsys, "flow", "run", "check-readonly", "-t", "x",
                       "--workspace", str(repo))
 
     assert code == 3, out
@@ -118,7 +132,7 @@ def test_missing_readonly_acp_image_stops_flow_before_any_launch(
                        "code": "workspace.readonly_unenforced"}
     assert meta["flow_state"] == "stopped"
     assert meta["flow_stop"]["code"] == "workspace.readonly_unenforced"
-    assert meta["flow_stop"]["step"] == step
+    assert meta["flow_stop"]["step"] == "review"
     assert engine.journal(store, meta["session_id"]) == []
 
 

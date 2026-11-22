@@ -234,9 +234,10 @@ def test_a_role_runs_in_the_harness_mode_it_names(fake_acp, monkeypatch, capsys)
 
 
 def test_a_proven_adapter_gets_the_default_mode_for_what_the_run_may_do(
-        fake_acp, monkeypatch, capsys):
+        fake_acp, fake_acp_confinement, monkeypatch, capsys):
     _modes(monkeypatch, {"readonly": "ask", "smart": "edit"})
     _user_file("version: 1\nroles: {coder: {harness: fakecfg}}\n")
+    fake_acp_confinement("fakecfg")
 
     assert _run(monkeypatch, capsys, fake_acp, "--role", "coder")[0] == 0
     assert _run(monkeypatch, capsys, fake_acp, "--role", "coder", "--no-edits")[0] == 0
@@ -264,9 +265,10 @@ def test_a_cli_harness_mode_overrides_the_role_for_one_run(fake_acp, monkeypatch
     ("{harness: fakecfg, harness_mode: sideways}", (), "role.mode_unknown"),
 ])
 def test_a_mode_beyond_the_role_refuses_before_launch(fake_acp, monkeypatch, capsys,
-                                                      config, extra, code):
+                                                      config, extra, code, fake_acp_confinement):
     _modes(monkeypatch)
     _user_file(f"version: 1\nroles: {{coder: {config}}}\n")
+    fake_acp_confinement("fakecfg")
 
     status, out = _run(monkeypatch, capsys, fake_acp, "--role", "coder", *extra)
 
@@ -295,16 +297,22 @@ def test_default_modes(runtime, permissions, no_edits, expected):
     assert roles.harness_mode(plan, no_edits=no_edits) == expected
 
 
-def test_a_stricter_run_ceiling_picks_the_mode(fake_acp, monkeypatch, capsys):
+@pytest.mark.parametrize("selection, permission", [
+    (["--role", "coder"], ["--permission-mode", "readonly"]),
+    (["--runtime", "fakecfg"], ["--mode", "readonly", "--permission-mode", "yolo"]),
+])
+def test_a_stricter_run_ceiling_picks_the_mode(
+        fake_acp, fake_acp_confinement, monkeypatch, capsys, selection, permission):
     _modes(monkeypatch, {"readonly": "ask", "smart": "edit"})
     _user_file("version: 1\nroles: {coder: {harness: fakecfg}}\n")
+    fake_acp_confinement("fakecfg")
 
-    code, out = _run(monkeypatch, capsys, fake_acp, "--role", "coder",
-                     "--permission-mode", "readonly")
+    code, out = _run(monkeypatch, capsys, fake_acp, *selection, *permission)
 
     assert code == 0, out
     (meta,) = SessionStore().list_sessions()
-    assert meta["role"]["acp_options"] == {"mode": "ask"}
+    assert meta["confinement"]["source"] == "read-only"
+    assert meta.get("role", meta)["acp_options"] == {"mode": "ask"}
 
 
 def test_codex_auto_review_needs_the_auto_ceiling():
@@ -344,6 +352,13 @@ def test_codex_adapter_accepts_the_role_options_it_offers(version, model):
     with pytest.raises(RoleRefused) as caught:
         roles.acp_options(plan, "2.9.0-unproven")
     assert caught.value.code == "role.options_unproven"
+
+
+def test_a_known_readonly_mode_cannot_fall_back_to_an_unproven_adapter_default():
+    plan = roles.RolePlan(role="r", runtime_id="codex", kind="acp")
+    with pytest.raises(RoleRefused, match="role.options_unproven"):
+        roles.acp_options(plan, "unknown", ceiling="readonly")
+    assert roles.acp_options(plan, "2.1.1", ceiling="readonly") == {"mode": "read-only"}
 
 
 def test_check_offered():
@@ -596,8 +611,9 @@ def test_an_external_run_saves_its_recorded_trail_as_the_trajectory(fake_acp, mo
 
 
 def test_a_trajectory_that_cannot_be_written_is_reported_after_the_no_edits_check(
-        fake_acp, monkeypatch, capsys, tmp_path):
+        fake_acp, fake_acp_confinement, monkeypatch, capsys, tmp_path):
     _user_file("version: 1\nroles: {coder: {harness: fakecfg, write_policy: no-edits}}\n")
+    fake_acp_confinement("fakecfg")
 
     code, out = _run(monkeypatch, capsys, fake_acp, "--role", "coder",
                      "--trajectory", str(tmp_path / "missing" / "t.jsonl"))

@@ -7,15 +7,18 @@ the server's current policy remain the authority to execute.
 
 from __future__ import annotations
 
+from garuda.runtime.roles import acp_permission
 from garuda.scenarios.digests import digest
 
 _PERMISSION_RANK = {"readonly": 0, "smart": 1, "auto": 2, "yolo": 3}
 
 
 def _effective_permission(context, role: str, *, no_edits: bool) -> str:
+    plan = context.role_plans[role]
+    if plan.kind == "acp":
+        return acp_permission(plan, no_edits=no_edits)
     if no_edits:
         return "readonly"
-    plan = context.role_plans[role]
     configured = context.resolved.config.get("roles", {}).get(role, {})
     mode = plan.permissions or configured.get("permissions")
     if mode is None and plan.agent_spec is not None:
@@ -35,12 +38,13 @@ def _role_scope(context, role: str, *, no_edits: bool, max_permission: str, bloc
         block("starter.fallback_unprepared", f"Role {role} has an unresolved fallback chain.",
               "Preview the starter again.")
     for candidate in candidates[1:]:
-        permission = "readonly" if no_edits else candidate.permissions
+        permission = (acp_permission(candidate, no_edits=no_edits) if candidate.kind == "acp"
+                      else "readonly" if no_edits else candidate.permissions)
         if _PERMISSION_RANK.get(permission, 99) > _PERMISSION_RANK.get(max_permission, -1):
             block("starter.permission_exceeds_ceiling",
                   f"Fallback {candidate.runtime_id} for {role} exceeds the dashboard ceiling.",
                   "Tighten the role or its agent profile.")
-        if candidate.kind == "acp" and (no_edits or permission == "readonly"):
+        if candidate.kind == "acp" and permission == "readonly":
             import shutil
 
             from garuda.workspace.confined_acp import Confinement
@@ -54,7 +58,7 @@ def _role_scope(context, role: str, *, no_edits: bool, max_permission: str, bloc
         block("starter.permission_exceeds_ceiling",
               f"Role {role} requests {permission}, above the dashboard ceiling {max_permission}.",
               "Tighten the role or explicitly restart the dashboard with that ceiling.")
-    if role_plan.kind == "acp" and (no_edits or permission == "readonly"):
+    if role_plan.kind == "acp" and permission == "readonly":
         import shutil
 
         from garuda.workspace.confined_acp import Confinement

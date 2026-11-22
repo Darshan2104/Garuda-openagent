@@ -15,11 +15,12 @@ from garuda.core.acceptance import checks_with_authority
 from garuda.core.sessions import SessionStore
 from garuda.flows import review
 from garuda.runtime.registry import RegistryError
-from garuda.runtime.roles import RoleRefused, acp_options, check_provable, harness_mode
+from garuda.runtime.roles import RoleRefused, acp_options, acp_permission, check_provable, harness_mode
 from garuda.scenarios.catalog import load_catalog
 from garuda.scenarios.compile import LaunchContext, compile_with_context, resolve_launch, workspace_path
 from garuda.scenarios.inputs import validate_inputs
 from garuda.scenarios.types import LaunchPlan, StarterError
+from garuda.workspace.confined_acp import CODE as READONLY_UNENFORCED
 
 RESOLUTION_ERRORS = (StarterError, gy.GarudaConfigError, RegistryError, RoleRefused, RuntimeSettingsError)
 INDEPENDENCE_LIMIT = (
@@ -67,9 +68,10 @@ def readiness(context: LaunchContext, *, starter_id: str, owned: bool = False) -
         if plan.kind == "native":
             row["availability"] = "in-process"
         else:
-            confined = (plan.permissions == "readonly" or (owned and (
-                plan.write_policy == "no-edits"
-                or (context.kind == "run" and entry.launch.get("no_edits")))))
+            run_no_edits = bool(context.kind == "run" and entry.launch.get("no_edits"))
+            step_no_edits = any(step.get("role") == name and step.get("write_policy") == "no-edits"
+                                for step in (context.flow or {}).get("steps", []))
+            confined = acp_permission(plan, no_edits=run_no_edits or step_no_edits) == "readonly"
             row["availability"] = ("image runtime; not checked" if confined else
                                    "present" if manifest.command and shutil.which(manifest.command[0]) else "missing")
             if row["availability"] == "missing" and not (owned and name in context.fallback_plans):
@@ -82,13 +84,12 @@ def readiness(context: LaunchContext, *, starter_id: str, owned: bool = False) -
                 confinement = Confinement.from_config(plan.harness)
                 row["confinement"] = "configured; runtime preflight not checked" if confinement else "missing image"
                 if confinement is None or not shutil.which("docker"):
-                    blockers.append("workspace.readonly_unenforced")
+                    blockers.append(READONLY_UNENFORCED)
                     diagnostics.append(_diagnostic(
-                        "workspace.readonly_unenforced",
+                        READONLY_UNENFORCED,
                         f"{name}: read-only ACP requires a configured confinement image and Docker executable",
                         "Configure harnesses.<runtime>.confinement.image in your user garuda.yaml and install Docker; runtime preflight must still prove confinement.",
                         level="error"))
-            run_no_edits = bool(context.kind == "run" and entry.launch.get("no_edits"))
             try:
                 harness_mode(plan, no_edits=run_no_edits)
                 # A probed version is known only at launch, which refuses an
@@ -176,6 +177,14 @@ def readiness(context: LaunchContext, *, starter_id: str, owned: bool = False) -
             "verification": verification, "check_count": len(trusted_checks)}
 
 
+def readiness_refusal(state: dict, message: str) -> tuple[str, str]:
+    """Preserve the confinement refusal code when readiness blocks a start."""
+    for item in state["diagnostics"]:
+        if item["code"] == READONLY_UNENFORCED:
+            return item["code"], item["message"]
+    return "starter.not_ready", message
+
+
 class StarterService:
     """List and preview without subprocesses, discovery, admission or store writes."""
 
@@ -191,8 +200,9 @@ class StarterService:
             allow_cross_project_context=record.get("context_grant") == "user-request")
         if current.launch_metadata() != record or current.task != task:
             raise StarterError("starter.preview_changed", "queued starter inputs, sources or configuration changed")
-        if not readiness(context, starter_id=current.starter_id)["can_run"]:
-            raise StarterError("starter.not_ready", "queued starter readiness changed")
+        state = readiness(context, starter_id=current.starter_id)
+        if not state["can_run"]:
+            raise StarterError(*readiness_refusal(state, "queued starter readiness changed"))
 
     async def start(self, plan: LaunchPlan) -> dict:
         """Recompile before dispatch; a cached task never authorizes a launch."""
@@ -207,7 +217,8 @@ class StarterService:
             raise StarterError("starter.preview_changed", "starter inputs, sources or configuration changed; preview again")
         state = readiness(context, starter_id=plan.starter_id)
         if not state["can_run"]:
-            raise StarterError("starter.not_ready", "resolve the starter's readiness diagnostics before starting")
+            raise StarterError(*readiness_refusal(
+                state, "resolve the starter's readiness diagnostics before starting"))
         if current.kind == "flow":
             result = await FlowExecutionService(self.store).run(
                 current.target, current.task, current.workspace,

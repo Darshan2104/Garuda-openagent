@@ -1,4 +1,4 @@
-"""Read-only ACP roles run in Docker confinement or not at all (#158, plan task C.8a)."""
+"""Read-only ACP runs require Docker confinement (#158, #663)."""
 
 import os
 import shutil
@@ -58,7 +58,7 @@ def _roles(confinement: str = "") -> None:
 
 CONFINED = f"""      image: {IMAGE}
       command: [python, {ROOT}/garuda/acp/fake_agent.py, --profile, probe-writes]
-      mounts: [{ROOT}]
+      mounts: [{ROOT}/garuda/acp]
 """
 
 
@@ -116,6 +116,98 @@ def test_without_proven_confinement_a_readonly_role_refuses(repo, monkeypatch, c
 
     assert code == 1 and "workspace.readonly_unenforced" in out and message in out
     assert SessionStore().list_sessions() == []  # refused before any session
+
+
+@pytest.mark.parametrize("role_fields, flags", [
+    ("", ["--mode", "readonly"]),
+    (None, ["--mode", "readonly"]),
+    (None, ["--permission-mode", "readonly"]),
+    ("", ["--permission-mode", "readonly"]),
+    (", permissions: readonly", ["--permission-mode", "yolo"]),
+    (", write_policy: no-edits", ["--permission-mode", "yolo"]),
+    (", permissions: auto", ["--mode", "readonly", "--permission-mode", "yolo"]),
+    (None, ["--no-edits", "--permission-mode", "yolo"]),
+    ("", ["--no-edits"]),
+    (None, ["--bg", "--mode", "readonly"]),
+])
+def test_readonly_requests_refuse_before_any_harness_launch(
+        repo, monkeypatch, capsys, role_fields, flags):
+    from tests.test_runtime_cli import _main
+
+    selection = ["--runtime", "codex"]
+    if role_fields is not None:
+        gy.user_path().parent.mkdir(parents=True, exist_ok=True)
+        gy.user_path().write_text("version: 1\nroles:\n"
+                                  f"  small: {{harness: codex, model_id: gpt-5.6-luna{role_fields}}}\n")
+        selection = ["--role", "small"]
+    _forbid_harness_launch(monkeypatch)
+
+    code, out = _main(monkeypatch, capsys, "run", "--workspace", str(repo),
+                      "-t", "review", *selection, *flags)
+
+    assert code != 0 and "workspace.readonly_unenforced" in out and "no confinement image" in out
+    assert SessionStore().list_sessions() == []
+
+
+def _forbid_harness_launch(monkeypatch):
+    from garuda.agents.setup import RuntimeCatalog
+    from garuda.interfaces import bg_sessions, runtime_cli
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("a refused readonly request attempted a launch")
+
+    def no_host_probes(self, *, only=None, **kwargs):
+        assert only == frozenset()
+        return ()
+
+    monkeypatch.setattr(RuntimeCatalog, "discover", no_host_probes)
+    monkeypatch.setattr(runtime_cli, "acp_launch_target", forbidden)
+    monkeypatch.setattr(runtime_cli, "adapter_for_manifest", forbidden)
+    monkeypatch.setattr("garuda.acp.catalog.discover", forbidden)
+    monkeypatch.setattr("garuda.acp.catalog.adapter_for_manifest", forbidden)
+    monkeypatch.setattr(bg_sessions, "_spawn_worker", forbidden)
+
+
+@pytest.mark.parametrize("source_runtime, target", [("codex", []), ("native", ["--as", "codex"])])
+def test_readonly_resume_refuses_before_any_harness_launch(
+        repo, monkeypatch, capsys, source_runtime, target):
+    from garuda.runtime import session_state
+    from garuda.runtime.session import RuntimeSegment
+    from tests.test_runtime_cli import _main
+
+    store = SessionStore()
+    store.begin("previous", task="first", model="fixture", agent="build", workspace=str(repo),
+                runtime_segment=RuntimeSegment(
+                    runtime_id=source_runtime, kind="native" if source_runtime == "native" else "acp"))
+    store.update_meta("previous", {"status": "success", "state": session_state.finished(success=True)})
+    _forbid_harness_launch(monkeypatch)
+
+    code, out = _main(monkeypatch, capsys, "run", "--workspace", str(repo), "--resume",
+                      "previous", *target, "--mode", "readonly", "-t", "continue")
+
+    assert code != 0 and "workspace.readonly_unenforced" in out
+    assert [meta["session_id"] for meta in store.list_sessions()] == ["previous"]
+
+
+def test_native_run_still_accepts_readonly_mode(repo, monkeypatch, capsys):
+    from garuda.model import factory
+    from garuda.model.protocol import ModelResponse
+    from garuda.model.script_model import ScriptModel
+    from tests.test_runtime_cli import _main
+
+    monkeypatch.setitem(factory._registry, "litellm", lambda spec: ScriptModel([
+        ModelResponse(content="I reviewed the repository and found the tracked document a.txt.",
+                      tool_calls=[])]))
+    _forbid_harness_launch(monkeypatch)
+
+    code, out = _main(monkeypatch, capsys, "run", "--workspace", str(repo), "--runtime", "native",
+                      "--mode", "readonly", "--no-bootstrap", "--no-collection",
+                      "--no-verifier", "--no-three-step-summary", "--max-turns", "1",
+                      "-t", "review")
+
+    assert code == 0, out
+    (meta,) = SessionStore().list_sessions()
+    assert meta["mode"] == "readonly"
 
 
 def test_a_worktree_is_never_offered_instead(repo, monkeypatch, capsys):
