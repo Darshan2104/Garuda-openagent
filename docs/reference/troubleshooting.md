@@ -378,6 +378,9 @@ Click a problem to see the fix.
     `harnesses.<id>.confinement.image` in your `garuda.yaml` to an image where
     you installed and logged in to the harness, and make sure Docker is
     running. Garuda never runs such a role on the host instead.
+    For a flow, a missing image on a statically resolved read-only ACP step stops
+    the flow before any step runs. The CLI prints the flow session ID and
+    `workspace.readonly_unenforced`.
 
 ## Dashboard and MCP
 

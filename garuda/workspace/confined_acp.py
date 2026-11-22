@@ -45,7 +45,8 @@ _PROBE = (
 
 class ConfinementRefused(Exception):
     def __init__(self, message: str):
-        super().__init__(f"{CODE}: {message}")
+        self.message = " ".join(message.splitlines())
+        super().__init__(f"{CODE}: {self.message}")
         self.code = CODE
 
 
@@ -97,11 +98,17 @@ def docker_argv(workspace, confinement: Confinement, command: list[str]) -> list
     return argv + [confinement.image, *command]
 
 
-def preflight(workspace, confinement: Confinement | None, *, timeout: float = 120) -> None:
-    """Prove the confinement holds, or refuse. Never substitutes the host."""
+def require_image(confinement: Confinement | None) -> Confinement:
+    """Require a configured image without starting a Docker probe."""
     if confinement is None:
         raise ConfinementRefused("this harness has no confinement image configured "
                                  "(harnesses.<id>.confinement.image in your garuda.yaml)")
+    return confinement
+
+
+def preflight(workspace, confinement: Confinement | None, *, timeout: float = 120) -> None:
+    """Prove the confinement holds, or refuse. Never substitutes the host."""
+    confinement = require_image(confinement)
     if shutil.which("docker") is None:
         raise ConfinementRefused("Docker is not available")
     root = Path(workspace).resolve()

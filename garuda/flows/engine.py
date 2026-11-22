@@ -37,6 +37,7 @@ from pathlib import Path
 from typing import Any
 
 from garuda.flows import artifacts as art
+from garuda.workspace.confined_acp import Confinement, ConfinementRefused, require_image
 
 JOURNAL = "journal.jsonl"
 
@@ -302,7 +303,7 @@ class FlowRunner:
         except DiffError:
             return False
 
-    def _role_plan(self, role: str):
+    def _role_plan(self, role: str, *, acp_only: bool = False):
         if self.prepared_roles is not None:
             if role not in self.prepared_roles:
                 raise FlowStopped("flow.role_unprepared",
@@ -319,8 +320,9 @@ class FlowRunner:
             from garuda.agents import role_agent
 
             plan = plan_role(resolved, catalog)
-            return role_agent.bind(choose(plan, resolved, catalog) if plan is not None else None,
-                                   self.workspace)
+            if plan is None or (acp_only and plan.kind != "acp"):
+                return None
+            return role_agent.bind(choose(plan, resolved, catalog), self.workspace)
         except RoleRefused as exc:
             raise FlowStopped(exc.code, str(exc), step=role) from exc
 
@@ -351,6 +353,28 @@ class FlowRunner:
     def _no_edits(self, step: dict, role: str) -> bool:
         spec = self.resolved.config.get("roles", {}).get(role, {})
         return "no-edits" in (step.get("write_policy"), spec.get("write_policy"))
+
+    def _check_confinement_image(self, step: dict, role: str, plan) -> None:
+        if plan is not None and plan.kind == "acp" and (
+                plan.permissions == "readonly" or (self.require_owned and self._no_edits(step, role))):
+            try:
+                require_image(Confinement.from_config(plan.harness))
+            except ConfinementRefused as exc:
+                raise FlowStopped(exc.code, exc.message, step=step["id"]) from exc
+
+    def _check_confinement_images(self) -> None:
+        roles = self.resolved.config.get("roles", {})
+        for step in self.steps:
+            if self.require_owned and "parallel" in step:
+                continue  # owned execution cannot launch parallel groups
+            for role in step.get("parallel") or (step["role"],):
+                spec = roles.get(role, {})
+                # Fallback probes select the harness at step launch.
+                if role in self.prepared_fallbacks or (self.prepared_roles is None and spec.get("fallback")):
+                    continue
+                if (self.prepared_roles is not None or spec.get("permissions") == "readonly"
+                        or spec.get("profile") or (self.require_owned and self._no_edits(step, role))):
+                    self._check_confinement_image(step, role, self._role_plan(role, acp_only=True))
 
     def _closed_step(self, outcome: StepResult, step: dict, attempt: int, role_record=None) -> dict:
         """Keep only bound lifetime facts, never raw process output tails."""
@@ -640,6 +664,7 @@ class FlowRunner:
                 if self.on_admitted is not None:
                     await self.on_admitted(
                         self.flow_session, self.operation_binding["lease_epoch"])
+                await _settled_sync(self._check_confinement_images)
             if self.quota_recovery is not None:
                 from garuda.flows.quota_recovery import RecoveryWaiting
 
@@ -821,7 +846,7 @@ class FlowRunner:
             raise FlowStopped("flow.snapshot_unavailable", str(exc), step=step["id"]) from exc
         # The same refusal contract as a standalone or sequential reviewer:
         # every external member's confinement is proven before any launches.
-        from garuda.workspace.confined_acp import Confinement, ConfinementRefused, preflight
+        from garuda.workspace.confined_acp import preflight
 
         for role, plan in plans.items():
             if plan is not None and plan.kind == "acp":
@@ -829,7 +854,7 @@ class FlowRunner:
                     await asyncio.to_thread(preflight, target,
                                             Confinement.from_config(plan.harness))
                 except ConfinementRefused as exc:
-                    raise FlowStopped(exc.code, f"{role}: {exc}", step=step["id"]) from exc
+                    raise FlowStopped(exc.code, f"{role}: {exc.message}", step=step["id"]) from exc
         _append(self.dir / JOURNAL, {"event": "intent", "index": step["index"],
                                      "step": step["id"], "attempt": attempt, "at": _now()})
         source_guard, snapshot_guard = NoEditsGuard(self.workspace), NoEditsGuard(target)
@@ -843,10 +868,13 @@ class FlowRunner:
 
         results = await asyncio.gather(*(one(role) for role in members), return_exceptions=True)
         outcomes = []
+        stop = None
         for role, item in zip(members, results, strict=True):
             if isinstance(item, BaseException):
                 if isinstance(item, asyncio.CancelledError):
                     raise item
+                if isinstance(item, ConfinementRefused) and stop is None:
+                    stop = FlowStopped(item.code, f"{role}: {item.message}", step=step["id"])
                 outcomes.append((role, StepResult("", False, f"{type(item).__name__}: {item}")))
             else:
                 outcomes.append(item)
@@ -856,7 +884,6 @@ class FlowRunner:
             "workspace_version_before": version, "recorded_at": _now(), "members": [],
             "outputs": [],
         }
-        stop = None
         source, copy = source_guard.check(), snapshot_guard.check()
         receipt["source_check"], receipt["snapshot_check"] = source.record(), copy.record()
         if not (source.unchanged and copy.unchanged):
@@ -1149,6 +1176,12 @@ class FlowRunner:
                               "cannot be bound to its candidate", step=terminal["id"])
         return packet
 
+    async def _record_step_receipt(self, receipt: dict) -> None:
+        step, attempt = receipt["step"], receipt["attempt"]
+        await _settled_sync(_write_once, self.dir / "receipts" / _receipt_name(step, attempt), receipt)
+        await _settled_sync(_append, self.dir / JOURNAL,
+                            {"event": "receipt", "step": step, "attempt": attempt, "at": _now()})
+
     async def _run_step(self, step: dict, done: list[dict], lease, *, attempt: int = 1,
                         prompt_extra: str = "", review_admission=None) -> dict:
         from garuda.runtime.roles import RoleRefused
@@ -1184,6 +1217,7 @@ class FlowRunner:
                 plan = await select_owned(self.prepared_fallbacks[role], self.runtime_catalog,
                                           self.workspace, lease, no_edits=no_edits, publish=publish)
                 self.prepared_roles[role] = plan
+            self._check_confinement_image(step, role, plan)
             if review_admission is not None:
                 await review_admission(plan)
             if self.quota_recovery is not None:
@@ -1216,6 +1250,19 @@ class FlowRunner:
                 quota_guard=((lambda: self.quota_recovery.before_launch(self, plan))
                              if self.quota_recovery and plan and plan.runtime_id == "codex"
                              else None)))
+        except ConfinementRefused as exc:
+            stop = FlowStopped(exc.code, exc.message, step=step["id"])
+            # This refusal precedes agent start. Settle the intent so recovery
+            # can distinguish it from an interrupted launch.
+            await self._record_step_receipt({
+                "index": step["index"], "step": step["id"], "role": role, "attempt": attempt,
+                "status": "stopped", "success": False, "session_id": None,
+                "inputs": [ref.to_dict() for ref, _ in inputs], "outputs": [],
+                "workspace_version_before": version_before, "recorded_at": _now(),
+                "role_plan": plan.record() if plan is not None else None,
+                "stop": {"code": stop.code, "message": str(stop)},
+            })
+            raise stop from exc
         except RoleRefused as exc:
             raise FlowStopped(exc.code, str(exc), step=step["id"]) from exc
         finally:
@@ -1292,11 +1339,7 @@ class FlowRunner:
             receipt["stop"] = {"code": stop.code, "message": str(stop)}
             receipt["outputs"] = [] if receipt.get("no_edits", {}).get("result") == "changed" \
                 else receipt["outputs"]
-        await _settled_sync(_write_once,
-                            self.dir / "receipts" / _receipt_name(step["id"], attempt), receipt)
-        await _settled_sync(_append, self.dir / JOURNAL,
-                            {"event": "receipt", "step": step["id"],
-                             "attempt": attempt, "at": _now()})
+        await self._record_step_receipt(receipt)
         if stop is not None:
             raise stop
         return receipt
