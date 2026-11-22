@@ -1063,6 +1063,29 @@ def test_starter_acp_roles_preserve_existing_owners(tmp_path, monkeypatch, capsy
         assert row['acceptance_receipts'][0]['exit_code'] == 1
 
 
+@pytest.mark.parametrize("version, model, expected", [
+    ("2.1.1", "gpt-6.1-sol", "gpt-6.1-sol"),
+    ("2.9.0", "gpt-6.2-sol", "gpt-6.2-sol"),
+    ("2.9.0-unproven", "gpt-6.2-sol", None),
+])
+def test_starter_identity_reads_the_model_from_proven_codex_options(tmp_path, version, model, expected):
+    from garuda.core.starter_evidence import identity
+    from garuda.runtime.session import RuntimeSegment
+
+    store = SessionStore()
+    segment = RuntimeSegment(runtime_id="codex", kind="acp", version=version)
+    store.begin("codex-starter", "task", "", "", str(tmp_path), runtime_segment=segment)
+    store.update_meta("codex-starter", {"role": {
+        "name": "coder", "adapter": {"runtime_id": "codex", "version": version},
+        "acp_options": {"model": model, "reasoning_effort": "high"},
+    }})
+
+    row, valid = identity(store, "codex-starter")
+
+    assert valid
+    assert (row["runtime_id"], row["model_id"]) == ("codex", expected)
+
+
 def test_starter_result_discloses_waiver_even_when_coder_stops_before_review(completed_plan, monkeypatch, capsys, tmp_path):
     import copy
 

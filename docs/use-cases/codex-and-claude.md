@@ -17,18 +17,20 @@ command, what happened when it ran, and where to see it in the dashboard.
 
 Install the adapter versions on which Garuda has proven it can set a role's
 model, effort and [harness mode](../guides/configuration.md#a-roles-harness-mode).
-A newer adapter refuses a role that names any of them (`role.options_unproven`)
-before anything is prompted.
+Codex ACP 2.9.0 offers `gpt-6.2-sol`. Version 2.1.1 remains proven for role
+options and is the only Codex adapter with proof for quota-bound recovery and
+consult forwarding. Garuda refuses explicit role options on unproven versions
+before prompting (`role.options_unproven`).
 
 ```bash
-npm install -g @agentclientprotocol/codex-acp@2.1.1 @agentclientprotocol/claude-agent-acp@0.85.0
+npm install -g @agentclientprotocol/codex-acp@2.9.0 @agentclientprotocol/claude-agent-acp@0.85.0
 codex login status
 claude auth status
 garuda doctor --runtime codex
 garuda doctor --runtime claude
 ```
 
-`garuda doctor` should show `codex 2.1.1 … logged in` and
+`garuda doctor` should show `codex 2.9.0 … logged in` and
 `claude 0.85.0 … logged in`. Garuda reads only the status commands' answers,
 never either login. Don't set `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` when you
 mean to use the subscriptions.

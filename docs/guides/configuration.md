@@ -559,11 +559,12 @@ of the two. Model ids are used exactly as written, never matched loosely.
 
 For an ACP harness, Garuda sets the agent's own model and effort options
 (`session/set_config_option`) before the first prompt, and only on an adapter
-version where that was proven (today Claude Code adapter 0.85.0 and Codex
-adapter 2.1.1). The agent must offer the exact id in its session; a missing or
-changed id, or an unproven adapter, refuses before anything is prompted. A
-role with no model or effort runs on any adapter version. The role, the ids
-set and the adapter version are recorded on the session.
+version where that was proven (Claude Code adapter 0.85.0 and Codex adapters
+2.9.0 and 2.1.1). Install Codex ACP 2.9.0 for models such as `gpt-6.2-sol`.
+The agent must offer the exact id in its session. Garuda refuses before the
+prompt if the id is missing or changed, or if the adapter version is unproven.
+Roles that omit all three options can use other adapter versions. The session
+records the role, the ids set and the adapter version.
 
 ### A role's harness mode
 
@@ -593,9 +594,10 @@ The mode follows the stricter of the role's `permissions` and the run's
 
 Garuda never chooses a mode that approves everything; you name it yourself
 under `permissions: yolo`. Defaults apply only on adapter versions where modes
-are proven (Claude Code adapter 0.85.0, Codex adapter 2.1.1); elsewhere the
-harness keeps its own default, and a named mode refuses. The mode that ran is
-recorded on the session with the model and effort.
+are proven (Claude Code adapter 0.85.0 and Codex adapters 2.9.0 and 2.1.1).
+Elsewhere the harness keeps its own default, and Garuda refuses a named mode.
+The session records the mode with the model and effort. Codex quota-bound
+recovery and consult forwarding have separate proofs, both limited to 2.1.1.
 
 ```yaml
 roles:

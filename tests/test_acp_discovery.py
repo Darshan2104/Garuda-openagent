@@ -94,6 +94,7 @@ def test_version_probed_and_unknown_shown(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize("runtime_id,binary,output,version", [
     ("codex", "codex-acp", "@agentclientprotocol/codex-acp 2.1.1\n", "2.1.1"),
+    ("codex", "codex-acp", "@agentclientprotocol/codex-acp 2.9.0\n", "2.9.0"),
     ("claude", "claude-agent-acp", "0.85.0\n", "0.85.0"),
 ])
 def test_builtin_manifests_discover_the_proven_adapter_version(

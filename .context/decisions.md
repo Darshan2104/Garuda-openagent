@@ -1,5 +1,11 @@
 # Durable decisions
 
+## 2026-11-22 — Codex ACP 2.9.0 role options (#662)
+
+The no-prompt capability capture proves model, effort and harness mode
+selection on Codex ACP 2.9.0. Role option proofs cover 2.9.0 and 2.1.1.
+Quota-bound recovery and consult forwarding retain their separate 2.1.1 proofs.
+
 ## 2026-11-19 — Project model trust follows runtime identity (#520)
 
 Resolve role harness aliases through the static trusted registry before
