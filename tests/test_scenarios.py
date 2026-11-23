@@ -238,6 +238,7 @@ def test_session_sources_use_existing_grants_and_compile_without_mutations(confi
     from garuda.context.tags import TagError
     from tests.test_session_tags import _session
 
+    (tmp_path / ".git").mkdir()
     other = tmp_path / "other-project"
     other.mkdir()
     store = SessionStore()

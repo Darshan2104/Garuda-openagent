@@ -4141,3 +4141,11 @@ the turn before reaping processes, closing resources, publishing the terminal
 outcome and releasing the lease. Cancellation of a close caller waits for the
 same teardown. Callbacks can schedule a close after their turn returns. An
 active turn cannot await its own close.
+
+## 2026-11-22 — Project roots require a Git layout (#665)
+
+Session identity and reconnect example preflight share a filesystem-only Git
+checkout check. It requires a readable Git directory with a `HEAD` file and
+`objects` and `refs` directories, using `commondir` for shared worktree data.
+Invalid or unreadable markers cannot assign an ancestor's identity to a workspace.
+Linked worktrees retain the main repository's identity.

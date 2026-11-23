@@ -61,6 +61,12 @@ garuda sessions --json          # the same model the dashboard serves
   `--all-projects` to `--resume latest` to search every project. A full ID
   always resolves.
 
+Garuda checks the workspace and its ancestors for the nearest valid Git layout.
+It looks for a `HEAD` file and `objects` and `refs` directories, following Git
+pointers so linked worktrees share the main repository's project.
+If no valid layout is found, the resolved workspace path is the project root.
+This lookup never runs Git.
+
 ### Briefs: reuse what another session did
 
 `@name` in a task, or `--with NAME`, attaches a session's **brief**: its task,

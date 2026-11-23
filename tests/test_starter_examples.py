@@ -18,6 +18,7 @@ from tests.test_scenarios import _snapshot, _starter_cli
 
 
 def test_example_creates_a_runnable_project_only_in_selected_new_directory(tmp_path, monkeypatch, capsys):
+    (tmp_path / '.git').mkdir()
     original = _git_workspace(tmp_path)
     before = _snapshot(original, SessionStore().root, gy.user_path().parent)
     monkeypatch.setenv('GIT_DIR', str(original / '.git'))

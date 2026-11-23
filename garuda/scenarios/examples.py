@@ -7,6 +7,7 @@ import subprocess
 from importlib.resources import files
 from pathlib import Path
 
+from garuda.core.git_layout import git_checkout_root
 from garuda.scenarios.types import StarterError
 
 
@@ -23,8 +24,7 @@ def materialize_reconnect(directory: str) -> dict:
     for ancestor in target.parents:
         if ancestor.is_symlink():
             raise StarterError("starter.example_invalid", "choose a directory without symlinked parents")
-        git = ancestor / ".git"
-        if git.exists() or git.is_symlink():
+        if git_checkout_root(ancestor) is not None:
             raise StarterError("starter.example_conflict", "choose a directory outside an existing Git repository")
     resource = files("examples.workflows.reconnect")
     # Installed package resources only. No project templates, scripts or config.
