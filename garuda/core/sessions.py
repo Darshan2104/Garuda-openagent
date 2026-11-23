@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
+from garuda.core.git_layout import git_checkout_root
 from garuda.runtime.session import (
     HANDOFF_STATES,
     SESSION_SCHEMA_VERSION,
@@ -224,31 +225,17 @@ def project_root(path: str | Path) -> str:
 
     Symlinks are resolved, and a linked Git worktree maps to its main
     repository's root (through ``.git`` -> ``gitdir`` -> ``commondir``), so every
-    checkout of one repository is one project. A non-Git path is its own root.
+    checkout of one repository is one project. Invalid or unreadable Git
+    metadata is skipped. A non-Git path is its own root.
     Never runs ``git``.
     """
     current = Path(path).expanduser().resolve()
     for candidate in (current, *current.parents):
-        dot_git = candidate / ".git"
-        if dot_git.is_dir():
-            return str(candidate)
-        if dot_git.is_file():
-            try:
-                line = dot_git.read_text(encoding="utf-8").strip()
-            except OSError:
-                return str(candidate)
-            if not line.startswith("gitdir:"):
-                return str(candidate)
-            gitdir = Path(line.split(":", 1)[1].strip())
-            if not gitdir.is_absolute():
-                gitdir = candidate / gitdir
-            commondir_file = gitdir / "commondir"
-            try:
-                common = (gitdir / commondir_file.read_text(encoding="utf-8").strip()).resolve()
-            except OSError:
-                return str(candidate)
-            return str(common.parent if common.name == ".git" else common)
+        root = git_checkout_root(candidate)
+        if root is not None:
+            return str(root)
     return str(current)
+
 
 def _finished_state(result: AgentResult) -> dict:
     from garuda.runtime.session_state import finished

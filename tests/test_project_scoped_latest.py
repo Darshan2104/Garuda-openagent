@@ -6,6 +6,7 @@ conversation. Sessions also recorded ``workspace: "."``, so they could not be to
 apart. These runs go through the SDK with real workspaces and a real session store.
 """
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -92,15 +93,39 @@ async def test_sessions_record_an_absolute_workspace(tmp_path, store):
     assert store.list_sessions(limit=1)[0]["workspace"] == str(a.resolve())
 
 
+def test_empty_git_directory_does_not_merge_sibling_workspaces(tmp_path):
+    (tmp_path / ".git").mkdir()
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+
+    assert project_root(a) == str(a.resolve())
+    assert project_root(b) == str(b.resolve())
+
+
+def test_unreadable_git_directory_is_ignored(tmp_path, monkeypatch):
+    git_dir = _git_repo(tmp_path / "repo") / ".git"
+    workspace = git_dir.parent / "workspace"
+    workspace.mkdir()
+    access = os.access
+    monkeypatch.setattr(os, "access", lambda path, mode: path != git_dir and access(path, mode))
+
+    assert project_root(workspace) == str(workspace.resolve())
+
+
 def test_a_linked_worktree_and_a_symlink_are_the_same_project(tmp_path):
     a = _git_repo(tmp_path / "a")
     worktree = tmp_path / "a-feature"
     subprocess.run(["git", "-C", str(a), "worktree", "add", "-q", str(worktree)], check=True)
     alias = tmp_path / "alias"
     alias.symlink_to(a)
+    nested = a / "nested"
+    nested.mkdir()
+    (nested / ".git").mkdir()
 
     assert project_root(worktree) == project_root(a) == project_root(alias) == str(a.resolve())
     assert project_root(a / "README") == str(a.resolve())
+    assert project_root(nested) == str(a.resolve())
 
 
 def test_a_project_with_no_session_says_so_and_names_the_flag(tmp_path, store):
