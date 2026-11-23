@@ -58,24 +58,25 @@ def _prepare_owned_step(launch, *, timeout) -> OwnedRoleRequest:
     from garuda.agents import role_agent
     from garuda.agents.setup import plan_agent_run, prepare_runtime_catalog
     from garuda.core.sessions import SessionStore
+    from garuda.runtime import roles
 
     workspace = os.path.realpath(launch.workspace)
     authority_workspace = launch.authority_workspace or workspace
     info = os.stat(workspace)
     identity = [info.st_dev, info.st_ino]
     if launch.workspace_identity is not None and identity != launch.workspace_identity:
-        from garuda.runtime.roles import RoleRefused
-
-        raise RoleRefused(
+        raise roles.RoleRefused(
             "flow.workspace_changed",
             "the admitted workspace identity changed before owned role preparation")
     role = launch.role_plan
-    if role is not None and role.kind == "acp" and (launch.no_edits or role.permissions == "readonly"):
-        from garuda.runtime.roles import RoleRefused
+    if (
+        role is not None and role.kind == "acp"
+        and roles.acp_permission(role, no_edits=launch.no_edits) == "readonly"
+    ):
         from garuda.workspace.confined_acp import Confinement
 
         if Confinement.from_config(role.harness) is None:
-            raise RoleRefused("workspace.readonly_unenforced", "this harness has no confinement image configured")
+            raise roles.RoleRefused("workspace.readonly_unenforced", "this harness has no confinement image configured")
         role = replace(role, permissions="readonly")
     store = launch.store or SessionStore()
     session_id = str(uuid.uuid4())

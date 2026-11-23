@@ -420,7 +420,8 @@ def prepare_background_runtime(args) -> BackgroundRuntimeBinding:
     import json
 
     from garuda.config.garuda_yaml import load_effective
-    from garuda.runtime.roles import RoleRefused, plan_role
+    from garuda.runtime.protocol import RuntimeKind
+    from garuda.runtime.roles import RoleRefused, acp_permission, plan_role
 
     reference = getattr(args, "runtime", None)
     resolved = load_effective(
@@ -436,10 +437,17 @@ def prepare_background_runtime(args) -> BackgroundRuntimeBinding:
                               "background roles with dynamic fallback need a persisted runtime "
                               "decision; use a role without fallback or run in the foreground")
         reference = reference or resolved.selected_role()["harness"]
+    runtime = catalog.registry.get(reference or "native")
+    if runtime.kind is RuntimeKind.ACP and acp_permission(
+            plan, mode=getattr(args, "mode", None), no_edits=getattr(args, "no_edits", False),
+            ceiling=getattr(args, "permission_mode", None)) == "readonly":
+        from garuda.workspace.confined_acp import required_confinement
+
+        required_confinement(runtime.runtime_id, plan)
     digest = (hashlib.sha256(json.dumps(resolved.config, sort_keys=True).encode()).hexdigest()
               if resolved is not None else None)
     return BackgroundRuntimeBinding(
-        catalog.registry.get(reference or "native").runtime_id, reference,
+        runtime.runtime_id, reference,
         plan.role if plan is not None else None, digest,
     )
 
@@ -516,6 +524,7 @@ def _initial_selection_inputs(
     """
     from garuda.acp.catalog import load_trusted_runtime_settings
     from garuda.config.agent_home import resolve_agent_home
+    from garuda.runtime.roles import acp_permission
     from garuda.runtime.selection import (
         InitialCandidate,
         InitialRequest,
@@ -537,6 +546,10 @@ def _initial_selection_inputs(
         global_selection=global_selection,
         project_selection=project_selection,
     )
+    if acp_permission(mode=mode, ceiling=permission_ceiling) == "readonly":
+        # A readonly ACP candidate uses its image. Host availability and
+        # authentication cannot establish whether that launch is possible.
+        wanted = frozenset()
     discovered = {
         entry.runtime_id: entry
         for entry in catalog.discover(only=wanted, cache_ttl=SELECTION_PROBE_CACHE_SECONDS)

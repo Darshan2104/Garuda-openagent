@@ -15,8 +15,8 @@ The first release is **supervisor mode**. Garuda does not reimplement the extern
 
 The [Garuda Starters guide](../use-cases/workflows.md) describes the P1a CLI
 journeys and runnable reconnect example built on these existing runtime, role,
-flow and evidence owners. External read-only roles still require their configured
-Docker confinement; a connected host CLI alone is insufficient. Reviewed flows
+flow and evidence owners. Every readonly ACP request requires a configured
+Docker image and a passing preflight before the harness starts. Reviewed flows
 can run authorized configured or explicit checks on Linux while retaining their
 parent workspace owner; other hosts report verification unavailable.
 Dashboard discovery and preview remain pure. On Linux, a write-mode dashboard

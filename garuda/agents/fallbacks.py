@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from garuda.runtime.roles import RolePlan, RoleRefused, check_model_allowed
+from garuda.runtime.roles import RolePlan, RoleRefused, acp_permission, check_model_allowed
 
 
 def default_limit_check(catalog, runtime_id: str, *, refresh=None) -> bool:
@@ -86,15 +86,18 @@ def candidates(plan: RolePlan, resolved, catalog) -> tuple[RolePlan, ...]:
     ))
 
 
-def choose(plan: RolePlan, resolved, catalog, *, login_run=None, limit_check=None) -> RolePlan:
+def choose(plan: RolePlan, resolved, catalog, *, login_run=None, limit_check=None,
+           mode=None, no_edits=False, ceiling=None) -> RolePlan:
     """The plan to start, with the fallback decision recorded on it."""
     choices = candidates(plan, resolved, catalog)
     if len(choices) == 1:
         return plan
     skipped = []
     for index, candidate in enumerate(choices):
-        reason = _skip_reason(catalog, candidate.runtime_id, login_run=login_run,
-                              limit_check=limit_check)
+        confined = candidate.kind == "acp" and acp_permission(
+            candidate, mode=mode, no_edits=no_edits, ceiling=ceiling) == "readonly"
+        reason = None if confined else _skip_reason(
+            catalog, candidate.runtime_id, login_run=login_run, limit_check=limit_check)
         if reason is None:
             decision = {
                 "primary": {"harness": plan.runtime_id, "model_id": plan.model_id},

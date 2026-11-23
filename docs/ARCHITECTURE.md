@@ -12,7 +12,7 @@ do not read them as current behavior.
 
 ## The two things to understand first
 
-**1. One selector decides run posture.** `AgentConfig` has dozens of independent
+**1. One selector decides native run posture.** `AgentConfig` has dozens of independent
 switches, which is right for ablation and wrong as an interface. `mode` implies a
 coherent set of them (`garuda/core/modes.py`):
 
@@ -31,6 +31,11 @@ it is opt-in.
 
 Precedence, widest to narrowest: `AgentConfig` defaults → mode preset → fields the
 profile YAML declared explicitly → explicit CLI flags.
+
+ACP launch authority uses the strictest of the run mode, permission flag, role
+permissions and no-edits policy. A readonly request requires the user-configured
+Docker image and a passing preflight before any ACP adapter starts. Foreground
+and queued runs, continuations, and starters share the permission decision.
 
 **2. Trust boundaries are not all equal.** Three mechanisms limit what a run can
 do, and only one is a real boundary:

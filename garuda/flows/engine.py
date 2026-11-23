@@ -303,7 +303,8 @@ class FlowRunner:
         except DiffError:
             return False
 
-    def _role_plan(self, role: str, *, acp_only: bool = False):
+    def _role_plan(self, role: str, *, acp_only: bool = False, no_edits: bool = False):
+        """Resolve the role, using its primary for ACP confinement checks."""
         if self.prepared_roles is not None:
             if role not in self.prepared_roles:
                 raise FlowStopped("flow.role_unprepared",
@@ -322,7 +323,9 @@ class FlowRunner:
             plan = plan_role(resolved, catalog)
             if plan is None or (acp_only and plan.kind != "acp"):
                 return None
-            return role_agent.bind(choose(plan, resolved, catalog), self.workspace)
+            if not acp_only:
+                plan = choose(plan, resolved, catalog, no_edits=no_edits)
+            return role_agent.bind(plan, self.workspace)
         except RoleRefused as exc:
             raise FlowStopped(exc.code, str(exc), step=role) from exc
 
@@ -354,27 +357,23 @@ class FlowRunner:
         spec = self.resolved.config.get("roles", {}).get(role, {})
         return "no-edits" in (step.get("write_policy"), spec.get("write_policy"))
 
-    def _check_confinement_image(self, step: dict, role: str, plan) -> None:
-        if plan is not None and plan.kind == "acp" and (
-                plan.permissions == "readonly" or (self.require_owned and self._no_edits(step, role))):
+    def _check_confinement_image(self, step: dict, plan, *, no_edits: bool) -> None:
+        from garuda.runtime.roles import acp_permission
+
+        if plan is not None and plan.kind == "acp" and acp_permission(plan, no_edits=no_edits) == "readonly":
             try:
                 require_image(Confinement.from_config(plan.harness))
             except ConfinementRefused as exc:
                 raise FlowStopped(exc.code, exc.message, step=step["id"]) from exc
 
     def _check_confinement_images(self) -> None:
-        roles = self.resolved.config.get("roles", {})
         for step in self.steps:
             if self.require_owned and "parallel" in step:
                 continue  # owned execution cannot launch parallel groups
             for role in step.get("parallel") or (step["role"],):
-                spec = roles.get(role, {})
-                # Fallback probes select the harness at step launch.
-                if role in self.prepared_fallbacks or (self.prepared_roles is None and spec.get("fallback")):
-                    continue
-                if (self.prepared_roles is not None or spec.get("permissions") == "readonly"
-                        or spec.get("profile") or (self.require_owned and self._no_edits(step, role))):
-                    self._check_confinement_image(step, role, self._role_plan(role, acp_only=True))
+                no_edits = self._no_edits(step, role)
+                plan = self._role_plan(role, acp_only=True)
+                self._check_confinement_image(step, plan, no_edits=no_edits)
 
     def _closed_step(self, outcome: StepResult, step: dict, attempt: int, role_record=None) -> dict:
         """Keep only bound lifetime facts, never raw process output tails."""
@@ -1008,8 +1007,8 @@ class FlowRunner:
 
         spec = step["review"]
         rounds = spec.get("max_rounds", 1)
-        reviewed_plan = self._role_plan(step["role"])
-        reviewer_plan = self._role_plan(terminal["role"])
+        reviewed_plan = self._role_plan(step["role"], no_edits=self._no_edits(step, step["role"]))
+        reviewer_plan = self._role_plan(terminal["role"], no_edits=self._no_edits(terminal, terminal["role"]))
         if spec.get("independent", True):
             why = rv.check_independent(self.resolved.config, step["role"], reviewed_plan,
                                        terminal["role"], reviewer_plan)
@@ -1194,8 +1193,8 @@ class FlowRunner:
             except (OSError, ValueError) as exc:
                 raise FlowStopped("flow.recovery_changed", str(exc), step=step["id"]) from exc
         role = step["role"]
-        plan = self._role_plan(role)
         no_edits = self._no_edits(step, role)
+        plan = self._role_plan(role, no_edits=no_edits)
         inputs = await self._inputs(step, done)
         version_before = await self._version_for_flow()
         prompt = self._prompt(step, role, inputs) + (f"\n\n{prompt_extra}" if prompt_extra else "")
@@ -1217,7 +1216,7 @@ class FlowRunner:
                 plan = await select_owned(self.prepared_fallbacks[role], self.runtime_catalog,
                                           self.workspace, lease, no_edits=no_edits, publish=publish)
                 self.prepared_roles[role] = plan
-            self._check_confinement_image(step, role, plan)
+            self._check_confinement_image(step, plan, no_edits=no_edits)
             if review_admission is not None:
                 await review_admission(plan)
             if self.quota_recovery is not None:

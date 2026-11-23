@@ -17,6 +17,7 @@ from garuda.agents.setup import RuntimeCatalog
 from garuda.runtime.process_supervision import CleanupUncertain, LinuxProcessSupervisor, ProcessRequest
 from garuda.runtime.registry import RuntimeRegistry
 from garuda.runtime.role_request import catalog_from_document, encode_document, freeze_acp
+from garuda.runtime.roles import acp_permission
 
 REASONS = {"m": "harness.cli_missing", "a": "harness.logged_out", "q": "harness.limit_reached"}
 
@@ -103,7 +104,7 @@ def decide(payload):
 
 async def select_owned(candidates, catalog, workspace, owner, *, no_edits, publish):
     payload = {"choices": [{"runtime_id": c.runtime_id, "model_id": c.model_id,
-                            "confined": c.kind == "acp" and (no_edits or c.permissions == "readonly")}
+                            "confined": c.kind == "acp" and acp_permission(c, no_edits=no_edits) == "readonly"}
                            for c in candidates],
                "manifests": [freeze_acp(catalog, rid) for rid in dict.fromkeys(c.runtime_id for c in candidates)]}
     raw = encode_document(payload)

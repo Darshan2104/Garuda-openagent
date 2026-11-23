@@ -207,6 +207,8 @@ async def test_unowned_run_starts_refuse_before_any_intent(tmp_path, monkeypatch
         response = await _call(ctx, "/api/scenarios/start", method="POST",
                                body=_start(preview, str(uuid.uuid4()), starter, inputs))
         assert response.status == 409
+        if case == "acp-ask":
+            assert _body(response)["error"]["code"] == code
         assert not (ctx.store.root / "launch-intents").exists()
         assert launches == []
     finally:

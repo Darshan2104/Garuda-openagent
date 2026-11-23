@@ -375,10 +375,9 @@ the resume stops with `flow.review_unresolved`, and you start a new flow.
 
 ## What to watch for
 
-- **No-edits is a guardrail, not confinement.** The `read-only` mode and
-  instructions above keep a Codex or Claude step from writing. For
-  confinement, an external role with `permissions: readonly` needs a
-  [Docker image](teams.md#keep-a-role-from-changing-anything).
+- **Readonly ACP requires Docker.** Readonly permissions and no-edits policies
+  require a configured [Docker image](teams.md#keep-a-role-from-changing-anything).
+  Garuda proves the read-only workspace mount before starting the harness.
 - **Asking modes need someone to answer.** In a flow or headless run, every
   request is denied. Codex then ends its turn, and the step fails with the
   denied action named.

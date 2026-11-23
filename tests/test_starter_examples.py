@@ -84,7 +84,8 @@ def test_example_refuses_invalid_or_conflicting_targets_without_writes(tmp_path,
     assert _snapshot(tmp_path, SessionStore().root) == before
 
 
-def test_single_acp_harness_init_reports_confinement_before_explicit_host_setup(tmp_path, monkeypatch, capsys):
+def test_single_acp_harness_init_reports_confinement_before_execution(
+        tmp_path, monkeypatch, capsys, fake_acp_confinement):
     target = tmp_path / 'reconnect'
     code, output = _main(monkeypatch, capsys, 'starter', 'example', 'reconnect', str(target))
     assert code == 0, output
@@ -104,14 +105,11 @@ def test_single_acp_harness_init_reports_confinement_before_explicit_host_setup(
     assert 'workspace.readonly_unenforced' in {d['code'] for d in preview['readiness']['diagnostics']}
     code, refusal = _starter_cli(monkeypatch, capsys, 'run', 'plan-change', '--goal', 'Add status',
                                 '--workspace', str(target))
-    assert code == 2 and refusal['error']['code'] == 'starter.not_ready'
+    assert code == 2 and refusal['error']['code'] == 'workspace.readonly_unenforced'
     assert SessionStore().list_sessions() == []
     doc = gy.load_file(gy.user_path())
     assert doc['roles']['scout']['permissions'] == 'readonly'
-    # Explicitly authored host/no-edits setup exercises ACP wiring; it does not
-    # prove Docker confinement. The proposal and readonly owner stay strict.
-    doc['roles']['scout']['permissions'] = 'smart'
-    gy.user_path().write_text(gy.dump(doc))
+    fake_acp_confinement('example-adapter')
     results = {}
     for starter, field, value, extra in [
         ('plan-change', 'goal', 'Add reconnect status', ['--constraints', 'Preserve retry delay', '--source', 'client.py']),
@@ -139,6 +137,7 @@ def test_single_acp_harness_init_reports_confinement_before_explicit_host_setup(
     doc = gy.load_file(gy.user_path())
     doc['roles']['reviewer']['harness'] = 'review-adapter'
     gy.user_path().write_text(gy.dump(doc))
+    fake_acp_confinement('review-adapter')
     code, row = _starter_cli(monkeypatch, capsys, 'run', 'build-review', '--goal', 'Add reconnect status',
                             '--workspace', str(target), '--requirements', 'Cover status transitions')
     assert code == 0 and row['state']['outcome'] == 'completed', row

@@ -22,7 +22,6 @@ from garuda.flows.quota_recovery import FlowRecovery, RecoveryStore, default_roo
 from garuda.flows.service import FlowExecutionService
 from garuda.observability.limits import LimitObservation, Window
 from garuda.runtime import strict_store as ss
-from garuda.runtime.roles import RolePlan
 from tests.test_flow_review import APPROVE, CHANGES, _config
 from tests.test_flows import _block
 from tests.test_flows import repo as _repo
@@ -33,6 +32,9 @@ repo = _repo
 @pytest.fixture
 def harness(repo, monkeypatch):
     config = _config(max_rounds=1)
+    for role in config["roles"].values():
+        role["harness"] = "codex"
+    config["harnesses"] = {"codex": {"confinement": {"image": "fake-acp-image"}}}
     user_path().parent.mkdir(parents=True, exist_ok=True)
     user_path().write_text(yaml.safe_dump(config))
     records = RecoveryStore()
@@ -43,11 +45,6 @@ def harness(repo, monkeypatch):
     script = SimpleNamespace(sequence=[], fail=("review", 1), failures=1,
                              exhausted=False, reviews=[APPROVE], error="usage limit reached",
                              account="acct:test", version="0.163.0", closure="closed")
-
-    def plan(runner, role):
-        spec = runner.resolved.config["roles"][role]
-        return RolePlan(role, "codex", "acp", model_id=spec["model_id"],
-                        digest=spec["model_id"], write_policy=spec.get("write_policy", "edits"))
 
     async def probe(_recovery):
         return LimitObservation("codex", script.version, clock.now,
@@ -79,7 +76,6 @@ def harness(repo, monkeypatch):
             output = _block("review", script.reviews.pop(0))
         return StepResult(str(uuid.uuid4()), True, output, closure={"status": "closed"})
 
-    monkeypatch.setattr(FlowRunner, "_role_plan", plan)
     monkeypatch.setattr(FlowRecovery, "probe", probe)
     monkeypatch.setattr("garuda.flows.launch.launch_step", launch)
     return SimpleNamespace(repo=repo, script=script, clock=clock, records=records,

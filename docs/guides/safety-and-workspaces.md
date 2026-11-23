@@ -9,9 +9,11 @@ it.
       workspace commands. Every other control is a guardrail.
     - Garuda itself, model calls, MCP servers, `web_fetch`/`web_search`, and any
       project tools or hooks run on the host, even with a Docker workspace.
-    - Permission rules and read-only mode screen what the agent **asks** to do.
-      They don't confine the process, and read-only has
+    - Native permission rules and read-only mode screen what the agent
+      **asks** to do. Native read-only has
       [known gaps](#read-only-mode-limits).
+    - [Read-only ACP runs](#read-only-external-harnesses-run-in-docker) require
+      a Docker container with a read-only workspace mount.
     - The OS sandbox limits writes and network. It does **not** stop host reads.
     - Model traffic always leaves from the host, whatever the workspace.
     - External (ACP) harnesses act with their own authority.
@@ -58,7 +60,7 @@ disabled.
 | Remote workspace | Runs commands in a container through another Docker daemon | Establish trust in that daemon, or provision its mount path |
 | `sandbox` workspace | Uses Bubblewrap or macOS Seatbelt to reduce write and network reach | Confine general host reads |
 | Permission rules | Screen tool names and literal path and command arguments | See shell expansion, or everything a broad read returns |
-| `readonly` mode | Denies Garuda's write tools and shell commands not classified as side-effect-free | Act as a sandbox, or hold MCP tools to read-only |
+| Native `readonly` mode | Denies Garuda's write tools and shell commands not classified as side-effect-free | Act as a sandbox, or hold MCP tools to read-only |
 | Workspace lease | Refuses a second editor of a workspace across `garuda run`, `garuda chat`, dashboard chats, `serve`, the SDK, recipes, and runtime sessions | Isolate the process |
 
 Permission rules and OS sandbox policies are useful defense in depth. Don't
@@ -182,7 +184,7 @@ garuda run --workspace /srv/project --workspace-kind remote --docker-host ssh://
 
 ## Run modes and permission modes
 
-Run mode chooses completion checks. Permission mode decides how tool requests
+In the native runtime, run mode chooses completion checks. Permission mode decides how tool requests
 are screened. Settings apply in this order, later ones winning: configuration
 defaults, the run-mode preset, explicit profile fields, then explicit CLI flags.
 `--mode readonly` forces read-only permissions over a profile, but a later
@@ -232,7 +234,7 @@ original cancellation retains that failure as its cause. These checks remain
 guardrails, not confinement.
 
 !!! warning
-    Don't combine `--mode readonly` with a more permissive `--permission-mode`
+    For native runs, don't combine `--mode readonly` with a more permissive `--permission-mode`
     and still call the result read-only.
 
 Path checks inspect literal arguments. Shell wildcards, indirection, and broad
@@ -241,8 +243,8 @@ mount, a minimal copy of the workspace, or a container when that matters.
 
 ### Read-only mode limits
 
-`--mode readonly` and the `readonly` permission mode are guardrails with known
-gaps today:
+Native `--mode readonly` and the `readonly` permission mode are guardrails with
+known gaps today:
 
 - **MCP tools.** MCP tools are added to every profile and aren't treated as
   writes, so a write-capable MCP tool still runs.
@@ -339,13 +341,12 @@ one with untrusted code.
 
 ## No-edits runs (a guardrail, not confinement)
 
-`garuda run --no-edits`, or a role with `write_policy: no-edits`, asks a run
-not to change the workspace. Its requests to edit files or run mutating
-commands are refused: a native run gets the `readonly` ceiling, and an
-external harness's approval requests are denied and recorded.
+`garuda run --no-edits` and a role's `write_policy: no-edits` impose read-only
+permissions. Native runs screen tool requests. ACP runs use the Docker
+confinement below and deny approval requests.
 
-Nothing stops a process from writing anyway, so Garuda checks afterwards.
-Once the run and everything it started have exited, it compares the workspace
+The no-edits check can also catch changes from other processes. Once the
+run and everything it started have exited, Garuda compares the workspace
 with a manifest taken before: every file, ignored ones included, with its
 mode, symlink target and change time, plus the repository's refs, `HEAD`,
 hooks, config and staged entries. If anything differs, or the comparison
@@ -356,9 +357,11 @@ comparison reports **no changes detected**.
 
 ## Read-only external harnesses run in Docker
 
-A role for an external harness (Claude Code, Codex, …) with
-`permissions: readonly` runs only inside a Docker container that Garuda has
-just proved is confined:
+For an external harness, any of `--mode readonly`, `--permission-mode readonly`,
+`--no-edits`, role `permissions: readonly` or role `write_policy: no-edits`
+requires Docker confinement. The strictest setting wins, including for bare
+`--runtime` runs, continuations and queued runs. Garuda proves the boundary
+before the harness starts:
 
 - your workspace is mounted read-only, and writing into it or its `.git`
   fails;
@@ -380,9 +383,7 @@ harnesses:
 ```
 
 Without a configured image, without Docker, or if the proof fails, the run
-refuses with `workspace.readonly_unenforced`. Garuda never runs such a role
-on the host instead, in a worktree or under the no-edits guardrail. This
-setting is user-only; a project file cannot add or change it.
+refuses with `workspace.readonly_unenforced`. The image setting is user-only.
 
 The no-edits manifest also follows a linked checkout's resolved Git
 administrative and common directories. It checks the active HEAD and staged

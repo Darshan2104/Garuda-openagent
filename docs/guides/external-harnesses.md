@@ -82,10 +82,24 @@ sequenceDiagram
   Garuda->>H: retire the process
 ```
 
-Unknown, disabled, or missing runtimes are refused. If an installed harness
+Unknown, disabled, or missing runtimes are refused. For an editable task, if an installed harness
 fails to start and the workspace is unchanged, Garuda moves the session once
 to `fallback_runtime` (native by default) and records the reason in the
 session.
+
+### Read-only ACP runs
+
+```bash
+garuda run --workspace . --runtime codex --mode readonly -t "Explain how tests are organized"
+```
+
+Configure `harnesses.codex.confinement.image` in your user `garuda.yaml` for
+this command. Any readonly request on an ACP run requires Garuda to prove
+Docker confinement before starting the adapter, including for roles,
+continuations, queued runs and no-edits starters. Missing or unproven
+confinement returns `workspace.readonly_unenforced`. Garuda also selects the
+known readonly session mode for Codex or Claude Code before sending a prompt.
+[Read-only external harnesses run in Docker](safety-and-workspaces.md#read-only-external-harnesses-run-in-docker).
 
 ## Route the initial runtime
 
@@ -371,7 +385,7 @@ and worked; **declared** means it is advertised but not proven here;
 | `session/resume` | Declared | Declared | Start a linked session from a brief |
 | Stdio MCP servers in `session/new` | Supported (an `mcpServers` list is accepted) | Supported | No MCP tools for that session |
 | HTTP MCP servers | Declared | Declared | Not used |
-| Permission mode selection | Supported: id `mode`; every value (`default`, `acceptEdits`, `plan`, `auto`, `bypassPermissions`) selected and reported back | Supported: id `mode`; every value (`read-only`, `workspace-write`, `agent`, `agent-full-access`) selected and reported back | The harness keeps its own mode; a named mode refuses |
+| Permission mode selection | Supported: id `mode`; every value (`default`, `acceptEdits`, `plan`, `auto`, `bypassPermissions`) selected and reported back | Supported: id `mode`; every value (`read-only`, `workspace-write`, `agent`, `agent-full-access`) selected and reported back | Named modes and mapped readonly modes require a proven adapter version |
 | `usage_update` accounting | Context snapshot each turn: `used`, `size`, an estimated `cost` in USD and the model that ran (`_meta`), observed with a prompt | Context snapshot each turn on 2.1.1: `used`, `size`. Unknown on 2.9.0. | Recorded as snapshots, never summed or counted as turns |
 
 Both adapters also advertise permission modes that bypass approval (Claude

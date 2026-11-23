@@ -173,6 +173,15 @@ def plan_role(resolved, catalog) -> RolePlan | None:
     return plan
 
 
+def acp_permission(plan: RolePlan | None = None, *, mode: str | None = None,
+                   no_edits: bool = False, ceiling: str | None = None) -> str:
+    """Resolve ACP launch authority from the strictest run and role settings."""
+    if mode == "readonly" or no_edits or (plan and plan.write_policy == "no-edits"):
+        return "readonly"
+    return min((plan.permissions if plan else None) or "smart", ceiling or "yolo",
+               key=PERMISSIONS.index)
+
+
 def harness_mode(plan: RolePlan, *, no_edits: bool = False,
                  ceiling: str | None = None) -> str | None:
     """The harness permission mode to select for ``plan``, or ``None`` to leave
@@ -181,7 +190,7 @@ def harness_mode(plan: RolePlan, *, no_edits: bool = False,
     ``ceiling`` is the run's own permission mode when it is stricter than the role's.
     """
     ceiling = min(plan.permissions or "smart", ceiling or "yolo", key=PERMISSIONS.index)
-    limit = "readonly" if no_edits or plan.write_policy == "no-edits" else ceiling
+    limit = acp_permission(plan, no_edits=no_edits, ceiling=ceiling)
     if plan.harness_mode is None:
         return DEFAULT_MODES.get(plan.runtime_id, {}).get(limit)
     needed = MODE_AUTHORITY.get(plan.runtime_id, {}).get(plan.harness_mode)
@@ -202,13 +211,14 @@ def acp_options(plan: RolePlan, adapter_version: str, *, no_edits: bool = False,
                 ceiling: str | None = None) -> dict[str, str]:
     """The ``session/set_config_option`` settings for an ACP role, or a refusal.
 
-    A mode the role names needs a proven adapter like any option; a default
-    mode is applied only where modes are proven.
+    Named modes and known readonly modes require a proven adapter. Other
+    default modes are applied only where modes are proven.
     """
     wanted = {k: v for k, v in (("model_id", plan.model_id), ("effort", plan.effort)) if v}
     proven = PROVEN_OPTIONS.get((plan.runtime_id, adapter_version))
     mode = harness_mode(plan, no_edits=no_edits, ceiling=ceiling)
     if mode is not None and (plan.harness_mode is not None
+                             or acp_permission(plan, no_edits=no_edits, ceiling=ceiling) == "readonly"
                              or "harness_mode" in (proven or {})):
         wanted["harness_mode"] = mode
     if not wanted:

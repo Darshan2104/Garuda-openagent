@@ -1,8 +1,7 @@
-"""Read-only ACP roles run in Docker (plan task C.8a, #158).
+"""Read-only ACP runs use Docker (plan task C.8a, #158).
 
-An external ACP role whose permissions are ``readonly`` — a standalone run,
-a sequential scout, planner or reviewer, or a fallback — runs only in
-Docker-class confinement, and only when a preflight proves it:
+An external ACP run with effective ``readonly`` permissions runs only in
+Docker confinement, and only when a preflight proves it:
 
 - the source is mounted read-only (a write into it fails, and into its
   ``.git`` too);
@@ -32,6 +31,10 @@ import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from garuda.runtime.roles import RolePlan
 
 CONTAINER_WORKSPACE = "/workspace"
 CODE = "workspace.readonly_unenforced"
@@ -63,6 +66,19 @@ class Confinement:
             return None
         return cls(image=spec["image"], command=tuple(spec.get("command", ())),
                    mounts=tuple(spec.get("mounts", ())))
+
+
+def required_confinement(runtime_id: str, role: RolePlan | None) -> Confinement:
+    """Get the trusted image for a readonly launch without running a probe."""
+    if role is not None:
+        if role.kind != "acp" or role.runtime_id != runtime_id:
+            raise ConfinementRefused("the selected harness differs from the readonly role")
+        harness = role.harness
+    else:
+        from garuda.config.garuda_yaml import load_file, user_path
+
+        harness = (load_file(user_path()) or {}).get("harnesses", {}).get(runtime_id)
+    return require_image(Confinement.from_config(harness))
 
 
 def _check_mounts(mounts, workspace: Path) -> None:

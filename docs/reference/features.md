@@ -116,7 +116,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | Advisor checkpoints | A granted consult target gives capped, evidence-citing advice at selected failure, plan or candidate checkpoints | `advisor: {role: planner}` in an agent definition | [Level 5](../use-cases/teams.md#get-an-advisors-second-opinion-when-a-run-keeps-failing) |
 | Consults | One role asks another, read-only | `consult: [planner]` on a role | [Level 5](../use-cases/teams.md#let-one-role-ask-another) |
 | Project checks | Every run in a repo verified by its tests | `garuda config trust` | [Level 5](../use-cases/teams.md#require-checks-for-every-run-in-this-project) |
-| Read-only external roles | Read-only/no-edits ACP roles use a configured confinement image; owned launches prove container removal before releasing workspace/capacity, retaining quarantine on uncertainty | `confinement.image` in `garuda.yaml` | [Level 5](../use-cases/teams.md#keep-a-role-from-changing-anything) |
+| Read-only ACP runs | Readonly and no-edits requests require a configured confinement image and preflight. Owned launches prove container removal before releasing workspace and capacity | `--mode readonly`, `--permission-mode readonly`, `--no-edits`, role policy | [External harnesses](../guides/external-harnesses.md#read-only-acp-runs) |
 | Config migration | `settings.yaml` limits into `garuda.yaml` | `garuda config migrate` | [Level 5](../use-cases/teams.md#move-runtime-limits-into-garudayaml) |
 
 ## Watch and measure

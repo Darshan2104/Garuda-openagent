@@ -307,7 +307,8 @@ def test_fresh_preview_with_installed_runtime_never_discovers_or_allocates(confi
     service = StarterService(store)
     rows = {row["id"]: row["readiness"] for row in service.list(configured)}
     assert set(rows) == {"plan-change", "plan-feedback", "build-review", "run-with-role", "ask-role"}
-    assert rows["ask-role"]["status"] == "ready"
+    assert rows["ask-role"]["status"] == "needs-setup"
+    assert "workspace.readonly_unenforced" in {item["code"] for item in rows["ask-role"]["diagnostics"]}
     assert rows["build-review"]["status"] == "needs-setup"
     assert service.preview("ask-role", {"question": "q"}, configured)["plan"]["digest"] == plan.digest
     assert _snapshot(*roots) == before and not store.root.exists()
@@ -346,7 +347,8 @@ def test_preview_cannot_allocate_or_repair_project_identity(configured, tmp_path
     ("run-with-role", {"goal": "chosen task", "requirements": "test it", "constraints": "preserve formats"}),
     ("ask-role", {"question": "what does retry do?"}),
 ])
-def test_compiled_fields_reach_the_actual_existing_runtime(tmp_path, monkeypatch, capsys, starter, inputs):
+def test_compiled_fields_reach_the_actual_existing_runtime(
+        tmp_path, monkeypatch, capsys, starter, inputs, fake_acp_confinement):
     from tests.test_runtime_cli import _git_workspace, _install_shim, _main, _on_path
 
     ws = _git_workspace(tmp_path)
@@ -357,6 +359,7 @@ def test_compiled_fields_reach_the_actual_existing_runtime(tmp_path, monkeypatch
     settings.write_text(yaml.safe_dump({"runtimes": [{"runtime_id": "capture", "kind": "acp", "version": "1", "command": ["fake-acp-shim"]}]}))
     gy.user_path().write_text(yaml.safe_dump({"version": 1, "roles": {
         role: {"harness": "capture"} for role in ("scout", "planner", "coder", "reviewer")}}))
+    fake_acp_confinement("capture")
     plan = compile_scenario(starter, inputs, ws)
     code, output = _main(monkeypatch, capsys, *shlex.split(plan.equivalent_command)[1:])
     assert code == (3 if starter == "build-review" else 0), output
@@ -380,7 +383,8 @@ def test_compiled_fields_reach_the_actual_existing_runtime(tmp_path, monkeypatch
     ("consulted-alias", "needs-setup", "not_independent"),
     ("consulted-unknown", "needs-setup", "not_independent"),
 ])
-def test_readiness_uses_the_existing_configured_identity_rule(configured, case, status, decision):
+def test_readiness_uses_the_existing_configured_identity_rule(
+        configured, case, status, decision, fake_acp_confinement):
     doc = gy.load_file(gy.user_path())
     roles = doc["roles"]
     for role in roles.values():
@@ -405,6 +409,8 @@ def test_readiness_uses_the_existing_configured_identity_rule(configured, case, 
         roles["coder"]["consult"] = ["scout"]
         roles["scout"].update(harness="builder" if "alias" in case else "missing" if "unknown" in case else "native", model_id="reviewer/model")
     gy.user_path().write_text(gy.dump(doc))
+    if case == "different-runtime":
+        fake_acp_confinement("external")
     result = StarterService().preview("build-review", {"goal": "Add status"}, configured)
     state = result["readiness"]
     assert state["status"] == status and state["can_run"] == (status == "ready")
@@ -463,7 +469,8 @@ def test_readiness_reports_effective_user_review_policy(configured, override, po
     ("unproven-options", "not-checked", "role.options_unproven"),
     ("missing-executable", "needs-setup", "harness.cli_missing"),
 ])
-def test_unavailable_readiness_is_visible_before_admission(configured, problem, status, code):
+def test_unavailable_readiness_is_visible_before_admission(
+        configured, problem, status, code, fake_acp_confinement):
     doc = gy.load_file(gy.user_path())
     if problem == "missing-role":
         del doc["roles"]["reviewer"]
@@ -479,10 +486,15 @@ def test_unavailable_readiness_is_visible_before_admission(configured, problem, 
         Path(os.environ["GARUDA_GLOBAL_SETTINGS"]).write_text(yaml.safe_dump(settings))
         doc["roles"]["reviewer"]["harness"] = "external"
     gy.user_path().write_text(gy.dump(doc))
+    if problem == "unproven-options":
+        fake_acp_confinement("external")
     store = SessionStore()
     before = _snapshot(store.root, configured, Path(os.environ["GARUDA_LEASES_DIR"]))
     rows = {row["id"]: row["readiness"] for row in StarterService(store).list(configured)}
     state = rows["build-review"]
+    if problem == "missing-executable":
+        state = StarterService(store).preview(
+            "run-with-role", {"goal": "Add status", "role": "reviewer"}, configured)["readiness"]
     assert state["status"] == status and state["can_run"] is False
     assert code in {d["code"] for d in state["diagnostics"]}
     assert _snapshot(store.root, configured, Path(os.environ["GARUDA_LEASES_DIR"])) == before
@@ -490,7 +502,8 @@ def test_unavailable_readiness_is_visible_before_admission(configured, problem, 
 
 @pytest.mark.parametrize("proven, status", [(True, "ready"), (False, "not-checked")])
 def test_a_probed_adapter_version_defers_the_option_proof_to_launch(configured, monkeypatch,
-                                                                    proven, status):
+                                                                    proven, status,
+                                                                    fake_acp_confinement):
     from garuda.runtime import roles
 
     if proven:  # some version of this harness can set the role's options; launch checks which
@@ -503,6 +516,7 @@ def test_a_probed_adapter_version_defers_the_option_proof_to_launch(configured, 
     Path(os.environ["GARUDA_GLOBAL_SETTINGS"]).write_text(yaml.safe_dump(settings))
     doc["roles"]["reviewer"]["harness"] = "external"
     gy.user_path().write_text(gy.dump(doc))
+    fake_acp_confinement("external")
     rows = {row["id"]: row["readiness"] for row in StarterService().list(configured)}
     state = rows["build-review"]
     codes = {d["code"] for d in state["diagnostics"]}
@@ -596,7 +610,7 @@ def test_library_refuses_invalid_workspace_before_admission(tmp_path, value):
 
 
 @pytest.fixture
-def completed_plan(tmp_path, monkeypatch, capsys):
+def completed_plan(tmp_path, monkeypatch, capsys, fake_acp_confinement):
     """Real runner/ACP producer owns sessions, journal, receipt and artifact."""
     from tests.test_runtime_cli import _git_workspace, _install_shim, _on_path
 
@@ -615,6 +629,8 @@ def completed_plan(tmp_path, monkeypatch, capsys):
                                  for role in ('scout', 'planner', 'coder', 'reviewer')}}
     doc['roles']['coder']['harness'] = 'capture'
     gy.user_path().write_text(gy.dump(doc))
+    fake_acp_confinement('producer')
+    fake_acp_confinement('capture', command='capture-acp-shim')
     inputs = {'goal': "Status 'client' <handoff>", 'requirements': 'All status transitions',
               'exclude': 'Do not rewrite transport', 'constraints': 'Keep retry delay and protocol'}
     store = SessionStore()
@@ -1003,7 +1019,8 @@ def test_starter_native_roles_use_real_loop_and_acceptance(tmp_path, monkeypatch
 
 
 @pytest.mark.parametrize('mode', ['worktree', 'background', 'question', 'failed-check', 'withheld'])
-def test_starter_acp_roles_preserve_existing_owners(tmp_path, monkeypatch, capsys, mode):
+def test_starter_acp_roles_preserve_existing_owners(
+        tmp_path, monkeypatch, capsys, mode, fake_acp_confinement):
     import time
 
     from tests.test_runtime_cli import _git_workspace, _hard_deadline, _install_shim, _on_path
@@ -1015,6 +1032,8 @@ def test_starter_acp_roles_preserve_existing_owners(tmp_path, monkeypatch, capsy
         {'runtime_id': 'fixture', 'kind': 'acp', 'version': '1', 'command': ['fake-acp-shim']}]}))
     gy.user_path().write_text(gy.dump({'version': 1, 'roles': {
         role: {'harness': 'fixture'} for role in ('coder', 'reviewer')}}))
+    if mode in ('question', 'withheld'):
+        fake_acp_confinement('fixture')
     store = SessionStore(tmp_path / 'custom-sessions') if mode == 'background' else SessionStore()
     if mode == 'background':
         monkeypatch.setattr('garuda.interfaces.scenario_cli.StarterService', lambda: StarterService(store))

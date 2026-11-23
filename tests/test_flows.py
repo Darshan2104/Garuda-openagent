@@ -437,7 +437,8 @@ async def test_cancelling_the_flow_reaps_its_acp_child(repo, tmp_path, monkeypat
     assert LeaseStore().holders_of(repo) == []
 
 
-def test_a_flow_runs_from_the_cli_with_acp_roles(repo, tmp_path, monkeypatch, capsys):
+def test_a_flow_runs_from_the_cli_with_acp_roles(repo, tmp_path, monkeypatch, capsys,
+                                                fake_acp_confinement):
     from tests.test_runtime_cli import _install_shim, _main, _on_path, _trusted_settings
 
     _on_path(monkeypatch, tmp_path / "bin")
@@ -449,6 +450,7 @@ def test_a_flow_runs_from_the_cli_with_acp_roles(repo, tmp_path, monkeypatch, ca
         "  coder: {harness: fakeacp}\n"
         "flows:\n  pb:\n    steps:\n      - {id: plan, role: planner, outputs: [plan]}\n"
         "      - {id: build, role: coder, inputs: [plan]}\n")
+    fake_acp_confinement("fakeacp")
 
     code, out = _main(monkeypatch, capsys, "flow", "run", "pb", "-t", "add a feature",
                       "--workspace", str(repo))

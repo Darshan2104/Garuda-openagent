@@ -355,7 +355,8 @@ def test_run_runtime_acp_refuses_a_foreign_mutating_lease(tmp_path, monkeypatch,
 @pytest.mark.parametrize(("profile", "expected_exit"), [
     ("streaming", 0), ("remote-error", 1), ("streaming", 3),
 ], ids=["success", "remote-error", "no-edits-refusal"])
-def test_run_runtime_acp_json_keeps_diagnostics_off_stdout(tmp_path, monkeypatch, capsys, profile, expected_exit):
+def test_run_runtime_acp_json_keeps_diagnostics_off_stdout(
+        tmp_path, monkeypatch, capsys, profile, expected_exit, fake_acp_confinement):
     ws = _git_workspace(tmp_path)
     _on_path(monkeypatch, tmp_path / "bin")
     _install_shim(tmp_path / "bin", profile=profile)
@@ -366,6 +367,7 @@ def test_run_runtime_acp_json_keeps_diagnostics_off_stdout(tmp_path, monkeypatch
     if expected_exit == 3:
         from garuda.interfaces import main as interface
 
+        fake_acp_confinement("fakeacp")
         check = interface._finish_no_edits
 
         def file_changed_before_check(*args):
