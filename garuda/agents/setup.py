@@ -407,6 +407,7 @@ class BackgroundRuntimeBinding:
     runtime_reference: str | None
     role: str | None
     config_digest: str | None
+    agent_digest: str | None = None
 
 
 def prepare_background_runtime(args) -> BackgroundRuntimeBinding:
@@ -419,6 +420,7 @@ def prepare_background_runtime(args) -> BackgroundRuntimeBinding:
     import hashlib
     import json
 
+    from garuda.agents import role_agent
     from garuda.config.garuda_yaml import load_effective
     from garuda.runtime.protocol import RuntimeKind
     from garuda.runtime.roles import RoleRefused, acp_permission, plan_role
@@ -431,12 +433,19 @@ def prepare_background_runtime(args) -> BackgroundRuntimeBinding:
     )
     catalog = prepare_runtime_catalog(args.workspace)
     plan = plan_role(resolved, catalog) if resolved is not None else None
+    agent_digest = None
     if plan is not None:
         if resolved.selected_role().get("fallback"):
             raise RoleRefused("background.fallback_unbound",
                               "background roles with dynamic fallback need a persisted runtime "
                               "decision; use a role without fallback or run in the foreground")
         reference = reference or resolved.selected_role()["harness"]
+        agent_name = getattr(args, "agent", None)
+        agent_file = getattr(args, "agent_file", None)
+        if plan.kind == "acp" and (agent_name is not None or agent_file is not None):
+            plan = role_agent.bind(plan, args.workspace, getattr(args, "agents_dir", None),
+                                   agent_name=agent_name, agent_file=agent_file)
+            agent_digest = plan.agent_digest
     runtime = catalog.registry.get(reference or "native")
     if runtime.kind is RuntimeKind.ACP and acp_permission(
             plan, mode=getattr(args, "mode", None), no_edits=getattr(args, "no_edits", False),
@@ -444,11 +453,14 @@ def prepare_background_runtime(args) -> BackgroundRuntimeBinding:
         from garuda.workspace.confined_acp import required_confinement
 
         required_confinement(runtime.runtime_id, plan)
-    digest = (hashlib.sha256(json.dumps(resolved.config, sort_keys=True).encode()).hexdigest()
-              if resolved is not None else None)
+    config = resolved.config if resolved is not None else None
+    if agent_digest is not None:
+        config = {"config": config, "agent_digest": agent_digest}
+    digest = (hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest()
+              if config is not None else None)
     return BackgroundRuntimeBinding(
         runtime.runtime_id, reference,
-        plan.role if plan is not None else None, digest,
+        plan.role if plan is not None else None, digest, agent_digest,
     )
 
 

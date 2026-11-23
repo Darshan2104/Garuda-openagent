@@ -103,6 +103,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | Setup and diagnostics | Proposed roles; global settings validation across sections, with fixes and JSON errors | `garuda init`, `garuda doctor` | [Level 5](../use-cases/teams.md#set-up-your-roles) |
 | Effective configuration | Every value and where it came from | `garuda config show` | [Level 5](../use-cases/teams.md#set-up-your-roles) |
 | Roles | A harness and exact model per job | `garuda run --role coder -t "…"` | [Level 5](../use-cases/teams.md#run-a-task-as-a-role) |
+| ACP role agent selection | Project effort, permission mode and appended instructions from an agent definition, and refuse unsupported fields before launch | `garuda run --role coder --agent careful-coder -t "…"` | [Level 5](../use-cases/teams.md#run-a-task-as-a-role) |
 | Fallbacks | Start on another harness if one is missing, logged out or out of quota | `fallback:` on a role | [Level 5](../use-cases/teams.md#run-a-task-as-a-role) |
 | Flows | Plan → build → review in one command | `garuda flow run plan-build-review -t "…"` | [Level 5](../use-cases/teams.md#run-a-plan-build-review-flow) |
 | Review packets | Frozen candidate, loader evidence and per-file diffs bounded after escaping; binary and secret-matching excerpts withheld, untracked symlinks and failed reads unknown, explicit omissions, checks kept separate | `garuda flow run plan-build-review -t "…"` | [Level 5](../use-cases/teams.md#run-a-plan-build-review-flow) |

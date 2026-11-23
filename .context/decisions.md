@@ -1,5 +1,17 @@
 # Durable decisions
 
+## 2026-11-23 — Explicit CLI agent selection binds to ACP roles (#679)
+
+Explicit `--agent` and `--agent-file` use the role's agent projection for both
+explicit and default ACP roles. Unsupported fields refuse before launch and
+competing definitions refuse with `config.conflict`. The session role records
+the effective definition digest. A definition's permission mode requires a
+proven harness mode or read-only confinement. Background admission validates
+the same projection and binds the selected definition digest through dispatch.
+Older queue records stored `build` even when the caller omitted `--agent`.
+Those ACP role launches require fresh admission. Native runs still default to
+`build`.
+
 ## 2026-11-22 — Codex ACP 2.9.0 role options (#662)
 
 The no-prompt capability capture proves model, effort and harness mode

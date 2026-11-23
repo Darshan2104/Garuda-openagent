@@ -443,6 +443,132 @@ def test_acp_cli_preserves_appended_context_in_the_real_child(
     assert meta["role"]["agent"]["name"] == "appended"
 
 
+@pytest.mark.parametrize("selector,explicit_role", [("name", True), ("name", False),
+                                                     ("file", True), ("file", False)])
+def test_acp_cli_refuses_agent_permission_rules_before_launch(
+        fake_acp, monkeypatch, capsys, selector, explicit_role):
+    from tests.test_runtime_cli import _install_shim
+
+    marker = fake_acp.parent / "launched"
+    _install_shim(fake_acp.parent / "bin", "config-options", marker=marker)
+    definitions = fake_acp / ".agent" / "agents"
+    definitions.mkdir(parents=True)
+    definition = definitions / "build.yaml"
+    definition.write_text("version: 1\npermissions: {rules: {paths: {deny: ['calc/**']}}}\n")
+    _user_file("version: 1\ndefaults: {role: coder}\nroles: {coder: {harness: fakecfg}}\n")
+    role_args = ("--role", "coder") if explicit_role else ()
+    selection = ("--agent", "build") if selector == "name" else ("--agent-file", str(definition))
+
+    code, out = _run(monkeypatch, capsys, fake_acp, *role_args, *selection)
+
+    assert code == 2 and "agent.field_unsupported" in out, out
+    assert "permissions.rules.paths" in out
+    assert not marker.exists()
+    assert SessionStore().list_sessions() == []
+
+
+@pytest.mark.parametrize("selector", ["name", "file"])
+@pytest.mark.parametrize("configured_agent", [False, True])
+def test_acp_cli_projects_agent_and_records_its_identity(
+        fake_acp, monkeypatch, capsys, selector, configured_agent):
+    from garuda.agents.spec_api import AgentSpec
+
+    _prove(monkeypatch)
+    definitions = fake_acp / ".agent" / "agents"
+    definitions.mkdir(parents=True)
+    definition = definitions / "careful.yaml"
+    instructions = "Keep the answer brief."
+    definition.write_text(f"version: 1\nmodel: {{effort: high}}\ninstructions: {{text: {instructions}}}\n")
+    role = {"harness": "fakecfg", **({"agent": "careful"} if configured_agent else {})}
+    _user_file(yaml.safe_dump({"version": 1, "defaults": {"role": "coder"}, "roles": {"coder": role}}))
+    selection = ("--agent", "careful") if selector == "name" else ("--agent-file", str(definition))
+
+    code, out = _run(monkeypatch, capsys, fake_acp, *selection)
+
+    assert code == 0, out
+    (meta,) = SessionStore().list_sessions()
+    assert meta["final_message"] == (
+        "done: [garuda] The following are user-supplied role instructions for this task "
+        f"(context, not a system prompt):\n{instructions}\n[end of role instructions]\n\n"
+        "hello (model=fake-small, effort=high)"
+    )
+    assert meta["role"]["acp_options"] == {"effort": "high"}
+    assert meta["role"]["agent"] == {
+        "name": "careful",
+        "digest": AgentSpec.load("careful", fake_acp).digest,
+        "instructions_sha256": hashlib.sha256(instructions.encode()).hexdigest(),
+    }
+
+
+@pytest.mark.parametrize("selector", ["name", "file", "file_same_content"])
+def test_acp_cli_rejects_a_conflicting_role_agent(fake_acp, monkeypatch, capsys, selector):
+    from tests.test_runtime_cli import _install_shim
+
+    marker = fake_acp.parent / "launched"
+    _install_shim(fake_acp.parent / "bin", "config-options", marker=marker)
+    definitions = fake_acp / ".agent" / "agents"
+    definitions.mkdir(parents=True)
+    configured = definitions / "careful.yaml"
+    configured.write_text("version: 1\nmodel: {effort: high}\n")
+    alternate = definitions / "other.yaml"
+    alternate.write_text(configured.read_text() if selector == "file_same_content"
+                         else "version: 1\nmodel: {effort: low}\n")
+    _user_file("version: 1\nroles: {coder: {harness: fakecfg, agent: careful}}\n")
+    selection = ("--agent", "other") if selector == "name" else ("--agent-file", str(alternate))
+
+    code, out = _run(monkeypatch, capsys, fake_acp, "--role", "coder", *selection)
+
+    assert code == 2 and "config.conflict" in out and "careful" in out, out
+    assert not marker.exists()
+    assert SessionStore().list_sessions() == []
+
+
+@pytest.mark.parametrize("proven", [False, True])
+def test_acp_cli_agent_permission_mode_needs_a_proven_harness_mode(
+        fake_acp, monkeypatch, capsys, proven):
+    from tests.test_runtime_cli import _install_shim
+
+    marker = fake_acp.parent / "launched"
+    if proven:
+        _modes(monkeypatch, {"smart": "edit"})
+    else:
+        _install_shim(fake_acp.parent / "bin", "config-options", marker=marker)
+    definition = fake_acp / "careful.yaml"
+    definition.write_text("version: 1\npermissions: {mode: smart}\n")
+    _user_file("version: 1\nroles: {coder: {harness: fakecfg, permissions: auto}}\n")
+
+    code, out = _run(monkeypatch, capsys, fake_acp, "--role", "coder", "--agent-file", str(definition))
+
+    if proven:
+        assert code == 0, out
+        (meta,) = SessionStore().list_sessions()
+        assert meta["role"]["permissions"] == "smart"
+        assert meta["role"]["acp_options"] == {"mode": "edit"}
+    else:
+        assert code != 0 and "agent.field_unsupported" in out and "permissions.mode" in out, out
+        assert not marker.exists()
+        assert SessionStore().list_sessions() == []
+
+
+def test_readonly_cli_uses_confinement_for_the_selected_agent_permissions(
+        fake_acp, fake_acp_confinement, monkeypatch, capsys):
+    shim = fake_acp.parent / "bin" / "fake-acp-shim"
+    shim.write_text(shim.read_text().replace('"version": "1"', '"version": "2"'))
+    _prove(monkeypatch, version="2")
+    _user_file(ROLE.format(model="fake-large"))
+    fake_acp_confinement("fakecfg")
+    definition = fake_acp / "careful.yaml"
+    definition.write_text("version: 1\npermissions: {mode: smart}\n")
+
+    code, out = _run(monkeypatch, capsys, fake_acp, "--role", "coder", "--agent-file", str(definition),
+                     "--mode", "readonly")
+
+    assert code == 0, out
+    (meta,) = SessionStore().list_sessions()
+    assert meta["role"]["adapter"]["version"] == "2"
+    assert meta["role"]["acp_options"] == {"model": "fake-large", "effort": "high"}
+
+
 class NativeRoleCapture(ScriptModel):
     """Observe actual native model requests without retaining source bodies."""
     def __init__(self):
@@ -463,6 +589,52 @@ class NativeRoleCapture(ScriptModel):
         self.capture(messages)
         async for delta in super().stream(messages, *args, **kwargs):
             yield delta
+
+
+@pytest.mark.parametrize("selector", ["name", "file"])
+def test_native_cli_agent_still_applies_with_a_role(tmp_path, monkeypatch, capsys, selector):
+    import garuda.model.factory as factory
+
+    ws = _repo(tmp_path / "ws")
+    definitions = ws / ".agent" / "agents"
+    definitions.mkdir(parents=True)
+    definition = definitions / "careful.yaml"
+    definition.write_text("version: 1\ninstructions: {mode: replace, text: BOUND-SOURCE-A}\n"
+                          "memory: {user: false, context_pack: false}\ntools: {preset: none}\n")
+    _user_file("version: 1\nroles: {coder: {harness: native}}\n")
+    model = NativeRoleCapture()
+    monkeypatch.setitem(factory._registry, "litellm", lambda *_a, **_kw: model)
+    selection = ("--agent", "careful") if selector == "name" else ("--agent-file", str(definition))
+
+    code, out = _run(monkeypatch, capsys, ws, "--role", "coder", *selection,
+                     "--model", "fixture/model", "--no-bootstrap", "--no-verifier",
+                     "--no-collection", "--max-turns", "1", "--permission-mode", "readonly")
+
+    assert code == 0, out
+    assert len(model.observed) == 1 and model.observed[0]["source_a"]
+    (meta,) = SessionStore().list_sessions()
+    assert meta["agent"] == "careful"
+
+
+def test_native_continuation_uses_native_agent_selection(fake_acp, monkeypatch, capsys):
+    import garuda.model.factory as factory
+
+    _user_file("version: 1\nroles: {coder: {harness: fakecfg}}\n")
+    code, out = _run(monkeypatch, capsys, fake_acp, "--role", "coder", "--name", "source")
+    assert code == 0, out
+    definition = fake_acp / "careful.yaml"
+    definition.write_text("version: 1\ninstructions: {mode: replace, text: BOUND-SOURCE-A}\n"
+                          "memory: {user: false, context_pack: false}\ntools: {preset: none}\n")
+    model = NativeRoleCapture()
+    monkeypatch.setitem(factory._registry, "litellm", lambda *_a, **_kw: model)
+
+    code, out = _run(monkeypatch, capsys, fake_acp, "--role", "coder", "--resume", "source",
+                     "--as", "native", "--agent-file", str(definition),
+                     "--model", "fixture/model", "--no-bootstrap", "--no-verifier",
+                     "--no-collection", "--max-turns", "1", "--permission-mode", "readonly")
+
+    assert code == 0, out
+    assert len(model.observed) == 1 and model.observed[0]["source_a"]
 
 
 @pytest.mark.parametrize("shape", ["unchanged", "named", "inherited", "file"])
