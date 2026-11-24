@@ -100,7 +100,9 @@ class SoftwareAgent:
         workspace's newest session unless ``resume_all_projects`` is true. Non-native runtimes
         execute one ACP turn per run through the selected harness; registered
         tools cannot reach a harness, so such a run refuses them with
-        ``ToolsUnsupportedOnRuntime`` before it starts. An ACP result's
+        ``ToolsUnsupportedOnRuntime`` before it starts, and a ``model``,
+        ``reasoning_model``, ``collection_model``, ``model_binding`` or
+        non-default ``agent`` with ``OptionsUnsupportedOnRuntime``. An ACP result's
         ``success`` means the harness ended its turn, not that Garuda verified it.
         ``fork`` with ``fork_at`` starts a native context-only fork through an
         inclusive zero-based saved message index; files/processes are not restored.
@@ -126,9 +128,13 @@ class SoftwareAgent:
         if fork is not None and self.runtime_name != "native":
             raise ValueError("context fork requires the native runtime")
         if self.runtime_name != "native":
-            from garuda.sdk.errors import refuse_unservable_tools
+            from garuda.sdk.errors import refuse_unservable_options, refuse_unservable_tools
 
             refuse_unservable_tools(self.runtime_name, self._extra_tools, self._load_project_tools)
+            refuse_unservable_options(
+                self.runtime_name, model=self.model_name, agent=self._agent,
+                reasoning_model=self.reasoning_model, collection_model=self.collection_model,
+                model_binding=self.model_binding)
             return await self._run_acp(task)
         from garuda.config.agent_home import resolve_agents_dirs
 

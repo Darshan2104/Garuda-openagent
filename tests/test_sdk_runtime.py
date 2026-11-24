@@ -680,3 +680,42 @@ async def test_failed_sdk_acp_run_settles_its_session(tmp_path, monkeypatch):
     (record,) = store.list_sessions()
     meta = store.load_meta(record["session_id"])
     assert (meta["status"], meta["state"]["outcome"]) == ("failed", "failed")
+
+
+@pytest.mark.parametrize("option", [{"model": "openai/gpt-x"}, {"reasoning_model": "openai/gpt-x"},
+                                    {"collection_model": "openai/gpt-x"}, {"model_binding": "fast"},
+                                    {"agent": "plan"},
+                                    {"agent": {"extends": "garuda/build"}}],
+                         ids=["model", "reasoning_model", "collection_model", "model_binding",
+                              "agent_name", "agent_spec"])
+@pytest.mark.parametrize("via", ["run", "conversation"])
+async def test_sdk_refuses_model_or_agent_an_acp_runtime_would_ignore(tmp_path, monkeypatch, via,
+                                                                      option):
+    """#712: a model or agent the harness cannot apply is refused before launch."""
+    from garuda.config import agent_home
+    from garuda.core.sessions import SessionStore
+    from garuda.interfaces import runtime_cli
+    from garuda.sdk import OptionsUnsupportedOnRuntime
+
+    store = SessionStore(tmp_path / "sessions")
+    # A mapping is resolved into a frozen AgentSpec at construction.
+    agent = SoftwareAgent(workspace=tmp_path, runtime="faketest", store=store, **option)
+    monkeypatch.setattr(agent_home, "resolve_agent_home", lambda workspace: _FakeHome(_fake_extra()))
+
+    def no_launch(*args, **kwargs):
+        pytest.fail("a refused run must not construct the harness")
+
+    monkeypatch.setattr(runtime_cli, "acp_adapter_for_workspace", no_launch)
+    with pytest.raises(OptionsUnsupportedOnRuntime) as refused:
+        if via == "conversation":
+            conversation = agent.conversation()
+            try:
+                await conversation.run("hello")
+            finally:
+                await conversation.close()
+        else:
+            await agent.run("hello")
+    assert refused.value.code == "sdk.options_unsupported"
+    assert isinstance(refused.value, ValueError)
+    assert next(iter(option)) in str(refused.value)
+    assert store.list_sessions() == []

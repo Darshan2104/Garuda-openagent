@@ -483,6 +483,11 @@ as `garuda run` does, and each turn's usage report goes to the usage ledger.
 A harness uses its own tools, so a run on an ACP runtime with registered tools
 or `load_project_tools=True` raises `garuda.sdk.ToolsUnsupportedOnRuntime` (a
 `ValueError`, code `sdk.tools_unsupported`) before the harness starts.
+The harness also runs its own configured model and agent, so `model=`,
+`reasoning_model=`, `collection_model=`, `model_binding=` or an `agent=` other
+than the default `"build"` (a name, mapping or `AgentSpec`) raises
+`garuda.sdk.OptionsUnsupportedOnRuntime` (a `ValueError`, code
+`sdk.options_unsupported`) before the harness starts, instead of being ignored.
 If the harness fails to start, Garuda closes it and records that session as
 failed; the next `run` starts a new harness session.
 
