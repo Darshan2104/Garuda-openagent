@@ -138,6 +138,11 @@ class AcpRuntime:
         self._quota: dict[str, Any] | None = None
         self._consult_host = None
         self._agent_info: dict[str, Any] = {}
+        # The permission mode checked before the first prompt (#700): whether
+        # it was checked, what Garuda set, and what the agent then reported.
+        self._mode_checked = False
+        self._mode_set = False
+        self._effective_mode: dict[str, Any] | None = None
         #: Actions denied this turn, named when the agent then ends the turn cancelled.
         self._denied: list[str] = []
 
@@ -184,6 +189,50 @@ class AcpRuntime:
     def reported_adapter_version(self) -> str:
         version = self._agent_info.get("version")
         return version if isinstance(version, str) else "unknown"
+
+    @property
+    def reported_mode(self) -> str | None:
+        """The permission mode the agent last reported; ``None`` when it reports none."""
+        from garuda.runtime.roles import reported_mode
+
+        process = self._process
+        if process is None:
+            return None
+        return reported_mode(getattr(process, "session_config_options", []),
+                             getattr(process, "session_modes", None))
+
+    @property
+    def effective_mode(self) -> dict[str, Any] | None:
+        """The mode this session was confirmed to run in, for the session record."""
+        return dict(self._effective_mode) if self._effective_mode is not None else None
+
+    def confirm_mode(self, required: str | None, *, permission: str) -> dict[str, Any] | None:
+        """Refuse unless the agent now reports a mode no broader than ``required``."""
+        from garuda.runtime.roles import check_mode
+
+        self._effective_mode = check_mode(
+            self._runtime_id, required, self.reported_mode,
+            adapter_version=self.reported_adapter_version, permission=permission,
+            set_by_garuda=self._mode_set)
+        self._mode_checked = True
+        return self.effective_mode
+
+    async def secure_mode(self, permission: str = "smart") -> dict[str, Any] | None:
+        """Select and confirm the mode for a run allowed ``permission`` and no role.
+
+        Run paths with a role set the role's options and call
+        :meth:`confirm_mode` themselves; any other path (SDK conversations, a
+        prompt nobody secured) gets this before its first prompt, so an agent
+        whose own default is broader than the run never acts (#700).
+        """
+        from garuda.runtime.roles import RolePlan, acp_options, harness_mode
+
+        plan = RolePlan(role="", runtime_id=self._runtime_id, kind="acp", permissions=permission)
+        required = harness_mode(plan)
+        if required is not None:
+            version = self.reported_adapter_version
+            await self.set_config_options(acp_options(plan, version), adapter_version=version)
+        return self.confirm_mode(required, permission=permission)
 
     @property
     def state(self) -> LifecycleState:
@@ -595,7 +644,7 @@ class AcpRuntime:
         ``adapter_version`` is the version the options were proven for; the
         agent's ``initialize`` identity must report the same one.
         """
-        from garuda.runtime.roles import RoleRefused, check_offered
+        from garuda.runtime.roles import PROVEN_MODE_OPTION, RoleRefused, check_offered, not_applied
 
         if not options:
             return {}
@@ -606,18 +655,30 @@ class AcpRuntime:
             raise RoleRefused("role.adapter_mismatch",
                               f"the agent reports version {reported!r} at initialize, but "
                               f"{adapter_version!r} was checked before launch")
-        check_offered(options, getattr(self._process, "session_config_options", []))
+        model = options.get("model")
         applied = {}
-        for config_id, value in options.items():
+        # The model first: the other options the agent offers depend on it (#694),
+        # so each one is checked against what the agent reports after the last set.
+        for config_id, value in sorted(options.items(), key=lambda item: item[0] != "model"):
+            check_offered({config_id: value},
+                          getattr(self._process, "session_config_options", []),
+                          model=model, runtime_id=self._runtime_id)
             current = await self._process.session_set_config_option(
                 self._agent_session_id or "", config_id, value
             )
             now = next((o.get("currentValue") for o in current
                         if isinstance(o, dict) and o.get("id") == config_id), None)
             if now != value:
-                raise RoleRefused("role.option_not_applied",
-                                  f"the agent reports {config_id}={now!r} after setting {value!r}")
+                raise not_applied(self._runtime_id, config_id, value, now, model=model)
             applied[config_id] = value
+            if config_id == PROVEN_MODE_OPTION:
+                self._mode_set = True
+        if PROVEN_MODE_OPTION in applied:
+            # A later set (or the agent itself) must not have moved the mode again.
+            now = self.reported_mode
+            if now != applied[PROVEN_MODE_OPTION]:
+                raise not_applied(self._runtime_id, PROVEN_MODE_OPTION,
+                                  applied[PROVEN_MODE_OPTION], now, model=model)
         return applied
 
     def _record_outbound_prompt(self, text: str) -> None:
@@ -640,6 +701,10 @@ class AcpRuntime:
             raise RuntimeNotActiveError(f"prompt needs IDLE, state={self._state.value}")
         if not text:
             raise RuntimeNotActiveError("prompt text must not be empty")
+        if not self._mode_checked:
+            # Nothing secured this session's mode: a run with no role, allowed
+            # at most `smart`, so an agent default broader than that refuses.
+            await self.secure_mode()
         # Open the normalizer turn before RUNNING: if it refuses, the runtime
         # is not left mid-turn with nothing driving it.
         self._normalizer.new_turn()

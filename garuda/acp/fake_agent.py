@@ -20,7 +20,9 @@ numeric version 1, absolute `cwd` plus `mcpServers`, content-block prompts),
 probe-writes (tries the workspace, .git, a SENTINEL= path and scratch;
 reports), artifacts (answers each requested artifact block; reviews approve),
 write-anyway (asks to edit, is refused, writes anyway), config-options (session/new offers model and effort options that
-session/set_config_option changes; replies name them), capabilities-<name>.
+session/set_config_option changes; replies name them; it starts in `--initial-mode`, and
+its `fake-mini` model offers no effort and takes `everything` as `edit`, like a model
+without a harness's broadest mode), capabilities-<name>.
 """
 
 from __future__ import annotations
@@ -161,6 +163,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="Lengthen each `artifacts` block body by this many characters.")
     parser.add_argument("--approval-kind",
                         help="Request this ACP tool kind before producing the reply.")
+    parser.add_argument("--initial-mode", default=None,
+                        help="Report this session mode at session/new (the `config-options` "
+                             "profile's mode before any set, `ask` by default).")
     args = parser.parse_args(argv)
     profile = args.profile
     if profile not in PROFILES:
@@ -170,7 +175,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     sessions = 0
     session_cwd = ""
-    config = {"model": "fake-small", "effort": "medium", "mode": "ask"}
+    config = {"model": "fake-small", "effort": "medium", "mode": args.initial_mode or "ask"}
     try:
         while True:
             request = _read_frame()
@@ -235,7 +240,14 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     session_id = f"fake-s{sessions}"
                 if profile == "config-options":
-                    _result(call_id, {"sessionId": session_id, "configOptions": _options(config)})
+                    _result(call_id, {"sessionId": session_id, "configOptions": _options(config),
+                                      "modes": {"currentModeId": config["mode"],
+                                                "availableModes": [{"id": m, "name": m}
+                                                                   for m in MODES]}})
+                elif args.initial_mode:
+                    _result(call_id, {"sessionId": session_id, "modes": {
+                        "currentModeId": args.initial_mode,
+                        "availableModes": [{"id": args.initial_mode, "name": args.initial_mode}]}})
                 else:
                     _result(call_id, {"sessionId": session_id})
             elif method == "session/set_config_option" and profile == "config-options":
@@ -245,6 +257,8 @@ def main(argv: list[str] | None = None) -> int:
                     _invalid(call_id, f"unknown value {value!r} for {config_id!r}")
                     continue
                 config[config_id] = value
+                if config["model"] == "fake-mini" and config["mode"] == "everything":
+                    config["mode"] = "edit"  # this model has no broadest mode
                 _result(call_id, {"configOptions": _options(config)})
             elif method == "session/load" and profile == "resume":
                 if args.record_mcp:
@@ -256,7 +270,8 @@ def main(argv: list[str] | None = None) -> int:
                     _invalid(call_id, "unknown session")
                     continue
                 session_cwd = str(params.get("cwd", ""))
-                _result(call_id, None)
+                _result(call_id, {"modes": {"currentModeId": args.initial_mode}}
+                        if args.initial_mode else None)
             elif method == "session/prompt":
                 if profile == "strict-v1":
                     prompt = params.get("prompt")
@@ -291,14 +306,21 @@ def main(argv: list[str] | None = None) -> int:
 
 def _options(config: dict) -> list[dict]:
     """The `config-options` profile's session options (the shape #152 captured)."""
-    return [
+    options = [
         {"id": "model", "category": "model", "currentValue": config["model"],
-         "options": [{"value": v, "name": v} for v in ("fake-small", "fake-large")]},
+         "options": [{"value": v, "name": v} for v in ("fake-small", "fake-large", "fake-mini")]},
         {"id": "effort", "category": "thought_level", "currentValue": config["effort"],
          "options": [{"value": v, "name": v} for v in ("low", "medium", "high")]},
         {"id": "mode", "category": "mode", "currentValue": config["mode"],
-         "options": [{"value": v, "name": v} for v in ("ask", "edit", "everything")]},
+         "options": [{"value": v, "name": v} for v in MODES]},
     ]
+    if config["model"] == "fake-mini":
+        del options[1]  # effort depends on the model
+    return options
+
+
+#: The `config-options` modes, narrowest first (tests map them to Garuda permissions).
+MODES = ("ask", "edit", "judge", "everything")
 
 
 def _request_permission(

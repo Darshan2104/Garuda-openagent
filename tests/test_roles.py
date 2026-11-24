@@ -259,7 +259,8 @@ def test_a_model_the_agent_does_not_offer_refuses_before_the_prompt(fake_acp, mo
 
     code, out = _run(monkeypatch, capsys, fake_acp, "--role", "coder")
 
-    assert code == 1 and "role.model_unavailable" in out
+    assert code == 1 and ("role.model_unavailable: fakecfg does not offer model 'fake-huge' "
+                          "this session (offered: fake-small, fake-large, fake-mini)") in out
     assert "done:" not in out  # nothing was prompted
     (meta,) = SessionStore().list_sessions()
     assert meta["status"] == "failed"
@@ -453,6 +454,214 @@ def test_check_offered():
     with pytest.raises(RoleRefused) as caught:
         roles.check_offered({"effort": "high"}, offered)
     assert caught.value.code == "role.option_missing"
+
+
+def test_a_model_the_agent_no_longer_offers_is_the_reported_cause():
+    """#694: the session inherits a retired model that offers no effort; say so."""
+    offered = [{"id": "model", "currentValue": "gpt-6.2-sol",
+                "options": [{"value": v} for v in ("gpt-6-luna", "gpt-5.6-terra")]}]
+    with pytest.raises(RoleRefused) as caught:
+        roles.check_offered({"reasoning_effort": "high", "model": "gpt-6.2-sol"}, offered,
+                            runtime_id="codex")
+    assert str(caught.value) == ("role.model_unavailable: codex does not offer model "
+                                 "'gpt-6.2-sol' this session (offered: gpt-6-luna, gpt-5.6-terra)")
+    with pytest.raises(RoleRefused) as caught:
+        roles.check_offered({"reasoning_effort": "high"}, offered, model="gpt-6-luna")
+    assert str(caught.value) == ("role.option_missing: the agent offers no 'reasoning_effort' "
+                                 "option for model 'gpt-6-luna' this session")
+
+
+def test_a_mode_the_model_does_not_take_names_the_model_and_the_permissions_that_fit():
+    """#694: Haiku on claude-agent-acp 0.85.0 takes `auto` as `acceptEdits`."""
+    refusal = roles.not_applied("claude", "mode", "auto", "acceptEdits", model="haiku")
+    assert refusal.code == "role.option_not_applied"
+    assert str(refusal) == (
+        "role.option_not_applied: the agent reports mode='acceptEdits' after setting 'auto': "
+        "model 'haiku' does not support mode 'auto' on claude; use permissions: smart "
+        "(mode acceptEdits) or another model")
+    offered = [{"id": "mode", "options": [{"value": v} for v in
+                                          ("default", "acceptEdits", "bypassPermissions")]}]
+    with pytest.raises(RoleRefused) as caught:
+        roles.check_offered({"mode": "auto"}, offered, model="haiku", runtime_id="claude")
+    assert caught.value.code == "role.option_unavailable"
+    assert "for model 'haiku'" in str(caught.value)
+    assert str(caught.value).endswith("use permissions: smart (mode acceptEdits) or another model")
+
+
+def test_reported_mode_prefers_the_mode_option_over_the_session_modes():
+    options = [{"id": "mode", "currentValue": "acceptEdits"}]
+    assert roles.reported_mode(options, {"currentModeId": "auto"}) == "acceptEdits"
+    assert roles.reported_mode([], {"currentModeId": "auto"}) == "auto"
+    assert roles.reported_mode([{"id": "model", "currentValue": "x"}], None) is None
+    assert roles.reported_mode([{"id": "mode", "currentValue": None}], {"currentModeId": "auto"}) is None
+
+
+@pytest.mark.parametrize("required, reported, permission, version, refused", [
+    # claude-agent-acp 0.110.1 starts in `auto`: a smart run must not act in it (#700).
+    ("acceptEdits", "auto", "smart", "0.110.1", "cannot set the mode on this adapter version"),
+    ("acceptEdits", "bypassPermissions", "smart", "0.110.1", "needs permissions: yolo"),
+    ("default", "acceptEdits", "readonly", "0.85.0", "needs permissions: smart"),
+    ("acceptEdits", None, "smart", "0.110.1", "reports no permission mode"),
+    ("acceptEdits", "sideways", "smart", "0.110.1", "which Garuda does not know"),
+    ("auto", "bypassPermissions", "yolo", "0.110.1", "needs permissions: yolo"),
+    # An explicit auto role on an unproven adapter runs when the agent reports auto.
+    ("auto", "auto", "auto", "0.110.1", None),
+    ("acceptEdits", "default", "smart", "0.110.1", None),
+    ("acceptEdits", "acceptEdits", "smart", "0.110.1", None),
+])
+def test_check_mode(required, reported, permission, version, refused):
+    def check():
+        return roles.check_mode("claude", required, reported, adapter_version=version,
+                                permission=permission, set_by_garuda=False)
+
+    if refused is None:
+        assert check() == {"mode": reported, "authority": roles.MODE_AUTHORITY["claude"][reported],
+                           "required": required, "source": "agent"}
+        return
+    with pytest.raises(RoleRefused) as caught:
+        check()
+    assert caught.value.code == "role.mode_unenforced"
+    assert refused in str(caught.value)
+
+
+def test_check_mode_needs_mode_knowledge_and_a_required_mode():
+    assert roles.check_mode("fakecfg", "edit", None, adapter_version="1", permission="smart",
+                            set_by_garuda=False) is None
+    assert roles.check_mode("claude", None, None, adapter_version="1", permission="smart",
+                            set_by_garuda=False) is None
+
+
+AUTO_MODES = {**FAKE_MODES, "judge": "auto"}
+
+
+def _mode_shim(fake_acp, initial: str | None, profile: str = "config-options") -> None:
+    """The fake harness starts in `initial` (``None``: reports no mode)."""
+    shim = fake_acp.parent / "bin" / "fake-acp-shim"
+    text = shim.read_text().replace("--profile config-options", f"--profile {profile}")
+    if initial is not None:
+        text = text.replace('"$@"', f'--initial-mode {initial} "$@"')
+    shim.write_text(text)
+
+
+def _known_modes(monkeypatch, *, proven: bool):
+    monkeypatch.setitem(roles.MODE_AUTHORITY, "fakecfg", AUTO_MODES)
+    monkeypatch.setitem(roles.DEFAULT_MODES, "fakecfg", {
+        "readonly": "ask", "smart": "edit", "auto": "judge", "yolo": "judge"})
+    if proven:
+        monkeypatch.setitem(roles.PROVEN_OPTIONS, ("fakecfg", "1"),
+                            {"model_id": "model", "effort": "effort", "harness_mode": "mode"})
+
+
+SELECTIONS = {
+    "role": ("version: 1\nroles: {coder: {harness: fakecfg, permissions: smart}}\n",
+             ("--role", "coder")),
+    "defaults.role": ("version: 1\nroles: {coder: {harness: fakecfg}}\n"
+                      "defaults: {role: coder}\n", ()),
+    "runtime": ("version: 1\n", ("--runtime", "fakecfg")),
+}
+
+
+@pytest.mark.parametrize("selection", sorted(SELECTIONS))
+@pytest.mark.parametrize("initial", ["judge", "everything"])
+def test_an_unproven_adapter_broader_than_the_run_refuses_before_the_prompt(
+        fake_acp, monkeypatch, capsys, selection, initial):
+    """#700: the adapter's own default is broader than smart, and Garuda cannot set one."""
+    _known_modes(monkeypatch, proven=False)
+    _mode_shim(fake_acp, initial)
+    config, extra = SELECTIONS[selection]
+    _user_file(config)
+
+    code, out = _run(monkeypatch, capsys, fake_acp, *extra)
+
+    assert code == 1, out
+    assert f"role.mode_unenforced: fakecfg 1 runs in mode {initial!r}" in out
+    assert "cannot set the mode on this adapter version" in out
+    assert "done:" not in out  # nothing was prompted
+    (meta,) = SessionStore().list_sessions()
+    assert meta["status"] == "failed" and "acp_mode" not in meta
+
+
+@pytest.mark.parametrize("selection", sorted(SELECTIONS))
+def test_a_proven_adapter_sets_the_run_mode_over_a_broader_default(
+        fake_acp, monkeypatch, capsys, selection):
+    _known_modes(monkeypatch, proven=True)
+    _mode_shim(fake_acp, "everything")
+    config, extra = SELECTIONS[selection]
+    _user_file(config)
+
+    code, out = _run(monkeypatch, capsys, fake_acp, *extra)
+
+    assert code == 0, out
+    (meta,) = SessionStore().list_sessions()
+    mode = {"mode": "edit", "authority": "smart", "required": "edit", "source": "garuda"}
+    assert meta["acp_mode"] == mode
+    if selection != "runtime":
+        assert meta["role"]["effective_mode"] == mode
+        assert meta["role"]["acp_options"] == {"mode": "edit"}
+    else:
+        assert meta["acp_options"] == {"mode": "edit"}
+
+
+@pytest.mark.parametrize("permissions, initial, refused", [
+    ("auto", "judge", False),       # the live campaign's explicit auto roles keep running
+    ("auto", "edit", False),        # a narrower default is fine
+    ("auto", "everything", True),   # never broader than auto without a proven set
+    ("yolo", "everything", True),   # an unproven yolo role never bypasses approval
+    ("smart", "ask", False),
+])
+def test_an_unproven_adapter_runs_only_in_a_mode_it_reports_within_the_role(
+        fake_acp, monkeypatch, capsys, permissions, initial, refused):
+    _known_modes(monkeypatch, proven=False)
+    _mode_shim(fake_acp, initial)
+    _user_file(f"version: 1\nroles: {{coder: {{harness: fakecfg, permissions: {permissions}}}}}\n")
+
+    code, out = _run(monkeypatch, capsys, fake_acp, "--role", "coder")
+
+    (meta,) = SessionStore().list_sessions()
+    if refused:
+        assert code == 1 and "role.mode_unenforced" in out and "done:" not in out
+        return
+    assert code == 0, out
+    assert meta["acp_mode"]["mode"] == initial and meta["acp_mode"]["source"] == "agent"
+    assert meta["role"]["effective_mode"] == meta["acp_mode"]
+
+
+def test_an_agent_that_reports_no_mode_refuses_before_the_prompt(fake_acp, monkeypatch, capsys):
+    _known_modes(monkeypatch, proven=False)
+    _mode_shim(fake_acp, None, profile="success")
+    _user_file("version: 1\nroles: {coder: {harness: fakecfg}}\n")
+
+    code, out = _run(monkeypatch, capsys, fake_acp, "--role", "coder")
+
+    assert code == 1 and "role.mode_unenforced: fakecfg 1 reports no permission mode" in out
+    assert "done:" not in out
+
+
+def test_a_mode_the_model_does_not_take_refuses_with_the_model_as_cause(
+        fake_acp, monkeypatch, capsys):
+    """#694: the agent keeps a narrower mode for this model; the refusal says why."""
+    _known_modes(monkeypatch, proven=True)
+    _user_file("version: 1\nroles: {coder: {harness: fakecfg, model_id: fake-mini, "
+               "permissions: yolo, harness_mode: everything}}\n")
+
+    code, out = _run(monkeypatch, capsys, fake_acp, "--role", "coder")
+
+    assert code == 1 and "done:" not in out
+    assert ("role.option_not_applied: the agent reports mode='edit' after setting 'everything': "
+            "model 'fake-mini' does not support mode 'everything' on fakecfg; use permissions: "
+            "smart (mode edit) or another model") in out
+
+
+def test_effort_is_checked_against_the_options_of_the_role_model(fake_acp, monkeypatch, capsys):
+    """#694: effort options depend on the model, so they are checked after it is set."""
+    _prove(monkeypatch)
+    _user_file(ROLE.format(model="fake-mini"))
+
+    code, out = _run(monkeypatch, capsys, fake_acp, "--role", "coder")
+
+    assert code == 1 and "done:" not in out
+    assert ("role.option_missing: the agent offers no 'effort' option for model 'fake-mini' "
+            "this session") in out
 
 
 @pytest.mark.parametrize("shape,inherited", [

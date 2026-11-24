@@ -78,7 +78,7 @@ async def test_smoke_runs_in_fixture_workspace_against_fake(tmp_path):
         "claude",
         argv=[
             sys.executable, str(fake_agent_mod.__file__),
-            "--profile", "success",
+            "--profile", "success", "--initial-mode", "acceptEdits",
         ],
         workspace=workspace,
         timeout=30.0,
