@@ -148,6 +148,13 @@ garuda runtime handoff --session latest --to opencode --confirm
 Add `--workspace` when an older native session recorded a relative workspace
 and you aren't running from that directory.
 
+Only a session the native runtime owns can be handed off. For a session an
+external runtime already owns (a role run on Claude or Codex, or an earlier
+handoff), the preview and `--confirm` both refuse with
+`runtime.handoff_external_source`. Continue it on another runtime with
+`garuda run --resume S --as RUNTIME -t ...`, which starts a linked session from
+its brief.
+
 The confirmed transaction is one-shot:
 
 1. pause the native source;

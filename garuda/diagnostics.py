@@ -53,6 +53,7 @@ REGISTRY: dict[str, str] = {
     "agent.unsupported_version": "Set `version: 1`.",
     "agent.invalid_value": "Fix the value at {path}.",
     "agent.invalid_name": "Use a plain name, or garuda/, user/ or project/<name>.",
+    "agent.not_found": "Check the name with `garuda agent list`, or the path to the definition file.",
     "agent.invalid_budget": "Adjust {path} so the budgets fit.",
     "agent.invalid_yaml": "Simplify the YAML (fewer aliases, less nesting).",
     "agent.required_gate": "Set {path} in your user agents, or pass a flag for one run.",
