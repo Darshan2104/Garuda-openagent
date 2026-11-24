@@ -52,6 +52,9 @@ MAX_STEPS = 32
 MAX_PARALLEL_REVIEWERS = 16
 MAX_RETRIES = 10
 MAX_CONSULTS = 100
+#: Bounds of `harnesses.<id>.handshake_timeout_sec`, the ACP startup deadline.
+MIN_HANDSHAKE_SEC = 5
+MAX_HANDSHAKE_SEC = 600
 PERMISSIONS = ("readonly", "smart", "auto", "yolo")  # most to least restrictive
 EFFORTS = ("minimal", "low", "medium", "high")
 WRITE_POLICIES = ("edits", "no-edits")
@@ -152,7 +155,8 @@ def _confinement(value, path) -> dict:
 
 
 def _harness(value, path) -> dict:
-    data = _mapping(value or {}, path, ("allowed_models", "max_parallel", "confinement"))
+    data = _mapping(value or {}, path, ("allowed_models", "max_parallel", "confinement",
+                                        "handshake_timeout_sec"))
     out: dict[str, Any] = {}
     if "confinement" in data:
         out["confinement"] = _confinement(data["confinement"], f"{path}.confinement")
@@ -160,6 +164,10 @@ def _harness(value, path) -> dict:
         out["allowed_models"] = _strs(data["allowed_models"], f"{path}.allowed_models")
     if "max_parallel" in data:
         out["max_parallel"] = _int(data["max_parallel"], f"{path}.max_parallel", 1, 64)
+    if "handshake_timeout_sec" in data:
+        out["handshake_timeout_sec"] = _int(data["handshake_timeout_sec"],
+                                            f"{path}.handshake_timeout_sec",
+                                            MIN_HANDSHAKE_SEC, MAX_HANDSHAKE_SEC)
     return out
 
 
@@ -548,6 +556,9 @@ def _narrow_harnesses(user: dict, project: dict) -> dict:
             base["max_parallel"] = min(spec["max_parallel"], base.get("max_parallel", 64))
         if "confinement" in spec:
             _fail(f"{path}.confinement", "confinement is user-only",
+                  code="config.project_widening")
+        if "handshake_timeout_sec" in spec:
+            _fail(f"{path}.handshake_timeout_sec", "the ACP startup deadline is user-only",
                   code="config.project_widening")
     return out
 

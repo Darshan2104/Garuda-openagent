@@ -250,7 +250,30 @@ def test_a_slow_start_acp_role_refuses_with_the_deadline(
         fake_acp, tmp_path, monkeypatch, capsys, fallback):
     monkeypatch.setattr("garuda.acp.client.HANDSHAKE_TIMEOUT", 0.5)
     error = _start_refusal(fake_acp, tmp_path, monkeypatch, capsys, fallback, "slow-initialize")
-    assert error.endswith("role coder could not start on fakecfg: initialize exceeded its deadline")
+    # The message names the deadline and how to raise it (#687).
+    assert error.endswith("role coder could not start on fakecfg: initialize exceeded its 0.5s "
+                          f"deadline; raise harnesses.fakecfg.handshake_timeout_sec in {gy.user_path()}")
+
+
+@pytest.mark.parametrize("configured, code", [("", 1), (", handshake_timeout_sec: 30", 0)])
+def test_a_slow_starting_harness_starts_within_its_configured_deadline(
+        fake_acp, tmp_path, monkeypatch, capsys, configured, code):
+    """#687: `harnesses.<id>.handshake_timeout_sec` raises the ACP startup deadline."""
+    _prove(monkeypatch)
+    monkeypatch.setattr("garuda.acp.client.HANDSHAKE_TIMEOUT", 0.5)  # the default, shortened
+    shim = tmp_path / "bin" / "fake-acp-shim"
+    shim.write_text(shim.read_text().replace("#!/bin/sh\n", "#!/bin/sh\nsleep 2\n", 1))
+    _user_file(ROLE.format(model="fake-large")
+               + f"harnesses: {{fakecfg: {{max_parallel: 1{configured}}}}}\n")
+
+    exit_code, out = _run(monkeypatch, capsys, fake_acp, "--role", "coder",
+                          "--workspace-kind", "local")
+
+    assert exit_code == code, out
+    if code:
+        assert "initialize exceeded its 0.5s deadline" in out
+    else:
+        assert "done: hello (model=fake-large, effort=high)" in out
 
 
 def test_a_model_the_agent_does_not_offer_refuses_before_the_prompt(fake_acp, monkeypatch, capsys):
