@@ -286,7 +286,9 @@ def external_trail(directory: Path, meta: dict[str, Any]) -> dict[str, Any] | No
     except OSError:
         return None
     role = meta.get("role") if isinstance(meta.get("role"), dict) else {}
-    approvals = [{"action": str(v.get("action") or "")[:200], "outcome": v.get("outcome")}
+    approvals = [{"action": str(v.get("action") or "")[:200], "outcome": v.get("outcome"),
+                  **({k: v.get(k) for k in ("tool_kind", "reason")}
+                     if v.get("via") == "confined-readonly" else {})}
                  for k, v in sorted(meta.items())
                  if k.startswith("approval:") and isinstance(v, dict)]
     return {

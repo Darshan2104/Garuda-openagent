@@ -155,6 +155,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--artifact-padding", type=int, default=0,
                         help="Lengthen each `artifacts` block body by this many characters.")
+    parser.add_argument("--approval-kind",
+                        help="Request this ACP tool kind before producing the reply.")
     args = parser.parse_args(argv)
     profile = args.profile
     if profile not in PROFILES:
@@ -263,9 +265,10 @@ def main(argv: list[str] | None = None) -> int:
                     continue
                 _handle_prompt(
                     profile, call_id, params,
-                    cwd=session_cwd if (args.report_cwd or profile in ("write-anyway",
-                                                                        "probe-writes")) else None,
+                    cwd=session_cwd if (args.report_cwd or args.approval_kind == "execute"
+                                        or profile in ("write-anyway", "probe-writes")) else None,
                     state_file=args.state_file, artifact_padding=args.artifact_padding,
+                    approval_kind=args.approval_kind,
                 )
             elif method == "session/cancel":
                 pass  # a notification; nothing is in flight outside a prompt
@@ -286,12 +289,66 @@ def _options(config: dict) -> list[dict]:
     ]
 
 
+def _request_permission(
+    session_id: str, title: str, kind: str | None, *, cwd: str | None,
+) -> bool | None:
+    tool_call = {"toolCallId": "c-apr", "title": title}
+    if kind is not None:
+        tool_call["kind"] = kind
+    _update(session_id, {"sessionUpdate": "tool_call", **tool_call,
+                         "kind": "execute" if kind is None else kind, "status": "pending"})
+    _send({
+        "jsonrpc": "2.0",
+        "id": "perm-1",
+        "method": "session/request_permission",
+        "params": {
+            "sessionId": session_id,
+            "toolCall": tool_call,
+            "options": [
+                {"optionId": "allow", "name": "Allow", "kind": "allow_once"},
+                {"optionId": "always", "name": "Always", "kind": "allow_always"},
+                {"optionId": "reject", "name": "Reject", "kind": "reject_once"},
+            ],
+        },
+    })
+    while True:
+        reply = _read_frame()
+        if reply.get("id") == "perm-1" and "method" not in reply:
+            break
+    outcome = (reply.get("result") or {}).get("outcome") or {}
+    if outcome.get("outcome") == "cancelled":
+        return None
+    allowed = outcome.get("optionId") == "allow"
+    result = "approved" if allowed else "denied"
+    if allowed and kind == "execute":
+        import subprocess
+
+        result = subprocess.check_output(["pwd"], cwd=cwd, text=True).strip()
+    _update(session_id, {
+        "sessionUpdate": "tool_call_update", "toolCallId": "c-apr",
+        "status": "completed" if allowed else "failed",
+        "content": [{"type": "content", "content": _text(result)}],
+    })
+    return allowed
+
+
 def _handle_prompt(
     profile: str, call_id: int, params: dict, *, cwd: str | None = None,
     state_file: str | None = None, artifact_padding: int = 0,
+    approval_kind: str | None = None,
 ) -> None:
     session_id = params.get("sessionId", "")
     text = _prompt_text(params.get("prompt"))
+    if profile == "approval" or approval_kind is not None:
+        title = text if profile == "approval" else "pwd"
+        allowed = _request_permission(session_id, title, approval_kind, cwd=cwd)
+        # Like Codex refusing a sandbox escalation, a denial can end the turn.
+        if allowed is None or (not allowed and (profile != "approval" or text.startswith("abort"))):
+            _result(call_id, {"stopReason": "cancelled"})
+            return
+        if profile == "approval":
+            _result(call_id, {"stopReason": "end_turn"})
+            return
     if profile == "malformed-result":
         _result(call_id, {"content": "<thin\x1b[0mking>private protocol thought</thinking>"})
     elif profile == "malformed":
@@ -312,49 +369,6 @@ def _handle_prompt(
         for chunk in ("hel", "lo, ", "world"):
             _update(session_id, {"sessionUpdate": "agent_message_chunk", "content": _text(chunk)})
         _result(call_id, {"stopReason": "end_turn"})
-    elif profile == "approval":
-        _update(
-            session_id,
-            {"sessionUpdate": "tool_call", "toolCallId": "c-apr", "title": text,
-             "kind": "execute", "status": "pending"},
-        )
-        _send(
-            {
-                "jsonrpc": "2.0",
-                "id": "perm-1",
-                "method": "session/request_permission",
-                "params": {
-                    "sessionId": session_id,
-                    "toolCall": {"toolCallId": "c-apr", "title": text},
-                    "options": [
-                        {"optionId": "allow", "name": "Allow", "kind": "allow_once"},
-                        {"optionId": "always", "name": "Always", "kind": "allow_always"},
-                        {"optionId": "reject", "name": "Reject", "kind": "reject_once"},
-                    ],
-                },
-            }
-        )
-        while True:
-            reply = _read_frame()
-            if reply.get("method") == "session/cancel":
-                continue  # the client must still answer the request `cancelled`
-            if reply.get("id") == "perm-1" and "method" not in reply:
-                break
-        outcome = (reply.get("result") or {}).get("outcome") or {}
-        if outcome.get("outcome") == "cancelled":
-            _result(call_id, {"stopReason": "cancelled"})
-            return
-        allowed = outcome.get("optionId") == "allow"
-        _update(
-            session_id,
-            {"sessionUpdate": "tool_call_update", "toolCallId": "c-apr",
-             "status": "completed" if allowed else "failed",
-             "content": [{"type": "content",
-                          "content": _text("approved" if allowed else "denied")}]},
-        )
-        # Like Codex refusing a sandbox escalation: a denial ends the turn.
-        aborted = not allowed and text.startswith("abort")
-        _result(call_id, {"stopReason": "cancelled" if aborted else "end_turn"})
     elif profile == "probe-writes":
         # Tries to write everywhere it should not, and to scratch; reports.
         targets = {"workspace": os.path.join(cwd or os.getcwd(), "planted.txt"),
