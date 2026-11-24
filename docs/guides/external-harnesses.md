@@ -370,7 +370,10 @@ python scripts/capture_usage_sources.py --out tests/fixtures/usage
 
 - Claude Code and Codex manifests check login with the CLI's own status command
   (`claude auth status --json`, `codex login status`); only the conclusion is
-  kept. Other shipped manifests declare no login check, so login shows as
+  kept. A status command that exits non-zero is read only for its documented
+  logged-out answer (`codex login status` prints `Not logged in` and exits 1),
+  so `garuda runtime inspect` shows `unauthenticated`; any other failure
+  stays `unknown`. Other shipped manifests declare no login check, so login shows as
   `unknown`.
 - Adapter subprocesses get a minimal environment: `PATH`, `HOME`, `USER`, and
   `LANG`. `USER` is the account name, not a credential: Claude Code on macOS

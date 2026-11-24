@@ -12,7 +12,10 @@ Click a problem to see the fix.
     bad value) or `config.project_untrusted` (review the project file with
     `garuda config trust`). A login check that timed out, failed or answered
     something unexpected is reported as such, never as "logged out". Only
-    the harnesses your roles use are checked; add `--runtime ID` for another.
+    the harnesses your roles use are checked, including each role's
+    `fallback:` harnesses; add `--runtime ID` for another. A fallback-only
+    harness that is missing or logged out is a warning, not an error: the
+    role can still start, but that fallback can never be taken.
 
     Doctor also validates `~/.agent/settings.yaml` (or `GARUDA_GLOBAL_SETTINGS`)
     with the runtime's loaders and section validators: capacity, routing, models,
