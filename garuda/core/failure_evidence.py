@@ -602,9 +602,11 @@ def _approval_evidence(store, session_id: str) -> tuple[dict[str, Any], dict[str
         return unavailable, unavailable
     counts = {"requests": 0, "decisions": 0, "deliveries": 0, "malformed": 0}
     outcomes: dict[str, int] = {}
+    # Each counted record kind names its counter explicitly: no derived key can miss.
+    kinds = (("request", "requests"), ("decision", "decisions"), ("delivery", "deliveries"))
     for name in names[:MAX_RECORDS]:
-        kind = next((part for part in ("request", "decision", "delivery")
-                     if name.endswith(f".{part}.json")), None)
+        kind, counter = next(((part, key) for part, key in kinds
+                              if name.endswith(f".{part}.json")), (None, None))
         if kind is None:
             continue
         try:
@@ -612,7 +614,7 @@ def _approval_evidence(store, session_id: str) -> tuple[dict[str, Any], dict[str
         except RecordError:
             counts["malformed"] += 1
             continue
-        counts[f"{kind}s"] += 1
+        counts[counter] += 1
         if kind == "decision" and isinstance(record.get("outcome"), str):
             outcome = _safe_scalar(record["outcome"], limit=64) or "unknown"
             outcomes[outcome] = outcomes.get(outcome, 0) + 1

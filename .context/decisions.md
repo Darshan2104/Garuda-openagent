@@ -13,6 +13,45 @@ refusal is a typed `recipe.*` error with exit 2. Library callers of
 or an unfilled placeholder now refuses before the first step. `RecipeError`
 is still a `ValueError`.
 
+## 2026-11-24 — Handoff, flow and agent-check references refuse typed (#698, #699, #670)
+
+`garuda runtime handoff` hands off only natively owned sessions. The preview
+and `--confirm` both refuse an externally owned source up front with
+`runtime.handoff_external_source`. The refusal points to
+`garuda run --resume S --as RUNTIME` and `garuda runtime reclaim`. Recovery's
+ownership checks are unchanged. `flow show` and `flow resume` resolve a flow
+reference like the session commands do (ID, unique prefix, name, or `latest`
+limited to flow sessions). An unknown reference refuses with
+`flow.session_not_found`, a non-flow session with `flow.not_a_flow`. A stopped
+flow's recorded `flow_stop` code, step and message appear in `flow show` and
+in the session flow projection. `garuda agent check` treats a qualified name
+(`garuda/`, `user/`, `project/`) as an agent, as other agent commands do. A
+missing agent or file is `agent.not_found`.
+
+## 2026-11-24 — CLI storage, MCP and approval-id refusals are typed (#677, #672, #678, #704)
+
+`garuda run` reports a strict-storage failure as `storage.unavailable` or
+`storage.corrupt_record` (exit 2) instead of a traceback; storage still fails
+closed and nothing is written. `garuda mcp list` reports a malformed required
+entry as `mcp.config_invalid` (exit 2), the error `garuda run` already gives.
+`garuda approvals answer` refuses an approval id that could leave the session's
+approvals folder as `approval.invalid_id` (exit 2); the channel's id check is
+unchanged. Approval evidence names each record kind's counter explicitly, so a
+delivery record no longer makes `sessions show` or the dashboard session view
+fail.
+
+## 2026-11-24 — Live-log polls and duplicate starts tolerate their writers' windows (#667)
+
+A background-task poll re-snapshots a running capture log when its timestamps
+changed but its size has not grown yet: the kernel updates the timestamps of
+an in-flight append before its size, so that state is not tampering. Growth
+is still the only accepted change, any change once a completion receipt
+exists still fails, and a log that never settles still reports
+`capture_failed`. A launch-intent reader now waits, like a creator, for a
+just-created intent directory to gain its lock, so a duplicate dashboard start
+racing the first request's store creation is not refused with 503. A lock
+that never appears still fails closed.
+
 ## 2026-11-24 — ACP runs fail closed on the harness mode the agent reports (#700, #694)
 
 Every ACP run requires a harness mode, including runs with no role and SDK

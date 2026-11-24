@@ -114,3 +114,19 @@ async def test_mcp_list_no_config(tmp_path: Path, monkeypatch, capsys):
     rc = await run_mcp_list(args)
     assert rc == 0
     assert "No MCP config found" in capsys.readouterr().out
+
+
+async def test_mcp_list_reports_a_malformed_required_entry_as_a_typed_error(
+    tmp_path: Path, monkeypatch, capsys
+):
+    """#672: the inspection command gives the same bounded named refusal as `garuda run`."""
+    monkeypatch.delenv("GARUDA_MCP_MERGE", raising=False)
+    _global(tmp_path, monkeypatch, {"r": {"command": "python3", "env": [1], "required": True}})
+    for no_connect in (True, False):
+        args = SimpleNamespace(workspace=str(tmp_path / "empty"), mcp_config=None,
+                               no_connect=no_connect)
+        assert await run_mcp_list(args) == 2
+        err = capsys.readouterr().err
+        assert err.startswith("Error: mcp.config_invalid: Required MCP server 'r' "
+                              "has malformed configuration")
+        assert "env must be a mapping" in err

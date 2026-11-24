@@ -29,6 +29,8 @@ except ImportError:  # pragma: no cover - POSIX-only storage boundary
 _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _DIRECTORY = getattr(os, "O_DIRECTORY", 0)
 _MAX_BYTES = 64 * 1024
+# How long an opener waits for a just-created store directory to gain its lock.
+LOCK_APPEARANCE_WAIT = 5.0
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 _EPOCH = re.compile(r"[0-9a-f]{32}\Z")
 _REASON = re.compile(r"[a-z][a-z0-9_.-]{0,79}\Z")
@@ -235,15 +237,17 @@ class LaunchIntentStore:
             else:
                 # Another process may have just created the directory but not
                 # yet fsynced its lock. Never recreate a missing lock in an
-                # existing directory: it could fence a different inode.
-                deadline = time.monotonic() + 5.0
+                # existing directory: it could fence a different inode. A
+                # reader waits for it too: a concurrent duplicate request must
+                # not see the creator's window as an unavailable store.
+                deadline = time.monotonic() + LOCK_APPEARANCE_WAIT
                 while True:
                     try:
                         lock_fd = os.open(".lock", os.O_RDWR | os.O_NONBLOCK | _NOFOLLOW,
                                           dir_fd=intents_fd)
                         break
                     except FileNotFoundError:
-                        if not create or time.monotonic() >= deadline:
+                        if time.monotonic() >= deadline:
                             raise StorageUnavailable("launch intent lock is missing") from None
                         time.sleep(0.01)
             lock_info = os.fstat(lock_fd)

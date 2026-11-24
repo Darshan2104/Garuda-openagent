@@ -314,24 +314,48 @@ async def test_lost_terminal_receipt_quarantines_the_parent_without_replay(case)
     assert marker.read_text() == "x"
 
 
+def _recorded_pidfd(path):
+    """A pidfd for the live process whose pid a test script recorded at *path*."""
+    try:
+        pid = int(path.read_text())
+        fd = os.pidfd_open(pid)
+    except (OSError, ValueError):
+        return None
+    try:
+        # The pidfd pins the process; its command line names the record path,
+        # so a reused pid is never signalled.
+        if str(path).encode() in Path(f"/proc/{pid}/cmdline").read_bytes():
+            return fd
+    except OSError:
+        pass
+    os.close(fd)
+    return None
+
+
 @linux
 @pytest.mark.asyncio
 @pytest.mark.parametrize("finish", ["cancel", "timeout", "supervisor-loss"])
 async def test_actual_runner_settles_detached_writer_or_retains_quarantine(case, finish):
     root, store, owner, context = case
     permissions = PermissionEngine(mode="auto")
-    marker, writes = root / "helper", root / "writes"
+    marker, writes, check = root / "helper", root / "writes", root / "check"
+    # The helper outlives the check by design, and a lost supervisor leaves the
+    # check itself running. Both bound their own lifetime and the test reaps
+    # both, so a failed or interrupted run leaks no writer (#686).
     script = f"""
 import os,pathlib,signal,time
+deadline = time.monotonic() + 60
+pathlib.Path({str(check)!r}).write_text(str(os.getpid()))
 if os.fork() == 0:
     os.setsid()
     if os.fork() != 0: os._exit(0)
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
     pathlib.Path({str(marker)!r}).write_text(str(os.getpid()))
-    while True:
+    while time.monotonic() < deadline and os.path.isdir({str(root)!r}):
         with open({str(writes)!r}, 'a') as f: f.write('x')
         time.sleep(.005)
-while True: time.sleep(.01)
+    os._exit(0)
+while time.monotonic() < deadline: time.sleep(.01)
 """
     task = asyncio.create_task(AcceptanceRunner(store).run(
         _request([_python(script)], permissions, timeout=3), context, owner, permissions))
@@ -375,7 +399,9 @@ while True: time.sleep(.01)
         if not task.done():
             task.cancel()
         await asyncio.gather(task, return_exceptions=True)
-        for fd in (helper_fd, supervisor_fd):
+        if helper_fd is None:
+            helper_fd = _recorded_pidfd(marker)
+        for fd in (helper_fd, _recorded_pidfd(check), supervisor_fd):
             if fd is not None:
                 try:
                     signal.pidfd_send_signal(fd, signal.SIGKILL)

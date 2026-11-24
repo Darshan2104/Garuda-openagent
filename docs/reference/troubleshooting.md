@@ -192,6 +192,14 @@ Click a problem to see the fix.
     garuda runtime resume --session latest -t "Continue natively"
     ```
 
+??? question "`runtime handoff` refuses with `runtime.handoff_external_source`"
+
+    Only a session the native runtime owns can be handed off. This one is
+    owned by an external harness (a Claude or Codex role run, or an earlier
+    handoff). Continue it on another runtime from its brief with
+    `garuda run --resume S --as RUNTIME -t "..."`. To take it back natively
+    once the harness has stopped, use `garuda runtime reclaim --session S`.
+
 ??? question "The Approvals page says `stale_request`, `already_answered` or `expired`"
 
     The page answered a request that is no longer the one it showed
@@ -200,6 +208,15 @@ Click a problem to see the fix.
     past its expiry (`expired`; it is denied). "Answer recorded" only means the
     broker has the file: if the permission ceiling changed meanwhile, the broker
     denies it and says why in the session's approval decision.
+
+??? question "A run refuses with `storage.unavailable: session store unavailable`"
+
+    Garuda couldn't create or lock its session store (by default
+    `~/.agent/sessions`, or `GARUDA_SESSIONS_DIR`), usually because the
+    directory isn't writable by you. Nothing was started or written. Make the
+    directory writable and owner-only (`chmod 700`), or point
+    `GARUDA_SESSIONS_DIR` at one that is. `storage.corrupt_record` means a stored
+    record is unreadable, malformed or from a newer Garuda version.
 
 ??? question "A `--bg` session stays `queued`"
 
@@ -289,6 +306,9 @@ Click a problem to see the fix.
     Version 1 definitions are strict, so mistakes are caught before a run. The
     message names the field and a fix. The common ones:
 
+    - `agent.not_found`: no agent with that name, or no file at that path.
+      `garuda agent list` shows the names; `garuda/build` is always the
+      packaged agent.
     - `agent.unknown_field`: a typo such as `limits.max_turn`; `garuda agent
       show garuda/build` lists the real fields.
     - `agent.unsupported_field`: a field that isn't supported yet, such as
@@ -364,11 +384,13 @@ Click a problem to see the fix.
     reviewer saw what the step produced. Run the flow in a git repository, or
     set `independent: false` on the review to accept an unenforced binding.
 
-??? question "`garuda flow show` says no such file"
+??? question "`garuda flow show` says `flow.session_not_found` or `flow.not_a_flow`"
 
-    `flow show` and `flow resume` need the full flow ID that `garuda flow run`
-    prints at the end (`"flow_session": "…"`, for a stopped flow too), not a
-    prefix or a name.
+    `flow show` and `flow resume` take the flow ID that `garuda flow run`
+    prints at the end (`"flow_session": "…"`, for a stopped flow too), a unique
+    prefix of it, or `latest`. Prefixes and `latest` are looked up in the
+    current project; pass `--workspace` from elsewhere. `flow.not_a_flow`
+    means the ID names a session that isn't a flow, such as one flow step.
 
 ??? question "`garuda flow resume` stops with `flow.review_unresolved`"
 
