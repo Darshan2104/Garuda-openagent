@@ -1349,9 +1349,11 @@ def _apply_role(args, resolved, catalog):
         plan = replace(plan, harness_mode=requested_mode)
     from garuda.agents.fallbacks import choose
 
+    workspace_kind = getattr(args, "workspace_kind", "local")
     plan = choose(plan, resolved, catalog, mode=getattr(args, "mode", None),
                   no_edits=getattr(args, "no_edits", False),
-                  ceiling=getattr(args, "permission_mode", None))
+                  ceiling=getattr(args, "permission_mode", None), workspace_kind=workspace_kind)
+    plan.require_workspace_kind(workspace_kind)  # a single, unchained ACP role refuses here
     from garuda.agents import role_agent
 
     # The role's agent, resolved for the harness that will actually run (H.10): its digest joins

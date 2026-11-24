@@ -134,7 +134,9 @@ def _runtime_binding(args):
 
     try:
         return prepare_background_runtime(args)
-    except (RegistryError, GarudaConfigError, RoleRefused, RuntimeSettingsError, ConfinementRefused) as exc:
+    except RoleRefused as exc:
+        raise BackgroundRefused(str(exc)) from exc
+    except (RegistryError, GarudaConfigError, RuntimeSettingsError, ConfinementRefused) as exc:
         raise BackgroundRefused(f"background runtime refused: {exc}") from exc
 
 

@@ -478,8 +478,9 @@ class AcpProcess:
         except (BrokenPipeError, ConnectionResetError) as exc:
             raise AcpExitError(f"agent stdin broken: {exc}", exit_code=None) from exc
 
-    async def initialize(self, *, timeout: float = HANDSHAKE_TIMEOUT) -> dict[str, Any]:
+    async def initialize(self, *, timeout: float | None = None) -> dict[str, Any]:
         """Handshake. A version mismatch fails here, never mid-session."""
+        timeout = HANDSHAKE_TIMEOUT if timeout is None else timeout  # read at call time
         result = await self._call(
             "initialize",
             {
@@ -503,12 +504,13 @@ class AcpProcess:
         cwd: str | None = None,
         mcp_servers: list[dict[str, Any]] | None = None,
         *,
-        timeout: float = HANDSHAKE_TIMEOUT,
+        timeout: float | None = None,
     ) -> str:
         if cwd is None:
             cwd = os.getcwd()
         if not os.path.isabs(cwd):
             raise AcpProtocolError("session/new cwd must be absolute")
+        timeout = HANDSHAKE_TIMEOUT if timeout is None else timeout
         if mcp_servers is not None and any(
             not isinstance(server, dict) for server in mcp_servers
         ):
@@ -526,9 +528,10 @@ class AcpProcess:
         return session_id
 
     async def session_set_config_option(
-        self, session_id: str, config_id: str, value: str, *, timeout: float = HANDSHAKE_TIMEOUT
+        self, session_id: str, config_id: str, value: str, *, timeout: float | None = None
     ) -> list[dict[str, Any]]:
         """Set one session option; returns the agent's options after the change."""
+        timeout = HANDSHAKE_TIMEOUT if timeout is None else timeout
         result = await self._call(
             "session/set_config_option",
             {"sessionId": session_id, "configId": config_id, "value": value},
@@ -543,11 +546,12 @@ class AcpProcess:
         cwd: str,
         mcp_servers: list[dict[str, Any]] | None = None,
         *,
-        timeout: float = HANDSHAKE_TIMEOUT,
+        timeout: float | None = None,
     ) -> None:
         """Reload an agent session this agent persisted (`session/load`)."""
         if not os.path.isabs(cwd):
             raise AcpProtocolError("session/load cwd must be absolute")
+        timeout = HANDSHAKE_TIMEOUT if timeout is None else timeout
         await self._call(
             "session/load",
             {"sessionId": session_id, "cwd": cwd, "mcpServers": list(mcp_servers or [])},

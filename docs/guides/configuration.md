@@ -567,6 +567,14 @@ Roles that omit all three options can use other adapter versions when the run
 requires no mapped readonly mode. The session records the role, the ids set
 and the adapter version.
 
+An ACP role selected through `--role` or `defaults.role` requires
+`--workspace-kind local` (the default). With another workspace kind, its
+ACP harness is not used: a configured `fallback:` entry that is native may
+run, and a role without one refuses with `role.workspace_unsupported` before
+starting. For read-only ACP roles, configure
+[Docker confinement](safety-and-workspaces.md#read-only-external-harnesses-run-in-docker)
+in the user file.
+
 ### A role's harness mode
 
 An external harness has its own permission modes. `harness_mode` picks one for
@@ -661,6 +669,10 @@ something unexpected is not a reason to move on. Once a prompt is sent there
 is no fallback, and trust, configuration or confinement errors refuse rather
 than fall back. The session records which harness was planned, which one ran
 and why; if none can start, the run refuses and lists every reason.
+
+If the selected ACP harness fails during startup, the role run reports
+`role.start_failed` with the startup error. The role's configured
+pre-start chain is its only fallback.
 
 ## Environment variables
 

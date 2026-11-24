@@ -11,6 +11,8 @@ No network, no subscription, no workspace access — argv and files here are the
 only inputs, so the test server is isolated from credentials by construction.
 
 Profiles: success, streaming, approval, diff, malformed, slow, exit-early,
+slow-initialize (never answers initialize within a handshake deadline), logged-out
+(session/new refuses: the harness has no login),
 resume (stable ids via --state-file; declares loadSession, answers session/load
 for its stored id and counts prompts across processes), version-mismatch, odd-stop (a stop
 reason outside v1), cancel-stop (the agent ends the turn `cancelled`), strict-v1 (rejects any request that is not v1-shaped:
@@ -58,6 +60,8 @@ BASE_PROFILES = frozenset(
         "diff",
         "malformed",
         "slow",
+        "slow-initialize",
+        "logged-out",
         "exit-early",
         "resume",
         "version-mismatch",
@@ -174,6 +178,10 @@ def main(argv: list[str] | None = None) -> int:
             call_id = request.get("id")
             params = request.get("params", {})
             if method == "initialize":
+                if profile == "slow-initialize":
+                    import time
+
+                    time.sleep(60)  # a start past any handshake deadline (the caller retires it)
                 if profile == "version-mismatch" or (
                     profile == "strict-v1"
                     and (
@@ -201,6 +209,10 @@ def main(argv: list[str] | None = None) -> int:
                             hello["quota"] = quota
                     _result(call_id, hello)
             elif method == "session/new":
+                if profile == "logged-out":
+                    _send({"jsonrpc": "2.0", "id": call_id, "error": {
+                        "code": -32000, "message": "login required: sign in to the harness first"}})
+                    continue
                 if args.record_mcp:
                     with open(args.record_mcp, "a", encoding="utf-8") as handle:
                         handle.write(json.dumps({"method": method,

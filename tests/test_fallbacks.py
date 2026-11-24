@@ -166,3 +166,22 @@ def test_native_alias_models_obey_canonical_allowlist_before_any_probe(
     else:
         chosen = choose(plan_role(resolved, catalog), resolved, catalog)
         assert chosen.runtime_id == "native" and chosen.model_id == model
+
+
+def test_a_nonlocal_workspace_skips_acp_and_keeps_a_native_chain_entry(harnesses):
+    plan, resolved, catalog = _plan("fakea", ["native"], harnesses)
+
+    chosen = choose(plan, resolved, catalog, workspace_kind="docker")
+
+    assert chosen.runtime_id == "native"
+    assert chosen.fallback["skipped"] == [{
+        "harness": "fakea", "model_id": plan.model_id, "reason": "role.workspace_unsupported"}]
+
+
+def test_a_nonlocal_workspace_with_only_acp_candidates_refuses_with_the_cause(harnesses):
+    plan, resolved, catalog = _plan("fakea", ["fakeb"], harnesses)
+    with pytest.raises(RoleRefused) as caught:
+        choose(plan, resolved, catalog, workspace_kind="docker")
+    assert caught.value.code == "harness.no_candidate"
+    assert "fakea (role.workspace_unsupported)" in str(caught.value)
+    assert "fakeb (role.workspace_unsupported)" in str(caught.value)

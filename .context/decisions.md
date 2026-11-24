@@ -9,6 +9,15 @@ missing kinds, and records each kind, outcome and reason. The read-only
 workspace bind mount is the boundary. The harness retains its selected mode,
 and host readonly approval remains deny-all.
 
+## 2026-11-23 — ACP role runs preserve their runtime authority (#668)
+
+An ACP role selected for a standalone CLI run requires the local workspace
+kind. Enforce this before dispatch because Garuda workspace flags cannot
+confine an external harness. The role's pre-start chain may still supply a
+native entry for a non-local workspace kind; with no such entry the run refuses.
+An ACP startup failure ends the role run on the selected harness and surfaces
+the startup error. The role's configured pre-start chain is its only fallback.
+
 ## 2026-11-22 — Codex ACP 2.9.0 role options (#662)
 
 The no-prompt capability capture proves model, effort and harness mode

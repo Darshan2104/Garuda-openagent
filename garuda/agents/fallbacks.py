@@ -87,13 +87,22 @@ def candidates(plan: RolePlan, resolved, catalog) -> tuple[RolePlan, ...]:
 
 
 def choose(plan: RolePlan, resolved, catalog, *, login_run=None, limit_check=None,
-           mode=None, no_edits=False, ceiling=None) -> RolePlan:
-    """The plan to start, with the fallback decision recorded on it."""
+           mode=None, no_edits=False, ceiling=None, workspace_kind="local") -> RolePlan:
+    """The plan to start, with the fallback decision recorded on it.
+
+    An ACP candidate cannot run in a non-local workspace kind (Garuda's
+    workspace flags do not confine an external harness), so it is skipped with
+    a recorded reason and the role's own chain may still supply a native one.
+    """
     choices = candidates(plan, resolved, catalog)
     if len(choices) == 1:
         return plan
     skipped = []
     for index, candidate in enumerate(choices):
+        if candidate.kind == "acp" and workspace_kind != "local":
+            skipped.append({"harness": candidate.runtime_id, "model_id": candidate.model_id,
+                            "reason": "role.workspace_unsupported"})
+            continue
         confined = candidate.kind == "acp" and acp_permission(
             candidate, mode=mode, no_edits=no_edits, ceiling=ceiling) == "readonly"
         reason = None if confined else _skip_reason(

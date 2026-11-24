@@ -82,10 +82,12 @@ sequenceDiagram
   Garuda->>H: retire the process
 ```
 
-Unknown, disabled, or missing runtimes are refused. For an editable task, if an installed harness
-fails to start and the workspace is unchanged, Garuda moves the session once
-to `fallback_runtime` (native by default) and records the reason in the
-session.
+Unknown, disabled, or missing runtimes are refused. For runs without a role,
+if an installed harness fails to start and the workspace is unchanged, Garuda
+moves the session once to `fallback_runtime` (native by default) and records
+the reason. Role runs use their [configured pre-start fallback
+chain](configuration.md#fallbacks). A startup failure in the chosen harness
+ends the role run with the startup error.
 
 ### Read-only ACP runs
 
