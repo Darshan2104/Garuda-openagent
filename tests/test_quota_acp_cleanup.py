@@ -70,6 +70,10 @@ while not ready_path.exists():
 def send(value):
     print(json.dumps(value), flush=True)
 
+# Like codex-acp 2.1.1, which starts in `agent`; Garuda sets the run's mode.
+options = [{"id": "mode", "currentValue": "agent", "options": [
+    {"value": v} for v in ("read-only", "workspace-write", "agent", "agent-full-access")]}]
+
 for line in sys.stdin:
     request = json.loads(line)
     method = request.get("method")
@@ -77,6 +81,7 @@ for line in sys.stdin:
     if method == "initialize":
         send({"jsonrpc": "2.0", "id": call_id, "result": {
             "protocolVersion": 1,
+            "agentInfo": {"name": "codex-acp", "version": "2.1.1"},
             "agentCapabilities": {
                 "families": ["edit", "terminal", "mcp", "approval"],
                 "mediated": ["edit", "terminal", "mcp", "approval"],
@@ -84,7 +89,11 @@ for line in sys.stdin:
             },
         }})
     elif method == "session/new":
-        send({"jsonrpc": "2.0", "id": call_id, "result": {"sessionId": "quota-s1"}})
+        send({"jsonrpc": "2.0", "id": call_id, "result": {"sessionId": "quota-s1",
+                                                          "configOptions": options}})
+    elif method == "session/set_config_option":
+        options[0]["currentValue"] = request["params"]["value"]
+        send({"jsonrpc": "2.0", "id": call_id, "result": {"configOptions": options}})
     elif method == "session/prompt":
         send({"jsonrpc": "2.0", "id": call_id, "error": {
             "code": 429, "message": "usage limit reached; reset is pending"

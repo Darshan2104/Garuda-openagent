@@ -233,13 +233,19 @@ def _vendor_entries() -> list[AdapterEntry]:
             builtin_manifest_dicts(), source="contract matrix"
         )
     }
+    from garuda.runtime.roles import DEFAULT_MODES
+
     entries = []
     for runtime_id, manifest in sorted(manifests.items()):
-        def _make(scratch: Path, _m=manifest) -> Any:
+        # The stand-in reports the mode a run with no role requires, as the
+        # vendor's adapter would once Garuda set it.
+        mode = DEFAULT_MODES.get(runtime_id, {}).get("smart")
+        def _make(scratch: Path, _m=manifest, _mode=mode) -> Any:
             return adapter_for_manifest(
                 _m,
                 argv_override=[
                     sys.executable, "-m", "garuda.acp.fake_agent", "--profile", "success",
+                    *(("--initial-mode", _mode) if _mode else ()),
                 ],
             )
 

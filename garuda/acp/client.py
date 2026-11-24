@@ -159,6 +159,10 @@ class AcpProcess:
         self._close_task: asyncio.Task[None] | None = None
         self._process_group: int | None = None
         self._leader_identity: str | None = None
+        #: The session options and modes the agent last reported (session/new,
+        #: session/load, and each session/set_config_option reply).
+        self.session_config_options: list[dict[str, Any]] = []
+        self.session_modes: dict[str, Any] | None = None
 
     @property
     def pid(self) -> int | None:
@@ -528,9 +532,17 @@ class AcpProcess:
         session_id = result.get("sessionId") if isinstance(result, dict) else None
         if not session_id:
             raise AcpProtocolError("session/new returned no sessionId")
-        options = result.get("configOptions") if isinstance(result, dict) else None
-        self.session_config_options = list(options) if isinstance(options, list) else []
+        self._remember_session_state(result, replace=True)
         return session_id
+
+    def _remember_session_state(self, result: object, *, replace: bool) -> None:
+        """Keep the options and modes an agent reports; ``replace`` drops what is not reported."""
+        result = result if isinstance(result, dict) else {}
+        options, modes = result.get("configOptions"), result.get("modes")
+        if isinstance(options, list) or replace:
+            self.session_config_options = list(options) if isinstance(options, list) else []
+        if isinstance(modes, dict) or replace:
+            self.session_modes = dict(modes) if isinstance(modes, dict) else None
 
     async def session_set_config_option(
         self, session_id: str, config_id: str, value: str, *, timeout: float | None = None
@@ -543,6 +555,8 @@ class AcpProcess:
             timeout=timeout,
         )
         options = result.get("configOptions") if isinstance(result, dict) else None
+        if isinstance(options, list) and options:
+            self.session_config_options = list(options)
         return list(options) if isinstance(options, list) else []
 
     async def session_load(
@@ -557,11 +571,12 @@ class AcpProcess:
         if not os.path.isabs(cwd):
             raise AcpProtocolError("session/load cwd must be absolute")
         timeout = HANDSHAKE_TIMEOUT if timeout is None else timeout
-        await self._call(
+        result = await self._call(
             "session/load",
             {"sessionId": session_id, "cwd": cwd, "mcpServers": list(mcp_servers or [])},
             timeout=timeout,
         )
+        self._remember_session_state(result, replace=True)
 
     async def session_prompt(
         self,
