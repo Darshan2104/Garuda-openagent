@@ -19,6 +19,7 @@ import signal
 import stat
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -331,6 +332,66 @@ def test_run_runtime_acp_holds_native_run_invariants(tmp_path, monkeypatch, caps
     assert LeaseStore().holders_of(ws) == []
     report = recover(store, session_id)
     assert report.state.value == "external"
+
+
+def test_run_runtime_acp_enforces_the_deadline(tmp_path, monkeypatch, capsys):
+    """#701: --deadline-sec on an ACP run cancels the turn, reaps the agent,
+    and settles the session failed with the deadline as its typed cause."""
+    from garuda.workspace.lease import LeaseStore
+
+    ws = _git_workspace(tmp_path)
+    _on_path(monkeypatch, tmp_path / "bin")
+    _install_shim(tmp_path / "bin", profile="slow")  # the turn sleeps 60 s
+    _trusted_settings(tmp_path, monkeypatch)
+
+    started = time.monotonic()
+    with _hard_deadline(50):
+        code, out = _main(
+            monkeypatch, capsys, "run", "-t", "take your time", "--workspace", str(ws),
+            "--runtime", "fakeacp", "--deadline-sec", "2",
+        )
+    assert time.monotonic() - started < 40
+    assert code == 1, out
+    assert "exceeded --deadline-sec 2" in out
+    (meta,) = SessionStore().list_sessions()
+    assert meta["status"] == "failed" and meta["state"]["outcome"] == "failed"
+    assert (meta["stop_reason"], meta["error_code"]) == ("deadline", "run.deadline_exceeded")
+    assert meta["limits"] == {"deadline_sec": 2.0}
+    (child,) = meta["runtime_children"]
+    assert child["state"] == "exited" and _pid_gone(child["pid"])
+    assert LeaseStore().holders_of(ws) == []
+
+
+def test_run_runtime_acp_records_a_deadline_it_met(tmp_path, monkeypatch, capsys):
+    ws = _git_workspace(tmp_path)
+    _on_path(monkeypatch, tmp_path / "bin")
+    _install_shim(tmp_path / "bin")
+    _trusted_settings(tmp_path, monkeypatch)
+
+    code, out = _main(monkeypatch, capsys, "run", "-t", "quick", "--workspace", str(ws),
+                      "--runtime", "fakeacp", "--deadline-sec", "60")
+    assert code == 0, out
+    (meta,) = SessionStore().list_sessions()
+    assert meta["status"] == "completed" and meta["limits"] == {"deadline_sec": 60.0}
+    assert "stop_reason" not in meta
+
+
+@pytest.mark.parametrize("flags", [["--max-turns", "1"], ["--deadline-sec", "0"],
+                                   ["--deadline-sec", "nan"], ["--deadline-sec", "-5"]])
+def test_run_runtime_acp_refuses_limits_it_cannot_enforce(tmp_path, monkeypatch, capsys, flags):
+    """#701: an ACP run refuses --max-turns and an invalid deadline up front."""
+    ws = _git_workspace(tmp_path)
+    marker = tmp_path / "launched.txt"
+    _on_path(monkeypatch, tmp_path / "bin")
+    _install_shim(tmp_path / "bin", marker=marker)
+    _trusted_settings(tmp_path, monkeypatch)
+
+    code, out = _main(monkeypatch, capsys, "run", "-t", "must not run", "--workspace", str(ws),
+                      "--runtime", "fakeacp", *flags)
+    assert code == 2, out
+    assert flags[0] in out
+    assert not marker.exists()
+    assert SessionStore().list_sessions() == []
 
 
 def test_run_runtime_acp_refuses_a_foreign_mutating_lease(tmp_path, monkeypatch, capsys):

@@ -98,7 +98,10 @@ class SoftwareAgent:
         Pass ``resume`` (a saved session id, unique prefix, or ``"latest"``) to
         seed the run with a prior session's conversation. ``"latest"`` is this
         workspace's newest session unless ``resume_all_projects`` is true. Non-native runtimes
-        execute one ACP turn per run through the selected harness.
+        execute one ACP turn per run through the selected harness; registered
+        tools cannot reach a harness, so such a run refuses them with
+        ``ToolsUnsupportedOnRuntime`` before it starts. An ACP result's
+        ``success`` means the harness ended its turn, not that Garuda verified it.
         ``fork`` with ``fork_at`` starts a native context-only fork through an
         inclusive zero-based saved message index; files/processes are not restored.
 
@@ -123,6 +126,9 @@ class SoftwareAgent:
         if fork is not None and self.runtime_name != "native":
             raise ValueError("context fork requires the native runtime")
         if self.runtime_name != "native":
+            from garuda.sdk.errors import refuse_unservable_tools
+
+            refuse_unservable_tools(self.runtime_name, self._extra_tools, self._load_project_tools)
             return await self._run_acp(task)
         from garuda.config.agent_home import resolve_agents_dirs
 
@@ -202,11 +208,13 @@ class SoftwareAgent:
             if "disabled by user configuration" in str(exc):
                 raise RegistryError(str(exc)) from exc
             raise
+        # The harness ran, not the SDK's native model or agent: record the
+        # runtime the way the CLI does (#702).
         store.begin(
             events.session_id,
             task=task,
-            model=self.model_name,
-            agent=self.agent_name,
+            model=f"acp:{adapter.runtime_id}",
+            agent=adapter.runtime_id,
             workspace=self.workspace,
         )
         store.ensure_unified(events.session_id)
@@ -219,12 +227,21 @@ class SoftwareAgent:
                 )
             except Exception:
                 pass
-        await adapter.start(task=task, session_id=events.session_id)
         try:
-            turn = await adapter.prompt(task)
-            trail, _ = await adapter.poll_events(0)
-        finally:
-            await adapter.close()
+            await adapter.start(task=task, session_id=events.session_id)
+            try:
+                turn = await adapter.prompt(task)
+                trail, _ = await adapter.poll_events(0)
+            finally:
+                await adapter.close()
+        except BaseException as exc:
+            _settle_unfinished(store, events.session_id, exc)
+            raise
+        from garuda.observability.usage import record_turn_acp_usage
+
+        record_turn_acp_usage(store, events.session_id, trail, runtime_id=adapter.runtime_id,
+                              adapter_version=adapter.reported_adapter_version,
+                              segment=adapter.native_session_id or events.session_id)
         texts = [
             e.payload.get("chunk", "") or e.payload.get("text", "")
             for e in trail
@@ -264,3 +281,22 @@ class SoftwareAgent:
             extra_tools=self._extra_tools,
             load_project_tools=self._load_project_tools,
         )
+
+
+def _settle_unfinished(store, session_id: str, exc: BaseException) -> None:
+    """Record an ACP run that ended without a result; never masks ``exc``."""
+    import asyncio
+    import logging
+    from datetime import datetime, timezone
+
+    from garuda.runtime.session_state import interrupted
+
+    cancelled = isinstance(exc, asyncio.CancelledError)
+    try:
+        store.update_meta(session_id, {
+            "status": "cancelled" if cancelled else "failed",
+            "state": interrupted(cancelled=cancelled), "verified": False,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        })
+    except Exception:
+        logging.getLogger(__name__).warning("Failed to record the ACP run's end", exc_info=True)

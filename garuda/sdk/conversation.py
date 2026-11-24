@@ -137,6 +137,9 @@ class Conversation:
         if on_delta is not None and self._runtime_name != "native":
             raise ValueError("live deltas are only available for the native runtime")
         if self._runtime_name != "native":
+            from garuda.sdk.errors import refuse_unservable_tools
+
+            refuse_unservable_tools(self._runtime_name, self._extra_tools, self._load_project_tools)
             return await self._run_acp(task)
         if self._native_close is not None and not self._native_close.done():
             raise RuntimeError("The native conversation is closing")
@@ -307,11 +310,13 @@ class Conversation:
                 store=store,
                 persist_dir=str(store.session_dir(events.session_id)),
             )
+            # The harness ran, not the SDK's native model or agent: record the
+            # runtime the way the CLI does (#702).
             store.begin(
                 events.session_id,
                 task=task,
-                model=self._model_name,
-                agent=getattr(self._agent_name, 'name', self._agent_name),
+                model=f"acp:{adapter.runtime_id}",
+                agent=adapter.runtime_id,
                 workspace=self._workspace,
             )
             self._acp = adapter
@@ -354,6 +359,12 @@ class Conversation:
         events, _ = await self._acp.poll_events(len(self._acp_trail))
         self._acp_trail.extend(events)
         assert self._store is not None and self._sdk_session_id is not None
+        from garuda.observability.usage import record_turn_acp_usage
+
+        record_turn_acp_usage(self._store, self._sdk_session_id, events,
+                              runtime_id=self._acp.runtime_id,
+                              adapter_version=getattr(self._acp, "reported_adapter_version", "unknown"),
+                              segment=self._acp.native_session_id or self._sdk_session_id)
         texts = [
             e.payload.get("chunk", "") or e.payload.get("text", "")
             for e in events
