@@ -146,6 +146,8 @@ def test_child_environment_is_shared_without_ambient_codex_home(monkeypatch):
     monkeypatch.setenv("USER", "operator")
     monkeypatch.setenv("LANG", "operator-locale")
     monkeypatch.setenv("CODEX_HOME", "/vendor/oauth-and-config")
+    # Any earlier ownership in this process stamps a lineage token (#676).
+    monkeypatch.delenv("GARUDA_OWNER_LINEAGE", raising=False)
 
     assert child_environment({"CODEX_PATH": "/opt/codex"}) == {
         "PATH": "/operator/bin",

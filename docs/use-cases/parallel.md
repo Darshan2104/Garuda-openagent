@@ -110,6 +110,9 @@ garuda sessions show docstrings --json | jq '.ownership | {owner, waiting: .prog
   `owner_scheduled` (quota recovery owns it), `blocked`, `unknown` or
   `eligible`. Only `eligible` names a repair path — `garuda runtime recover
   --session ID` — and that command checks every prerequisite again itself.
+  When the path lists `releases`, the session's dead owner still holds that
+  workspace lease or capacity slot (flow-step slots included), and recovery
+  releases it after it proves that no process the owner started survives.
   When quota recovery owns the session (`owner_scheduled`, or `blocked` on a
   quota-recovery state) the path is `garuda recovery status`, which only reports.
 - Inspection starts, stops and repairs nothing, and the dashboard's session

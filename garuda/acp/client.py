@@ -72,6 +72,11 @@ def child_environment(extra_env: dict[str, str] | None = None) -> dict[str, str]
         "USER": os.environ.get("USER", ""),
         "LANG": "C.UTF-8",
     }
+    # The owner's lineage token lets recovery prove no ACP descendant
+    # outlived a dead owner before reclaiming its lease (#676). Not a secret.
+    from garuda.runtime.ownership import LINEAGE_ENV
+
+    env[LINEAGE_ENV] = os.environ.get(LINEAGE_ENV, "")
     env.update(extra_env or {})
     return {key: value for key, value in env.items() if value}
 

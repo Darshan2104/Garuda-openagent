@@ -5,8 +5,10 @@ freely. A lease is a small JSON document in the agent-home leases dir (never
 in the workspace itself), published atomically and refreshed by heartbeat.
 A heartbeat TTL marks a lease expired but cannot prove descendant cleanup.
 Ordinary holders remain recorded even after parent death; only explicit
-issuing-owner release removes them. User files are never removed to resolve
-a conflict. A corrupt lease
+issuing-owner release removes them, or an explicit reclaim once the owner is
+proved dead with no surviving descendants and the holder was not quarantined
+(``LeaseStore.reclaim_dead``, run by ``garuda runtime recover``; #676). User
+files are never removed to resolve a conflict. A corrupt lease
 file fails closed: acquisition is refused until a human clears it.
 
 Parallel worktrees are separate workspaces by real path: `workspace_key`
@@ -74,6 +76,9 @@ class Lease:
     identity: str = ""
     pgid: int = 0
     epoch: str = ""
+    # Set by the live owner when it quarantines (retains ownership on purpose
+    # because cleanup or a recorded phase is unreconciled). Never reclaimed.
+    quarantined: bool = False
 
     def is_stale(self, now: float | None = None) -> bool:
         return (now if now is not None else time.time()) - self.heartbeat_at > self.ttl_sec
@@ -91,6 +96,7 @@ class Lease:
             "identity": self.identity,
             "pgid": self.pgid,
             "epoch": self.epoch,
+            "quarantined": self.quarantined,
         }
 
     @classmethod
@@ -116,6 +122,7 @@ class Lease:
                 identity=str(data.get("identity", "")),
                 pgid=int(data.get("pgid", 0)),
                 epoch=str(data.get("epoch", "")),
+                quarantined=data.get("quarantined", False) is not False,
             )
         except (TypeError, ValueError) as exc:
             raise LeaseError(f"lease has malformed times/pid: {exc}") from exc
@@ -254,7 +261,11 @@ class LeaseStore:
                 state = self._owner_state(holder)
                 if holder.mode == "mutating" and mode == "mutating":
                     reason = (
-                        "its parent is dead but descendant cleanup is not proved"
+                        "its parent is dead but descendant cleanup is not proved; "
+                        f"`garuda runtime recover --session {holder.session_id}` checks "
+                        "its descendants and releases it"
+                        if state is False and not holder.quarantined else
+                        "it was quarantined by its owner and is never released automatically"
                         if state is False else
                         "its owner is still running past the lease TTL"
                         if state is True else
@@ -269,8 +280,11 @@ class LeaseStore:
                 kept.append(holder)
             if mode == "mutating" and any(h.mode == "mutating" for h in kept):
                 holder = next(h for h in kept if h.mode == "mutating")
+                hint = ("; its owner is dead: `garuda runtime recover --session "
+                        f"{holder.session_id}` checks its descendants and releases it"
+                        if not holder.quarantined and self._owner_state(holder) is False else "")
                 raise LeaseConflictError(
-                    f"workspace {key} is mutably held by session {holder.session_id}",
+                    f"workspace {key} is mutably held by session {holder.session_id}{hint}",
                     holder=holder.to_dict(),
                 )
             lease = Lease(
@@ -378,6 +392,7 @@ class LeaseStore:
                 identity=current.identity,
                 pgid=current.pgid,
                 epoch=current.epoch,
+                quarantined=current.quarantined,
             )
             self._publish_all(
                 path, [h if h.session_id != session_id else refreshed for h in holders]
@@ -404,6 +419,52 @@ class LeaseStore:
                 return
             self._publish_all(path, [h for h in holders if h.session_id != session_id])
             self._issued.pop((key, session_id), None)
+
+    def quarantine(
+        self, workspace: str | Path, session_id: str, *, epoch: str | None = None
+    ) -> None:
+        """Mark this instance's issued holder quarantined so no reclaim takes it."""
+        key = workspace_key(workspace)
+        path = self._path_for(key)
+        with self._locked():
+            holders = self._read_all(path)
+            current = self._own_entry(holders, session_id, epoch, key)
+            if current is None or current.quarantined:
+                return
+            marked = Lease(**{**current.to_dict(), "quarantined": True})
+            self._publish_all(path, [marked if h is current else h for h in holders])
+            self._issued[(key, session_id)] = Lease(
+                **{**self._issued[(key, session_id)].to_dict(), "quarantined": True})
+
+    def reclaim_dead(self, holder: Lease) -> bool:
+        """Remove ``holder`` only while its owner is proved dead (#676).
+
+        Re-reads the record under the lock: the exact holder (same session,
+        owner identity and epoch) must still be there, not quarantined, its
+        owner confirmed dead and no live process may carry the owner's lineage
+        token (``ownership.reclaim_refusal``). Returns False when the holder is
+        already gone; raises ``LeaseConflictError`` when reclaim is not proved.
+        """
+        from garuda.runtime.ownership import reclaim_refusal
+
+        key = workspace_key(holder.workspace)
+        path = self._path_for(key)
+        with self._locked():
+            holders = self._read_all(path)
+            current = next((h for h in holders if h.session_id == holder.session_id
+                            and h.epoch == holder.epoch and h.pid == holder.pid
+                            and h.identity == holder.identity), None)
+            if current is None:
+                return False
+            refusal = reclaim_refusal(
+                {"pid": current.pid, "identity": current.identity, "pgid": current.pgid},
+                quarantined=current.quarantined, liveness=self._liveness)
+            if refusal is not None:
+                raise LeaseConflictError(
+                    f"workspace {key}: lease of session {current.session_id} cannot be "
+                    f"reclaimed: {refusal}", holder=current.to_dict())
+            self._publish_all(path, [h for h in holders if h is not current])
+            return True
 
     def holders_of(self, workspace: str | Path) -> list[Lease]:
         """Inspect current holders, if any. Never mutates."""

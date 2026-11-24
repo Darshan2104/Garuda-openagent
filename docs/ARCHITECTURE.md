@@ -1357,19 +1357,37 @@ verification independently.
   `ownership` field of `garuda sessions show --json` and `/api/sessions/<id>`.
   It takes no lock, writes nothing, probes no further process and never calls
   recovery. An unreadable lease, queue or capacity record makes reconciliation
-  `unknown`; a retained lease, quarantined or retained queue claim, or quota
-  `blocked`/`uncertain` state makes it `blocked`. Only a dead owner with none of
-  those is `eligible`, and then it names the existing `garuda runtime recover`
-  path, which re-proves every prerequisite. Retained capacity slots are listed
-  because nothing releases them automatically. Children are reported as recorded
+  `unknown`; a lease retained by a live, unknown or quarantining owner, a
+  quarantined or retained queue claim, or quota `blocked`/`uncertain` state
+  makes it `blocked`. Only a dead owner with none of those is `eligible`, and
+  then it names the existing `garuda runtime recover` path, which re-proves every
+  prerequisite. A lease or ordinary capacity slot (flow-step slots
+  `<flow>:<step>:<attempt>` included) still held by the session's own dead,
+  unquarantined owner is listed under `path.releases`. Children are reported as recorded
   with an unknown process, and progress recorded after owner death never makes
   the owner alive.
 - **Quarantine retains ownership through teardown.** The shared run guard
   stops renewal but retains its workspace lease and runtime reservation. Later
   release/finalizer calls cannot undo quarantine. A borrowed flow step also
   quarantines its parent and retains its own slot; revocation gives no cleanup
-  authority. Ordinary reaped completion still releases normally. Persisted
-  descendant supervision and recovery receipts remain separate work.
+  authority. Ordinary reaped completion still releases normally. Quarantine is
+  recorded on the lease and the ordinary slot (`quarantined: true`), so it
+  survives the owner's exit.
+- **A dead owner's ownership is reclaimed only on proof (#676, #703).** An
+  owner stamps a lineage token (a hash of its pid and start identity) into
+  `GARUDA_OWNER_LINEAGE` when it takes ownership. Every child launched from its
+  environment inherits the token, and ACP's minimal child environment passes it
+  on explicitly. `garuda runtime recover` (`recover(release_dead_owner=True)`)
+  refuses while any lease owner is alive, unknown or quarantining. It then
+  reaps the recorded children of the session and of its flow-step sessions.
+  `LeaseStore.reclaim_dead` and `CapacityStore.reclaim_dead` remove a holder
+  only under their lock and only when four things hold: the record is
+  unchanged, the owner is confirmed dead by identity (and the group it led is
+  empty), the holder is not quarantined, and no same-user process in `/proc`
+  carries the token. Queue and loan slots stay with their coordinators.
+  Without `/proc` the scan cannot run, so recovery refuses. A child that
+  scrubbed its environment is outside the scan. Plain `recover()` (resume
+  paths) still refuses on any retained lease, and acquisition never reclaims.
 - **Queue ids bind admitted work.** Enqueue retries match the exact scope,
   user, harness, session and configuration digest of a waiting entry or claim.
   Exact retries preserve the durable sequence; conflicts refuse under the
