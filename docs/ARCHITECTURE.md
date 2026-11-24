@@ -275,6 +275,9 @@ fastest way to learn the system.
    `AgentConfig`, applies the mode preset, builds the toolkit and the permission
    engine, and resolves the reasoning and optional collection clients. New wiring
    belongs here, not in each entry point.
+   ACP role planning uses `agents/role_agent.py::bind` for definitions from the
+   role or an explicit CLI selection. Queue admission also uses this binding
+   and checks the admitted definition digest again before execution.
 3. **Environment** — `workspace/factory.py` picks local, Docker, remote, or tmux.
    Everything the agent runs goes through the `Environment` protocol
    (`workspace/protocol.py`), which is what makes the same loop work in a
@@ -1379,10 +1382,12 @@ verification independently.
   effective roles before admission and preserves default roles explicitly in
   launch arguments. Workers recheck the effective garuda.yaml digest before
   selection; background dynamic role fallback refuses until its runtime
-  decision can be persisted. Referenced runtime/agent/MCP files and later concurrent
-  configuration changes are outside this check. A worker verifies the lane,
-  session and serialized launch digest before publishing identity or selecting
-  work; alias retargeting or changed launch arguments refuse without rebinding.
+  decision can be persisted. Explicit ACP role agent selections also bind the
+  resolved definition digest at admission and recheck it at dispatch. Other
+  referenced files and later configuration changes are outside this check.
+  A worker verifies the lane, session and serialized launch digest before
+  publishing identity or selecting work. Alias retargeting or changed launch
+  arguments refuse without rebinding.
 - **Recovered project usage uses committed aliases.** Recovery publishes a
   versioned source-free alias manifest bound to the committed local key epoch.
   The shared identity reader locks publication and refuses unfinished,

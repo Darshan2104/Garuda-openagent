@@ -195,7 +195,7 @@ def build_parser():
     )
     run_parser.add_argument("--docker-memory", default="2g", help="Container memory limit (e.g. 2g)")
     run_parser.add_argument("--docker-cpus", default="2", help="Container CPU limit (e.g. 2)")
-    run_parser.add_argument("--agent", default="build", help="Agent profile name")
+    run_parser.add_argument("--agent", help="Agent definition name (native default: build)")
     run_parser.add_argument(
         "--agent-file", metavar="PATH",
         help="Run a definition file instead of a named agent. It selects a source and grants "
@@ -1356,7 +1356,20 @@ def _apply_role(args, resolved, catalog):
 
     # The role's agent, resolved for the harness that will actually run (H.10): its digest joins
     # the plan's identity; an external harness gets only what it can honour, or a refusal.
-    plan = role_agent.bind(plan, args.workspace, getattr(args, "agents_dir", None))
+    agent_name = getattr(args, "agent", None)
+    agent_file = getattr(args, "agent_file", None)
+    continuation = getattr(args, "as_runtime", None)
+    if (plan.kind == "acp" and (agent_name is not None or agent_file is not None)
+            and continuation and getattr(args, "resume", None)
+            and catalog.registry.get(continuation).kind.value == "native"):
+        # The explicit continuation will use the native agent selection path.
+        agent_name = agent_file = None
+    plan = role_agent.bind(plan, args.workspace, getattr(args, "agents_dir", None),
+                           agent_name=agent_name, agent_file=agent_file)
+    admitted_agent = getattr(args, "_background_agent_digest", None)
+    if admitted_agent is not None and admitted_agent != plan.agent_digest:
+        raise RoleRefused("config.conflict",
+                          f"role {plan.role}: the agent definition changed after queue admission")
     args.runtime = args.runtime or plan.runtime_id
     if plan.kind == "native":
         if plan.model_id and not getattr(args, "model", None):
