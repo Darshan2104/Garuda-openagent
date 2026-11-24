@@ -135,6 +135,44 @@ def test_auth_probe_matching_and_unknown(tmp_path, monkeypatch):
     assert found.auth is AuthStatus.UNKNOWN
 
 
+def _failing_binary(tmp_path, output: str, name="fake-acp") -> None:
+    path = tmp_path / "bin" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"#!/bin/sh\nprintf '%s\\n' {output!r}\nexit 1\n")
+    path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+
+def test_a_logged_out_answer_that_exits_non_zero_reads_as_unauthenticated(tmp_path, monkeypatch):
+    """#669: ``codex login status`` prints ``Not logged in`` and exits 1."""
+    from garuda.agents.fallback_probe import ProbeCatalog
+    from garuda.runtime.registry import RuntimeRegistry
+
+    monkeypatch.setenv("PATH", str(tmp_path / "bin") + os.pathsep + os.environ.get("PATH", ""))
+    manifests = _manifest(
+        command=["fake-acp"],
+        version_args=["fake-acp", "--version"],
+        version_pattern=r"fake-acp (\d+\.\d+\.\d+)",
+        auth_probe={
+            "argv": ["fake-acp", "auth"],
+            "authenticated_pattern": "Logged in using",
+            "unauthenticated_pattern": "Not logged in",
+        },
+    )
+    _failing_binary(tmp_path, "Not logged in")
+    (found,) = [d for d in discover(manifests) if d.runtime_id == "fake"]
+    assert found.auth is AuthStatus.UNAUTHENTICATED
+    assert found.version == "unknown"  # a failing command's output is never a version
+    (owned,) = [d for d in ProbeCatalog(RuntimeRegistry(manifests)).discover(only={"fake"})
+                if d.runtime_id == "fake"]
+    assert owned.auth is AuthStatus.UNAUTHENTICATED
+
+    # A failing command is never trusted to say it is logged in.
+    _failing_binary(tmp_path, "Logged in using ChatGPT; fake-acp 1.2.3")
+    (found,) = [d for d in discover(manifests) if d.runtime_id == "fake"]
+    assert found.auth is AuthStatus.UNKNOWN
+    assert found.version == "unknown"
+
+
 def test_disabled_runtimes_skip_probes_entirely():
     calls: list = []
     manifests = _manifest(version_args=["fake-acp", "--version"])
