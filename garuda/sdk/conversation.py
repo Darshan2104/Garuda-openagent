@@ -137,9 +137,13 @@ class Conversation:
         if on_delta is not None and self._runtime_name != "native":
             raise ValueError("live deltas are only available for the native runtime")
         if self._runtime_name != "native":
-            from garuda.sdk.errors import refuse_unservable_tools
+            from garuda.sdk.errors import refuse_unservable_options, refuse_unservable_tools
 
             refuse_unservable_tools(self._runtime_name, self._extra_tools, self._load_project_tools)
+            refuse_unservable_options(
+                self._runtime_name, model=self._model_name, agent=self._agent_name,
+                reasoning_model=self._reasoning_model, collection_model=self._collection_model,
+                model_binding=self._model_binding)
             return await self._run_acp(task)
         if self._native_close is not None and not self._native_close.done():
             raise RuntimeError("The native conversation is closing")

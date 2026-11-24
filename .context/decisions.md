@@ -14,6 +14,45 @@ recovery's quota pattern accepts the typed code. Eligibility still needs a
 closed Codex step, no permission or cancellation wording, and a proved
 exhausted quota reading, so typing the error alone never dispatches work.
 
+## 2026-11-25 — SDK ACP runs refuse model and agent options; `--bg` refuses ACP limits at admission (#712)
+
+An SDK run or conversation on an ACP runtime raises
+`OptionsUnsupportedOnRuntime` (code `sdk.options_unsupported`) before the
+harness starts when it was given `model`, `reasoning_model`,
+`collection_model`, `model_binding` or a non-default `agent`: the harness runs
+its own configured model and agent, so these were silently ignored. No role
+option mapping is proven for the SDK, so nothing is mapped. `garuda run --bg`
+whose role or `--runtime` resolves to an ACP runtime refuses `--max-turns`, an
+invalid `--deadline-sec` and the run-tree spend caps at admission with the
+foreground run's message and exit status 2; nothing is queued or spawned. A
+background run whose runtime is only chosen later by routing is still refused
+when its worker selects ACP.
+
+## 2026-11-25 — A withdrawn terminal approval stops its stdin reader (#675)
+
+On a POSIX terminal the approval prompt's reader thread waits in `select()`
+for a complete line, or for a wake-up byte, before it calls `input()`. When the
+prompt is withdrawn because the approval was answered from another terminal or
+the dashboard, timed out or was cancelled, the reader stops without consuming
+input, prints `approval withdrawn`, and no thread stays blocked in `input()`;
+the run finishes and the process exits. Previously the orphan `input()` thread
+kept `asyncio.run` and the interpreter exit waiting until the user pressed
+Enter. A reader that has already taken a line, piped stdin and Windows keep the
+previous behaviour: the next line is discarded and the prompt is reprinted.
+
+## 2026-11-24 — Recipes are validated before any step runs (#682)
+
+`garuda recipe run` validates the whole recipe before it prepares a workspace.
+Recipes are strict like other Garuda configuration. Unknown top-level, parameter
+and step keys refuse, as do an empty `steps` list, a step without `agent` or
+`prompt` (`agent` has no default), and a `mode` outside the run modes. A
+`{{placeholder}}` must name a declared parameter. A step agent must resolve
+through the step resolver. The CLI refuses undeclared `--param` names. Every
+refusal is a typed `recipe.*` error with exit 2. Library callers of
+`run_recipe` keep undeclared parameters, but a missing required parameter
+or an unfilled placeholder now refuses before the first step. `RecipeError`
+is still a `ValueError`.
+
 ## 2026-11-24 — A proved-dead owner's lease and slot are reclaimable (#676, #703)
 
 Owner death still never releases ownership by itself. `garuda runtime recover`

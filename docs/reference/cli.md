@@ -97,7 +97,7 @@ successful preview can still be refused by those steps after admission.
     | `--all-projects` | With `--resume latest` or `--fork latest`, take the newest session from any project |
     | `--as RUNTIME` | With `--resume`, continue on another runtime: a new linked session started from the resumed session's brief |
     | `--name NAME` | Name the session (unique in the project; defaults to a slug of the task) |
-    | `--bg` | Queue the run and return at once; a detached worker waits without a workspace lease. Effective roles use their runtime’s lane; dynamic role fallback refuses. Activated or ambiguous worker death retains capacity pending cleanup. Prints the session id |
+    | `--bg` | Queue the run and return at once; a detached worker waits without a workspace lease. Effective roles use their runtime’s lane; dynamic role fallback refuses. Activated or ambiguous worker death retains capacity pending cleanup. On an ACP runtime named by the role or `--runtime`, `--max-turns`, an invalid `--deadline-sec` and the spend caps are refused at admission, as in the foreground. Prints the session id |
     | `--no-edits` | Run with read-only permissions and withhold output if the workspace changed (exit 3). ACP runs require Docker confinement |
     | `--harness-mode MODE` | Run the selected external role in this mode of its harness for this run (Claude Code `acceptEdits`, Codex `read-only`, …); it must fit the role's permissions |
     | `--check COMMAND` | An acceptance check run after the session (repeatable); its result is the session's verification |
@@ -231,7 +231,9 @@ isolation boundary.
 === "recipe run"
 
     `garuda recipe run FILE [--param KEY=VALUE]...` runs a recipe. It takes the
-    model, workspace, `--agents-dir`, and `--mcp-config` flags. See
+    model, workspace, `--agents-dir`, and `--mcp-config` flags. An invalid
+    recipe, step agent or parameter refuses before any step runs with a typed
+    `recipe.*` error (exit 2). See
     [Run a multi-step recipe](../use-cases/automate.md#run-a-multi-step-recipe).
 
 === "recovery"
