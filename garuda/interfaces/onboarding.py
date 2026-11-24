@@ -190,12 +190,23 @@ def _state_diagnostics() -> list[Diagnostic]:
     except Exception as exc:  # a corrupt lease file is itself worth reporting
         holders = []
         out.append(diagnostic("lease.unreadable", str(exc), level="warning"))
+    from garuda.runtime.ownership import owner_liveness
+
     now = time.time()
     for holder in holders:
-        code = "lease.stale" if holder.is_stale(now) else "lease.held"
-        out.append(diagnostic(code, f"{holder.workspace} held by {holder.session_id[:8]} "
-                                    f"({holder.mode})", level="warning" if code == "lease.stale"
-                              else "info", session=holder.session_id[:8]))
+        session = holder.session_id[:8]
+        message = f"{holder.workspace} held by {session} ({holder.mode})"
+        # Only a dead owner's lease can be released, so the advice follows the
+        # owner's state rather than always pointing at recovery (#676).
+        state = owner_liveness({"pid": holder.pid, "identity": holder.identity,
+                                "pgid": holder.pgid})
+        if state is True and not holder.is_stale(now):
+            out.append(diagnostic("lease.held", message, session=session))
+            continue
+        code = ("lease.quarantined" if holder.quarantined else "lease.overdue" if state is True
+                else "lease.stale" if state is False else "lease.unknown")
+        out.append(diagnostic(code, message, level="warning", session=session, pid=holder.pid))
+    out += _capacity_diagnostics(owner_liveness)
     from garuda.workspace.worktrees import worktrees_root
 
     root = worktrees_root()
@@ -205,6 +216,37 @@ def _state_diagnostics() -> list[Diagnostic]:
                                and not p.name.startswith(".")):
                 out.append(diagnostic("worktree.unpublished", f"worktree {tree}",
                                       session=tree.name[:8]))
+    return out
+
+
+def _capacity_diagnostics(liveness) -> list[Diagnostic]:
+    """Reserved runtime capacity slots, so a leaked slot is visible (#703)."""
+    from garuda.runtime.capacity import CapacityStore
+
+    out = []
+    try:
+        slots = CapacityStore().all_slots()
+    except Exception as exc:
+        return [diagnostic("capacity.unreadable", str(exc), level="warning")]
+    for slot in slots:
+        holder = slot["holder"]
+        session = holder.split(":", 1)[0][:8]
+        owner = slot.get("owner") or {}
+        message = f"{slot['key']} capacity slot reserved by {holder}"
+        state = liveness(owner)
+        if slot.get("quarantined"):
+            out.append(diagnostic("capacity.retained", message, level="warning",
+                                  session=session, reason="quarantined by its owner"))
+        elif state is True:
+            out.append(diagnostic("capacity.held", message, pid=owner.get("pid")))
+        elif "queue" in slot or "loan" in slot:
+            out.append(diagnostic("capacity.retained", message, level="warning", session=session,
+                                  reason="queue-bound" if "queue" in slot else "loaned"))
+        elif state is False:
+            out.append(diagnostic("capacity.stale", message, level="warning", session=session))
+        else:
+            out.append(diagnostic("capacity.retained", message, level="warning", session=session,
+                                  reason="its owner's liveness cannot be determined"))
     return out
 
 

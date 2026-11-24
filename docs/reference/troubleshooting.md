@@ -146,12 +146,26 @@ Click a problem to see the fix.
     ```
 
     If the message says the holder's **parent is dead but descendant cleanup is
-    not proved**, the other session crashed (for example its terminal was
-    closed) and Garuda can't prove the commands it started have stopped. That
-    lease stays held: `garuda doctor` lists it as `lease.stale`, and
-    `garuda runtime recover` and `reclaim` refuse while it's there. There is no
-    command yet that releases it, so keep working with `--isolation worktree`
-    (or `--no-edits` for read-only work). Don't delete lease records by hand.
+    not proved**, the other session crashed (for example it was killed with
+    `kill -9`, or its terminal was closed). `garuda doctor` lists the lease as
+    `lease.stale`. Release it with:
+
+    ```bash
+    garuda runtime recover --session ID   # the id, prefix or name from the message
+    ```
+
+    Recovery releases the lease, and the runtime capacity slots of the session
+    and its flow steps, only when it can prove the owner is gone: the owner's
+    pid has exited (or now belongs to another process), the commands that
+    Garuda recorded for it are stopped, and no process the owner started
+    (they carry its lineage in `GARUDA_OWNER_LINEAGE`) is still running. If a
+    leftover process is still running, the refusal names its pid. Stop it and
+    run the command again. Recovery never takes a lease from a running owner.
+    A lease that a session **quarantined** (`lease.quarantined`) is kept on
+    purpose until its cleanup is reconciled. Recovery can't release it, so use
+    `--isolation worktree` (or `--no-edits` for read-only work) meanwhile.
+    The proof reads `/proc`, so on macOS recovery still refuses. Don't delete
+    lease records by hand.
 
 ??? question "`sessions merge` fails with `integration.check_failed`"
 
