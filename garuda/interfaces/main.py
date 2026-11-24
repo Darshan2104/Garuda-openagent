@@ -689,11 +689,13 @@ def build_parser():
              "(repeatable; Linux only)",
     )
     flow_show = flow_sub.add_parser("show", help="A flow session's steps and receipts")
-    flow_show.add_argument("flow_session")
+    flow_show.add_argument("flow_session", help="Flow session id, unique prefix, name or 'latest'")
+    flow_show.add_argument("--workspace", default=".",
+                           help="Project whose sessions a prefix, name or 'latest' is looked up in")
     flow_resume = flow_sub.add_parser(
         "resume", help="Continue a flow after its last receipted step (never replays one)"
     )
-    flow_resume.add_argument("flow_session")
+    flow_resume.add_argument("flow_session", help="Flow session id, unique prefix, name or 'latest'")
     flow_resume.add_argument("--workspace", default=".")
 
     recovery_parser = subparsers.add_parser(
@@ -1507,6 +1509,55 @@ def run_agent(args) -> int:
     return 0
 
 
+def _resolve_flow_session(store, ref: str, workspace: str, *,
+                          protected_meta: bool = False) -> tuple[str | None, dict | None]:
+    """Resolve a flow reference like the session commands do, or print a typed refusal.
+
+    Returns ``(session_id, meta)``; ``(None, None)`` after printing the error.
+    With ``protected_meta`` (resume), metadata strict storage cannot read is
+    left to the flow service, which reports it as a reconciliation stop.
+    """
+    import sys
+
+    from garuda.core.project_identity import ProjectIdentityError
+    from garuda.runtime.strict_store import StorageError
+
+    try:
+        session_id = store.resolve(ref, workspace=os.path.realpath(workspace), kind="flow")
+        try:
+            meta = store.load_meta(session_id)
+        except StorageError:
+            if not protected_meta:
+                raise
+            return session_id, None
+    except FileNotFoundError:
+        print(f"Error: flow.session_not_found: no such flow session {ref!r}", file=sys.stderr)
+        return None, None
+    except ProjectIdentityError as exc:
+        print(f"Error: {exc.code}: {exc}", file=sys.stderr)
+        return None, None
+    except (OSError, ValueError, StorageError) as exc:
+        print(f"Error: flow.session_unresolved: {exc}", file=sys.stderr)
+        return None, None
+    if meta.get("kind") != "flow":
+        print(f"Error: flow.not_a_flow: session {session_id} is not a flow session", file=sys.stderr)
+        return None, None
+    return session_id, meta
+
+
+def _flow_stop_line(stop) -> str | None:
+    """The recorded stop reason of a stopped flow (`meta.json` `flow_stop`), on one line."""
+    if not isinstance(stop, dict) or not stop.get("code"):
+        return None
+
+    def text(value, limit):
+        return " ".join(str(value).split())[:limit]
+
+    step = f" at step {text(stop['step'], 80)}" if stop.get("step") else ""
+    message = f": {text(stop['message'], 500)}" if stop.get("message") else ""
+    return f"  stopped{step}: {text(stop['code'], 120)}{message}"
+
+
 def run_flow(args) -> int:
     """`garuda flow run|show|resume` (C.6a)."""
     import asyncio
@@ -1523,13 +1574,20 @@ def run_flow(args) -> int:
     from garuda.workspace.lease import LeaseError
 
     store = SessionStore()
-    if args.flow_command == "show":
-        try:
-            meta = store.load_meta(args.flow_session)
-        except (OSError, ValueError) as exc:
-            print(f"Error: {exc}", file=sys.stderr)
+    if args.flow_command in ("show", "resume"):
+        flow_session, meta = _resolve_flow_session(
+            store, args.flow_session, getattr(args, "workspace", "."),
+            protected_meta=args.flow_command == "resume")
+        if flow_session is None:
             return 2
-        print(f"flow {meta.get('flow', {}).get('name')}: {meta.get('flow_state')}")
+        args.flow_session = flow_session
+    if args.flow_command == "show":
+        flow_meta = meta.get("flow")
+        name = flow_meta.get("name") if isinstance(flow_meta, dict) else None
+        print(f"flow {name}: {meta.get('flow_state')}")
+        stop_line = _flow_stop_line(meta.get("flow_stop"))
+        if stop_line:
+            print(stop_line)
         recovery = meta.get("quota_recovery")
         if recovery:
             print(f"  quota recovery: {recovery.get('state')}; {recovery.get('reason', '')}")
@@ -1987,6 +2045,7 @@ async def _run_runtime_command(args) -> int:
     from garuda.context.pack import ContextPackManager
     from garuda.core.sessions import SessionStore
     from garuda.interfaces.runtime_cli import (
+        HandoffRefused,
         cmd_handoff_confirm,
         cmd_handoff_preview,
         cmd_inspect_registry,
@@ -2038,7 +2097,11 @@ async def _run_runtime_command(args) -> int:
             return 2
     if command == "handoff":
         if not args.confirm:
-            print(cmd_handoff_preview(store, session_id, args.to), end="")
+            try:
+                print(cmd_handoff_preview(store, session_id, args.to), end="")
+            except HandoffRefused as exc:
+                print(f"Error: {exc.code}: {exc}", file=sys.stderr)
+                return 2
             return 0
         from garuda.interfaces.run_guard import interactive_approval
 
@@ -2057,6 +2120,9 @@ async def _run_runtime_command(args) -> int:
             )
         except RegistryError:
             raise
+        except HandoffRefused as exc:
+            print(f"Error: {exc.code}: {exc}", file=sys.stderr)
+            return 2
         except Exception as exc:
             print(f"Error: {exc}")
             return 1
