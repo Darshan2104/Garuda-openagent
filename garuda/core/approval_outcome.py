@@ -79,3 +79,33 @@ def approval_requester(identity: ApprovalRequester, engine: object) -> Iterator[
 
 def current_approval_requester() -> tuple[ApprovalRequester, object] | None:
     return _requester.get()
+
+
+def approval_summary(meta: dict) -> dict | None:
+    """How a session's recorded approval requests ended, or ``None`` with none (#691).
+
+    ``denied`` counts every request that was not allowed (denied, timed out,
+    disconnected or cancelled): a run whose every tool call was blocked can end
+    its turn ``completed``, and a study must tell that apart from work done.
+    """
+    outcomes: dict[str, int] = {}
+    for key, record in (meta or {}).items():
+        if key.startswith("approval:") and isinstance(record, dict):
+            outcome = record.get("outcome")
+            outcome = outcome if isinstance(outcome, str) and outcome else "unknown"
+            outcomes[outcome] = outcomes.get(outcome, 0) + 1
+    if not outcomes:
+        return None
+    requested = sum(outcomes.values())
+    allowed = outcomes.get(ApprovalOutcome.ALLOW.value, 0)
+    return {"requested": requested, "allowed": allowed, "denied": requested - allowed,
+            "all_denied": allowed == 0, "by_outcome": dict(sorted(outcomes.items()))}
+
+
+def approval_summary_line(summary: dict | None) -> str | None:
+    """One human line for :func:`approval_summary`; ``None`` when nothing was denied."""
+    if not summary or not summary["denied"]:
+        return None
+    line = (f"{summary['denied']} of {summary['requested']} tool approval requests were "
+            "not allowed")
+    return line + (" (every one was blocked)" if summary["all_denied"] else "")

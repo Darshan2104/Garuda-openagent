@@ -118,6 +118,12 @@ class AcpRuntime:
         self._prepared_recorder = None
         self._prepared_child_pid: int | None = None
         self._persist_dir = persist_dir
+        # The user's opt-in study-trace level (#691); only a persisting run reads it.
+        self._trace_detail = "metadata"
+        if persist_dir is not None:
+            from garuda.observability.trace_detail import configured_level
+
+            self._trace_detail = configured_level()
         # Always-on: every adapter run records its own timings and triage,
         # so metrics are observable in real runs without opt-in plumbing.
         # Callers (mostly tests) may inject their own recorder instead.
@@ -189,6 +195,41 @@ class AcpRuntime:
     def reported_adapter_version(self) -> str:
         version = self._agent_info.get("version")
         return version if isinstance(version, str) else "unknown"
+
+    def negotiated_session(self) -> dict[str, Any]:
+        """What the agent reported at ``initialize`` and ``session/new`` (#691): its
+        identity, the options it offers with their current values, and its modes.
+
+        Bounded agent-reported names only; a study of a run that failed while its
+        role was applied can see what was on offer without talking to the agent."""
+
+        def name(value: Any) -> str | None:
+            if not isinstance(value, (str, int, float)) or isinstance(value, bool):
+                return None
+            text = " ".join(str(value).split())
+            return text[:128] or None
+
+        record: dict[str, Any] = {"agent_info": {
+            key: text for key in ("name", "title", "version")
+            if (text := name(self._agent_info.get(key))) is not None}}
+        process = self._process
+        options = []
+        for option in list(getattr(process, "session_config_options", None) or [])[:16]:
+            if not isinstance(option, dict):
+                continue
+            values = [text for value in (option.get("options") or [])[:32]
+                      if isinstance(value, dict) and (text := name(value.get("value"))) is not None]
+            options.append({"id": name(option.get("id")), "category": name(option.get("category")),
+                            "current": name(option.get("currentValue")), "values": values})
+        record["config_options"] = options
+        modes = getattr(process, "session_modes", None)
+        if isinstance(modes, dict):
+            available = modes.get("availableModes")
+            record["modes"] = {
+                "current": name(modes.get("currentModeId")),
+                "available": [text for mode in (available if isinstance(available, list) else [])[:16]
+                              if isinstance(mode, dict) and (text := name(mode.get("id"))) is not None]}
+        return record
 
     @property
     def reported_mode(self) -> str | None:
@@ -323,7 +364,9 @@ class AcpRuntime:
                             "session_id": event.session_id,
                             "turn": event.turn,
                             "seq": event.seq,
-                            **({"payload": selected} if (selected := evidence_payload(event)) else {}),
+                            **({"payload": selected}
+                               if (selected := evidence_payload(event, self._trace_detail))
+                               else {}),
                         },
                         default=str,
                     )

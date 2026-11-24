@@ -432,6 +432,33 @@ paths, and the writer refuses any field outside its schema.
   until reconciled from its event log, which adds only what is missing.
 - Month files are kept for 13 months; cleaning up sessions does not touch them.
 
+## Study traces
+
+An external harness's run keeps a trail in its session (`acp-events.jsonl`). By
+default it holds metadata only: ids, tool kinds, statuses, lifecycle, prompt
+digests and usage reports, never the harness's messages or tool calls. To study and
+optimise a workflow, opt in to tool detail in your own settings (a project file
+cannot set it):
+
+```yaml
+# ~/.agent/settings.yaml
+observability:
+  trace_detail: commands   # metadata (default) | commands
+```
+
+With `commands`, each persisted tool call and tool result also keeps its title,
+command and up to five paths it names, the parent tool call when it ran inside a
+harness subagent (Claude Code's `Task`), and the message of a failed tool call or
+error event. Each field is redacted for secret patterns and bounded (300
+characters, 500 for an error message); a cut field says `truncated`, a scrubbed
+one `redacted`. Tool output is never kept. An unknown value keeps `metadata`.
+
+Independently of the level, an ACP session records what the agent offered
+(`acp_session`: its `initialize` identity, each session option with its current
+value and choices, and its modes), the code and a redacted message of a run that
+failed (`error_code`, `error_detail`), and `sessions show` adds `approval_summary`
+(see [Sessions](sessions-and-flows.md)).
+
 ## Runtime capacity
 
 Limit how many runs of one runtime may be active at once, across every way of
