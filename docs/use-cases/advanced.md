@@ -241,7 +241,9 @@ garuda runtime resume --session latest -t "Continue after the external run"
 ```
 
 - `recover` classifies the session as `resumable`, `rolled_back`, or
-  `external` (owned by a harness that may still be acting).
+  `external` (owned by a harness that may still be acting). After a crash it
+  also releases the workspace lease and capacity slots that the dead run
+  still held, once it proves that no process the run started is still alive.
 - `reclaim` returns an `external` session to native. It refuses while a
   workspace lock, a live recorded process, or an active target state says the
   harness might still be running. It repairs ownership; it does not undo the

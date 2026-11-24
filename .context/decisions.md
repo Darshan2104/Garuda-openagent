@@ -12,6 +12,20 @@ kept `asyncio.run` and the interpreter exit waiting until the user pressed
 Enter. A reader that has already taken a line, piped stdin and Windows keep the
 previous behaviour: the next line is discarded and the prompt is reprinted.
 
+## 2026-11-24 — A proved-dead owner's lease and slot are reclaimable (#676, #703)
+
+Owner death still never releases ownership by itself. `garuda runtime recover`
+now releases a session's retained leases and ordinary capacity slots, including
+flow-step slots `<flow>:<step>:<attempt>`. Each release needs four proofs: the
+owner is confirmed dead by its pid and start identity, the record is unchanged
+under its store lock, the owner did not quarantine it, and no live same-user
+process carries the owner's `GARUDA_OWNER_LINEAGE` token. Recorded children of
+the session and its flow steps are reaped first. A live or unknown owner is
+never evicted. Quarantine is now persisted on the lease and slot, so it outlives
+the owner. Without `/proc` the descendant scan cannot run and recovery refuses.
+Plain `recover()` and acquisition keep their previous refusals. `doctor`
+classifies leases by owner state and lists capacity slots.
+
 ## 2026-11-24 — Handoff, flow and agent-check references refuse typed (#698, #699, #670)
 
 `garuda runtime handoff` hands off only natively owned sessions. The preview

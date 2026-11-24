@@ -16,10 +16,12 @@ that part ``unavailable`` and reconciliation ``unknown`` — never a guess.
 
 **Reconciliation is advice, not action.** ``eligible`` names the one existing
 owner-proved path (``garuda runtime recover``), which re-proves every
-prerequisite itself before it signals anything. Retained leases, quarantined
-queue claims and unknown owner liveness block it here, as they would there;
-retained capacity slots are reported because no path releases them
-automatically. Inspection never authorizes replay.
+prerequisite itself before it signals anything. Quarantined queue claims,
+unknown owner liveness and leases that a live or quarantining owner retains
+block it here, as they would there. A lease or ordinary capacity slot still
+recorded for the session's own dead owner does not: ``garuda runtime recover``
+re-proves that owner dead with no surviving descendant and releases it
+(#676, #703). Inspection never authorizes replay.
 """
 
 from __future__ import annotations
@@ -85,7 +87,7 @@ def _leases(session_id: str) -> dict:
     return {"coverage": "complete", "holders": [
         {"workspace": h.workspace, "mode": h.mode, "pid": h.pid,
          "heartbeat_at": h.heartbeat_at, "ttl_sec": h.ttl_sec,
-         "heartbeat_expired": h.is_stale()} for h in holders]}
+         "heartbeat_expired": h.is_stale(), "quarantined": h.quarantined} for h in holders]}
 
 
 def _queue(session_id: str, entries: list[dict] | None, configured: bool) -> dict:
@@ -113,18 +115,20 @@ def _capacity(session_id: str, queue) -> dict:
     try:
         # The queue's store when there is one, so both read the same root.
         capacity = queue.capacity if queue is not None else CapacityStore()
-        slots = capacity.slots_for_holder(session_id)
+        # Flow steps hold slots keyed ``<flow id>:<step>:<attempt>`` (#703).
+        slots = capacity.slots_for_session(session_id)
     except (CapacityError, OSError, ValueError) as exc:
         return {"coverage": "unavailable", "slots": [], "reason": str(exc)}
     out = []
     for slot in slots:
         marker = slot.get("queue") if isinstance(slot.get("queue"), dict) else None
         owner = slot.get("owner") if isinstance(slot.get("owner"), dict) else {}
-        out.append({"key": slot["key"],
+        out.append({"key": slot["key"], "holder": slot["holder"],
                     "kind": "queue" if marker else ("loan" if "loan" in slot else "ordinary"),
                     "phase": marker.get("phase") if marker else None,
                     "owner_pid": _int_or_none(owner.get("pid")),
-                    "reserved_at": slot.get("reserved_at")})
+                    "reserved_at": slot.get("reserved_at"),
+                    "quarantined": slot.get("quarantined") is True})
     return {"coverage": "complete", "slots": out}
 
 
@@ -147,12 +151,19 @@ def _waiting(row: dict, approvals_pending: int, queue: dict, quota: dict | None)
 def _reconciliation(session_id: str, row: dict, owner: dict, leases: dict, queue: dict,
                     capacity: dict, quota: dict | None, workers: dict) -> dict:
     active = row["state"].get("work") in ACTIVE_WORK
-    blockers, retained = [], []
+    blockers, retained, releasable = [], [], set()
+    # Held by this session's own owner, recorded dead: recovery can re-prove
+    # that and release it. Any other holder keeps the existing block.
+    dead_owner = owner["liveness"] == "dead" and owner["pid"] is not None
     if leases["coverage"] != "complete":
         blockers.append("workspace_leases_unreadable")
     elif leases["holders"]:
-        blockers.append("workspace_lease_retained")
         retained.append("workspace_lease")
+        if dead_owner and all(h["pid"] == owner["pid"] and not h["quarantined"]
+                              for h in leases["holders"]):
+            releasable.add("workspace_lease")
+        else:
+            blockers.append("workspace_lease_retained")
     if queue["coverage"] == "unavailable":
         blockers.append("queue_unreadable")
     entry = queue.get("entry")
@@ -166,6 +177,9 @@ def _reconciliation(session_id: str, row: dict, owner: dict, leases: dict, queue
         blockers.append("capacity_unreadable")
     elif capacity["slots"]:
         retained.append("capacity_slot")
+        if dead_owner and all(s["kind"] == "ordinary" and s["owner_pid"] == owner["pid"]
+                              and not s["quarantined"] for s in capacity["slots"]):
+            releasable.add("capacity_slot")
     if workers["coverage"] != "complete":
         blockers.append("editing_workers_unreadable")
     elif any(e["repository_state"] != "removed" for e in workers["entries"]):
@@ -187,6 +201,11 @@ def _reconciliation(session_id: str, row: dict, owner: dict, leases: dict, queue
     if not active:
         if unreadable:
             result.update(status=UNKNOWN, blockers=blockers)
+        elif retained and set(retained) <= releasable:
+            result.update(status="eligible", path={
+                "command": RECOVER_COMMAND.format(session_id=session_id),
+                "rechecks": ["owner identity", "surviving descendants", "child process identities"],
+                "releases": retained})
         elif retained:
             # Finished work that still holds ownership: only its issuing owner
             # (or an operator) may release it; nothing here proposes a takeover.
@@ -207,6 +226,8 @@ def _reconciliation(session_id: str, row: dict, owner: dict, leases: dict, queue
         "command": RECOVER_COMMAND.format(session_id=session_id),
         "rechecks": ["workspace leases", "owner processes", "event trail",
                      "child process identities"]})
+    if releasable:
+        result["path"]["releases"] = sorted(releasable)
     return result
 
 
