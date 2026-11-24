@@ -177,6 +177,23 @@ def test_lineage_is_inherited_by_children_launched_after_ownership(tmp_path):
         child.wait()
 
 
+def test_an_unreadable_process_is_ruled_out_only_through_an_older_ancestor():
+    from garuda.runtime.ownership import _older_lineage
+
+    def fields(ppid, start):
+        return ["comm", "S", str(ppid), *["0"] * 17, str(start)]
+
+    table = {50: fields(40, 900), 40: fields(1, 100),  # under an older live process
+             60: fields(1, 900),                        # orphaned to init
+             70: fields(71, 900), 71: fields(1, 800),   # its whole chain is younger
+             80: fields(81, 900)}                       # ancestor vanished
+    assert _older_lineage(50, 500, table.get) is True
+    assert _older_lineage(40, 500, table.get) is True
+    assert _older_lineage(60, 500, table.get) is False
+    assert _older_lineage(70, 500, table.get) is False
+    assert _older_lineage(80, 500, table.get) is False
+
+
 def _session(tmp_path, session_id="crashed"):
     from garuda.core.sessions import SessionStore
 

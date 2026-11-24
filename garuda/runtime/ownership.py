@@ -85,13 +85,14 @@ def surviving_descendants(owner: dict) -> list[int] | None:
     Reads each same-user process's start-time environment from ``/proc``.
     An owner from an earlier boot has none. A same-user process whose
     environment is unreadable (a non-dumpable one, such as an sshd session) is
-    ruled out only when it started before the owner, or when its live parent
-    is another user's process other than init, which an orphaned descendant
-    never has. ``None`` means the scan is impossible or inconclusive (no
+    ruled out only when it, or a live ancestor of it below init, started
+    before the owner; an orphan reparented to init has no such ancestor. (A
+    non-dumpable orphan reparented to an older subreaper, such as
+    ``systemd --user``, is outside the scan.) ``None`` means the scan is impossible or inconclusive (no
     ``/proc``, no Linux owner identity, or an unexplained unreadable
     process), so descendant cleanup stays unproved.
     """
-    from garuda.runtime.recovery import RecoveryError, _linux_stat
+    from garuda.runtime.recovery import _linux_stat
 
     token = lineage_token(owner.get("pid"), owner.get("identity"))
     identity = owner.get("identity")
@@ -126,26 +127,42 @@ def surviving_descendants(owner: dict) -> list[int] | None:
         except (FileNotFoundError, ProcessLookupError):
             continue  # exited while scanning
         except PermissionError:
-            try:
-                fields = _linux_stat(pid)
-                if fields is None:
-                    continue  # exited while scanning
-                if int(fields[20]) < owner_start:
-                    continue  # started before the owner: not its descendant
-                ppid = int(fields[2])
-                if ppid > 1 and os.stat(f"/proc/{ppid}").st_uid != uid:
-                    continue  # attached to another user's live parent, not orphaned
-            except (RecoveryError, OSError, ValueError, IndexError):
+            # A non-dumpable process: its environment is private even to
+            # its own user. It is ruled out when it, or a live ancestor below
+            # init, started before the owner. Every live ancestor of an
+            # orphaned descendant below its reaper started after the owner.
+            if not _older_lineage(pid, owner_start, _linux_stat):
                 return None
-            return None
+            continue
         except OSError:
-            return None
+            if not _older_lineage(pid, owner_start, _linux_stat):
+                return None
+            continue
         for entry in environ.split(b"\0"):
             if entry.startswith(needle) and token in entry[len(needle):].decode(
                     "utf-8", "replace").split():
                 found.append(pid)
                 break
     return sorted(found)
+
+
+def _older_lineage(pid: int, owner_start: int, stat) -> bool:
+    """Whether ``pid`` or a live ancestor of it below init started before ``owner_start``."""
+    from garuda.runtime.recovery import RecoveryError
+
+    for _depth in range(256):
+        if pid <= 1:
+            return False
+        try:
+            fields = stat(pid)
+            if fields is None:
+                return False
+            if int(fields[20]) < owner_start:
+                return True
+            pid = int(fields[2])
+        except (RecoveryError, OSError, ValueError, IndexError):
+            return False
+    return False
 
 
 def reclaim_refusal(owner: dict, *, quarantined: bool = False,

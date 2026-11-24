@@ -1385,8 +1385,11 @@ verification independently.
   unchanged, the owner is confirmed dead by identity (and the group it led is
   empty), the holder is not quarantined, and no same-user process in `/proc`
   carries the token. Queue and loan slots stay with their coordinators.
-  Without `/proc` the scan cannot run, so recovery refuses. A child that
-  scrubbed its environment is outside the scan. Plain `recover()` (resume
+  Without `/proc` the scan cannot run, so recovery refuses. A same-user
+  process whose environment is unreadable (non-dumpable) is ruled out only
+  when it, or a live ancestor below init, started before the owner. A child
+  that scrubbed its environment, or a non-dumpable orphan adopted by an older
+  subreaper, is outside the scan. Plain `recover()` (resume
   paths) still refuses on any retained lease, and acquisition never reclaims.
 - **Queue ids bind admitted work.** Enqueue retries match the exact scope,
   user, harness, session and configuration digest of a waiting entry or claim.
