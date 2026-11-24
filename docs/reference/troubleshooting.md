@@ -345,6 +345,18 @@ Click a problem to see the fix.
 
     See the [Agent definitions guide](../guides/agents.md#checks-before-a-run).
 
+??? question "`garuda recipe run` refuses with `recipe.*`"
+
+    The recipe is checked before anything runs. The message names the field.
+
+    - `recipe.invalid`: an unknown key, an empty `steps` list, a step without
+      `agent` or `prompt`, an unknown `mode`, a `{{name}}` that isn't a declared
+      parameter, or a file that isn't valid YAML.
+    - `recipe.not_found` or `recipe.unreadable`: check the recipe path.
+    - `recipe.agent_not_found`: `garuda agent list` shows the agent names.
+    - `recipe.param_missing`: pass `--param NAME=VALUE` or give it a `default`.
+    - `recipe.param_unknown`: the `--param` isn't declared under `parameters`.
+
 ??? question "A run says `verification: unavailable`"
 
     No check ran, so nothing verified the result. Pass `--check COMMAND`, add

@@ -365,7 +365,10 @@ garuda run --deadline-sec 900 --max-turns 30 -t "Fix the flaky test in tests/tes
   is refused.
 - `--max-turns` caps the number of agent turns. An ACP harness runs its own tool
   loop inside one Garuda turn, so `garuda run` refuses `--max-turns` on an ACP
-  runtime; use `--deadline-sec` there.
+  runtime; use `--deadline-sec` there. When the role or `--runtime` names an ACP
+  runtime, `garuda run --bg` refuses `--max-turns`, an invalid `--deadline-sec`
+  and `--max-run-tokens`/`--max-run-cost-usd` immediately, with the same error,
+  instead of queueing a session that would fail when its worker starts.
 - `--max-run-tokens` caps tokens across the whole native run tree: the main
   calls, summaries, the verifier, collection workers, rigorous mode's plan and
   critic, and every native subagent and native consult (including advisors)

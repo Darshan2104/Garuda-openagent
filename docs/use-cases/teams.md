@@ -671,9 +671,12 @@ or always-allow grant.
 
 Cancellation, timeout, disconnect or another channel's answer withdraws the
 attached prompt. Queued time counts toward expiry, and a settled queued ask is
-never presented. Terminal input cannot be interrupted: the next line belonging
-to a withdrawn prompt is discarded and the current prompt is printed again.
-That read can still compete with chat's own `input()` or the cross-project
+never presented. On a macOS or Linux terminal a withdrawn prompt stops its
+stdin reader before it takes a line, so an approval answered from another
+terminal or the dashboard consumes no input and the run exits normally when it
+finishes. Elsewhere (piped stdin, Windows) terminal input cannot be interrupted:
+the next line belonging to a withdrawn prompt is discarded and the current
+prompt is printed again. That read can still compete with chat's own `input()` or the cross-project
 resume confirmation's input for a subsequent line;
 it never applies that line to another approval. Root prompts remain unlabelled.
 
