@@ -14,7 +14,7 @@ version: 1
 defaults: {role: coder}
 harnesses:
   claude-code: {allowed_models: [claude-sonnet-5-5], max_parallel: 2}
-  codex: {allowed_models: [gpt-5.5-codex]}
+  codex: {allowed_models: [gpt-5.5-codex], handshake_timeout_sec: 90}
 roles:
   planner:  {harness: claude-code, model_id: claude-sonnet-5-5, permissions: smart, write_policy: no-edits}
   coder:    {harness: codex, model_id: gpt-5.5-codex, effort: high,
@@ -76,6 +76,8 @@ def test_maintained_examples_round_trip(text):
     ("version: 1\nroles: {r: {harness: codex, permissions: no-edits}}", "config.invalid",
      "roles.r.permissions"),
     ("version: 1\nchecks: [{run: pytest, cwd: ../elsewhere}]", "config.invalid", "checks[0].cwd"),
+    *[(f"version: 1\nharnesses: {{codex: {{handshake_timeout_sec: {bad}}}}}\n", "config.invalid",
+       "harnesses.codex.handshake_timeout_sec") for bad in ("4", "601", "1.5", "true", "slow")],
 ])
 def test_refusals_name_the_value(text, code, path):
     error = _err(text)
@@ -161,6 +163,7 @@ def test_project_permissions_within_ceiling_when_user_role_sets_none(ceiling, pe
     ({"harnesses": {"codex": {"allowed_models": ["gpt-x", "gpt-y"]}}},
      "harnesses.codex.allowed_models"),
     ({"sessions": {"keep_days": 999}}, "sessions.keep_days"),
+    ({"harnesses": {"codex": {"handshake_timeout_sec": 60}}}, "harnesses.codex.handshake_timeout_sec"),
 ])
 def test_a_project_cannot_widen_user_only_settings(project, path):
     user = _user(roles=ROLES, harnesses={"codex": {"allowed_models": ["gpt-x"], "max_parallel": 4},

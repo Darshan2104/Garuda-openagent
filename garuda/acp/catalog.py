@@ -604,6 +604,7 @@ def adapter_for_manifest(
     argv = list(argv_override) if argv_override is not None else require_acp_argv(
         manifest, executable=executable
     )
+    handshake_timeout, handshake_hint = handshake_settings(manifest.runtime_id)
     return AcpRuntime(
         argv,
         runtime_id=manifest.runtime_id,
@@ -617,7 +618,34 @@ def adapter_for_manifest(
         persist_dir=persist_dir,
         metrics=metrics,
         agent_definition=agent_definition,
+        handshake_timeout=handshake_timeout,
+        handshake_hint=handshake_hint,
     )
+
+
+def handshake_settings(runtime_id: str) -> tuple[float | None, str]:
+    """The ACP startup deadline for ``runtime_id`` and how to raise it (#687).
+
+    ``harnesses.<id>.handshake_timeout_sec`` from the user's ``garuda.yaml``
+    only (a project cannot set it); ``None`` keeps the client default
+    (``HANDSHAKE_TIMEOUT``). The file is validated when it is loaded, so a
+    value here is in bounds. A file that cannot be read keeps the default:
+    the deadline bounds a wait, it authorizes nothing, and every role or
+    configuration path reports the file's own error.
+    """
+    from garuda.config import garuda_yaml
+
+    path = garuda_yaml.user_path()
+    hint = f"raise harnesses.{runtime_id}.handshake_timeout_sec in {path}"
+    try:
+        document = garuda_yaml.load_file(path)
+    except Exception:
+        logger.warning("Could not read %s for the ACP startup deadline; using the default",
+                       path, exc_info=True)
+        return None, hint
+    harness = ((document or {}).get("harnesses") or {}).get(runtime_id) or {}
+    value = harness.get("handshake_timeout_sec")
+    return (float(value) if value is not None else None), hint
 
 
 class AcpUnavailableError(Exception):

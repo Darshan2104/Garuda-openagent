@@ -1,5 +1,16 @@
 # Durable decisions
 
+## 2026-11-25 — The ACP startup deadline is configurable per harness (#687)
+
+`harnesses.<id>.handshake_timeout_sec` in the user `garuda.yaml` (an integer
+from 5 to 600; default 30) bounds an ACP harness's startup calls: initialize,
+session/new, session/load and role option sets. It is user-only; a project
+file that sets it is refused as `config.project_widening`. Every launch path
+that builds an ACP runtime through the manifest factory reads it. A user file
+that cannot be read keeps the default, because the deadline bounds a wait and
+authorizes nothing. A startup timeout now names its deadline and the setting
+that raises it.
+
 ## 2026-11-25 — An ACP usage-limit error is typed `harness.limit_reached` (#684)
 
 A JSON-RPC error from an ACP agent keeps a bounded, one-line copy of its
