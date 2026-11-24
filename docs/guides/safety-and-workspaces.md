@@ -84,12 +84,17 @@ stopped, so it keeps both held rather than let a second run edit alongside a
 possible leftover process:
 
 - `garuda sessions` shows the session as `crashed`, and `garuda doctor` lists
-  the held lease (`lease.stale`) and slot.
-- Later editing runs on that workspace are refused, and `garuda runtime
-  recover` and `reclaim` refuse too. Read-only and `--no-edits` runs still
-  work.
-- There is no command yet that releases such a lease. To keep working, run in
-  a separate worktree (`--isolation worktree`), which takes its own lease.
+  the held lease (`lease.stale`) and slot (`capacity.stale`). `garuda sessions
+  show ID --json` lists both, including the slots of a flow's steps.
+- Later editing runs on that workspace are refused. Read-only and
+  `--no-edits` runs still work.
+- `garuda runtime recover --session ID` releases both once it proves the
+  owner is gone: its pid has exited or been reused, its recorded child
+  processes are stopped, and no process it started is still running (each
+  carries the owner's `GARUDA_OWNER_LINEAGE` token, checked through `/proc`).
+  A running owner is never evicted, and a lease or slot that its owner
+  quarantined stays held. Until then, run in a separate worktree
+  (`--isolation worktree`), which takes its own lease.
 - Don't delete lease or capacity records by hand to force a run.
 
 Stopping a run with ++ctrl+c++, `garuda sessions cancel` or the dashboard's

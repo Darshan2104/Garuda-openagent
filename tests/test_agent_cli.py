@@ -351,3 +351,22 @@ def test_foreign_metadata_never_constructs_executable_or_recursive_objects(ws, m
     assert row["field_status"].startswith("unknown:")
     assert row["executable_configuration"]["status"] == "not imported"
     assert not (ws / "INSPECTION-MUST-NOT-RUN").exists()
+
+
+def test_check_resolves_qualified_names_and_names_a_missing_target(ws, monkeypatch, capsys):
+    """#670: `garuda/build` is the packaged agent, not a path; a miss says what is missing."""
+    _write(ws, "mine", "version: 1\n")
+    for name in ("garuda/build", "project/mine"):
+        code, out = _main(monkeypatch, capsys, "agent", "check", name, "--json",
+                          "--workspace", str(ws))
+        assert code == 0, out
+        assert [d["code"] for d in json.loads(out)][-1] == "agent.ok"
+        assert f"{name} resolves" in json.loads(out)[-1]["message"]
+    missing = str(ws / "nowhere" / "agent")
+    for target, text in ((missing, f"no such agent or file: {missing}"),
+                         ("garuda/nosuch", "garuda/nosuch"),
+                         ("nosuch", "nosuch")):
+        code, out = _main(monkeypatch, capsys, "agent", "check", target, "--json",
+                          "--workspace", str(ws))
+        (diag,) = json.loads(out)
+        assert code == 1 and diag["code"] == "agent.not_found" and text in diag["message"]

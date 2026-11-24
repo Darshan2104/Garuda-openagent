@@ -217,7 +217,9 @@ Version 1 is strict, so a mistake is caught before anything runs:
 | `agent.output_schema_invalid`, `_unsupported`, `_ref`, `_too_large` | A problem with the output schema |
 
 `garuda agent check NAME_OR_PATH` prints every diagnostic with its code, the
-field path and a fix, and exits `1` on an error. A project agent's Docker
+field path and a fix, and exits `1` on an error. A qualified name such as
+`garuda/build` or `user/mine` is checked as that agent; any other target with a
+`/` is a file path. A missing agent or file is `agent.not_found`. A project agent's Docker
 limits can only narrow what you granted.
 
 ## One definition everywhere

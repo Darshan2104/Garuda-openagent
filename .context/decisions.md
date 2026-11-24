@@ -18,6 +18,35 @@ turn whose result is unsuccessful with an `error` update and a JSON-RPC error,
 not `end_turn`; the native loop logs a failed model call as one bounded line
 (stack at debug level).
 
+## 2026-11-24 — A proved-dead owner's lease and slot are reclaimable (#676, #703)
+
+Owner death still never releases ownership by itself. `garuda runtime recover`
+now releases a session's retained leases and ordinary capacity slots, including
+flow-step slots `<flow>:<step>:<attempt>`. Each release needs four proofs: the
+owner is confirmed dead by its pid and start identity, the record is unchanged
+under its store lock, the owner did not quarantine it, and no live same-user
+process carries the owner's `GARUDA_OWNER_LINEAGE` token. Recorded children of
+the session and its flow steps are reaped first. A live or unknown owner is
+never evicted. Quarantine is now persisted on the lease and slot, so it outlives
+the owner. Without `/proc` the descendant scan cannot run and recovery refuses.
+Plain `recover()` and acquisition keep their previous refusals. `doctor`
+classifies leases by owner state and lists capacity slots.
+
+## 2026-11-24 — Handoff, flow and agent-check references refuse typed (#698, #699, #670)
+
+`garuda runtime handoff` hands off only natively owned sessions. The preview
+and `--confirm` both refuse an externally owned source up front with
+`runtime.handoff_external_source`. The refusal points to
+`garuda run --resume S --as RUNTIME` and `garuda runtime reclaim`. Recovery's
+ownership checks are unchanged. `flow show` and `flow resume` resolve a flow
+reference like the session commands do (ID, unique prefix, name, or `latest`
+limited to flow sessions). An unknown reference refuses with
+`flow.session_not_found`, a non-flow session with `flow.not_a_flow`. A stopped
+flow's recorded `flow_stop` code, step and message appear in `flow show` and
+in the session flow projection. `garuda agent check` treats a qualified name
+(`garuda/`, `user/`, `project/`) as an agent, as other agent commands do. A
+missing agent or file is `agent.not_found`.
+
 ## 2026-11-24 — CLI storage, MCP and approval-id refusals are typed (#677, #672, #678, #704)
 
 `garuda run` reports a strict-storage failure as `storage.unavailable` or

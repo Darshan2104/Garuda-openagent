@@ -31,8 +31,8 @@ entry points remain callable by Garuda's subprocesses.
 | | `garuda doctor [--runtime ID] [--json]` | Validate global settings and configuration, check the harnesses your roles use (executable, version, login), leases and worktrees; exits 1 on an error |
 | | `garuda doctor --recover-project-ids` | Rebuild session project ids after the project key was lost |
 | Flows | `garuda flow run NAME -t TASK [--check COMMAND]` | Run a flow, then run repeatable owned checks on Linux before releasing its workspace |
-| | `garuda flow show FLOW` | A flow's steps, attempts, receipts and outputs |
-| | `garuda flow resume FLOW` | Continue from settled steps. Checked CLI flows can retry a stopped step before checks start when their saved request, workspace and evidence still match. Interrupted steps and started checks are never replayed. |
+| | `garuda flow show FLOW [--workspace W]` | A flow's steps, attempts, receipts and outputs, and a stopped flow's stop code, step and message. `FLOW` is the flow ID, a unique prefix, a name or `latest` (the newest flow in the project); an unknown one refuses with `flow.session_not_found`, a non-flow session with `flow.not_a_flow` |
+| | `garuda flow resume FLOW` | `FLOW` resolves as for `flow show`. Continue from settled steps. Checked CLI flows can retry a stopped step before checks start when their saved request, workspace and evidence still match. Interrupted steps and started checks are never replayed. |
 | Quota recovery | `garuda recovery enable [--root PATH]` | Enable future eligible flows and install the hourly user-cron entry; `--root` selects the store for this command only |
 | | `garuda recovery disable [--root PATH]` | Disable future automatic dispatch and remove Garuda's cron block; does not stop live work |
 | | `garuda recovery status [--root PATH]` | Print persisted enablement, verified local installation and mismatch reason, recorded tick health (last attempt, result, dispatch), plus continuation status; does not launch work or probe quota |
@@ -44,7 +44,7 @@ entry points remain callable by Garuda's subprocesses.
 | | `garuda agent show NAME [--json]` | Each effective field with its source (`packaged`, `user`, `project`, `extends:<agent>`, `default`); secrets redacted, unsupported fields labelled |
 | | `garuda agent show NAME --instruction-sources [--json]` | Opt-in instruction inventory, actual native static loading, duplicates/shadowing, ignored fields and potential conflicts; foreign configuration is not imported |
 | | `garuda agent prompt NAME [--json] [--raw]` | The static system prompt by section, with bytes, characters, estimated tokens and a digest |
-| | `garuda agent check NAME_OR_PATH [--json]` | Every diagnostic, each with its code, field path and fix; exits 1 on an error |
+| | `garuda agent check NAME_OR_PATH [--json]` | Every diagnostic, each with its code, field path and fix; exits 1 on an error. A qualified name such as `garuda/build` is an agent, not a path; a missing agent or file is `agent.not_found` |
 | | `garuda agent new NAME [--from AGENT] [--project]` | Write a minimal definition (your agents directory by default); never overwrites |
 | | `garuda agent migrate PATH [--write] [--accept-tightening]` | Preview a legacy profile as a version 1 definition (and confirm it resolves the same); `--write` replaces it with a backup, and refuses if behaviour would change. Where version 1 is only stricter, it also needs `--accept-tightening` |
 | Memory | `garuda memory list [--json]` | The note proposals waiting for your review in this project |
@@ -59,9 +59,9 @@ entry points remain callable by Garuda's subprocesses.
 | | `garuda lsp list [--workspace W]` | Show the globally configured language servers and ignored project entries; starts nothing |
 | Runtimes | `garuda runtime list [--json] [--workspace W]` | List configured runtimes with health (globally disabled ones read unavailable) |
 | | `garuda runtime inspect <id> [--json] [--workspace W]` | Inspect one runtime, login, and quota |
-| | `garuda runtime handoff --session S --to R [--workspace W] [--confirm]` | Preview (default) or execute a one-shot handoff to an ACP runtime |
+| | `garuda runtime handoff --session S --to R [--workspace W] [--confirm]` | Preview (default) or execute a one-shot handoff of a native session to an ACP runtime; a session an external runtime owns refuses in both with `runtime.handoff_external_source` |
 | | `garuda runtime resume --session S -t TASK` | Resume a native session through the normal run lifecycle; refuses a session an external runtime owns |
-| | `garuda runtime recover --session S [--json]` | Classify and recover a session: `resumable`, `rolled_back`, or `external` |
+| | `garuda runtime recover --session S [--json]` | Classify and recover a session: `resumable`, `rolled_back`, or `external`. Also releases its workspace leases and capacity slots (and its flow steps' slots) once their owner is proved dead with no surviving descendant |
 | | `garuda runtime reclaim --session S` | Return an `external` session to native once the target is proven stopped |
 | | `garuda runtime support --session S` | Print a redacted support bundle with versioned failure evidence |
 | | `garuda runtime support --session S --select causes,identities --preview` | Preview the exact bounded diagnostic JSON, byte count, expiry and digest |
