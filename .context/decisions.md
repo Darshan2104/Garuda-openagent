@@ -1,5 +1,18 @@
 # Durable decisions
 
+## 2026-11-24 — Recipes are validated before any step runs (#682)
+
+`garuda recipe run` validates the whole recipe before it prepares a workspace.
+Recipes are strict like other Garuda configuration. Unknown top-level, parameter
+and step keys refuse, as do an empty `steps` list, a step without `agent` or
+`prompt` (`agent` has no default), and a `mode` outside the run modes. A
+`{{placeholder}}` must name a declared parameter. A step agent must resolve
+through the step resolver. The CLI refuses undeclared `--param` names. Every
+refusal is a typed `recipe.*` error with exit 2. Library callers of
+`run_recipe` keep undeclared parameters, but a missing required parameter
+or an unfilled placeholder now refuses before the first step. `RecipeError`
+is still a `ValueError`.
+
 ## 2026-11-24 — Proven readonly ACP confinement permits inspection (#689)
 
 After the Docker preflight or parent-owned confinement proof, readonly ACP

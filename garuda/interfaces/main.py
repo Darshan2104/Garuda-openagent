@@ -2283,7 +2283,13 @@ async def run_recipe_command(args) -> int:
     import sys
 
     from garuda.config.agent_home import resolve_agents_dirs
-    from garuda.config.recipes import load_recipe, run_recipe
+    from garuda.config.recipes import (
+        RecipeError,
+        check_recipe_agents,
+        load_recipe,
+        resolve_recipe_params,
+        run_recipe,
+    )
 
     try:
         params = _parse_params(args.param)
@@ -2291,7 +2297,15 @@ async def run_recipe_command(args) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    recipe = load_recipe(args.recipe)
+    agents_dir = resolve_agents_dirs(args.workspace, args.agents_dir)
+    # The whole recipe is checked before a workspace is prepared or any step runs.
+    try:
+        recipe = load_recipe(args.recipe)
+        resolve_recipe_params(recipe, params, allow_undeclared=False)
+        check_recipe_agents(recipe, args.workspace, agents_dir)
+    except RecipeError as exc:
+        print(f"Error: {exc.code}: {exc}", file=sys.stderr)
+        return 2
     env, handle = await resolve_environment(
         args.workspace_kind,
         args.workspace,
@@ -2310,7 +2324,7 @@ async def run_recipe_command(args) -> int:
             env=env,
             workspace=args.workspace,
             events=events,
-            agents_dir=resolve_agents_dirs(args.workspace, args.agents_dir),
+            agents_dir=agents_dir,
             mcp_config_path=args.mcp_config,
         )
     finally:
