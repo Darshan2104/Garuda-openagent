@@ -231,7 +231,9 @@ isolation boundary.
 === "recipe run"
 
     `garuda recipe run FILE [--param KEY=VALUE]...` runs a recipe. It takes the
-    model, workspace, `--agents-dir`, and `--mcp-config` flags. See
+    model, workspace, `--agents-dir`, and `--mcp-config` flags. An invalid
+    recipe, step agent or parameter refuses before any step runs with a typed
+    `recipe.*` error (exit 2). See
     [Run a multi-step recipe](../use-cases/automate.md#run-a-multi-step-recipe).
 
 === "recovery"
