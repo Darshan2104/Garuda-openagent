@@ -1,5 +1,17 @@
 # Durable decisions
 
+## 2026-11-24 — Live-log polls and duplicate starts tolerate their writers' windows (#667)
+
+A background-task poll re-snapshots a running capture log when its timestamps
+changed but its size has not grown yet: the kernel updates the timestamps of
+an in-flight append before its size, so that state is not tampering. Growth
+is still the only accepted change, any change once a completion receipt
+exists still fails, and a log that never settles still reports
+`capture_failed`. A launch-intent reader now waits, like a creator, for a
+just-created intent directory to gain its lock, so a duplicate dashboard start
+racing the first request's store creation is not refused with 503. A lock
+that never appears still fails closed.
+
 ## 2026-11-24 — Proven readonly ACP confinement permits inspection (#689)
 
 After the Docker preflight or parent-owned confinement proof, readonly ACP

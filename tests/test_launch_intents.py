@@ -3,6 +3,7 @@
 import json
 import multiprocessing
 import os
+import threading
 import uuid
 from concurrent.futures import ProcessPoolExecutor
 
@@ -10,6 +11,7 @@ import pytest
 
 from garuda.runtime.ownership import current_owner
 from garuda.runtime.strict_store import CorruptRecord, StorageUnavailable
+from garuda.scenarios import launch_intents
 from garuda.scenarios.launch_intents import IntentConflict, IntentStateError, LaunchIntentStore
 
 
@@ -147,7 +149,8 @@ def test_corrupt_or_redirected_records_refuse_without_repair(private_store, corr
     assert path.exists()
 
 
-def test_missing_or_replaced_lock_never_falls_back_to_unlocked_read(private_store):
+def test_missing_or_replaced_lock_never_falls_back_to_unlocked_read(private_store, monkeypatch):
+    monkeypatch.setattr(launch_intents, "LOCK_APPEARANCE_WAIT", 0.05)
     root, workspace, store = private_store
     operation_id = str(uuid.uuid4())
     store.prepare(**_request(workspace, operation_id))
@@ -155,6 +158,23 @@ def test_missing_or_replaced_lock_never_falls_back_to_unlocked_read(private_stor
     lock.unlink()
     with pytest.raises(StorageUnavailable):
         store.read(operation_id)
+
+
+def test_reader_waits_for_a_concurrent_creator_to_publish_its_lock(private_store):
+    """A duplicate request read during another's store creation is not a 503."""
+    root, workspace, store = private_store
+    operation_id = str(uuid.uuid4())
+    directory = root / "launch-intents"
+    # The creator's window: directory made, lock not yet created.
+    directory.mkdir(mode=0o700)
+    timer = threading.Timer(0.2, lambda: (directory / ".lock").touch(mode=0o600))
+    timer.start()
+    try:
+        assert store.read(operation_id) is None
+    finally:
+        timer.join()
+    record, created = store.prepare(**_request(workspace, operation_id))
+    assert created and store.read(operation_id) == record
 
 
 def test_symlinked_session_root_refuses_before_access(private_store, tmp_path):
