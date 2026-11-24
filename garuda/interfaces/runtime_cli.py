@@ -777,16 +777,18 @@ async def run_acp_task(
     else:
         manifest, record = acp_launch_target(catalog, runtime_id)
     option_plan = role_plan
-    if readonly and option_plan is None:
-        option_plan = RolePlan(role="", runtime_id=manifest.runtime_id, kind="acp")
+    if option_plan is None:
+        # A run with no role still runs in a mode its permission allows (#700).
+        option_plan = RolePlan(role="", runtime_id=manifest.runtime_id, kind="acp",
+                               permissions=None if readonly else permission)
     options: dict[str, str] = {}
     adapter_version = getattr(record, "version", "unknown")
-    if option_plan is not None:
-        if readonly:
-            harness_mode(option_plan, ceiling=permission)
-            check_provable(option_plan)
-        else:
-            options = acp_options(option_plan, adapter_version, ceiling=permission)
+    # The mode the run requires; the agent's reported mode is checked against it.
+    required_mode = harness_mode(option_plan, ceiling=permission)
+    if readonly:
+        check_provable(option_plan)
+    else:
+        options = acp_options(option_plan, adapter_version, ceiling=permission)
 
     store = store or SessionStore()
     if capacity_loan is not None and lease_capability is not None:
@@ -985,20 +987,23 @@ async def run_acp_task(
             raise NativeStartupFallback(
                 store=store, events=events, selection=fallback
             ) from start_error
-        if option_plan is not None:
-            if readonly:
-                # The image's adapter version comes from its own handshake.
-                adapter_version = runtime.reported_adapter_version
-                options = acp_options(option_plan, adapter_version, ceiling=permission)
-            applied = await runtime.set_config_options(
-                options, adapter_version=adapter_version)
-            if role_plan is None and applied:
-                store.update_meta(session_id, {"acp_options": applied})
+        if readonly:
+            # The image's adapter version comes from its own handshake.
+            adapter_version = runtime.reported_adapter_version
+            options = acp_options(option_plan, adapter_version, ceiling=permission)
+        applied = await runtime.set_config_options(
+            options, adapter_version=adapter_version)
+        if role_plan is None and applied:
+            store.update_meta(session_id, {"acp_options": applied})
+        # Whatever was set, the agent must now report a mode the run allows.
+        effective_mode = runtime.confirm_mode(required_mode, permission=permission)
+        if effective_mode is not None:
+            store.update_meta(session_id, {"acp_mode": effective_mode})
         if role_plan is not None:
             store.update_meta(session_id, {"role": role_plan.record(
                 adapter={"runtime_id": manifest.runtime_id,
                          "version": adapter_version},
-                options=applied)})
+                options=applied, mode=effective_mode)})
             from garuda.observability import usage as usage_ledger
 
             usage_ledger.record_fallback_start(store, session_id)
