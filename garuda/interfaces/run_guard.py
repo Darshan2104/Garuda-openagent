@@ -233,6 +233,20 @@ class WorkspaceLeaseGuard:
         if self._capacity_loan is not None:
             self._capacity_loan.quarantine()
         await self._stop_beating()
+        self._mark_quarantined()
+
+    def _mark_quarantined(self) -> None:
+        """Record quarantine on the retained lease and slot so no reclaim takes them (#676)."""
+        if self._held:
+            try:
+                self.leases.quarantine(self.workspace, self.session_id, epoch=self._epoch)
+            except Exception:
+                logger.warning("Recording lease quarantine failed", exc_info=True)
+        if self._reservation is not None and self._capacity_store is not None:
+            try:
+                self._capacity_store.quarantine(self._reservation)
+            except Exception:
+                logger.warning("Recording capacity quarantine failed", exc_info=True)
 
     async def release(self) -> None:
         """Release ordinary ownership; quarantined ownership remains held."""
@@ -324,6 +338,7 @@ class BorrowedLease:
         # retains the child slot and the parent's workspace/capacity.
         self._capacity._quarantined = True
         await self._capability._parent.stop_heartbeat()
+        self._capacity._mark_quarantined()
 
     async def release(self) -> None:
         if self._capability._parent._quarantined:

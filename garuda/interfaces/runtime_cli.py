@@ -566,7 +566,9 @@ async def cmd_resume(
 
 
 def cmd_recover(store, session_id: str, *, as_json: bool = False) -> str:
-    report = recover(store, session_id)
+    # The operator's explicit recovery also releases leases and capacity slots
+    # whose owner is proved dead with no surviving descendants (#676, #703).
+    report = recover(store, session_id, release_dead_owner=True)
     if as_json:
         return json.dumps(report_to_dict(report), indent=2)
     lines = [
