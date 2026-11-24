@@ -343,7 +343,7 @@ garuda run --agent careful -t "Rename the retry setting in config.py"
 
 ## Cap time, turns, and cost
 
-<p class="gd-facts">Works with: any native run</p>
+<p class="gd-facts">Works with: any native run · `--deadline-sec` also bounds an ACP run</p>
 
 **Use it when** you want a run to stay small and predictable.
 
@@ -357,7 +357,15 @@ garuda run --deadline-sec 900 --max-turns 30 -t "Fix the flaky test in tests/tes
   before execution starts, the run reports the unexecuted plan, labelled as
   such, rather than as an answer. If planning itself failed (for example, a model error),
   the run says no plan was produced and shows the planner's output as is.
-- `--max-turns` caps the number of agent turns.
+- On an ACP runtime, `--deadline-sec` is the run's wall-clock budget from
+  launch. When it runs out, Garuda sends the harness `session/cancel`, stops its
+  process, and exits with status 1. The session is saved as `failed`, with
+  `stop_reason: deadline` and `error_code: run.deadline_exceeded`. The budget is
+  saved under `limits.deadline_sec`. A value that is not a finite number above 0
+  is refused.
+- `--max-turns` caps the number of agent turns. An ACP harness runs its own tool
+  loop inside one Garuda turn, so `garuda run` refuses `--max-turns` on an ACP
+  runtime; use `--deadline-sec` there.
 - `--max-run-tokens` caps tokens across the whole native run tree: the main
   calls, summaries, the verifier, collection workers, rigorous mode's plan and
   critic, and every native subagent and native consult (including advisors)
