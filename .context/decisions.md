@@ -12,6 +12,33 @@ per segment, summed across segments, labelled `adapter_reported`. It is display
 evidence: the session's `usage`/`cost` stay `unknown`, nothing is summed into
 ledger totals, and no spend cap counts it.
 
+## 2026-11-24 — Recipes are validated before any step runs (#682)
+
+`garuda recipe run` validates the whole recipe before it prepares a workspace.
+Recipes are strict like other Garuda configuration. Unknown top-level, parameter
+and step keys refuse, as do an empty `steps` list, a step without `agent` or
+`prompt` (`agent` has no default), and a `mode` outside the run modes. A
+`{{placeholder}}` must name a declared parameter. A step agent must resolve
+through the step resolver. The CLI refuses undeclared `--param` names. Every
+refusal is a typed `recipe.*` error with exit 2. Library callers of
+`run_recipe` keep undeclared parameters, but a missing required parameter
+or an unfilled placeholder now refuses before the first step. `RecipeError`
+is still a `ValueError`.
+
+## 2026-11-24 — A proved-dead owner's lease and slot are reclaimable (#676, #703)
+
+Owner death still never releases ownership by itself. `garuda runtime recover`
+now releases a session's retained leases and ordinary capacity slots, including
+flow-step slots `<flow>:<step>:<attempt>`. Each release needs four proofs: the
+owner is confirmed dead by its pid and start identity, the record is unchanged
+under its store lock, the owner did not quarantine it, and no live same-user
+process carries the owner's `GARUDA_OWNER_LINEAGE` token. Recorded children of
+the session and its flow steps are reaped first. A live or unknown owner is
+never evicted. Quarantine is now persisted on the lease and slot, so it outlives
+the owner. Without `/proc` the descendant scan cannot run and recovery refuses.
+Plain `recover()` and acquisition keep their previous refusals. `doctor`
+classifies leases by owner state and lists capacity slots.
+
 ## 2026-11-24 — Handoff, flow and agent-check references refuse typed (#698, #699, #670)
 
 `garuda runtime handoff` hands off only natively owned sessions. The preview

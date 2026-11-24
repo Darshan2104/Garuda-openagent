@@ -61,7 +61,7 @@ entry points remain callable by Garuda's subprocesses.
 | | `garuda runtime inspect <id> [--json] [--workspace W]` | Inspect one runtime, login, and quota |
 | | `garuda runtime handoff --session S --to R [--workspace W] [--confirm]` | Preview (default) or execute a one-shot handoff of a native session to an ACP runtime; a session an external runtime owns refuses in both with `runtime.handoff_external_source` |
 | | `garuda runtime resume --session S -t TASK` | Resume a native session through the normal run lifecycle; refuses a session an external runtime owns |
-| | `garuda runtime recover --session S [--json]` | Classify and recover a session: `resumable`, `rolled_back`, or `external` |
+| | `garuda runtime recover --session S [--json]` | Classify and recover a session: `resumable`, `rolled_back`, or `external`. Also releases its workspace leases and capacity slots (and its flow steps' slots) once their owner is proved dead with no surviving descendant |
 | | `garuda runtime reclaim --session S` | Return an `external` session to native once the target is proven stopped |
 | | `garuda runtime support --session S` | Print a redacted support bundle with versioned failure evidence |
 | | `garuda runtime support --session S --select causes,identities --preview` | Preview the exact bounded diagnostic JSON, byte count, expiry and digest |
@@ -231,7 +231,9 @@ isolation boundary.
 === "recipe run"
 
     `garuda recipe run FILE [--param KEY=VALUE]...` runs a recipe. It takes the
-    model, workspace, `--agents-dir`, and `--mcp-config` flags. See
+    model, workspace, `--agents-dir`, and `--mcp-config` flags. An invalid
+    recipe, step agent or parameter refuses before any step runs with a typed
+    `recipe.*` error (exit 2). See
     [Run a multi-step recipe](../use-cases/automate.md#run-a-multi-step-recipe).
 
 === "recovery"
