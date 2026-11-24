@@ -163,8 +163,17 @@ def flow(store, session_id: str, meta: dict | None = None, *, receipts: list[dic
             "coverage": {"declarations": "complete" if declarations_known else "unknown",
                          "receipts": "complete" if receipts_known else "unknown",
                          "journal": journal_coverage},
+            "stop": _flow_stop(meta.get("flow_stop")),
             # Own field: a review verdict is advice about the work, not verification of it.
             "review": meta.get("review"), "quota_recovery": meta.get("quota_recovery")}
+
+
+def _flow_stop(stop) -> dict | None:
+    """Why a stopped flow stopped: its recorded code, step and message, bounded."""
+    if not isinstance(stop, dict) or not stop.get("code"):
+        return None
+    return {key: (" ".join(str(stop[key]).split())[:limit] if stop.get(key) else None)
+            for key, limit in (("code", 120), ("step", 80), ("message", 500))}
 
 
 def _spend(meta: dict) -> dict | None:

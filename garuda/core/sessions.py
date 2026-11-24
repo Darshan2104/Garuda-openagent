@@ -623,9 +623,12 @@ class SessionStore:
             return ProjectIdentity(existing_project_id(self.root, workspace), project_root(workspace), "")
         return project_identity(self.root, workspace)
 
-    def _latest_in_project(self, workspace: str | Path, *, read_only: bool = False) -> str:
+    def _latest_in_project(self, workspace: str | Path, *, read_only: bool = False,
+                           kind: str | None = None) -> str:
         identity = self._resolution_identity(workspace, read_only=read_only)
         everything = self.list_sessions(limit=None)
+        if kind is not None:
+            everything = [meta for meta in everything if meta.get("kind") == kind]
         for meta in everything:
             if self._in_project(meta, identity.project_id, identity.path):
                 return meta["session_id"]
@@ -665,6 +668,7 @@ class SessionStore:
         workspace: str | Path | None = None,
         all_projects: bool = False,
         read_only: bool = False,
+        kind: str | None = None,
     ) -> str:
         """Resolve a full id, a session name, a unique prefix or 'latest'.
 
@@ -676,6 +680,7 @@ class SessionStore:
         never a project's ``latest``.
         ``read_only`` uses only the existing project key and never allocates or
         repairs it; full IDs retain their explicit cross-project meaning.
+        ``kind`` makes ``latest`` the newest session of that kind (``"flow"``).
 
         Raises ``ValueError`` for a ref that is not a bare id — refs can arrive
         from remote clients via the server's ``resume`` param — or an unsafe
@@ -683,11 +688,13 @@ class SessionStore:
         """
         if session_ref == "latest":
             if workspace is None or all_projects:
-                sessions = self.list_sessions(limit=1)
+                sessions = self.list_sessions(limit=1 if kind is None else None)
+                if kind is not None:
+                    sessions = [meta for meta in sessions if meta.get("kind") == kind]
                 if not sessions:
                     raise FileNotFoundError("No saved sessions to resume.")
                 return sessions[0]["session_id"]
-            return self._latest_in_project(workspace, read_only=read_only)
+            return self._latest_in_project(workspace, read_only=read_only, kind=kind)
         validate_session_ref(session_ref)
         if self.session_dir(session_ref).is_dir():
             return session_ref
