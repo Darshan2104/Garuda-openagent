@@ -54,6 +54,7 @@ REGISTRY: dict[str, str] = {
     "agent.unsupported_version": "Set `version: 1`.",
     "agent.invalid_value": "Fix the value at {path}.",
     "agent.invalid_name": "Use a plain name, or garuda/, user/ or project/<name>.",
+    "agent.not_found": "Check the name with `garuda agent list`, or the path to the definition file.",
     "agent.invalid_budget": "Adjust {path} so the budgets fit.",
     "agent.invalid_yaml": "Simplify the YAML (fewer aliases, less nesting).",
     "agent.required_gate": "Set {path} in your user agents, or pass a flag for one run.",
@@ -78,7 +79,19 @@ REGISTRY: dict[str, str] = {
     # sessions and workspaces
     "lease.unreadable": "Inspect the leases directory; a corrupt lease blocks its workspace.",
     "lease.held": "Wait for session {session} to finish, or stop it.",
-    "lease.stale": "Session {session} may have crashed; `garuda runtime recover --session {session}`.",
+    "lease.stale": "Its owner is dead; `garuda runtime recover --session {session}` checks that "
+                   "no descendant survives and releases it.",
+    "lease.overdue": "Its owner (pid {pid}) is still running; wait for it or stop session {session}.",
+    "lease.unknown": "Garuda cannot tell whether its owner (pid {pid}) is alive; check that pid, "
+                     "and use `--isolation worktree` meanwhile.",
+    "lease.quarantined": "Session {session} kept it on purpose (cleanup or a phase was not reconciled); "
+                         "see `garuda sessions show {session}` and use `--isolation worktree` meanwhile.",
+    "capacity.unreadable": "Inspect the capacity directory; a corrupt record blocks its runtime.",
+    "capacity.stale": "Its owner is dead; `garuda runtime recover --session {session}` checks that "
+                      "no descendant survives and releases it.",
+    "capacity.held": "Its owner (pid {pid}) is still running; the slot frees when it ends.",
+    "capacity.retained": "The slot is not released automatically ({reason}); see "
+                         "`garuda sessions show {session}`.",
     "worktree.unpublished": "Merge it (`garuda sessions merge {session}`) or remove it with --force.",
     "session.project_key_missing": "Run `garuda doctor --recover-project-ids`.",
     "verification.no_trusted_check": "Add a check to garuda.yaml, or pass --check COMMAND.",

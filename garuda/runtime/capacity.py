@@ -20,7 +20,9 @@ A reservation that cannot be made now is refused immediately — no caller
 waits on a slot (the background queue, D.1, adds waiting on top). A slot whose
 ordinary owner is confirmed dead still counts: parent death does not prove
 runtime descendants were reaped. Ordinary reservations need an explicit matched
-release; recovery receipts remain session-kernel work. Queue-bound slots remain protected until journaled coordinator release,
+release, or an explicit reclaim once the owner is proved dead with no surviving
+descendants and the slot was not quarantined (``CapacityStore.reclaim_dead``,
+run by ``garuda runtime recover``; #676, #703). Queue-bound slots remain protected until journaled coordinator release,
 including after owner death. Nonempty version 1 records refuse mutation because
 they do not record whether reservations came from a queue. Empty version 1
 records upgrade only after a durable byte-exact private backup.
@@ -305,6 +307,51 @@ class CapacityStore:
         except StorageError as exc:
             raise CapacityError(f"capacity storage unavailable: {exc}") from exc
 
+    def quarantine(self, reservation: Reservation) -> None:
+        """Mark the issuing owner's ordinary slot quarantined so no reclaim takes it."""
+        try:
+            with exclusive_lock(self.root) as directory_fd:
+                document = self._load(reservation.key, for_mutation=True, directory_fd=directory_fd)
+                slot = document["slots"].get(reservation.holder)
+                if (slot is None or slot.get("owner") != reservation.owner.to_dict()
+                        or slot.get("quarantined") is True):
+                    return
+                slot["quarantined"] = True
+                write_locked_document(directory_fd, self._path(reservation.key), document)
+        except StorageError as exc:
+            raise CapacityError(f"capacity storage unavailable: {exc}") from exc
+
+    def reclaim_dead(self, key: str, holder: str, owner: dict) -> bool:
+        """Remove an ordinary slot only while its owner is proved dead (#676, #703).
+
+        Re-reads the record under the lock: the slot must still name exactly
+        ``owner``, carry no queue or loan marker (those have their own
+        coordinators) and not be quarantined; its owner must be confirmed dead
+        with no live process carrying its lineage token. Returns False when the
+        slot is already gone; raises ``CapacityError`` when reclaim is not proved.
+        """
+        from garuda.runtime.ownership import reclaim_refusal
+
+        try:
+            with exclusive_lock(self.root) as directory_fd:
+                document = self._load(key, for_mutation=True, directory_fd=directory_fd)
+                slot = document["slots"].get(holder)
+                if slot is None or slot.get("owner") != owner:
+                    return False
+                if "queue" in slot or "loan" in slot:
+                    raise CapacityError(f"runtime {key!r}: slot {holder!r} is queue- or "
+                                        "loan-bound; its coordinator releases it")
+                refusal = reclaim_refusal(owner, quarantined=slot.get("quarantined", False) is not False,
+                                          liveness=self._liveness)
+                if refusal is not None:
+                    raise CapacityError(f"runtime {key!r}: slot {holder!r} cannot be "
+                                        f"reclaimed: {refusal}")
+                del document["slots"][holder]
+                write_locked_document(directory_fd, self._path(key), document)
+                return True
+        except StorageError as exc:
+            raise CapacityError(f"capacity storage unavailable: {exc}") from exc
+
     def released(self, key: str, holder: str) -> bool:
         """Prove release from an existing readable record, never a missing store."""
         document = self._load(key)
@@ -335,6 +382,16 @@ class CapacityStore:
         match its file, or that fails the ordinary read validation, raises
         (fail closed) rather than being skipped.
         """
+        return [{"key": slot["key"], **{k: v for k, v in slot.items() if k not in {"key", "holder"}}}
+                for slot in self.all_slots() if slot["holder"] == holder]
+
+    def slots_for_session(self, session_id: str) -> list[dict]:
+        """Slots held by ``session_id`` itself or by its flow steps (``<id>:<step>:<attempt>``)."""
+        return [slot for slot in self.all_slots()
+                if slot["holder"] == session_id or slot["holder"].startswith(f"{session_id}:")]
+
+    def all_slots(self) -> list[dict]:
+        """Every recorded slot as ``{"key", "holder", **slot}``. Read-only; corrupt records raise."""
         if not self.root.is_dir():
             return []
         out = []
@@ -346,7 +403,6 @@ class CapacityStore:
             key = (document or {}).get("key")
             if not isinstance(key, str) or self._path(key).name != path.name:
                 raise CapacityError(f"capacity record {path.name} does not match its key; refusing")
-            slot = self._load(key)["slots"].get(holder)
-            if slot is not None:
-                out.append({"key": key, **slot})
+            for holder, slot in sorted(self._load(key)["slots"].items()):
+                out.append({**slot, "key": key, "holder": holder})
         return out

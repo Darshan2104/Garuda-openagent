@@ -142,12 +142,26 @@ Click a problem to see the fix.
     ```
 
     If the message says the holder's **parent is dead but descendant cleanup is
-    not proved**, the other session crashed (for example its terminal was
-    closed) and Garuda can't prove the commands it started have stopped. That
-    lease stays held: `garuda doctor` lists it as `lease.stale`, and
-    `garuda runtime recover` and `reclaim` refuse while it's there. There is no
-    command yet that releases it, so keep working with `--isolation worktree`
-    (or `--no-edits` for read-only work). Don't delete lease records by hand.
+    not proved**, the other session crashed (for example it was killed with
+    `kill -9`, or its terminal was closed). `garuda doctor` lists the lease as
+    `lease.stale`. Release it with:
+
+    ```bash
+    garuda runtime recover --session ID   # the id, prefix or name from the message
+    ```
+
+    Recovery releases the lease, and the runtime capacity slots of the session
+    and its flow steps, only when it can prove the owner is gone: the owner's
+    pid has exited (or now belongs to another process), the commands that
+    Garuda recorded for it are stopped, and no process the owner started
+    (they carry its lineage in `GARUDA_OWNER_LINEAGE`) is still running. If a
+    leftover process is still running, the refusal names its pid. Stop it and
+    run the command again. Recovery never takes a lease from a running owner.
+    A lease that a session **quarantined** (`lease.quarantined`) is kept on
+    purpose until its cleanup is reconciled. Recovery can't release it, so use
+    `--isolation worktree` (or `--no-edits` for read-only work) meanwhile.
+    The proof reads `/proc`, so on macOS recovery still refuses. Don't delete
+    lease records by hand.
 
 ??? question "`sessions merge` fails with `integration.check_failed`"
 
@@ -191,6 +205,14 @@ Click a problem to see the fix.
     garuda runtime reclaim --session latest
     garuda runtime resume --session latest -t "Continue natively"
     ```
+
+??? question "`runtime handoff` refuses with `runtime.handoff_external_source`"
+
+    Only a session the native runtime owns can be handed off. This one is
+    owned by an external harness (a Claude or Codex role run, or an earlier
+    handoff). Continue it on another runtime from its brief with
+    `garuda run --resume S --as RUNTIME -t "..."`. To take it back natively
+    once the harness has stopped, use `garuda runtime reclaim --session S`.
 
 ??? question "The Approvals page says `stale_request`, `already_answered` or `expired`"
 
@@ -298,6 +320,9 @@ Click a problem to see the fix.
     Version 1 definitions are strict, so mistakes are caught before a run. The
     message names the field and a fix. The common ones:
 
+    - `agent.not_found`: no agent with that name, or no file at that path.
+      `garuda agent list` shows the names; `garuda/build` is always the
+      packaged agent.
     - `agent.unknown_field`: a typo such as `limits.max_turn`; `garuda agent
       show garuda/build` lists the real fields.
     - `agent.unsupported_field`: a field that isn't supported yet, such as
@@ -311,6 +336,18 @@ Click a problem to see the fix.
       a reference outside the file.
 
     See the [Agent definitions guide](../guides/agents.md#checks-before-a-run).
+
+??? question "`garuda recipe run` refuses with `recipe.*`"
+
+    The recipe is checked before anything runs. The message names the field.
+
+    - `recipe.invalid`: an unknown key, an empty `steps` list, a step without
+      `agent` or `prompt`, an unknown `mode`, a `{{name}}` that isn't a declared
+      parameter, or a file that isn't valid YAML.
+    - `recipe.not_found` or `recipe.unreadable`: check the recipe path.
+    - `recipe.agent_not_found`: `garuda agent list` shows the agent names.
+    - `recipe.param_missing`: pass `--param NAME=VALUE` or give it a `default`.
+    - `recipe.param_unknown`: the `--param` isn't declared under `parameters`.
 
 ??? question "A run says `verification: unavailable`"
 
@@ -361,11 +398,13 @@ Click a problem to see the fix.
     reviewer saw what the step produced. Run the flow in a git repository, or
     set `independent: false` on the review to accept an unenforced binding.
 
-??? question "`garuda flow show` says no such file"
+??? question "`garuda flow show` says `flow.session_not_found` or `flow.not_a_flow`"
 
-    `flow show` and `flow resume` need the full flow ID that `garuda flow run`
-    prints at the end (`"flow_session": "…"`, for a stopped flow too), not a
-    prefix or a name.
+    `flow show` and `flow resume` take the flow ID that `garuda flow run`
+    prints at the end (`"flow_session": "…"`, for a stopped flow too), a unique
+    prefix of it, or `latest`. Prefixes and `latest` are looked up in the
+    current project; pass `--workspace` from elsewhere. `flow.not_a_flow`
+    means the ID names a session that isn't a flow, such as one flow step.
 
 ??? question "`garuda flow resume` stops with `flow.review_unresolved`"
 

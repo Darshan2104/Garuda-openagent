@@ -299,9 +299,38 @@ def cmd_inspect_registry(
     )
 
 
+class HandoffRefused(ValueError):
+    """A handoff the preview and ``--confirm`` both refuse before anything moves."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+def _require_native_source(unified, session_id: str) -> None:
+    """Only a natively owned session can be handed off.
+
+    A session an external runtime already owns is refused up front, by the
+    preview and by ``--confirm`` alike, with the ways it can actually continue.
+    """
+    active = unified.active
+    if active.kind != "native":
+        raise HandoffRefused(
+            "runtime.handoff_external_source",
+            f"session {session_id} is owned by external runtime {active.runtime_id!r}; "
+            "`garuda runtime handoff` hands off native sessions only. Continue it on "
+            f"another runtime with `garuda run --resume {session_id} --as <runtime> -t ...`, "
+            f"or, once its harness has stopped, `garuda runtime reclaim --session {session_id}`",
+        )
+
+
 def cmd_handoff_preview(store, session_id: str, target_id: str) -> str:
-    """Show what a switch would do. Reads only; changes nothing."""
+    """Show what a switch would do. Reads only; changes nothing.
+
+    Raises :class:`HandoffRefused` for a source ``--confirm`` would refuse.
+    """
     unified = store.load_unified(session_id)
+    _require_native_source(unified, session_id)
     lines = [
         f"handoff preview: {session_id} -> {target_id}",
         f"  source runtime: {unified.active.runtime_id} "
@@ -354,6 +383,8 @@ async def cmd_handoff_confirm(
             "handoff refused: the target is the native runtime itself — "
             "resume the session instead (`garuda runtime resume`).\n"
         )
+    # The same refusal the preview gives, before any catalog, lease or runtime work.
+    _require_native_source(store.load_unified(session_id), session_id)
     if workspace is None:
         recorded = store.load_meta(session_id).get("workspace")
         # A relative record (native sessions store ".") names whatever
@@ -535,7 +566,9 @@ async def cmd_resume(
 
 
 def cmd_recover(store, session_id: str, *, as_json: bool = False) -> str:
-    report = recover(store, session_id)
+    # The operator's explicit recovery also releases leases and capacity slots
+    # whose owner is proved dead with no surviving descendants (#676, #703).
+    report = recover(store, session_id, release_dead_owner=True)
     if as_json:
         return json.dumps(report_to_dict(report), indent=2)
     lines = [
