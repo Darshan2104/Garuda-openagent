@@ -308,3 +308,43 @@ def test_the_container_has_no_way_back_to_the_host(repo):
     assert "--read-only" in argv and "--cap-drop" in argv and "no-new-privileges" in joined
     assert "65534:65534" in argv and "docker.sock" not in joined
     assert not any(a.startswith(str(Path.home())) and ":rw" in a for a in argv)
+
+
+@pytest.mark.parametrize("profile, status", [("success", "completed"), ("remote-error", "failed")])
+def test_confined_runs_record_adapter_usage_in_the_ledger(
+        repo, tmp_path, monkeypatch, capsys, fake_acp_confinement, profile, status):
+    """#690: a confined readonly session records the usage its adapter reported, keyed by
+    the version the image's handshake reported, marked confined, even when the turn
+    fails; `sessions show` surfaces it as adapter-reported (#691)."""
+    from garuda.observability.ledger import Ledger
+    from tests.test_runtime_cli import _hard_deadline, _install_shim, _main, _on_path
+
+    _settings()
+    _roles()
+    _on_path(monkeypatch, tmp_path / "bin")
+    _install_shim(tmp_path / "bin", profile=profile, extra=(
+        "--report-usage", "--agent-info", json.dumps({"name": "fake-image", "version": "7.1.0"})))
+    fake_acp_confinement("fakeacp")
+
+    with _hard_deadline(60):
+        code, out = _run(monkeypatch, capsys, repo, "-t", "review")
+
+    assert code == (0 if status == "completed" else 1), out
+    (meta,) = SessionStore().list_sessions()
+    assert meta["status"] == status
+    rows = [r for r in Ledger().records() if r.get("session_id") == meta["session_id"]]
+    assert [(r["kind"], r["adapter_version"], r["confined"], r["cost_usd"], r["model"])
+            for r in rows] == [("acp_usage_snapshot", "7.1.0", True, 0.0025, "fake-model-1")]
+
+    code, out = _main(monkeypatch, capsys, "sessions", "show", meta["session_id"],
+                      "--workspace", str(repo), "--json")
+    assert code == 0, out
+    reported = json.loads(out)["reported_usage"]
+    assert reported["source"] == "adapter_reported"
+    assert (reported["cost_usd"], reported["models"], reported["adapter_version"],
+            reported["confined"]) == (0.0025, ["fake-model-1"], "7.1.0", True)
+    code, out = _main(monkeypatch, capsys, "sessions", "show", meta["session_id"],
+                      "--workspace", str(repo))
+    assert code == 0, out
+    assert "Reported usage: USD 0.0025; model fake-model-1" in out
+    assert "adapter-reported, not metered by Garuda" in out

@@ -217,7 +217,8 @@ history. On top of that:
   its outcome. Garuda never stores the harness's own messages or tool calls,
   so the trace below it says so instead of showing empty turns. **Models used**
   adds each turn's context snapshot, with the model the harness reported and
-  its estimated cost when it gives them.
+  its estimated cost when it gives them. The run's **Cost** tile shows that
+  adapter-reported cost, labelled as such, instead of a blank.
 - **Consults** lists each question the session asked another role as a lane:
   who asked whom, the identity that ran, its outcome (`answered`, `withheld`,
   `failed`, `timeout`, `quarantined`, `interrupted`), duration, denied
@@ -246,7 +247,8 @@ place when you open a session and come back. A session's page adds:
 `garuda sessions --json` prints the same rows: the CLI and the dashboard read
 one model. A queue that can't be read shows as `unknown`, not as empty. A
 session row's own usage and cost still read `unknown`; the Usage page has the
-totals.
+totals, and a session's detail adds `reported_usage`, what an external harness's
+adapter reported (see [Sessions](sessions-and-flows.md)).
 
 ## Approvals
 

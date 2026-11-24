@@ -1070,8 +1070,17 @@ def run_sessions(args) -> int:
         if args.json:
             print(_json.dumps(row, indent=2, default=str))
         else:
+            from garuda.observability.usage import reported_usage_line
+
             shown = {**row, "consults": row.get("consults", {}).get("line") or "none"}
+            reported = shown.pop("reported_usage", None)
+            if reported:
+                for key in ("usage", "cost"):
+                    if shown.get(key) == "unknown":
+                        shown[key] = "unknown (not metered by Garuda; see Reported usage)"
             print("\n".join(f"{k}: {v}" for k, v in shown.items() if k != "spend"))
+            if reported:
+                print(f"Reported usage: {reported_usage_line(reported)}")
             spend = row["spend"]
             if spend is None:
                 print("Spend: not recorded")

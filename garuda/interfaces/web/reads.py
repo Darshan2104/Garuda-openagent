@@ -248,7 +248,7 @@ def read_run(
         "trajectory": run.to_dict(include_events=False),
         "event_count": event_count,
         "condenser_threshold": condenser_threshold((run.config or {}).get("condenser")),
-        "external": external_trail(directory, meta),
+        "external": external_trail(directory, meta, session_id=session_id),
     }
 
 
@@ -256,13 +256,16 @@ def read_run(
 EXTERNAL_KINDS = ("message", "tool_call", "tool_result", "approval_request", "error")
 
 
-def external_trail(directory: Path, meta: dict[str, Any]) -> dict[str, Any] | None:
+def external_trail(directory: Path, meta: dict[str, Any], *,
+                   session_id: str | None = None) -> dict[str, Any] | None:
     """What Garuda recorded of an external harness's run: who ran, per-turn event counts,
     approvals and the last usage report. ``None`` for a session with no external events.
 
     Garuda keeps only the shape of an external trail (kinds, turns, prompt digests), never
     the harness's own messages or tool calls, so this is all a trajectory can show.
     """
+    from garuda.observability.usage import reported_usage
+
     path = directory / ACP_EVENTS_FILE
     if not path.is_file():
         return None
@@ -301,6 +304,8 @@ def external_trail(directory: Path, meta: dict[str, Any]) -> dict[str, Any] | No
         "turns": [{"turn": turn, **counts} for turn, counts in sorted(turns.items())],
         "prompts_sent": prompts,
         "approvals": approvals,
+        # The adapter's own usage/cost figure, labelled as such (#691).
+        "reported_usage": reported_usage(session_id) if session_id else None,
         "note": ("The harness's own messages and tool calls are not stored; only their counts. "
                  "Message events include streamed chunks and informational updates such as "
                  "usage reports."),

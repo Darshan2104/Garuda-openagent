@@ -160,7 +160,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Append the session/new cwd to the default reply (launch-path tests).",
     )
     parser.add_argument("--report-usage", action="store_true",
-                        help="Send a usage_update (cost and model) before the default reply.")
+                        help="Send a usage_update (cost and model) first in every prompt.")
     parser.add_argument("--artifact-padding", type=int, default=0,
                         help="Lengthen each `artifacts` block body by this many characters.")
     parser.add_argument("--approval-kind",
@@ -375,6 +375,10 @@ def _handle_prompt(
 ) -> None:
     session_id = params.get("sessionId", "")
     text = _prompt_text(params.get("prompt"))
+    if report_usage:  # first, so a turn that then fails has reported what it cost
+        _update(session_id, {"sessionUpdate": "usage_update", "used": 1200, "size": 200000,
+                             "cost": {"amount": 0.0025, "currency": "USD"},
+                             "_meta": {"_claude/model": "fake-model-1"}})
     if profile == "approval" or approval_kind is not None:
         title = text if profile == "approval" else "pwd"
         allowed = _request_permission(session_id, title, approval_kind, cwd=cwd)
@@ -485,10 +489,6 @@ def _handle_prompt(
         _result(call_id, {"stopReason": "end_turn"})
     else:
         reply = f"done: {text}" if cwd is None else f"done: {text} (cwd={cwd})"
-        if report_usage:
-            _update(session_id, {"sessionUpdate": "usage_update", "used": 1200, "size": 200000,
-                                 "cost": {"amount": 0.0025, "currency": "USD"},
-                                 "_meta": {"_claude/model": "fake-model-1"}})
         _update(
             session_id,
             {"sessionUpdate": "agent_message_chunk", "content": _text(reply)},

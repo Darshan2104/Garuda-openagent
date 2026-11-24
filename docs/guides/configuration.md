@@ -424,6 +424,10 @@ paths, and the writer refuses any field outside its schema.
   and never a call count) until a policy for that exact adapter version is proved.
   Simultaneous per-turn and cumulative reports are never added together. A gap, reset,
   decrease or adapter change leaves the delta unavailable instead of guessing.
+- An external run's usage is recorded after the harness closes, on every outcome, so a
+  failed or cancelled turn keeps the cost its adapter reported. A run in a harness's
+  confinement image is keyed by the adapter version the image itself reported and
+  marked `confined: true`.
 - Unknown cost stays unknown (`null`), never zero. A session killed mid-run is incomplete
   until reconciled from its event log, which adds only what is missing.
 - Month files are kept for 13 months; cleaning up sessions does not touch them.
