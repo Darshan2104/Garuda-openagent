@@ -28,7 +28,7 @@ entry points remain callable by Garuda's subprocesses.
 | | `garuda sessions remove-worktree S [--force]` | Remove a worktree session's worktree; refuses unpublished work without `--force` |
 | | `garuda approvals list S` | List a running session's parked approvals with each request digest |
 | | `garuda approvals answer S ID --allow [--digest D]` | Answer one from another terminal (`--deny` refuses); bound to that exact request, one answer only; `--digest` refuses unless the pending request is the one you listed; an id that could name a file outside the session's approvals folder refuses with `approval.invalid_id` (exit 2) |
-| | `garuda doctor [--runtime ID] [--json]` | Validate global settings and configuration, check the harnesses your roles use (executable, version, login), leases and worktrees; exits 1 on an error |
+| | `garuda doctor [--runtime ID] [--json]` | Validate global settings and configuration, check the harnesses your roles use, fallbacks included (executable, version, login), leases and worktrees; exits 1 on an error |
 | | `garuda doctor --recover-project-ids` | Rebuild session project ids after the project key was lost |
 | Flows | `garuda flow run NAME -t TASK [--check COMMAND]` | Run a flow, then run repeatable owned checks on Linux before releasing its workspace |
 | | `garuda flow show FLOW [--workspace W]` | A flow's steps, attempts, receipts and outputs, and a stopped flow's stop code, step and message. `FLOW` is the flow ID, a unique prefix, a name or `latest` (the newest flow in the project); an unknown one refuses with `flow.session_not_found`, a non-flow session with `flow.not_a_flow` |
@@ -97,7 +97,7 @@ successful preview can still be refused by those steps after admission.
     | `--all-projects` | With `--resume latest` or `--fork latest`, take the newest session from any project |
     | `--as RUNTIME` | With `--resume`, continue on another runtime: a new linked session started from the resumed session's brief |
     | `--name NAME` | Name the session (unique in the project; defaults to a slug of the task) |
-    | `--bg` | Queue the run and return at once; a detached worker waits without a workspace lease. Effective roles use their runtime’s lane; dynamic role fallback refuses. Activated or ambiguous worker death retains capacity pending cleanup. Prints the session id |
+    | `--bg` | Queue the run and return at once; a detached worker waits without a workspace lease. Effective roles use their runtime’s lane; dynamic role fallback refuses. Activated or ambiguous worker death retains capacity pending cleanup. On an ACP runtime named by the role or `--runtime`, `--max-turns`, an invalid `--deadline-sec` and the spend caps are refused at admission, as in the foreground. Prints the session id |
     | `--no-edits` | Run with read-only permissions and withhold output if the workspace changed (exit 3). ACP runs require Docker confinement |
     | `--harness-mode MODE` | Run the selected external role in this mode of its harness for this run (Claude Code `acceptEdits`, Codex `read-only`, …); it must fit the role's permissions |
     | `--check COMMAND` | An acceptance check run after the session (repeatable); its result is the session's verification |

@@ -812,7 +812,7 @@ by native runs, ACP runs, and CLI handoffs: the workspace lease with heartbeat a
 race, complete issuing-parent validation before delegation and borrowed
 capability creation/acquisition/start/race, and the P0.17 broker approval path), `server.py` + `jobs.py` (JSON-RPC header authentication before body reads, separate bounded header/body/run capacity with excess authenticated work refused, and job queue: submit/status/
 events/result/cancel), `session.py` (multi-turn state shared by CLI and SDK),
-`runner.py` (assembles a run and owns workspace teardown), `onboarding.py` (C.4: `garuda doctor` — global settings validated through shared runtime loaders/parsers with errors collected across sections, config with provenance, only the harnesses roles use, executable/version/login/capabilities, leases, worktrees — `garuda init` / `init --project` proposals that write only after confirmation, `config show`), `session_service.py`
+`runner.py` (assembles a run and owns workspace teardown), `onboarding.py` (C.4: `garuda doctor` — global settings validated through shared runtime loaders/parsers with errors collected across sections, config with provenance, only the harnesses roles use (fallback chains included), executable/version/login/capabilities, leases, worktrees — `garuda init` / `init --project` proposals that write only after confirmation, `config show`), `session_service.py`
 (B.6: the one session lifecycle every native entry point follows — workspace,
 capacity then lease, session record and baseline, approval broker, environment,
 then reap, teardown, persist and release last; `garuda chat`, dashboard chats and
@@ -835,9 +835,12 @@ cleanup and the terminal session record have settled.
 `terminal_approval.py` owns `TerminalApprover`: request-aware worker, agent,
 depth and waiting-count labels, plus one shielded stdin reader per event loop.
 It is single-loop only: all approval users of one stdin must share that loop;
-concurrent loops in different threads are not serialized. A withdrawn prompt
-retains its read ownership; that line is discarded before a fresh read for the
-reprinted current prompt. Do not replace the loop while that reader is outstanding.
+concurrent loops in different threads are not serialized. On a POSIX tty the
+reader thread waits in `select()` for a complete line (or a wake-up pipe) before
+calling `input()`, so withdrawal stops it without consuming input or leaving a
+thread blocked in `input()` that would keep the process alive (#675). Otherwise
+a withdrawn prompt retains its read ownership; that line is discarded before a
+fresh read for the reprinted current prompt. Do not replace the loop while that reader is outstanding.
 The locked presentation suspends all renderers through the initial prompt, drain,
 re-prompt and read. Cancellation releases that suspension while the orphan input
 thread can still own stdin; the next presentation drains its line.

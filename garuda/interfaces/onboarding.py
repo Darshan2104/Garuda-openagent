@@ -132,7 +132,15 @@ def _config_diagnostics(workspace) -> tuple[list[Diagnostic], object]:
 
 
 def _harness_diagnostics(catalog, targets: set[str], *, login_run=None,
-                         probe_timeout: float = 10.0) -> list[Diagnostic]:
+                         probe_timeout: float = 10.0,
+                         fallback_only: frozenset[str] = frozenset()) -> list[Diagnostic]:
+    """Check each harness in ``targets``.
+
+    A harness in ``fallback_only`` is used only in a role's ``fallback:``
+    chain: it is checked the same way, but a missing or logged-out one is a
+    warning (that fallback can never be taken), not an error, because the
+    role itself can still start.
+    """
     from garuda.acp.login_probe import LoginState, probe_login
 
     out = []
@@ -140,6 +148,9 @@ def _harness_diagnostics(catalog, targets: set[str], *, login_run=None,
         rid = manifest.runtime_id
         if manifest.kind.value == "native":
             continue
+        fallback = rid in fallback_only
+        blocking = "warning" if fallback else "error"
+        note = " (used only as a role fallback, which can never be taken)" if fallback else ""
         if rid not in targets:
             out.append(diagnostic("harness.not_checked", f"{rid}: not used by your roles",
                                   runtime=rid))
@@ -151,8 +162,8 @@ def _harness_diagnostics(catalog, targets: set[str], *, login_run=None,
         record = next(r for r in catalog.discover(only=frozenset({rid}), cache_ttl=60.0)
                       if r.runtime_id == rid)  # discovery also lists built-in stubs
         if not record.available:
-            out.append(diagnostic("harness.cli_missing", f"{rid}: executable not found",
-                                  level="error", setup=manifest.setup or "see its docs"))
+            out.append(diagnostic("harness.cli_missing", f"{rid}: executable not found{note}",
+                                  level=blocking, setup=manifest.setup or "see its docs"))
             continue
         caps = ", ".join(record.capabilities) or "none declared"
         state = probe_login(manifest, timeout=probe_timeout, run=login_run)
@@ -161,7 +172,7 @@ def _harness_diagnostics(catalog, targets: set[str], *, login_run=None,
         if state is LoginState.AUTHENTICATED:
             out.append(diagnostic("harness.ok", f"{head}; logged in"))
         elif state is LoginState.LOGGED_OUT:
-            out.append(diagnostic("harness.logged_out", f"{head}; logged out", level="error",
+            out.append(diagnostic("harness.logged_out", f"{head}; logged out{note}", level=blocking,
                                   login=manifest.login.instructions or "see its docs"))
         elif state is LoginState.TIMEOUT:
             out.append(diagnostic("harness.login_timeout", f"{head}; login check timed out",
@@ -262,11 +273,17 @@ def doctor_report(workspace, *, runtimes=(), login_run=None) -> list[Diagnostic]
     config, resolved = _config_diagnostics(workspace)
     out += config
     targets = set(runtimes)
+    fallbacks: set[str] = set()
     if resolved is not None:
-        targets |= {r["harness"] for r in resolved.config.get("roles", {}).values()}
+        roles = resolved.config.get("roles", {}).values()
+        targets |= {r["harness"] for r in roles}
         targets |= set(resolved.config.get("harnesses", {}))
+        # A role's fallback harnesses are used too (#680).
+        fallbacks = {c["harness"] for r in roles for c in r.get("fallback", [])} - targets
+        targets |= fallbacks
     catalog = prepare_runtime_catalog(str(workspace))
-    out += _harness_diagnostics(catalog, targets, login_run=login_run)
+    out += _harness_diagnostics(catalog, targets, login_run=login_run,
+                                fallback_only=frozenset(fallbacks))
     out += _state_diagnostics()
     return out
 

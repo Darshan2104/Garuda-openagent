@@ -61,8 +61,12 @@ class ProbeCatalog(RuntimeCatalog):
         from garuda.acp.catalog import discover
 
         def version(argv, *, timeout):
+            from garuda.acp.catalog import FailedProbeOutput
+
             outcome = bounded_probe(argv, timeout)
-            return outcome[1] if isinstance(outcome, tuple) and outcome[0] == 0 else None
+            if not isinstance(outcome, tuple):
+                return None
+            return outcome[1] if outcome[0] == 0 else FailedProbeOutput(outcome[1])
 
         records = tuple(discover([m for m in self.registry.manifests if only is None or m.runtime_id in only],
                                  run_probe=version))
