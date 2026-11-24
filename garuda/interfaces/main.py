@@ -2243,6 +2243,7 @@ async def run_acp_command(args, task: str, catalog) -> int:
             store=getattr(args, "_store", None),
             starter_record=getattr(args, "starter_record", None),
             isolation=getattr(args, "isolation", "shared"),
+            deadline_sec=getattr(args, "deadline_sec", None),
         )
     except NativeStartupFallback:
         raise

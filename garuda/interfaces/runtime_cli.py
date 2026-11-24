@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import os
 from functools import partial
 from typing import Any
@@ -638,6 +639,7 @@ async def run_acp_task(
     catalog=None,
     approval=None,
     prompt_timeout: float | None = None,
+    deadline_sec: float | None = None,
     emit=print,
     format_event=None,
     initial_selection=None,
@@ -674,7 +676,15 @@ async def run_acp_task(
     retired) → final workspace delta → lease release, on every path including
     cancellation. The session status is `completed` when the agent ended its
     turn — Garuda did not verify the result — or `failed`.
+
+    ``deadline_sec`` is the run's wall-clock budget, counted from this call
+    (#701). The prompt gets what remains; when it runs out the turn is
+    cancelled (`session/cancel`), the agent process is reaped, the session
+    settles `failed` with ``stop_reason: deadline`` and
+    ``error_code: run.deadline_exceeded``, and ``AcpTimeoutError`` is raised.
     """
+    import time
+
     from garuda.core.events import EventStore
     from garuda.core.sessions import SessionStore
     from garuda.interfaces.run_guard import WorkspaceLeaseGuard, broker_approval_handler
@@ -682,6 +692,10 @@ async def run_acp_task(
     from garuda.runtime.session import RuntimeSegment
     from garuda.workspace.evidence import begin_session_evidence, finish_session_evidence
 
+    started_at = time.monotonic()
+    if deadline_sec is not None and not (
+            isinstance(deadline_sec, (int, float)) and math.isfinite(deadline_sec) and deadline_sec > 0):
+        raise ValueError("deadline_sec must be a finite number of seconds > 0")
     workspace = os.path.abspath(workspace)
     if codex_executable is not None and (
             runtime_id != "codex" or not os.path.isabs(codex_executable)):
@@ -781,6 +795,7 @@ async def run_acp_task(
     runtime = None
     began = False
     transferred_to_native = False
+    deadline_hit = False
     outcome: dict[str, Any] | None = None
     try:
         store.begin(
@@ -800,6 +815,8 @@ async def run_acp_task(
         began = True
         if session_record:
             store.update_meta(session_id, session_record)
+        if deadline_sec is not None:
+            store.update_meta(session_id, {"limits": {"deadline_sec": deadline_sec}})
         if worktree:
             store.update_meta(session_id, plan_meta(worktree))
         if starter_record is not None:
@@ -963,9 +980,25 @@ async def run_acp_task(
         first_message = with_instructions(role_plan, task)
         if before_prompt is not None:
             await before_prompt()
-        turn = await lease.race(
-            runtime.prompt(prompt_with(attached, first_message), timeout=prompt_timeout)
-        )
+        timeout = prompt_timeout
+        if deadline_sec is not None:
+            remaining = max(0.0, deadline_sec - (time.monotonic() - started_at))
+            timeout = remaining if timeout is None else min(timeout, remaining)
+        from garuda.acp.protocol import AcpTimeoutError
+
+        try:
+            turn = await lease.race(
+                runtime.prompt(prompt_with(attached, first_message), timeout=timeout)
+            )
+        except AcpTimeoutError as exc:
+            if deadline_sec is None:
+                raise
+            # The adapter has sent session/cancel and reaped the agent; the
+            # session settles failed below with the deadline as its cause.
+            deadline_hit = True
+            raise AcpTimeoutError(
+                f"the run exceeded --deadline-sec {deadline_sec:g}; the ACP turn was "
+                "cancelled and the agent stopped") from exc
         events, _ = await runtime.poll_events(0)
         for event in events:
             emit(format_event(event) if format_event is not None
@@ -978,15 +1011,11 @@ async def run_acp_task(
         )
         if reply:
             store.update_meta(session_id, {"final_message": reply[-2000:]})
-        reports = [e.payload["usage"] for e in events  # a report with no valid field is none
-                   if e.kind.value == "message" and isinstance(e.payload.get("usage"), dict)
-                   and e.payload["usage"]]
-        if reports:
-            from garuda.observability.usage import record_acp_usage
+        from garuda.observability.usage import record_turn_acp_usage
 
-            record_acp_usage(store, session_id, runtime_id=manifest.runtime_id,
-                             adapter_version=getattr(record, "version", "unknown"),
-                             segment=info.native_session_id or session_id, usage=reports[-1])
+        record_turn_acp_usage(store, session_id, events, runtime_id=manifest.runtime_id,
+                              adapter_version=getattr(record, "version", "unknown"),
+                              segment=info.native_session_id or session_id)
         outcome = {
             "session_id": session_id,
             "native_session_id": info.native_session_id,
@@ -1030,16 +1059,16 @@ async def run_acp_task(
                 try:
                     from garuda.runtime.session_state import finished
 
-                    store.update_meta(
-                        session_id,
-                        {
-                            "status": status,
-                            "verified": False,
-                            # The external harness's own checks are not Garuda's
-                            # completion gate: no self-check, no verification.
-                            "state": finished(success=status == "completed"),
-                        },
-                    )
+                    settled = {
+                        "status": status,
+                        "verified": False,
+                        # The external harness's own checks are not Garuda's
+                        # completion gate: no self-check, no verification.
+                        "state": finished(success=status == "completed"),
+                    }
+                    if deadline_hit:
+                        settled.update(stop_reason="deadline", error_code="run.deadline_exceeded")
+                    store.update_meta(session_id, settled)
                 except Exception:
                     logger.warning("Failed to record ACP session status", exc_info=True)
                 if outcome is not None:
