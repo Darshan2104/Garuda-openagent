@@ -14,6 +14,31 @@ from pathlib import Path
 from garuda.core.events import EventStore
 
 
+def acp_limit_refusal(args, runtime_id: str) -> str | None:
+    """Why a run limit cannot be enforced on the ACP runtime, else None.
+
+    Shared by the foreground run and `--bg` admission (#712), so a queued
+    run is refused immediately with the same message a foreground run gives.
+    """
+    if (getattr(args, "max_run_tokens", None), getattr(args, "max_run_cost_usd", None)) != (None, None):
+        # The external agent makes its own model calls; Garuda cannot
+        # admit or settle them, so a cap here would be a silent no-op.
+        return (f"--max-run-tokens/--max-run-cost-usd cannot be enforced on the "
+                f"ACP runtime '{runtime_id}'; they bound the native run tree only "
+                "(use --runtime native)")
+    if getattr(args, "max_turns", None) is not None:
+        # One ACP prompt is one Garuda turn; the harness runs its own
+        # tool loop, so a turn cap would be a silent no-op (#701).
+        return (f"--max-turns cannot be enforced on the ACP runtime "
+                f"'{runtime_id}'; the harness runs its own tool loop inside one "
+                "Garuda turn (bound the run with --deadline-sec, or use --runtime native)")
+    deadline = getattr(args, "deadline_sec", None)
+    if deadline is not None and not (math.isfinite(deadline) and deadline > 0):
+        return ("--deadline-sec must be a finite number of seconds > 0 on the "
+                f"ACP runtime '{runtime_id}'")
+    return None
+
+
 async def run_task(args) -> int:
     import sys
 
@@ -178,25 +203,9 @@ async def run_task(args) -> int:
                 raise RoleRefused("config.conflict",
                                   f"role {role_plan.role} resolved to {role_plan.runtime_id}, "
                                   f"but the run selected {selected.runtime_id}")
-            if spend_caps != (None, None):
-                # The external agent makes its own model calls; Garuda cannot
-                # admit or settle them, so a cap here would be a silent no-op.
-                print(f"Error: --max-run-tokens/--max-run-cost-usd cannot be enforced on the "
-                      f"ACP runtime '{args.runtime}'; they bound the native run tree only "
-                      "(use --runtime native)", file=sys.stderr)
-                return 2
-            if getattr(args, "max_turns", None) is not None:
-                # One ACP prompt is one Garuda turn; the harness runs its own
-                # tool loop, so a turn cap would be a silent no-op (#701).
-                print(f"Error: --max-turns cannot be enforced on the ACP runtime "
-                      f"'{args.runtime}'; the harness runs its own tool loop inside one "
-                      "Garuda turn (bound the run with --deadline-sec, or use --runtime native)",
-                      file=sys.stderr)
-                return 2
-            deadline = getattr(args, "deadline_sec", None)
-            if deadline is not None and not (math.isfinite(deadline) and deadline > 0):
-                print("Error: --deadline-sec must be a finite number of seconds > 0 on the "
-                      f"ACP runtime '{args.runtime}'", file=sys.stderr)
+            refusal = acp_limit_refusal(args, args.runtime)
+            if refusal is not None:
+                print(f"Error: {refusal}", file=sys.stderr)
                 return 2
             try:
                 return await run_acp_command(args, task, runtime_catalog)

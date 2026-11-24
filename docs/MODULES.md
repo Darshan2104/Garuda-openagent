@@ -835,9 +835,12 @@ cleanup and the terminal session record have settled.
 `terminal_approval.py` owns `TerminalApprover`: request-aware worker, agent,
 depth and waiting-count labels, plus one shielded stdin reader per event loop.
 It is single-loop only: all approval users of one stdin must share that loop;
-concurrent loops in different threads are not serialized. A withdrawn prompt
-retains its read ownership; that line is discarded before a fresh read for the
-reprinted current prompt. Do not replace the loop while that reader is outstanding.
+concurrent loops in different threads are not serialized. On a POSIX tty the
+reader thread waits in `select()` for a complete line (or a wake-up pipe) before
+calling `input()`, so withdrawal stops it without consuming input or leaving a
+thread blocked in `input()` that would keep the process alive (#675). Otherwise
+a withdrawn prompt retains its read ownership; that line is discarded before a
+fresh read for the reprinted current prompt. Do not replace the loop while that reader is outstanding.
 The locked presentation suspends all renderers through the initial prompt, drain,
 re-prompt and read. Cancellation releases that suspension while the orphan input
 thread can still own stdin; the next presentation drains its line.
