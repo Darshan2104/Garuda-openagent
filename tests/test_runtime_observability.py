@@ -16,6 +16,7 @@ from garuda.acp.protocol import (
     AcpProtocolError,
     AcpRemoteError,
     AcpTimeoutError,
+    AcpUsageLimitError,
 )
 from garuda.core.metrics import TurnMetrics
 from garuda.observability.runtime_metrics import (
@@ -210,6 +211,7 @@ async def test_public_projection_distinguishes_remote_and_malformed_acp_failures
 
     for profile, error_type, expected_code in (
         ("remote-error", AcpRemoteError, "acp.remote.internal_error"),
+        ("usage-limit", AcpUsageLimitError, "harness.limit_reached"),
         ("malformed", AcpProtocolError, "acp.protocol.malformed"),
         ("malformed-result", AcpProtocolError, "acp.protocol.malformed"),
         ("approval", AcpCancelledError, "permission.denied"),
@@ -230,9 +232,19 @@ async def test_public_projection_distinguishes_remote_and_malformed_acp_failures
         except error_type as exc:
             if profile == "malformed-result":
                 assert "private protocol thought" not in str(exc)
+            if profile == "usage-limit":
+                # The cause and reset are kept, not a bare "Internal error" (#684).
+                assert str(exc).startswith("harness.limit_reached: You've hit your usage limit.")
+                assert "Internal error" not in str(exc) and exc.reset_hint == "3:05 PM"
+                assert classify_error(exc) == "harness"
         else:
             raise AssertionError(f"{profile} must fail")
         await runtime.close()
+        if profile == "usage-limit":
+            events = [json.loads(line) for line in
+                      (store.session_dir(session_id) / "acp-events.jsonl").read_text().splitlines()]
+            (error,) = [e for e in events if e["kind"] == "error"]
+            assert error["payload"] == {"code": "harness.limit_reached"}
         observed[profile] = build_support_bundle(store.session_dir(session_id))[
             "failure_evidence"
         ]["original_cause"]["value"]["code"]
@@ -240,6 +252,7 @@ async def test_public_projection_distinguishes_remote_and_malformed_acp_failures
 
     assert observed == {
         "remote-error": "acp.remote.internal_error",
+        "usage-limit": "harness.limit_reached",
         "malformed": "acp.protocol.malformed",
         "malformed-result": "acp.protocol.malformed",
         "approval": "permission.denied",

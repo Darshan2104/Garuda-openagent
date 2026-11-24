@@ -11,6 +11,20 @@ that cannot be read keeps the default, because the deadline bounds a wait and
 authorizes nothing. A startup timeout now names its deadline and the setting
 that raises it.
 
+## 2026-11-25 — An ACP usage-limit error is typed `harness.limit_reached` (#684)
+
+A JSON-RPC error from an ACP agent keeps a bounded, one-line copy of its
+`data` message (Codex puts the real cause there behind a generic `-32603
+Internal error`). A usage-limit cause, either Codex's `codexErrorInfo:
+usageLimitExceeded` or the text saying the usage limit is reached, raises
+`AcpUsageLimitError`. Its message leads with `harness.limit_reached` and the
+harness's own words, including any reset time, and drops the generic
+`Internal error` text. Causal evidence codes it `harness.limit_reached`. The
+session's error event records that stable code, never the text. Quota
+recovery's quota pattern accepts the typed code. Eligibility still needs a
+closed Codex step, no permission or cancellation wording, and a proved
+exhausted quota reading, so typing the error alone never dispatches work.
+
 ## 2026-11-25 — A logged-out status that exits non-zero is logged out; doctor checks fallbacks (#669, #680)
 
 Runtime discovery (`runtime inspect`/`list`) now reads a login status command

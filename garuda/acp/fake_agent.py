@@ -13,6 +13,7 @@ only inputs, so the test server is isolated from credentials by construction.
 Profiles: success, streaming, approval, diff, malformed, slow, exit-early,
 slow-initialize (never answers initialize within a handshake deadline), logged-out
 (session/new refuses: the harness has no login),
+usage-limit (the prompt fails like codex-acp at a plan limit: -32603 with the cause in `data`),
 resume (stable ids via --state-file; declares loadSession, answers session/load
 for its stored id and counts prompts across processes), version-mismatch, odd-stop (a stop
 reason outside v1), cancel-stop (the agent ends the turn `cancelled`), strict-v1 (rejects any request that is not v1-shaped:
@@ -68,6 +69,7 @@ BASE_PROFILES = frozenset(
         "resume",
         "version-mismatch",
         "remote-error",
+        "usage-limit",
         "malformed-result",
         "odd-stop",
         "cancel-stop",
@@ -393,6 +395,14 @@ def _handle_prompt(
     elif profile == "remote-error":
         _send({"jsonrpc": "2.0", "id": call_id,
                "error": {"code": -32603, "message": "synthetic internal failure"}})
+    elif profile == "usage-limit":
+        # What codex-acp 2.9.0 answers when Codex's plan limit is reached: a
+        # generic internal error whose `data` carries the cause (#684).
+        _send({"jsonrpc": "2.0", "id": call_id, "error": {
+            "code": -32603, "message": "Internal error",
+            "data": {"message": "You've hit your usage limit. Upgrade to Pro "
+                                "(https://chatgpt.com/explore/pro) or try again at 3:05 PM.",
+                     "codexErrorInfo": "usageLimitExceeded"}}})
     elif profile == "slow":
         import time
 

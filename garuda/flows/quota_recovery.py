@@ -25,7 +25,9 @@ from garuda.runtime.ownership import current_owner, owner_liveness
 
 QUOTA_ERROR = re.compile(
     r"(?:usage|rate|quota)[ _-]*(?:limit)?[ _-]*(?:has been |was |is )?"
-    r"(?:reached|exceeded|exhausted)|usage limit|quota exceeded|insufficient_quota",
+    r"(?:reached|exceeded|exhausted)|usage limit|quota exceeded|insufficient_quota"
+    # The typed ACP usage-limit stop (#684), whatever the harness's own words.
+    r"|harness\.limit_reached",
     re.I)
 NON_QUOTA = re.compile(r"cancelled|canceled|permission|denied|approval|internal error", re.I)
 

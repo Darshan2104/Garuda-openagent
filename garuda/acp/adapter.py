@@ -750,9 +750,11 @@ class AcpRuntime:
             self._move(LifecycleState.CLOSED)
             raise
         except AcpError as exc:
+            from garuda.core.failure_evidence import classify_exception
+
             self._note_error(exc)
             self._record_failure(exc, phase="prompt")
-            self._finish_turn("failed", detail=str(exc))
+            self._finish_turn("failed", detail=str(exc), code=classify_exception(exc)[0])
             await self._close_process()
             self._move(LifecycleState.FAILED)
             raise
@@ -792,7 +794,7 @@ class AcpRuntime:
         self._move(LifecycleState.IDLE)
         return self._turn
 
-    def _finish_turn(self, reason: str, *, detail: str = "") -> None:
+    def _finish_turn(self, reason: str, *, detail: str = "", code: str = "") -> None:
         """Close the normalizer turn on a path that must still reap.
 
         A trail that cannot close cleanly (updates for unknown tool calls) is
@@ -800,7 +802,7 @@ class AcpRuntime:
         """
         assert self._normalizer is not None
         try:
-            self._absorb(self._normalizer.finish(reason, detail=detail))
+            self._absorb(self._normalizer.finish(reason, detail=detail, code=code))
         except AcpProtocolError as exc:
             self._emit(RuntimeEventKind.ERROR, {"message": str(exc)})
 

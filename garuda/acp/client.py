@@ -35,10 +35,10 @@ from garuda.acp.protocol import (
     AcpCancelledError,
     AcpExitError,
     AcpProtocolError,
-    AcpRemoteError,
     AcpTimeoutError,
     decode_frame,
     encode_frame,
+    remote_error,
 )
 
 logger = logging.getLogger(__name__)
@@ -370,9 +370,7 @@ class AcpProcess:
                         or not isinstance(error.get("message"), str)):
                     self._on_transport_error(AcpProtocolError("malformed JSON-RPC error response"))
                     return
-                response_error = AcpRemoteError(
-                    f"agent error {error['code']}: {error['message']}", remote_code=error["code"]
-                )
+                response_error = remote_error(error["code"], error["message"], error.get("data"))
             future = self._pending.pop(message["id"], None)
             if future is not None and not future.done():
                 # Resolve only after the current read callback returns. An
