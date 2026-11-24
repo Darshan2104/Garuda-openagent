@@ -86,15 +86,22 @@ async def run_task(args) -> int:
     # resolves and explains the initial owner from the same trusted registry;
     # its selected id is the executor below, never merely an audit record.
     runtime_catalog = prepare_runtime_catalog(args.workspace)
-    args._role_plan = _apply_role(args, resolved_config, runtime_catalog)
+    cli_agent_requested = (getattr(args, "agent", None) is not None
+                           or getattr(args, "agent_file", None) is not None)
+    role_plan = _apply_role(args, resolved_config, runtime_catalog)
+    args._role_plan = role_plan
+    if getattr(args, "agent", None) is None:
+        args.agent = "build"
     # How a resumed session continues (B.7) is decided before selection: a
     # session of an ACP runtime continues on it — by the agent's own reload
     # when that is proven for the adapter, otherwise through a brief — and
     # `--as` continues on another runtime through a brief.
     resume_plan = _plan_resume(args, runtime_catalog)
-    if resume_plan is not None and resume_plan.mode != "native":
-        args.runtime = resume_plan.runtime_id
-        args.resume = None
+    if resume_plan is not None:
+        if resume_plan.mode != "native" or getattr(args, "as_runtime", None):
+            args.runtime = resume_plan.runtime_id
+        if resume_plan.mode != "native":
+            args.resume = None
         if resume_plan.mode == "brief":
             from garuda.context.tags import with_resume_brief
             from garuda.core.sessions import SessionStore
@@ -130,7 +137,7 @@ async def run_task(args) -> int:
         workspace=args.workspace,
         task=task,
         catalog=runtime_catalog,
-        agent=getattr(args, "agent", "build"),
+        agent=args.agent,
         mode=getattr(args, "mode", None) or "",
         explicit_runtime=(
             routed_runtime if routed_runtime != "native" or explicit_native else None
@@ -162,6 +169,14 @@ async def run_task(args) -> int:
 
         selected = runtime_catalog.registry.get(args.runtime)
         if selected.kind is RuntimeKind.ACP:
+            if cli_agent_requested and role_plan is not None and (
+                role_plan.kind != "acp" or role_plan.runtime_id != selected.runtime_id
+            ):
+                from garuda.runtime.roles import RoleRefused
+
+                raise RoleRefused("config.conflict",
+                                  f"role {role_plan.role} resolved to {role_plan.runtime_id}, "
+                                  f"but the run selected {selected.runtime_id}")
             if spend_caps != (None, None):
                 # The external agent makes its own model calls; Garuda cannot
                 # admit or settle them, so a cap here would be a silent no-op.

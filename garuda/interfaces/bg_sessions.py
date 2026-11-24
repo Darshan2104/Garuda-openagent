@@ -203,7 +203,7 @@ def launch(args: argparse.Namespace | None = None, *, store=None, queue=None, sp
         description.update({"role": binding.role, "runtime": binding.runtime_reference})
     session_id = str(uuid.uuid4())
     store.begin(session_id, task=task, model=str(getattr(args, "model", None) or ""),
-                agent=str(getattr(args, "agent", "build")),
+                agent=str(getattr(args, "agent", None) or "build"),
                 workspace=os.path.realpath(args.workspace),
                 name=getattr(args, "name", None))
     directory = store.session_dir(session_id)
@@ -388,6 +388,7 @@ async def run_worker_async(session_id: str, *, store=None, queue=None, runner=No
                 or admission.get("config_digest") != _admission_digest(document["args"], binding.config_digest)
                 or document.get("config_digest") != admission.get("config_digest")):
             raise BackgroundRefused("background launch disagrees with its frozen queue admission")
+        args._background_agent_digest = binding.agent_digest
     except BackgroundRefused:
         try:
             await _retire_refused_admission(store, queue, session_id, document, admission)

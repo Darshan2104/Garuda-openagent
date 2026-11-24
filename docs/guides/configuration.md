@@ -639,6 +639,14 @@ the denied action named. Use an asking mode when you answer approvals yourself:
 fallback was chosen, and its digest becomes part of the role's identity on the session, so
 changing the definition changes the identity.
 
+For an ACP role, `garuda run --agent NAME` and `garuda run --agent-file PATH`
+use the same projection as the role's `agent:` setting. This applies to roles
+selected with `--role` or `defaults.role`, including background runs. If the role
+and command line select different definitions, the run refuses with
+`config.conflict`. A queued run requires the selected definition to match the
+digest recorded at admission. The implicit `build` default only applies to
+native runs.
+
 - **Native roles** run exactly as `garuda run --agent careful-coder` would. If the role and the
   definition name different efforts, the run refuses (`config.conflict`).
 - **ACP roles** (an external harness has its own prompt, skills and memory) receive only what
@@ -649,7 +657,8 @@ changing the definition changes the identity.
   memory, a tool list, `tools.mcp`, limits, completion checks, a final-output schema, permission
   rules, a model binding, or replacing the prompt - refuses by name as
   `agent.field_unsupported`; defaults a definition does not declare are not expanded and
-  rejected. Forwarding MCP servers to an external harness is not enabled. A fallback that changes
+  rejected. An explicit `permissions.mode` requires a proven harness mode or read-only
+  confinement. Forwarding MCP servers to an external harness is not enabled. A fallback that changes
   the harness kind is projected again, and a definition the new harness cannot honour refuses
   rather than falling back.
 - **Consulted native roles** keep the definition's model, instructions, memory and skills but use

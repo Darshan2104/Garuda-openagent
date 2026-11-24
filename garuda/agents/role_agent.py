@@ -1,8 +1,9 @@
 """A role's agent definition, bridged into teams (plan task H.10, #172).
 
 ``roles.<name>.agent`` names an agent definition (``profile`` is the older spelling of the
-same field). :func:`bind` is called once on the plan that is about to start, **after** any
-fallback was chosen, so it describes the harness that will actually run:
+same field). An explicit CLI agent selection for an ACP role uses the same binding.
+:func:`bind` takes the concrete plan, **after** any fallback was chosen, so it describes
+the harness that will actually run:
 
 * a **native** role runs under the definition as ``garuda run --agent`` would. The
   definition's source digest becomes part of the plan's digest (its execution identity), and
@@ -46,14 +47,16 @@ def _refused(code: str, message: str) -> RoleRefused:
     return RoleRefused(code, message)
 
 
-def load(plan: RolePlan, workspace: str, agents_dir=None):
+def load(plan: RolePlan, workspace: str, agents_dir=None, *, agent_file=None):
     from garuda.agents.spec_api import AgentSpec
 
     try:
+        if agent_file is not None:
+            return AgentSpec.from_file(agent_file, workspace, agents_dir)
         return AgentSpec.load(plan.profile, workspace, agents_dir)
     except agent_spec.AgentSpecError as exc:
         raise _refused(getattr(exc, "code", "agent.invalid"), str(exc)) from exc
-    except (FileNotFoundError, ValueError) as exc:
+    except (OSError, ValueError) as exc:
         raise _refused("agent.not_found", f"role {plan.role}: {exc}") from exc
 
 
@@ -118,11 +121,28 @@ def acp_unsupported(resolved) -> list[tuple[str, str]]:
     return found
 
 
-def bind(plan: RolePlan | None, workspace: str, agents_dir=None) -> RolePlan | None:
-    """The plan with its agent resolved (and projected, for an external harness)."""
-    if plan is None or not plan.profile:
+def bind(plan: RolePlan | None, workspace: str, agents_dir=None, *,
+         agent_name: str | None = None, agent_file=None) -> RolePlan | None:
+    """Resolve the role's agent, including per-run selectors for ACP roles."""
+    if plan is None:
+        return None
+    if plan.kind == "acp" and agent_name is not None:
+        if plan.profile is None:
+            plan = replace(plan, profile=agent_name)
+        elif plan.profile != agent_name:
+            raise _refused("config.conflict", f"role {plan.role} names agent {plan.profile!r} "
+                           f"but --agent names {agent_name!r}")
+    agent = load(plan, workspace, agents_dir) if plan.profile is not None else None
+    if plan.kind == "acp" and agent_file is not None:
+        selected = load(plan, workspace, agents_dir, agent_file=agent_file)
+        if agent is None:
+            plan = replace(plan, profile=selected.name)
+            agent = selected
+        elif selected.name != agent.name or selected.digest != agent.digest:
+            raise _refused("config.conflict",
+                           f"role {plan.role}: --agent-file disagrees with agent {plan.profile!r}")
+    if agent is None:
         return plan
-    agent = load(plan, workspace, agents_dir)
     resolved = agent.resolved()
     digest = hashlib.sha256((plan.digest + ":" + agent.digest).encode()).hexdigest()
     if plan.kind == "native":
@@ -139,6 +159,7 @@ def bind(plan: RolePlan | None, workspace: str, agents_dir=None) -> RolePlan | N
     mode = resolved.leaves.get("permissions.mode")
     return replace(plan, agent_digest=agent.digest, digest=digest, effort=effort, agent_spec=None,
                    permissions=_stricter(plan.permissions, mode),
+                   agent_permission_mode=mode,
                    instructions=own_instructions(resolved)[0])
 
 

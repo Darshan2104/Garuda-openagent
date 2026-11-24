@@ -27,7 +27,7 @@ def environment(tmp_path, selected="default", harness="codex", extra=""):
     store = SessionStore(tmp_path / "sessions")
     args = argparse.Namespace(task="test", file=None, workspace=str(workspace), runtime=None,
                               role="worker" if selected == "explicit" else None,
-                              agent="build", model=None, name=None, resume=None,
+                              agent=None, model=None, name=None, resume=None,
                               trajectory=None, json=False, bg=True)
     return user_file, capacity, queue, store, args
 
@@ -85,6 +85,58 @@ def test_a_dynamic_role_fallback_refuses_before_creating_launch_state(tmp_path):
     assert not capacity.root.exists()
 
 
+@pytest.mark.parametrize("selector", ["name", "file"])
+def test_background_acp_agent_refuses_before_admission(tmp_path, selector):
+    _, capacity, queue, store, args = environment(tmp_path)
+    definitions = Path(args.workspace) / ".agent" / "agents"
+    definitions.mkdir(parents=True)
+    definition = definitions / "careful.yaml"
+    definition.write_text("version: 1\npermissions: {rules: {paths: {deny: ['calc/**']}}}\n")
+    if selector == "name":
+        args.agent = "careful"
+    else:
+        args.agent_file = str(definition)
+    spawned = []
+
+    with pytest.raises(bg_sessions.BackgroundRefused, match=r"agent.field_unsupported.*permissions.rules.paths"):
+        bg_sessions.launch(args, queue=queue, store=store, spawn=spawned.append)
+
+    assert not spawned
+    assert not store.root.exists()
+    assert not queue.root.exists()
+    assert not capacity.root.exists()
+
+
+def test_background_readonly_cli_agent_requires_confinement(tmp_path):
+    _, capacity, queue, store, args = environment(tmp_path)
+    definition = Path(args.workspace) / "careful.yaml"
+    definition.write_text("version: 1\npermissions: {mode: readonly}\n")
+    args.agent_file = str(definition)
+
+    with pytest.raises(bg_sessions.BackgroundRefused, match="workspace.readonly_unenforced"):
+        launch(queue, store, args)
+
+    assert not store.root.exists()
+    assert not queue.root.exists()
+    assert not capacity.root.exists()
+
+
+async def test_a_cli_agent_changed_while_queued_refuses_before_dispatch(tmp_path):
+    _, capacity, queue, store, args = environment(tmp_path)
+    definition = Path(args.workspace) / "careful.yaml"
+    definition.write_text("version: 1\ninstructions: {text: Keep the answer brief.}\n")
+    args.agent_file = str(definition)
+    session = launch(queue, store, args)
+    definition.write_text("version: 1\n")
+
+    with pytest.raises(bg_sessions.BackgroundRefused, match="frozen queue admission"):
+        await bg_sessions.run_worker_async(session, queue=queue, store=store)
+
+    assert queue.entries() == []
+    assert store.load_meta(session)["state"]["outcome"] == "refused"
+    assert not capacity.root.exists()
+
+
 @pytest.mark.parametrize("changed_default", [False, True])
 async def test_a_default_role_preserves_permissions_and_its_runtime_alias_at_dispatch(
         tmp_path, changed_default, fake_acp_confinement):
@@ -98,6 +150,9 @@ async def test_a_default_role_preserves_permissions_and_its_runtime_alias_at_dis
     settings = Path(args.workspace) / ".agent" / "settings.yaml"
     settings.parent.mkdir()
     settings.write_text("runtime_refs: [{alias: quick, runtime_id: codex, capabilities: [prompt]}]\n")
+    definition = Path(args.workspace) / "careful.yaml"
+    definition.write_text("version: 1\ninstructions: {text: Keep the answer brief.}\n")
+    args.agent_file = str(definition)
     session = launch(queue, store, args)
     if changed_default:
         user_file.write_text(user_file.read_text().replace("role: worker", "role: other"))
@@ -110,6 +165,8 @@ async def test_a_default_role_preserves_permissions_and_its_runtime_alias_at_dis
                                               cli_runtime=received.runtime)
         plan = _apply_role(received, resolved, catalog)
         assert plan.runtime_id == "codex"
+        assert plan.instructions == "Keep the answer brief."
+        assert plan.record()["agent"]["name"] == "careful"
         assert received.permission_mode == "readonly"
         assert not catalog.registry.get(received.runtime).capabilities.supports("cancel")
         reservation = capacity.reserve(plan.runtime_id, session, 1)

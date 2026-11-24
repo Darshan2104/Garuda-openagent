@@ -130,8 +130,8 @@ successful preview can still be refused by those steps after admission.
 
     | Flag | Use |
     |---|---|
-    | `--agent NAME` | Profile: `build` (default), `plan`, `explore`, `reviewer`, `harbor`, or your own |
-    | `--agent-file PATH` | Run (or chat with) a definition file instead of a named agent. It selects a source and grants no trust: a file in the repository stays under the project ceiling. the `agent` inspection commands also take a path |
+    | `--agent NAME` | Agent definition, such as `build` (native default), `plan`, `explore`, `reviewer`, `harbor`, or your own. For an ACP role, the [role agent projection](../guides/configuration.md#a-roles-agent) applies |
+    | `--agent-file PATH` | Select a definition file for a run or chat without changing its trust. For an ACP role, the same [role agent projection](../guides/configuration.md#a-roles-agent) applies. The `agent` inspection commands also accept a path |
     | `--agents-dir DIR` | Profiles directory to use instead of `.agent/agents` and `.garuda/agents` (built-ins still apply) |
     | `--mode MODE` | `interactive` (default), `readonly`, `eval`, or `rigorous` (`standard` = `interactive`) |
     | `--permission-mode MODE` | `smart`, `readonly`, `auto`, or `yolo`; overrides the mode and profile |

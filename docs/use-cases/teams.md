@@ -111,9 +111,11 @@ garuda run --role coder -t "Add input validation to the signup form"
 - With `defaults: {role: coder}`, every `garuda run` uses that role unless you
   pass `--runtime` or `--model`.
 - `roles.<name>.agent: careful-coder` runs the role under one of
-  [your agents](customize.md#create-your-own-agent). On an external harness
-  only the agent's effort, permission mode and added instructions apply; any
-  other setting is refused by name.
+  [your agents](customize.md#create-your-own-agent). If `coder` uses an ACP
+  harness, you can select the agent for one run with
+  `garuda run --role coder --agent careful-coder -t "Add input validation"`.
+  The same projection applies in both cases. Garuda uses the agent's effort,
+  permission mode and added instructions, and refuses unsupported fields by name.
 
 **If a harness isn't available**, a role's `fallback` list is tried once,
 before anything is sent: Garuda moves on only when the harness's CLI is

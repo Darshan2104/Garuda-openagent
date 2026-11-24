@@ -100,6 +100,8 @@ class RolePlan:
     #: An ACP role's agent instructions, sent as a labelled context block with the first
     #: task. Never recorded on the session (only its digest is).
     instructions: str | None = None
+    #: An explicit agent permission ceiling requires a proven mode or read-only confinement.
+    agent_permission_mode: str | None = None
     #: Native resolved source held for execution only; never serialized in record().
     agent_spec: AgentSpec | None = field(default=None, repr=False, compare=False)
 
@@ -226,6 +228,12 @@ def acp_options(plan: RolePlan, adapter_version: str, *, no_edits: bool = False,
     wanted = {k: v for k, v in (("model_id", plan.model_id), ("effort", plan.effort)) if v}
     proven = PROVEN_OPTIONS.get((plan.runtime_id, adapter_version))
     mode = harness_mode(plan, no_edits=no_edits, ceiling=ceiling)
+    if (plan.agent_permission_mode is not None
+            and (mode is None or "harness_mode" not in (proven or {}))
+            and acp_permission(plan, no_edits=no_edits, ceiling=ceiling) != "readonly"):
+        raise RoleRefused("agent.field_unsupported",
+                          f"role {plan.role} runs on {plan.runtime_id} {adapter_version}, which "
+                          f"cannot honour permissions.mode from agent {plan.profile!r}")
     if mode is not None and (plan.harness_mode is not None
                              or acp_permission(plan, no_edits=no_edits, ceiling=ceiling) == "readonly"
                              or "harness_mode" in (proven or {})):

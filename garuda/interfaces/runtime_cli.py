@@ -958,8 +958,9 @@ async def run_acp_task(
         from garuda.agents.role_agent import with_instructions
         from garuda.context.tags import prompt_with
 
-        first_message = (task if resume_plan is not None and resume_plan.mode == "acp"
-                         else with_instructions(role_plan, task))  # a reattached session has them
+        # Reloaded sessions may have used a different definition. Include the
+        # current role's instructions with the first task of this run.
+        first_message = with_instructions(role_plan, task)
         if before_prompt is not None:
             await before_prompt()
         turn = await lease.race(

@@ -94,6 +94,26 @@ def test_a_proven_adapter_reloads_its_own_session_in_a_new_process(acp, monkeypa
     assert meta["runtime_segments"][-1]["native_session_id"] == "resume-s1"
 
 
+def test_acp_role_applies_selected_agent_instructions_when_reloading(acp, monkeypatch, capsys):
+    from garuda.config.garuda_yaml import user_path
+
+    ws, _install = acp
+    monkeypatch.setitem(resume_mod.PROVEN_LOAD, "fakeresume", frozenset({"1"}))
+    source = _first(monkeypatch, capsys, ws)
+    user_path().write_text("version: 1\nroles: {coder: {harness: fakeresume}}\n")
+    definition = ws / "careful.yaml"
+    definition.write_text("version: 1\ninstructions: {text: Keep the answer brief.}\n")
+
+    code, out = _run(monkeypatch, capsys, "-t", "second task", "--workspace", str(ws),
+                     "--resume", "first", "--role", "coder", "--agent-file", str(definition))
+
+    assert code == 0, out
+    meta = _newest_other(source)
+    assert meta["resume_mode"] == "acp"
+    assert meta["role"]["agent"]["name"] == "careful"
+    assert "Keep the answer brief.\n[end of role instructions]\n\nsecond task" in meta["final_message"]
+
+
 def test_adapter_drift_at_the_handshake_falls_back_to_a_brief(acp, monkeypatch, capsys):
     ws, install = acp
     monkeypatch.setitem(resume_mod.PROVEN_LOAD, "fakeresume", frozenset({"1"}))
