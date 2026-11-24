@@ -1897,7 +1897,13 @@ def run_mcp_trust(args, *, ask=input) -> int:
 
     explicit = getattr(args, "mcp_config", None)
     paths = [explicit] if explicit else resolve_mcp_config_paths(args.workspace)
-    _, untrusted = partition_mcp_servers(paths, workspace=args.workspace)
+    from garuda.model.config import ConfigError
+
+    try:
+        _, untrusted = partition_mcp_servers(paths, workspace=args.workspace)
+    except ConfigError as exc:
+        print(f"Error: mcp.config_invalid: {exc}", file=sys.stderr)
+        return 2
     wanted = set(args.names or [])
     candidates = [s for s in untrusted if not wanted or s.name in wanted]
     unknown = sorted(wanted - {s.name for s in untrusted})
@@ -2478,6 +2484,8 @@ async def run_task_guarded(args) -> int:
     from garuda.runtime.resume import ResumeRefused
     from garuda.runtime.roles import RoleRefused
     from garuda.runtime.strict_store import CorruptRecord, StorageError
+    from garuda.workspace.diff import BaselineError
+    from garuda.workspace.factory import WorkspaceStartError
     from garuda.workspace.lease import LeaseError
     from garuda.workspace.worktrees import WorktreeError
 
@@ -2485,6 +2493,20 @@ async def run_task_guarded(args) -> int:
         return await run_task(args)
     except (RegistryError, RuntimeSettingsError) as exc:
         return _print_runtime_refusal(exc)
+    except WorkspaceStartError as exc:
+        # The session was already settled failed and its lease released; the
+        # message carries its own `workspace.start_failed` code (#671).
+        import sys
+
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    except BaselineError as exc:
+        # The workspace's starting state could not be recorded (for example a
+        # missing workspace directory): refused before any prompt.
+        import sys
+
+        print(f"Error: workspace.baseline_failed: {exc}", file=sys.stderr)
+        return 2
     except StorageError as exc:
         # Strict storage already failed closed (nothing was changed); report it, typed.
         import sys

@@ -537,7 +537,12 @@ class DefaultAgent:
         except Exception as exc:
             if record is not None:
                 record.model_ms = model_ms[0]
-            logger.exception("Model call failed after retries")
+            # One line, not a raw traceback: the failure reaches the caller as
+            # the run's result (and an ACP client as an error, #674). The stack
+            # stays available at debug level.
+            logger.error("Model call failed after retries: %s: %s", type(exc).__name__,
+                         " ".join(str(exc).split())[:500])
+            logger.debug("Model call failure detail", exc_info=True)
             await self._advise(state, "candidate-ready", [], turn, ending="model error")
             if state.emit_session_events:
                 state.events.append(

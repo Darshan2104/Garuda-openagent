@@ -1,5 +1,23 @@
 # Durable decisions
 
+## 2026-11-25 — Unparseable MCP configs, workspace start failures and failed ACP turns fail closed (#673, #671, #674)
+
+An MCP config file that does not parse, or whose server container has the
+wrong shape, raises `ConfigError` (`mcp.config_invalid`, exit 2 from `garuda
+run`, `mcp list` and `mcp trust`) instead of loading no servers, since Garuda
+cannot prove it declares no required server. A single non-mapping entry, which
+cannot be required, is still skipped; an empty file still means no servers.
+A docker, remote or tmux workspace that cannot start raises
+`WorkspaceStartError` (a `RuntimeError`, message led by
+`workspace.start_failed`); `garuda run` prints it, and a missing-workspace
+baseline failure (`workspace.baseline_failed`), as one line with exit 2. Every
+startup refusal now also settles the four-field session state to failed, so it
+no longer reads as crashed, and the lease is released as before. Closing an ACP
+runtime that never started no longer raises. The Garuda ACP server answers a
+turn whose result is unsuccessful with an `error` update and a JSON-RPC error,
+not `end_turn`; the native loop logs a failed model call as one bounded line
+(stack at debug level).
+
 ## 2026-11-24 — CLI storage, MCP and approval-id refusals are typed (#677, #672, #678, #704)
 
 `garuda run` reports a strict-storage failure as `storage.unavailable` or

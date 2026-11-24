@@ -155,6 +155,11 @@ garuda run --workspace . --workspace-kind docker --docker-image python:3.12 --no
 | CPUs | 2 | `--docker-cpus` |
 | Network | Bridged | `--no-network` switches to Docker's `none` network |
 
+If the container cannot start (an image that cannot be pulled, an unreachable
+or refused `--docker-host`), the run refuses before any prompt with one line,
+`Error: workspace.start_failed: ...` (exit 2). The session is recorded as
+failed and its workspace lease released, so the next run can start at once.
+
 These network flags govern commands inside the workspace. They don't stop
 Garuda itself from calling the model provider, or `web_fetch` and `web_search`
 from fetching pages, so don't use them to claim the agent is offline.

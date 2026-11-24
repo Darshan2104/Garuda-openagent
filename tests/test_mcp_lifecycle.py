@@ -505,6 +505,16 @@ async def test_malformed_required_server_refuses_shared_toolkit(tmp_path, field,
     assert len(str(refused.value)) < 400
 
 
+async def test_unparseable_config_refuses_the_shared_toolkit(tmp_path):
+    """#673: a required server in a file that does not parse is not silently dropped."""
+    from garuda.model.config import ConfigError
+
+    cfg = tmp_path / "mcp.json"
+    cfg.write_text('{"mcpServers": {"broken": {"command": "/nonexistent", "required": true},}}')
+    with pytest.raises(ConfigError, match="Failed to parse MCP config"):
+        await build_toolkit([], [str(cfg)])
+
+
 async def test_nonstring_required_server_name_refuses_shared_toolkit(tmp_path):
     from garuda.model.config import ConfigError
 

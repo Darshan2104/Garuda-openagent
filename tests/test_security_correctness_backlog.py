@@ -266,11 +266,17 @@ def test_args_of_a_nonsensical_type_skips_only_that_entry(tmp_path):
     assert [c.name for c in load_mcp_config(path)] == ["fine"]
 
 
-@pytest.mark.parametrize(
-    "text", ["", "- just\n- a\n- list\n", "servers:\n  - name: a\n   bad: [\n"]
-)
-def test_unusable_config_yields_no_servers_without_raising(tmp_path, text):
-    assert load_mcp_config(_write_config(tmp_path, text)) == []
+def test_empty_config_yields_no_servers_without_raising(tmp_path):
+    assert load_mcp_config(_write_config(tmp_path, "")) == []
+
+
+@pytest.mark.parametrize("text", ["- just\n- a\n- list\n", "servers:\n  - name: a\n   bad: [\n"])
+def test_unusable_config_refuses_with_a_typed_error(tmp_path, text):
+    # #673: loading nothing would let a required server fail open.
+    from garuda.model.config import ConfigError
+
+    with pytest.raises(ConfigError, match="MCP config"):
+        load_mcp_config(_write_config(tmp_path, text))
 
 
 # --- T5: bash_background under bwrap ---------------------------------------

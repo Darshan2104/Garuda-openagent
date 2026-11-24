@@ -488,6 +488,11 @@ control character or line break before starting a turn, and neutralises `<` and
 capability, so it also refuses a prompt containing those blocks before starting
 a turn.
 
+A turn that ends unsuccessfully, for example because the model call failed,
+is not reported as `end_turn`: the editor receives an `error` session update
+with the bounded reason and a JSON-RPC error for `session/prompt`. A cancelled
+turn still ends with `stopReason: cancelled`.
+
 The stdio transport buffers split writes and frames larger than 64 KiB until
 their newline arrives, with a 16 MiB limit per frame. Blank lines are ignored.
 Malformed or oversized frames, and an unfinished record at EOF, end the server

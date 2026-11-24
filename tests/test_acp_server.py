@@ -902,3 +902,75 @@ async def test_stdio_waits_for_consumed_fragment_before_reading_remainder(monkey
             task.cancel()
         await asyncio.gather(task, return_exceptions=True)
         pipe.close()
+
+
+class _ResultRuntime:
+    """A runtime whose turn returns without raising, with a given result."""
+
+    runtime_id = "result"
+
+    def __init__(self, result):
+        self._result = result
+        self.last_result = None
+
+    async def start(self, *, task, session_id=None):
+        return None
+
+    async def prompt(self, text):
+        self.last_result = self._result
+        return 1
+
+    async def poll_events(self, cursor):
+        return [], 0
+
+    async def close(self):
+        return None
+
+
+async def _prompt_reply(result) -> tuple[dict, list[dict]]:
+    sent: list[bytes] = []
+
+    async def _send(frame: bytes) -> None:
+        sent.append(frame)
+
+    async def _make(session_id: str):
+        return _ResultRuntime(result)
+
+    server = AcpServer(_make, _send)
+    await server.handle({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+                         "params": {"protocolVersion": ACP_VERSION}})
+    await server.handle({"jsonrpc": "2.0", "id": 2, "method": "session/new", "params": {}})
+    session_id = decode_frame(sent[-1])[0]["result"]["sessionId"]
+    await server.handle({"jsonrpc": "2.0", "id": 3, "method": "session/prompt",
+                         "params": {"sessionId": session_id,
+                                    "prompt": [{"type": "text", "text": "Say hi"}]}})
+    messages = [decode_frame(frame)[0] for frame in sent]
+    reply = next(m for m in messages if m.get("id") == 3)
+    updates = [m["params"]["update"] for m in messages if m.get("method") == "session/update"]
+    return reply, updates
+
+
+async def test_failed_native_turn_is_reported_not_end_turn():
+    """#674: a turn whose model call failed reaches the client as a failure."""
+    from garuda.types import AgentResult
+
+    failure = AgentResult(
+        success=False, messages=[], turns=1,
+        final_message="Model call failed: AuthenticationError: 401\n" + "x" * 2000,
+    )
+    reply, updates = await _prompt_reply(failure)
+    assert "result" not in reply
+    assert reply["error"]["message"].startswith("turn failed: Model call failed: AuthenticationError")
+    errors = [u for u in updates if u["sessionUpdate"] == "error"]
+    assert len(errors) == 1
+    assert errors[0]["message"].startswith("Model call failed: AuthenticationError: 401 x")
+    assert len(errors[0]["message"]) <= 500
+
+
+async def test_successful_native_turn_still_ends_the_turn():
+    from garuda.types import AgentResult
+
+    ok = AgentResult(success=True, messages=[], turns=1, final_message="hi")
+    reply, updates = await _prompt_reply(ok)
+    assert reply["result"] == {"stopReason": "end_turn"}
+    assert not [u for u in updates if u["sessionUpdate"] == "error"]

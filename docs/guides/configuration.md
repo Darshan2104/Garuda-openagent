@@ -175,7 +175,11 @@ Garuda resolves `.agent/mcp.json` or YAML, `.garuda/` compatibility files,
   state and reason. An untrusted project server marked required also refuses.
   Malformed required entries refuse before launch with a bounded named error,
   which `garuda mcp list` reports as `mcp.config_invalid`; malformed optional
-  entries remain isolated and are skipped.
+  entries remain isolated and are skipped. A config file that does not parse
+  (one trailing comma is enough), or whose `mcpServers`, `servers` or top level
+  has the wrong shape, refuses the run and `garuda mcp list` (exit 2,
+  `mcp.config_invalid`) instead of loading no servers: Garuda cannot tell
+  whether it declares a required one. An empty file still means no servers.
 - A stdio server whose process exits is relaunched up to 3 times per run with
   backoff (a server that keeps exiting after it reconnects ends failed), only while its entry is unchanged and, for a project server, still trusted.
   A call in flight when it exited fails and is never replayed; the run keeps
