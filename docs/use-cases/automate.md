@@ -482,7 +482,13 @@ A conversation inherits the agent instance's registered tools and explicit
 `conversation()`; later registrations affect later conversations. Different
 agent instances keep separate tool registries.
 Closing a conversation backed by an ACP harness saves the last turn's outcome
-and final message. The ACP result has no independent verification by default.
+and final message. The ACP result has no independent verification by default:
+`success` is `True` when the harness ended its turn, whatever it answered.
+The session saves the harness as `model: acp:<runtime>` and `agent: <runtime>`,
+as `garuda run` does, and each turn's usage report goes to the usage ledger.
+A harness uses its own tools, so a run on an ACP runtime with registered tools
+or `load_project_tools=True` raises `garuda.sdk.ToolsUnsupportedOnRuntime` (a
+`ValueError`, code `sdk.tools_unsupported`) before the harness starts.
 If the harness fails to start, Garuda closes it and records that session as
 failed; the next `run` starts a new harness session.
 
