@@ -795,6 +795,106 @@ def _refuse_live_lease(session_id: str, leases) -> None:
         )
 
 
+def _dead_owner_leases(session_id: str, leases) -> list:
+    """The session's retained leases, all of whose owners are confirmed dead.
+
+    A live, unknown or quarantining owner refuses, exactly as before (#676).
+    The lineage scan for surviving descendants runs later, in
+    ``LeaseStore.reclaim_dead``, after recorded children have been reaped.
+    """
+    from garuda.runtime.ownership import reclaim_refusal
+    from garuda.workspace.lease import LeaseError, LeaseStore
+
+    lease_store = leases if leases is not None else LeaseStore()
+    try:
+        holders = lease_store.live_holders_for_session(session_id)
+    except LeaseError as exc:
+        raise RecoveryError(f"cannot audit workspace leases: {exc}; refusing") from exc
+    for holder in holders:
+        refusal = reclaim_refusal(
+            {"pid": holder.pid, "identity": holder.identity, "pgid": holder.pgid},
+            quarantined=holder.quarantined, scan_descendants=False,
+            liveness=getattr(lease_store, "_liveness", None))
+        if refusal is not None:
+            raise RecoveryError(
+                f"session {session_id} still holds a retained {holder.mode} workspace lease "
+                f"on {holder.workspace} (pid {holder.pid}): {refusal} — refusing"
+            )
+    return holders
+
+
+def _flow_step_sessions(store, session_id: str) -> list[str]:
+    """Step sessions recorded for flow ``session_id`` (``meta.flow_step.flow_session``)."""
+    list_sessions = getattr(store, "list_sessions", None)
+    if not callable(list_sessions):
+        return []
+    try:
+        metas = list_sessions(limit=None)
+    except Exception as exc:
+        raise RecoveryError(f"cannot list sessions to find flow steps: {exc}; refusing") from exc
+    return [meta["session_id"] for meta in metas
+            if isinstance(meta.get("flow_step"), dict)
+            and meta["flow_step"].get("flow_session") == session_id
+            and isinstance(meta.get("session_id"), str) and meta["session_id"] != session_id]
+
+
+def _release_dead_owner_holdings(store, session_id: str, holders: list, leases, capacity,
+                                  settle: Callable[[str], tuple[list[int], list[str]]]
+                                  ) -> tuple[list[int], list[str]]:
+    """Settle flow-step children, then reclaim dead-owner leases and slots (#676, #703).
+
+    Each reclaim re-proves, under its store's lock, that the owner is dead, the
+    holding was not quarantined and no live process carries the owner's
+    lineage token. A lease that cannot be reclaimed refuses; a capacity slot
+    that cannot be reclaimed (live owner, queue/loan-bound, quarantined) is
+    left in place and reported.
+    """
+    from garuda.runtime.capacity import CapacityError, CapacityStore
+    from garuda.runtime.ownership import reclaim_refusal
+    from garuda.workspace.lease import LeaseError, LeaseStore
+
+    reaped: list[int] = []
+    notes: list[str] = []
+    capacity_store = capacity if capacity is not None else CapacityStore()
+    try:
+        slots = capacity_store.slots_for_session(session_id)
+    except (CapacityError, OSError) as exc:
+        notes.append(f"capacity slots were not inspected: {exc}")
+        slots = []
+    candidates = []
+    for slot in slots:
+        refusal = ("it is queue- or loan-bound; its coordinator releases it"
+                   if "queue" in slot or "loan" in slot else
+                   reclaim_refusal(slot["owner"], quarantined=slot.get("quarantined", False) is not False,
+                                   scan_descendants=False))
+        if refusal is None:
+            candidates.append(slot)
+        else:
+            notes.append(f"kept {slot['key']} capacity slot {slot['holder']}: {refusal}")
+    if not holders and not candidates:
+        return reaped, notes
+    for step_session in _flow_step_sessions(store, session_id):
+        step_reaped, step_notes = settle(step_session)
+        reaped += step_reaped
+        notes += step_notes
+    lease_store = leases if leases is not None else LeaseStore()
+    for holder in holders:
+        try:
+            if lease_store.reclaim_dead(holder):
+                notes.append(f"released {holder.mode} workspace lease on {holder.workspace} "
+                             f"held by dead owner pid {holder.pid}")
+        except LeaseError as exc:
+            raise RecoveryError(f"{exc}; refusing") from exc
+    for slot in candidates:
+        try:
+            if capacity_store.reclaim_dead(slot["key"], slot["holder"], slot["owner"]):
+                notes.append(f"released {slot['key']} capacity slot {slot['holder']} "
+                             f"held by dead owner pid {slot['owner'].get('pid')}")
+        except CapacityError as exc:
+            notes.append(f"kept {slot['key']} capacity slot {slot['holder']}: {exc}")
+    return reaped, notes
+
+
 def _refuse_live_owner(child: dict, identify: Callable[[int], str | None]) -> None:
     """Refuse while the Garuda process that launched `child` is still alive."""
     owner = child["owner"]
@@ -812,57 +912,9 @@ def _refuse_live_owner(child: dict, identify: Callable[[int], str | None]) -> No
         )
 
 
-def recover(
-    store,
-    session_id: str,
-    *,
-    is_alive: Callable[[int], bool | None] = _process_live,
-    reap: Callable[[int], None] = _reap_group,
-    identify: Callable[[int], str | None] = _process_identity,
-    leases=None,
-    reap_timeout: float = REAP_TIMEOUT_SEC,
-    source_reader: RecoverySource | None = None,
-) -> RecoveryReport:
-    """Audit, classify, reap identity-matched orphans, and mark rolled-back
-    switches. Returns the session to resume; never invents success.
-
-    Order: refuse while a retained workspace lease or a live owning Garuda
-    process names the session; audit the persisted trail and classify (both
-    read-only); only then signal. A recorded child is signalled only when it
-    is still alive and its start-time/command identity equals the recorded
-    one; a gone child is retired `exited`, a recycled PID is retired
-    `reused` without a signal, and a signalled child must be observed dead
-    within `reap_timeout` before it is retired `reaped`.
-    """
-    # The session record is the only source of signal targets.  Callers may
-    # customise the probes for deterministic tests, but may not smuggle an
-    # arbitrary PID into a production recovery operation.
-    _refuse_live_lease(session_id, leases)
-    source = source_reader if source_reader is not None else store
-    children = _live_children(source, session_id)
-    for child in children:
-        _refuse_live_owner(child, identify)
-    events_path = getattr(store, "events_path", None)
-    if callable(events_path):
-        try:
-            trail_ok = audit_core_trail(
-                events_path(session_id),
-                read_text=(lambda: source_reader.load_event_trail(session_id))
-                    if source_reader is not None else None,
-            )
-        except RecoveryError:
-            raise
-        except Exception as exc:
-            raise RecoveryError(
-                f"session {session_id} trail audit failed: {exc}"
-            ) from exc
-        if not trail_ok:
-            raise RecoveryError(
-                f"session {session_id} has a malformed or ambiguous terminal "
-                "trail; refusing without operator action"
-            )
-    report = classify(source, session_id)
-
+def _settle_children(store, source, session_id: str, children: list[dict], *,
+                     is_alive, reap, identify, reap_timeout) -> tuple[list[int], list[str]]:
+    """Reap identity-matched live children and retire every handled record."""
     outcomes: dict[int, str] = {}
     reaped: list[int] = []
     notes: list[str] = []
@@ -914,6 +966,94 @@ def recover(
                 f"session {session_id} children were handled but could not be "
                 f"retired: {exc}"
             ) from exc
+    return reaped, notes
+
+
+def recover(
+    store,
+    session_id: str,
+    *,
+    is_alive: Callable[[int], bool | None] = _process_live,
+    reap: Callable[[int], None] = _reap_group,
+    identify: Callable[[int], str | None] = _process_identity,
+    leases=None,
+    reap_timeout: float = REAP_TIMEOUT_SEC,
+    source_reader: RecoverySource | None = None,
+    release_dead_owner: bool = False,
+    capacity=None,
+) -> RecoveryReport:
+    """Audit, classify, reap identity-matched orphans, and mark rolled-back
+    switches. Returns the session to resume; never invents success.
+
+    With ``release_dead_owner`` (``garuda runtime recover``; #676, #703) a
+    retained lease no longer refuses by itself: every holder's owner must be
+    confirmed dead and not have quarantined it. After the session's recorded
+    children (and its flow steps' children) are reaped, the leases and the
+    ordinary capacity slots of the session and its steps are reclaimed, each
+    re-proving owner death and that no live process carries the owner's
+    lineage token. A live owner is never evicted.
+
+    Order: refuse while a retained workspace lease or a live owning Garuda
+    process names the session; audit the persisted trail and classify (both
+    read-only); only then signal. A recorded child is signalled only when it
+    is still alive and its start-time/command identity equals the recorded
+    one; a gone child is retired `exited`, a recycled PID is retired
+    `reused` without a signal, and a signalled child must be observed dead
+    within `reap_timeout` before it is retired `reaped`.
+    """
+    # The session record is the only source of signal targets.  Callers may
+    # customise the probes for deterministic tests, but may not smuggle an
+    # arbitrary PID into a production recovery operation.
+    if release_dead_owner:
+        dead_leases = _dead_owner_leases(session_id, leases)
+    else:
+        _refuse_live_lease(session_id, leases)
+    source = source_reader if source_reader is not None else store
+    children = _live_children(source, session_id)
+    for child in children:
+        _refuse_live_owner(child, identify)
+    events_path = getattr(store, "events_path", None)
+    if callable(events_path):
+        try:
+            trail_ok = audit_core_trail(
+                events_path(session_id),
+                read_text=(lambda: source_reader.load_event_trail(session_id))
+                    if source_reader is not None else None,
+            )
+        except RecoveryError:
+            raise
+        except Exception as exc:
+            raise RecoveryError(
+                f"session {session_id} trail audit failed: {exc}"
+            ) from exc
+        if not trail_ok:
+            raise RecoveryError(
+                f"session {session_id} has a malformed or ambiguous terminal "
+                "trail; refusing without operator action"
+            )
+    report = classify(source, session_id)
+
+    reaped, notes = _settle_children(store, source, session_id, children, is_alive=is_alive,
+                                     reap=reap, identify=identify, reap_timeout=reap_timeout)
+    if release_dead_owner:
+        def _settle_step(step_session: str) -> tuple[list[int], list[str]]:
+            try:
+                step_children = _live_children(store, step_session)
+            except RecoveryError:
+                raise
+            except Exception as exc:
+                raise RecoveryError(
+                    f"flow step session {step_session} children are unreadable: {exc}; refusing"
+                ) from exc
+            for child in step_children:
+                _refuse_live_owner(child, identify)
+            return _settle_children(store, store, step_session, step_children, is_alive=is_alive,
+                                    reap=reap, identify=identify, reap_timeout=reap_timeout)
+
+        step_reaped, release_notes = _release_dead_owner_holdings(
+            store, session_id, dead_leases, leases, capacity, _settle_step)
+        reaped += step_reaped
+        notes += release_notes
     if report.state is RestartState.ROLLED_BACK:
         # Keep the target id so a prepared child left by a crash in a later
         # recovery attempt still binds to this handoff attempt.
