@@ -18,6 +18,7 @@ or mode that the model does not offer still refuses. `garuda config check`
 checks every role and fallback entry before a run; with `--probe` it sets the
 options on a scratch session, so model-dependent efforts and modes are checked
 against the installed adapter.
+
 ## 2026-11-24 — Recipes are validated before any step runs (#682)
 
 `garuda recipe run` validates the whole recipe before it prepares a workspace.
