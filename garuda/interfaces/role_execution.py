@@ -7,6 +7,7 @@ has one owner here, including runtime/role selection and native/ACP routing.
 from __future__ import annotations
 
 import contextlib
+import math
 import os
 from pathlib import Path
 
@@ -183,6 +184,19 @@ async def run_task(args) -> int:
                 print(f"Error: --max-run-tokens/--max-run-cost-usd cannot be enforced on the "
                       f"ACP runtime '{args.runtime}'; they bound the native run tree only "
                       "(use --runtime native)", file=sys.stderr)
+                return 2
+            if getattr(args, "max_turns", None) is not None:
+                # One ACP prompt is one Garuda turn; the harness runs its own
+                # tool loop, so a turn cap would be a silent no-op (#701).
+                print(f"Error: --max-turns cannot be enforced on the ACP runtime "
+                      f"'{args.runtime}'; the harness runs its own tool loop inside one "
+                      "Garuda turn (bound the run with --deadline-sec, or use --runtime native)",
+                      file=sys.stderr)
+                return 2
+            deadline = getattr(args, "deadline_sec", None)
+            if deadline is not None and not (math.isfinite(deadline) and deadline > 0):
+                print("Error: --deadline-sec must be a finite number of seconds > 0 on the "
+                      f"ACP runtime '{args.runtime}'", file=sys.stderr)
                 return 2
             try:
                 return await run_acp_command(args, task, runtime_catalog)

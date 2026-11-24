@@ -12,6 +12,20 @@ just-created intent directory to gain its lock, so a duplicate dashboard start
 racing the first request's store creation is not refused with 503. A lock
 that never appears still fails closed.
 
+## 2026-11-24 — ACP runs enforce the deadline; SDK ACP runs refuse custom tools (#701, #702)
+
+`garuda run --deadline-sec` on an ACP runtime counts wall-clock time from launch.
+The prompt gets the time that remains. When that runs out, the adapter sends
+`session/cancel` and then stops the harness process. The session is saved as
+`failed` with `stop_reason: deadline` and `error_code: run.deadline_exceeded`.
+The budget is saved under `limits.deadline_sec`. A deadline that is not a finite
+number above 0 is refused there. `--max-turns` is refused on ACP runtimes,
+like the spend caps: the harness's tool loop runs inside one Garuda turn.
+The SDK refuses registered tools and `load_project_tools=True` on an ACP
+runtime with `ToolsUnsupportedOnRuntime`, before launch; no MCP bridge
+serves them to a harness. SDK ACP sessions save the harness as
+`acp:<runtime>`, as the CLI does, and write the same usage-ledger snapshot.
+
 ## 2026-11-24 — Proven readonly ACP confinement permits inspection (#689)
 
 After the Docker preflight or parent-owned confinement proof, readonly ACP

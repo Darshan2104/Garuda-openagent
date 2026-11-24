@@ -42,7 +42,7 @@ click, and the copy button copies it as shown.
 <div class="gb-step">
 <p class="gb-label">4 · Extras (optional, pick any)</p>
 <div class="gb-options" data-group="extras" data-multi>
-<button data-args="--deadline-sec 900" data-native-only data-explain="--deadline-sec 900 gives the run a 15-minute wall-clock budget.">15-minute limit</button>
+<button data-args="--deadline-sec 900" data-explain="--deadline-sec 900 gives the run a 15-minute wall-clock budget.">15-minute limit</button>
 <button data-args="--max-turns 30" data-native-only data-explain="--max-turns 30 stops the loop after 30 agent turns.">30-turn limit</button>
 <button data-args="--check &quot;python -m pytest -q&quot;" data-explain="--check runs your test command after the session; its result becomes the session's verification (passed or failed). Repeat the flag for more checks." data-note="Replace python -m pytest -q with your own test command.">Verify with my tests</button>
 <button data-id="bg" data-conflicts="resume trajectory" data-args="--bg" data-explain="--bg queues the run and returns at once with the session ID; follow it with garuda sessions and stop it with garuda sessions cancel." data-note="A background run has nobody to approve risky actions, so they are denied.">Run in the background</button>
