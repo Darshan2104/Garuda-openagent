@@ -55,12 +55,16 @@ async def probe(argv: list[str], options_for: Callable[[str], dict[str, str]], *
     nothing is set (enough for a model). With ``required_mode``, the mode the
     agent then reports must be no broader than it, as before a prompt
     (:func:`~garuda.runtime.roles.check_mode`). Handshake deadlines are the
-    launch's own (``garuda.acp.client.HANDSHAKE_TIMEOUT``).
+    launch's own: ``harnesses.<id>.handshake_timeout_sec``, else
+    ``garuda.acp.client.HANDSHAKE_TIMEOUT``.
     """
+    from garuda.acp.catalog import handshake_settings
     from garuda.acp.client import AcpProcess
 
+    # The same startup deadline as a launch of this harness (#687).
+    deadline, _hint = handshake_settings(runtime_id)
     workspace = tempfile.mkdtemp(prefix="garuda-options-probe-")
-    process = AcpProcess(list(argv), cwd=workspace)
+    process = AcpProcess(list(argv), cwd=workspace, handshake_timeout=deadline)
     try:
         await process.launch()
         hello = await process.initialize()

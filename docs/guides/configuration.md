@@ -508,7 +508,7 @@ version: 1
 defaults: {role: coder}
 harnesses:
   claude: {allowed_models: [<exact-id>], max_parallel: 2}
-  codex: {allowed_models: [<exact-id>]}
+  codex: {allowed_models: [<exact-id>], handshake_timeout_sec: 90}
 roles:
   planner:  {harness: claude, model_id: <exact-id>, permissions: smart, write_policy: no-edits}
   coder:    {harness: codex, model_id: <exact-id>, effort: high,
@@ -535,6 +535,14 @@ and an `authority` key are refused with the full path of the value, before
 anything starts. A `settings.yaml` key such as `routing` in a `garuda.yaml`, a
 `max_parallel` that disagrees with `capacity`, or a `--runtime` that
 contradicts the selected role is refused as `config.conflict`.
+
+`harnesses.<id>.handshake_timeout_sec` is how long Garuda waits for an
+external (ACP) harness to answer its startup calls (`initialize`,
+`session/new`, `session/load` and setting role options), in whole seconds
+from 5 to 600; the default is 30. Raise it when a harness starts slowly on a
+loaded machine and runs fail with `initialize exceeded its 30s deadline`; the
+error names the setting to raise. It applies to every run of that harness,
+with or without a role, and only your user file may set it.
 
 `garuda config migrate` previews the user `garuda.yaml` that carries what
 `settings.yaml` already says (trusted runtimes as `harnesses`, `capacity` as

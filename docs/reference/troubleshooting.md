@@ -275,6 +275,14 @@ Click a problem to see the fix.
     `~/.agent/settings.yaml`, or its version check fails. Login and quota often
     show as `unknown`; that alone does not make a runtime unavailable.
 
+??? question "A harness fails to start: `initialize exceeded its 30s deadline`"
+
+    The external harness did not answer its startup calls in time, which
+    can happen on a loaded machine. Raise its deadline in your user
+    `garuda.yaml`, for example
+    `harnesses: {codex: {handshake_timeout_sec: 90}}` (5 to 600 seconds;
+    default 30). See [Roles and flows](../guides/configuration.md#roles-and-flows-garudayaml).
+
 ??? question "A `consult` call is refused (`consult.*`)"
 
     The code says why, and a refused consult never runs the other role or
