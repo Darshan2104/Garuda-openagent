@@ -40,6 +40,7 @@ from garuda.flows import artifacts as art
 from garuda.workspace.confined_acp import Confinement, ConfinementRefused, require_image
 
 JOURNAL = "journal.jsonl"
+RESUMABLE_CHECKED_STOPS = {"workspace.readonly_unenforced", "flow.step_failed", "flow.output_missing"}
 
 
 class FlowStopped(Exception):
@@ -221,9 +222,13 @@ class FlowRunner:
                  on_admitted=None, approval_handler=None, launch_kind: str = "flow",
                  session_name: str | None = None, execution_workspace: dict | None = None,
                  worktree_plan: dict | None = None, prepared_fallbacks: dict | None = None,
-                 background_admission=None, configuration_sources: tuple | None = None):
+                 background_admission=None, configuration_sources: tuple | None = None,
+                 verification_cli_checks: tuple[str, ...] | None = None):
         if (verification_request is None) != (verification_permissions is None):
             raise ValueError("flow verification requires its frozen permission ceiling")
+        if verification_cli_checks is not None and (verification_request is None
+                or operation_binding is not None or background_admission is not None):
+            raise ValueError("a saved check selection requires a standalone checked flow")
         if (operation_binding is None) != (on_admitted is None):
             raise ValueError("owned operation binding and admission callback are inseparable")
         if launch_kind not in {"flow", "run"}:
@@ -252,6 +257,7 @@ class FlowRunner:
         self.starter_record = starter_record
         self.verification_request = verification_request
         self.verification_permissions = verification_permissions
+        self.verification_cli_checks = verification_cli_checks
         self.prepared_roles = dict(prepared_roles) if prepared_roles is not None else None
         self.prepared_fallbacks = dict(prepared_fallbacks or {})
         self._fallback_probes = {}
@@ -270,6 +276,8 @@ class FlowRunner:
         self.background_admission = background_admission
         self.require_owned = verification_request is not None or operation_binding is not None
         self._evidence = None
+        self._evidence_count = 0
+        self._prior_attempts = {}
         self._owned_snapshot = None
         self._verification_quarantined = False
         self._interrupted_acceptance_receipts = None
@@ -417,42 +425,44 @@ class FlowRunner:
                                                       "outcome", "exit_code")},
             **({"confinement": confinement} if confinement is not None else {})}
 
-    def _evidence_coverage(self, done: list[dict]) -> list[dict]:
+    def _evidence_coverage(self, entries: list[dict], attempts: list[dict]) -> list[dict]:
         """Tie every settled step intent to its receipt and boundary digest."""
         from garuda.core.acceptance_request import is_digest
 
-        entries = journal(self.store, self.flow_session)
-        intents = [entry for entry in entries if entry.get("event") == "intent"]
-        settled = [entry for entry in entries if entry.get("event") == "receipt"]
-        actual = receipts(self.store, self.flow_session)
-        identities = [(entry.get("step"), entry.get("attempt")) for entry in done]
-        if (len(intents) != len(done) or len(settled) != len(done)
-                or len(actual) != len(done)
-                or len(set(identities)) != len(done)
-                or set(identities) != {(entry.get("step"), entry.get("attempt"))
-                                       for entry in actual}
-                or any(entry.get("event") not in {"intent", "receipt"} for entry in entries)):
+        by_attempt = {(row["step"], row["attempt"]): row for row in attempts}
+        if (len(by_attempt) != len(attempts) or len(entries) != 2 * len(attempts)
+                or len(attempts) > 512):
             raise FlowStopped("flow.evidence_incomplete", "step attempt coverage is incomplete")
         by_id = {step["id"]: step for step in self.steps}
         coverage = []
-        for intent, recorded, receipt in zip(intents, settled, done, strict=True):
-            key = (intent.get("step"), intent.get("attempt"))
+        for intent, recorded in zip(entries[::2], entries[1::2], strict=True):
+            key = intent.get("step"), intent.get("attempt")
+            receipt = by_attempt.pop(key, {})
             boundary = receipt.get("evidence_boundary")
-            if (key != (recorded.get("step"), recorded.get("attempt"))
-                    or key != (receipt.get("step"), receipt.get("attempt"))
+            stopped = (receipt.get("status") == "stopped" and self.verification_cli_checks is not None
+                       and (receipt.get("stop") or {}).get("code") in RESUMABLE_CHECKED_STOPS)
+            if (intent.get("event") != "intent" or recorded.get("event") != "receipt"
+                    or key != (recorded.get("step"), recorded.get("attempt"))
                     or intent.get("index") != receipt.get("index")
                     or intent.get("index") != by_id.get(key[0], {}).get("index")
-                    or receipt.get("status") != "done"
-                    or receipt.get("success") is not True
-                    or receipt not in actual
                     or key[0] not in by_id
                     or type(key[1]) is not int
-                    or not isinstance(boundary, dict)
+                    or not (stopped or (receipt.get("status") == "done" and receipt.get("success") is True))):
+                raise FlowStopped("flow.evidence_incomplete", "step receipt does not cover its intent")
+            if (stopped and receipt["stop"]["code"] == "workspace.readonly_unenforced"
+                    and receipt.get("session_id") is None and receipt.get("success") is False
+                    and boundary is None):
+                continue  # confinement refused before agent start
+            if (not isinstance(boundary, dict)
                     or not is_digest(boundary.get("boundary_digest"))):
                 raise FlowStopped("flow.evidence_incomplete",
                                   "step receipt or boundary does not cover its intent")
-            self._closed_step(StepResult(receipt["session_id"], True, "",
-                                         receipt.get("closure")), by_id[key[0]], key[1], receipt.get("role_plan"))
+            if key in self._prior_attempts:
+                if receipt != self._prior_attempts[key]:
+                    raise FlowStopped("flow.evidence_incomplete", "a settled step receipt changed")
+            else:
+                self._closed_step(StepResult(receipt["session_id"], True, "",
+                                             receipt.get("closure")), by_id[key[0]], key[1], receipt.get("role_plan"))
             coverage.append({"step": key[0], "attempt": key[1],
                              "boundary_digest": boundary["boundary_digest"]})
         return coverage
@@ -475,7 +485,8 @@ class FlowRunner:
             context = CheckContext(self.flow_session, str(uuid.uuid4()), self.workspace,
                                    candidate, reference["manifest_digest"],
                                    tuple(manifest["changed"]), True, tuple(identity))
-            publisher = OwnedFlowVerification(self.store, lease, request, context, permissions)
+            publisher = OwnedFlowVerification(self.store, lease, request, context, permissions,
+                                              baseline_digest=self._evidence.baseline_digest)
             phase = await publisher.prepare()
             # The intent precedes any acceptance launch. A crash after the
             # private intent but before this metadata update remains visible
@@ -547,6 +558,83 @@ class FlowRunner:
 
     # -- running -----------------------------------------------------------------------
 
+    def _resume_request(self):
+        from garuda.core.acceptance_records import digest
+
+        return {"version": 1, "checks": list(self.verification_cli_checks),
+                "request": self.verification_request.identity, "flow": digest(self.flow)}
+
+    def _verification_records(self):
+        from garuda.flows.verification_records import FlowVerificationRecords
+
+        return FlowVerificationRecords(self.store.session_dir(self.flow_session), self.flow_session)
+
+    def _checked_history(self):
+        from garuda.core.session_records import (
+            BoundedSessionRecords,
+            RecordError,
+            list_json,
+            parse_json,
+        )
+
+        reader = BoundedSessionRecords(self.store.root, byte_budget=16 * 1024 * 1024)
+        directory = Path(self.flow_session) / "flow"
+        with reader.selected_session(self.flow_session):
+            names = list_json(reader, directory / "receipts", entry_limit=512)
+            attempts = [parse_json(reader.read(directory / "receipts" / name)) for name in names]
+            try:
+                raw = reader.read(directory / JOURNAL)
+            except RecordError as exc:
+                if attempts or not isinstance(exc.__cause__, FileNotFoundError):
+                    raise
+                raw = b""
+        return [parse_json(line) for line in raw.splitlines()], attempts
+
+    def _resume_inputs(self, expected_checkpoint):
+        from garuda.core.acceptance_records import digest
+        from garuda.core.acceptance_request import is_digest
+        from garuda.runtime.strict_store import CorruptRecord, StorageError
+
+        try:
+            prior = self.store.load_meta(self.flow_session)
+            if self._verification_records().resume_request(prior) != self._resume_request():
+                raise CorruptRecord("the original check authority or flow definition changed")
+            checkpoint = prior["flow_resume_checkpoint"]
+            baseline = prior["flow_evidence_baseline"]["baseline_digest"]
+            entries, attempts = self._checked_history()
+            if (checkpoint != expected_checkpoint or not is_digest(baseline)
+                    or checkpoint["attempts"] != digest([entries, attempts])
+                    or prior["workspace"] != self.workspace or prior["task"] != self.task):
+                raise CorruptRecord("the stopped flow's history or workspace changed")
+            # The stop was published only after verifying these exact receipts
+            # against their original live owners. Keep their closure bindings.
+            self._prior_attempts = {(row["step"], row["attempt"]): row for row in attempts}
+            coverage = self._evidence_coverage(entries, attempts)
+            existing = sorted(attempts, key=lambda row: (row["index"], row["attempt"]))
+            return prior, baseline, checkpoint["candidate"], coverage, existing
+        except (StorageError, OSError, ValueError, KeyError, TypeError) as exc:
+            raise FlowStopped("flow.verification_reconciliation_required",
+                              "original check authority or stopped flow evidence could not be proved") from exc
+
+    async def _stop_checkpoint(self, lease):
+        from garuda.core.acceptance_records import digest
+        from garuda.core.acceptance_work import AcceptanceWorkError
+        from garuda.runtime.process_supervision import CleanupUncertain
+        from garuda.runtime.strict_store import StorageError
+
+        try:
+            entries, attempts = await _settled_sync(self._checked_history)
+            self._evidence_coverage(entries, attempts)
+            return {"attempts": digest([entries, attempts]),
+                    "candidate": await self._evidence.version(), "id": uuid.uuid4().hex}
+        except CleanupUncertain as exc:
+            await lease.stop_heartbeat()
+            raise FlowStopped("flow.cleanup_unproved",
+                              "the stopped flow evidence worker did not settle") from exc
+        except (AcceptanceWorkError, StorageError, OSError, ValueError, KeyError, TypeError, FlowStopped) as exc:
+            raise FlowStopped("flow.verification_reconciliation_required",
+                              "the stopped flow evidence could not be recorded") from exc
+
     def _begin(self) -> None:
         # A reserved ID is not permission to reuse an earlier or partially
         # published session. Reserve the directory only after the workspace
@@ -579,10 +667,13 @@ class FlowRunner:
         # Path.mkdir(parents=True) creates missing ancestors with the default
         # mode, which makes the flow directory too open for owned records.
         self.dir.mkdir(mode=0o700)
+        request_reference = (self._verification_records().save_resume_request(self._resume_request())
+                             if self.verification_cli_checks is not None else None)
         self.store.update_meta(self.flow_session, {
             "kind": "flow", "flow": {"name": self.name, "steps": [s["id"] for s in
                                                                  self.steps]},
             "flow_state": "running",
+            **({"flow_resume_request": request_reference} if request_reference is not None else {}),
             "review_policies": [{"step": s["id"], "reviewer": s["review"]["by"],
                                  "policy": "required" if s["review"].get("independent", True) else "waived"}
                                 for s in self.steps if "review" in s],
@@ -616,20 +707,24 @@ class FlowRunner:
             return "read-only"
         return "mutating"
 
-    async def run(self, *, resume: bool = False) -> FlowResult:
+    async def run(self, *, resume: bool = False, checked_checkpoint: dict | None = None) -> FlowResult:
         from garuda.interfaces.run_guard import WorkspaceLeaseGuard
+        from garuda.runtime.process_supervision import CleanupUncertain
         from garuda.runtime.session_state import finished, interrupted
 
-        if resume:
-            # Service callers reconstruct a runner without the original live
-            # check request. A protected parent must never fall through the
-            # ordinary step-resume path and overwrite its committed verdict.
-            prior = await _settled_sync(self.store.load_meta, self.flow_session)
+        checked_resume = resume and checked_checkpoint is not None and self.verification_cli_checks is not None
+        if resume and not checked_resume:
+            from garuda.runtime.strict_store import StorageError
+
+            try:
+                prior = await _settled_sync(self.store.load_meta, self.flow_session)
+            except StorageError as exc:
+                raise FlowStopped("flow.verification_reconciliation_required",
+                                  "protected flow metadata is unavailable") from exc
             if prior.get("publication_policy") is not None or self.verification_request is not None:
                 raise FlowStopped("flow.verification_reconciliation_required",
                                   "owned flow verification requires recovery from its durable phase; "
                                   "steps and checks are never replayed automatically")
-        if resume:
             await _settled_sync(recover, self.store, self.flow_session)
             prior_receipts = await _settled_sync(receipts, self.store, self.flow_session)
             held = [r["step"] for r in prior_receipts
@@ -646,7 +741,9 @@ class FlowRunner:
         lease.acquire()
         lease.start_heartbeat()
         result = FlowResult(self.flow_session)
-        begun = resume
+        begun = resume and not checked_resume
+        prior = None
+        confinement_stop = None
         try:
             if self.require_owned:
                 self._owned_snapshot = (lease.snapshot_ownership() if lease._mode == "mutating"
@@ -663,7 +760,15 @@ class FlowRunner:
                 if self.on_admitted is not None:
                     await self.on_admitted(
                         self.flow_session, self.operation_binding["lease_epoch"])
-                await _settled_sync(self._check_confinement_images)
+                try:
+                    await _settled_sync(self._check_confinement_images)
+                except FlowStopped as exc:
+                    if self.verification_cli_checks is None or exc.code != "workspace.readonly_unenforced":
+                        raise
+                    confinement_stop = exc
+            if checked_resume:
+                prior, baseline_digest, candidate, coverage, existing = await _settled_sync(
+                    self._resume_inputs, checked_checkpoint)
             if self.quota_recovery is not None:
                 from garuda.flows.quota_recovery import RecoveryWaiting
 
@@ -673,7 +778,7 @@ class FlowRunner:
                     raise FlowStopped("flow.quota_wait", str(exc)) from exc
                 except (OSError, ValueError) as exc:
                     raise FlowStopped("flow.recovery_changed", str(exc)) from exc
-            if resume:
+            if resume and not checked_resume:
                 from garuda.runtime.ownership import current_owner
                 from garuda.runtime.session_state import started
 
@@ -705,11 +810,40 @@ class FlowRunner:
                 except AcceptanceWorkError as exc:
                     raise FlowStopped("flow.check_authority_changed",
                                       "check sources changed before step admission") from exc
-                self._evidence = OwnedFlowEvidence(self.store.session_dir(self.flow_session),
-                                                   self.flow_session, self.workspace, lease)
-                baseline = await self._evidence.begin()
-                await self._publish(self.flow_session, {"flow_evidence_baseline": baseline})
-            existing = receipts(self.store, self.flow_session)
+                self._evidence = OwnedFlowEvidence(
+                    self.store.session_dir(self.flow_session), self.flow_session, self.workspace, lease,
+                    baseline_digest=baseline_digest if checked_resume else None)
+                if checked_resume:
+                    try:
+                        await self._evidence.resume(candidate, coverage)
+                    except CleanupUncertain as exc:
+                        await lease.stop_heartbeat()
+                        raise FlowStopped("flow.cleanup_unproved",
+                                          "the resume evidence worker did not settle") from exc
+                    except AcceptanceWorkError as exc:
+                        raise FlowStopped("flow.verification_reconciliation_required",
+                                          "the stopped flow workspace or baseline evidence changed") from exc
+                    self._evidence_count = len(coverage)
+                    from garuda.runtime.ownership import current_owner
+                    from garuda.runtime.session_state import started
+
+                    await self._publish(self.flow_session, {
+                        "flow_state": "running", "status": "running", "flow_stop": None,
+                        "flow_resume_checkpoint": None, "state": started(current_owner().to_dict())})
+                    begun = True
+                else:
+                    try:
+                        baseline = await self._evidence.begin()
+                    except AcceptanceWorkError as exc:
+                        if confinement_stop is None:
+                            raise
+                        self._evidence = None
+                        raise confinement_stop from exc
+                    await self._publish(self.flow_session, {"flow_evidence_baseline": baseline})
+                    if confinement_stop is not None:
+                        raise confinement_stop
+            if not checked_resume:
+                existing = receipts(self.store, self.flow_session)
             done = [r for r in existing if r.get("status") == "done"]
             completed_steps = {r["step"] for r in done}
             tried = {}
@@ -719,7 +853,12 @@ class FlowRunner:
             prior_approvals = ((await _settled_sync(self.store.load_meta, self.flow_session))
                                .get("review_approvals") if resume else None)
             self._review_approvals = prior_approvals if isinstance(prior_approvals, dict) else {}
+            continuation = (prior or {}).get("flow_continuation")
             for step in steps:
+                if step.get("review") and continuation and continuation.get("build") == step["id"]:
+                    await self._review_loop(step, steps[-1], done, lease, tried, checkpoint=continuation)
+                    completed_steps.add(steps[-1]["id"])
+                    continue
                 if step["id"] in completed_steps:
                     # A receipt says the step ran, not that its reviewer approved it.
                     if (step.get("review") and self.quota_recovery is not None
@@ -747,7 +886,11 @@ class FlowRunner:
                 done.append(receipt)
             if self.verification_request is not None:
                 try:
-                    coverage = self._evidence_coverage(done)
+                    entries, attempts = await _settled_sync(self._checked_history)
+                    known = {(row["step"], row["attempt"]): row for row in done} | self._prior_attempts
+                    if known != {(row["step"], row["attempt"]): row for row in attempts}:
+                        raise FlowStopped("flow.evidence_incomplete", "step attempt coverage is incomplete")
+                    coverage = self._evidence_coverage(entries, attempts)
                     reference, manifest = await self._evidence.finalize(coverage)
                     await self._publish(self.flow_session, {
                         "flow_evidence_manifest": reference,
@@ -775,25 +918,35 @@ class FlowRunner:
         except FlowStopped as stop:
             if not begun:
                 raise
-            result.stopped = stop
+            checkpoint = None
+            refusal = None
+            if (self.verification_cli_checks is not None and self._evidence is not None
+                    and not self._verification_quarantined and stop.code in RESUMABLE_CHECKED_STOPS):
+                try:
+                    checkpoint = await self._stop_checkpoint(lease)
+                except FlowStopped as exc:
+                    refusal = exc
+            failure = refusal or stop
+            result.stopped = failure
             await self._publish(self.flow_session, {
-                "flow_state": "quarantined" if self._verification_quarantined or stop.code in {
+                "flow_state": "quarantined" if self._verification_quarantined or failure.code in {
                     "flow.cleanup_unproved", "flow.evidence_incomplete", "flow.evidence_unavailable"
                 } else "stopped",
                 "status": "failed", "state": finished(success=False),
-                "flow_stop": {"code": stop.code, "step": stop.step, "message": str(stop)}})
+                **({"flow_resume_checkpoint": checkpoint} if checkpoint is not None else {}),
+                "flow_stop": {"code": failure.code, "step": failure.step, "message": str(failure)}})
+            if refusal is not None:
+                raise refusal from refusal.__cause__
             if self.quota_recovery is not None:
                 await self.quota_recovery.stopped(self, stop)
         except BaseException as exc:
             # Cancelled or crashed mid-flow: the step that was running has an
             # intent and no receipt, so a resume quarantines it.
-            if not begun:
-                raise
-            from garuda.runtime.process_supervision import CleanupUncertain
-
             uncertain = isinstance(exc, CleanupUncertain) or self._verification_quarantined
             if uncertain:
                 await lease.stop_heartbeat()
+            if not begun:
+                raise
             updates = {
                 "flow_state": "quarantined" if uncertain else "interrupted",
                 "status": "failed",
@@ -999,7 +1152,7 @@ class FlowRunner:
                 and history[-1].get("packet_digest") == approval.get("packet_digest"))
 
     async def _review_loop(self, step: dict, terminal: dict, done: list[dict], lease,
-                           tried: dict) -> None:
+                           tried: dict, *, checkpoint=None) -> None:
         """Run ``step`` and its terminal reviewer until approval or the rounds run out."""
         from html import escape
 
@@ -1016,7 +1169,8 @@ class FlowRunner:
                 raise FlowStopped("flow.review_not_independent", why, step=terminal["id"])
         extra = ""
         history = []
-        checkpoint = (self.quota_recovery.continuation if self.quota_recovery else None)
+        if self.quota_recovery is not None:
+            checkpoint = self.quota_recovery.continuation
         start = 0
         pending = step["id"]
         if checkpoint:
@@ -1047,7 +1201,7 @@ class FlowRunner:
             for target in (step, terminal):
                 if pair == start and pending == terminal["id"] and target is step:
                     continue
-                if self.quota_recovery is not None:
+                if self.quota_recovery is not None or self.verification_cli_checks is not None:
                     await self._publish(self.flow_session, {"flow_continuation": {
                         "version": 1, "build": step["id"], "reviewer": terminal["id"],
                         "round": pair, "pending": target["id"], "history": history,
@@ -1102,6 +1256,7 @@ class FlowRunner:
                     "review": review, "review_approvals": dict(self._review_approvals)})
                 if self.quota_recovery is not None:
                     self.quota_recovery.continuation = None
+                if self.quota_recovery is not None or self.verification_cli_checks is not None:
                     await self._publish(self.flow_session, {"flow_continuation": None})
                 return
             extra = ("[garuda] The reviewer requested changes. Address these findings "
@@ -1280,7 +1435,8 @@ class FlowRunner:
                 raise
             if self._evidence is not None:
                 try:
-                    boundary = await self._evidence.boundary(len(done), step["id"], attempt)
+                    boundary = await self._evidence.boundary(self._evidence_count, step["id"], attempt)
+                    self._evidence_count += 1
                 except CleanupUncertain:
                     await lease.stop_heartbeat()
                     raise

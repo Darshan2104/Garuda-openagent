@@ -21,6 +21,9 @@ isolation, readonly ACP and owned fallback probes (#337). See the
 [approved plan](../plans/2026-10-06-ready-to-use-workflow-scenarios.md)
 and [current workflow guide](../use-cases/workflows.md).
 
+Checked CLI flows can resume settled step stops before the check phase starts
+when the original request, workspace and attempt evidence still match.
+
 Context-fork slice (#415, second half of #370): native checkpoint prefixes now
 continue under a new identity with ordinary admission and fresh workspace evidence.
 [Context forks](../use-cases/advanced.md#fork-an-earlier-conversation-context) rewind

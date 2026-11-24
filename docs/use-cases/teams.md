@@ -245,11 +245,13 @@ sequenceDiagram
   `policy: waived`; unresolved configured evidence is labelled unknown, not an
   independent review. Actual launched and consulted identities remain recorded.
 - If Garuda is killed mid-step, that step is quarantined, never replayed.
-  `garuda flow resume FLOW_ID` continues after the last finished step. A
-  reviewed step counts as finished only once its review approved it; otherwise
-  the resume stops with `flow.review_unresolved`. An unfinished protected check
-  phase is classified without replay; incomplete or uncertain publication
-  requires reconciliation.
+  `garuda flow resume FLOW_ID` continues after the last finished step. Before
+  checks begin, a checked CLI flow can retry a settled step failure, a missing
+  output, or a confinement refusal. A failed review step can retry against the
+  saved build candidate and must still approve it. Other unresolved reviews
+  stop with `flow.review_unresolved`. Once the protected check phase has a
+  durable intent, resume only reconciles records and reports incomplete or
+  uncertain publication.
 
 !!! warning "Native roles in flows: two current limitations"
     - A native step's output is the summary it passes to `task_complete`, so

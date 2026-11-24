@@ -362,7 +362,18 @@ Click a problem to see the fix.
 
     The reviewed step finished, but its reviewer never approved it: the review
     was invalid, still asked for changes after the last round, or never ran. A
-    resume never treats such a step as reviewed. Start a new flow.
+    checked CLI flow can retry a settled reviewer failure before checks start
+    when its saved review checkpoint and candidate still match. If resume
+    reports `flow.review_unresolved`, start a new flow.
+
+??? question "A checked flow refuses resume with `flow.verification_reconciliation_required`"
+
+    Garuda could not prove the original check request, stopped workspace and
+    evidence, or a consistent check phase. Checked flows created before the
+    resume checkpoint was introduced have no saved request. Start a new flow
+    after inspecting the workspace and any retained check records. If you need
+    to change configuration to fix a confinement refusal, use a new checked
+    flow with the updated configuration.
 
 ??? question "A flow stops with `flow.review_invalid`"
 

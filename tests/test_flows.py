@@ -502,6 +502,158 @@ def test_resuming_a_failed_flow_through_cli_runs_a_new_attempt(repo, monkeypatch
     assert len(sessions) == 3  # every attempt is its own session
 
 
+@pytest.mark.parametrize("checks", [(), ("--check", "true")], ids=["unchecked", "checked"])
+def test_resume_plan_only_after_confinement_refusal(repo, monkeypatch, capsys, checks):
+    from types import SimpleNamespace
+
+    from tests.test_runtime_cli import _main
+
+    if checks and sys.platform != "linux":
+        pytest.skip("owned flow checks require Linux")
+    gy.user_path().write_text(
+        "version: 1\nroles:\n  scout: {harness: codex, permissions: readonly}\n"
+        "  planner: {harness: native}\n")
+    monkeypatch.setattr(FlowRunner, "_role_plan", lambda *args, **kwargs: SimpleNamespace(
+        kind="acp", permissions="readonly", harness={}))
+
+    async def must_not_launch(launch):
+        pytest.fail(f"confinement should refuse before launching {launch.step_id}")
+
+    monkeypatch.setattr("garuda.flows.launch.launch_step", must_not_launch)
+
+    code, out = _main(monkeypatch, capsys, "flow", "run", "plan-only", "-t", "plan the fix",
+                      "--workspace", str(repo), *checks)
+    assert code == 3, out
+    stopped = json.loads(next(line for line in out.splitlines() if line.startswith("{")))
+    flow_id = stopped["flow_session"]
+    assert stopped["code"] == "workspace.readonly_unenforced"
+    code, out = _main(monkeypatch, capsys, "flow", "resume", flow_id)
+    assert code == 3, out
+    assert json.loads(next(line for line in out.splitlines() if line.startswith("{"))) == stopped
+    if not checks:
+        return
+
+    store = SessionStore()
+    original = store.load_meta(flow_id)
+    flow_dir = engine.flow_dir(store, flow_id)
+
+    def refused():
+        code, out = _main(monkeypatch, capsys, "flow", "resume", flow_id)
+        assert code == 2, out
+        assert len(out.splitlines()) == 1
+        assert out.startswith("Error: flow.verification_reconciliation_required: ")
+        assert store.load_meta(flow_id) == original
+
+    phase = flow_dir / "verification-phase.json"
+    phase.write_text("torn intent")
+    phase.chmod(0o600)
+    refused()
+    phase.unlink()
+
+    orphan = store.session_dir(flow_id) / "acceptance-orphan"
+    orphan.mkdir(mode=0o700)
+    refused()
+    orphan.rmdir()
+
+    journal = flow_dir / engine.JOURNAL
+    journal.write_text('{"event":"intent","index":0,"step":"scout","attempt":1}\n')
+    refused()
+    journal.unlink()
+
+    config = gy.user_path().read_text()
+    gy.user_path().write_text(config + "# changed authority source\n")
+    refused()
+    gy.user_path().write_text(config)
+
+    (repo / "a.txt").write_text("different candidate\n")
+    refused()
+    (repo / "a.txt").write_text("a\n")
+
+    (flow_dir / "verification-request.json").unlink()
+    refused()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="owned flow checks require Linux")
+@pytest.mark.parametrize("stop_step, stop_code", [
+    ("build", "flow.step_failed"), ("review", "flow.output_missing"),
+    ("build", "workspace.readonly_unenforced"),
+])
+def test_checked_flow_resumes_settled_attempt_and_runs_original_check(
+        repo, monkeypatch, capsys, stop_step, stop_code):
+    from garuda.workspace.confined_acp import ConfinementRefused
+    from tests.test_runtime_cli import _main
+
+    gy.user_path().write_text(
+        "version: 1\nroles:\n  planner: {harness: native}\n  coder: {harness: native}\n"
+        "  reviewer: {harness: native}\nflows:\n  checked:\n    steps:\n"
+        "    - {id: plan, role: planner, outputs: [plan]}\n"
+        "    - {id: build, role: coder, inputs: [plan], outputs: [patch],\n"
+        "       review: {by: reviewer, independent: false, max_rounds: 1}}\n"
+        "    - {id: review, role: reviewer, inputs: [patch], outputs: [review]}\n")
+    launches = []
+    outputs = {"plan": _block("plan", "edit a.txt"), "build": _block("patch", "a.txt"),
+               "review": _block("review", "verdict: approve")}
+
+    async def launcher(launch):
+        assert launch.require_owned
+        launches.append((launch.step_id, launch.attempt))
+        session = str(uuid.uuid4())
+        lease = launch.capability._parent.snapshot_ownership()["lease"]
+        info = repo.stat()
+        closure = {"version": 1, "request_digest": "a" * 64, "session_id": session,
+                   "parent_id": launch.flow_session, "step_id": launch.step_id,
+                   "attempt": launch.attempt, "workspace_identity": [info.st_dev, info.st_ino],
+                   "parent_owner": {key: lease[key] for key in ("pid", "identity", "pgid", "epoch")},
+                   "process": {"cleanup": {"backend": "linux-subreaper", "echild": True},
+                               "outcome": "exited", "supervisor": {}, "command": {}, "exit_code": 0}}
+        if launch.step_id == stop_step and launch.attempt == 1:
+            if stop_code == "workspace.readonly_unenforced":
+                # #664: a launch-time refusal settles a stopped receipt before any agent starts.
+                raise ConfinementRefused("the confinement probe failed:\nDocker is not available")
+            if stop_step == "build":
+                (repo / "a.txt").write_text("partial edit\n")
+                return StepResult(session, False, "", closure, error="acp.timeout during initialize")
+            return StepResult(session, True, "missing review artifact", closure)
+        if launch.step_id == "build" and launch.attempt == 2:
+            (repo / "a.txt").write_text("a\n")
+        return StepResult(session, True, outputs[launch.step_id], closure)
+
+    monkeypatch.setattr("garuda.flows.launch.launch_step", launcher)
+    code, out = _main(monkeypatch, capsys, "flow", "run", "checked", "-t", "ship it",
+                      "--workspace", str(repo), "--check", "true")
+    assert code == 3, out
+    stopped = json.loads(next(line for line in out.splitlines() if line.startswith("{")))
+    assert stopped["code"] == stop_code
+    flow_id = stopped["flow_session"]
+    store = SessionStore()
+    flow_dir = engine.flow_dir(store, flow_id)
+    assert not (flow_dir / "verification-phase.json").exists()
+
+    code, out = _main(monkeypatch, capsys, "flow", "resume", flow_id)
+    assert code == 0, out
+    expected = [("plan", 1), ("build", 1)]
+    expected += ([("build", 2), ("review", 1)] if stop_step == "build"
+                 else [("review", 1), ("review", 2)])
+    assert launches == expected
+    meta = store.load_meta(flow_id)
+    assert meta["review"]["status"] == "review_approved"
+    assert meta["state"]["verification"] == {"status": "passed", "authority": "user-request"}
+    assert len(meta["acceptance_receipts"]) == 1
+    manifest = json.loads((flow_dir / "evidence" / "manifest.json").read_text())
+    # A refusal before agent start has no boundary, so it owns no evidence segment.
+    unsegmented = [("build", 1)] if stop_code == "workspace.readonly_unenforced" else []
+    assert [(row["step"], row["attempt"]) for row in manifest["segments"]] == [
+        key for key in expected if key not in unsegmented]
+    if stop_step == "build":
+        # Only the failed step's partial edit is a change; a launch refusal wrote nothing.
+        assert manifest["changed"] == (["a.txt"] if stop_code == "flow.step_failed" else [])
+        assert manifest["final_changed"] == []
+    code, out = _main(monkeypatch, capsys, "flow", "resume", flow_id)
+    assert code == 0, out
+    assert launches == expected
+    assert store.load_meta(flow_id) == meta
+
+
 @pytest.mark.parametrize("parallel", [False, True])
 @pytest.mark.parametrize("change_source", [False, True])
 async def test_native_flow_executes_its_admitted_agent_source(repo, monkeypatch,

@@ -84,7 +84,12 @@ def _full_changed(delta):
 class FlowEvidenceStore:
     """One flow's immutable baseline, attempt boundaries and final manifest."""
 
-    def __init__(self, session_dir, parent_id, workspace, snapshot):
+    def __init__(self, session_dir, parent_id, workspace, snapshot, *, baseline_digest=None):
+        from garuda.core.acceptance_request import is_digest
+
+        if baseline_digest is not None and not is_digest(baseline_digest):
+            raise StorageUnavailable("resumed flow baseline commitment is invalid")
+        self.baseline_digest = baseline_digest
         self.session = Path(session_dir)
         self.path = self.session / "flow" / "evidence"
         if (str(uuid.UUID(parent_id)) != parent_id or self.session.name != parent_id
@@ -132,13 +137,21 @@ class FlowEvidenceStore:
             if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
                 raise StorageUnavailable("flow evidence directory is not private")
             start, start_digest = _read(directory, "baseline.json")
+            binding = self.binding
+            if self.baseline_digest is not None:
+                if start_digest != self.baseline_digest or not isinstance(start.get("binding"), dict):
+                    raise CorruptRecord("resumed flow baseline commitment changed")
+                # The durable baseline keeps its original owner binding. The
+                # caller must still prove a live lease for each owned operation.
+                binding = {**binding, "owner_digest": start["binding"].get("owner_digest")}
             if (set(start) != {"version", "binding", "directory", "baseline"}
-                    or start["binding"] != self.binding
+                    or start["binding"] != binding
                     or start["directory"] != [info.st_dev, info.st_ino]):
                 raise CorruptRecord("flow baseline binding changed")
             baseline = Baseline.from_dict(start["baseline"])
             if baseline.state != BASELINE_CAPTURED:
                 raise CorruptRecord("flow baseline is not attributable")
+            self.binding = binding
             return directory, baseline, start_digest
         except BaseException:
             os.close(directory)
@@ -187,42 +200,9 @@ class FlowEvidenceStore:
 
     def finalize(self, coverage: list[dict]):
         """Require every supplied attempt and its exact boundary commitment."""
-        if (not isinstance(coverage, list) or len(coverage) > 512
-                or any(not isinstance(row, dict) or set(row) != {"step", "attempt", "boundary_digest"}
-                       for row in coverage)):
-            raise ValueError("invalid flow evidence coverage")
-        identities = [(row["step"], row["attempt"]) for row in coverage]
-        if (any(not isinstance(step, str) or not step or type(attempt) is not int or attempt < 1
-                for step, attempt in identities) or len(set(identities)) != len(identities)
-                or any(not isinstance(row["boundary_digest"], str)
-                       or len(row["boundary_digest"]) != 64
-                       or any(char not in "0123456789abcdef" for char in row["boundary_digest"])
-                       for row in coverage)):
-            raise ValueError("duplicate or invalid flow evidence attempt")
         directory, baseline, start_digest = self._open()
         try:
-            expected_names = {f"boundary-{index}.json" for index in range(len(coverage))}
-            actual_names = {name for name in os.listdir(directory) if name.startswith("boundary-")}
-            if actual_names != expected_names:
-                raise CorruptRecord("flow evidence boundary coverage differs")
-            changed, segments = set(), []
-            for ordinal, identity in enumerate(coverage):
-                document, segment_digest = _read(directory, f"boundary-{ordinal}.json")
-                if (set(document) != {"version", "binding", "baseline_digest", "ordinal",
-                                     "step", "attempt", "changed", "preexisting", "attribution"}
-                        or document["binding"] != self.binding
-                        or document["baseline_digest"] != start_digest
-                        or type(document["ordinal"]) is not int or document["ordinal"] != ordinal
-                        or document["step"] != identity["step"]
-                        or type(document["attempt"]) is not int
-                        or document["attempt"] != identity["attempt"]
-                        or segment_digest != identity["boundary_digest"]
-                        or document["attribution"] != BASELINE_CAPTURED):
-                    raise CorruptRecord("flow evidence segment differs from coverage")
-                changed.update(_paths(document["changed"]))
-                _paths(document["preexisting"])
-                segments.append({"step": identity["step"], "attempt": identity["attempt"],
-                                 "digest": segment_digest})
+            segments, changed = self._segments(directory, start_digest, coverage)
             final = session_delta(baseline, self.workspace)
             if not final.attributable:
                 raise StorageUnavailable("final flow delta is not attributable")
@@ -235,6 +215,61 @@ class FlowEvidenceStore:
             return {"manifest_digest": _digest(raw), "changed_count": len(changed)}
         finally:
             os.close(directory)
+
+    def resume(self, candidate, coverage):
+        """Reopen the same baseline only at the settled candidate and boundaries."""
+        directory, _baseline, start_digest = self._open()
+        try:
+            try:
+                os.stat("manifest.json", dir_fd=directory, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                raise CorruptRecord("resumed flow evidence was already finalized")
+            self._segments(directory, start_digest, coverage)
+            if (capture_baseline(self.workspace).state != BASELINE_CAPTURED
+                    or self.version()["fingerprint"] != candidate):
+                raise CorruptRecord("the stopped flow workspace changed")
+            return {}
+        finally:
+            os.close(directory)
+
+    def _segments(self, directory, start_digest, coverage):
+        if (not isinstance(coverage, list) or len(coverage) > 512
+                or any(not isinstance(row, dict) or set(row) != {"step", "attempt", "boundary_digest"}
+                       for row in coverage)):
+            raise ValueError("invalid flow evidence coverage")
+        identities = [(row["step"], row["attempt"]) for row in coverage]
+        if (any(not isinstance(step, str) or not step or type(attempt) is not int or attempt < 1
+                for step, attempt in identities) or len(set(identities)) != len(identities)
+                or any(not isinstance(row["boundary_digest"], str)
+                       or len(row["boundary_digest"]) != 64
+                       or any(char not in "0123456789abcdef" for char in row["boundary_digest"])
+                       for row in coverage)):
+            raise ValueError("duplicate or invalid flow evidence attempt")
+        expected_names = {f"boundary-{index}.json" for index in range(len(coverage))}
+        actual_names = {name for name in os.listdir(directory) if name.startswith("boundary-")}
+        if actual_names != expected_names:
+            raise CorruptRecord("flow evidence boundary coverage differs")
+        changed, segments = set(), []
+        for ordinal, identity in enumerate(coverage):
+            document, segment_digest = _read(directory, f"boundary-{ordinal}.json")
+            if (set(document) != {"version", "binding", "baseline_digest", "ordinal",
+                                 "step", "attempt", "changed", "preexisting", "attribution"}
+                    or document["binding"] != self.binding
+                    or document["baseline_digest"] != start_digest
+                    or type(document["ordinal"]) is not int or document["ordinal"] != ordinal
+                    or document["step"] != identity["step"]
+                    or type(document["attempt"]) is not int
+                    or document["attempt"] != identity["attempt"]
+                    or segment_digest != identity["boundary_digest"]
+                    or document["attribution"] != BASELINE_CAPTURED):
+                raise CorruptRecord("flow evidence segment differs from coverage")
+            changed.update(_paths(document["changed"]))
+            _paths(document["preexisting"])
+            segments.append({"step": identity["step"], "attempt": identity["attempt"],
+                             "digest": segment_digest})
+        return segments, changed
 
     def manifest(self, expected_digest: str):
         directory, _baseline, start_digest = self._open()
@@ -291,11 +326,14 @@ class FlowEvidenceStore:
 class OwnedFlowEvidence:
     """Async parent adapter; every Git probe and publication has owned closure."""
 
-    def __init__(self, session_dir, parent_id, workspace, owner):
+    def __init__(self, session_dir, parent_id, workspace, owner, *, baseline_digest=None):
         self.owner = owner
+        self.baseline_digest = baseline_digest
         self.base = {"snapshot": owner.snapshot_ownership(),
                      "session_dir": str(session_dir),
                      "parent_id": parent_id, "workspace": workspace}
+        if baseline_digest is not None:
+            self.base["baseline_digest"] = baseline_digest
 
     async def _call(self, operation, **fields):
         from garuda.core.acceptance_work import owned_call
@@ -309,6 +347,9 @@ class OwnedFlowEvidence:
         result = await self._call("flow-evidence-version")
         return result["fingerprint"]
 
+    async def resume(self, candidate, coverage):
+        await self._call("flow-evidence-resume", candidate=candidate, coverage=coverage)
+
     async def boundary(self, ordinal, step, attempt):
         return await self._call("flow-evidence-boundary", ordinal=ordinal,
                                 step=step, attempt=attempt)
@@ -318,7 +359,8 @@ class OwnedFlowEvidence:
 
         def read():
             reader = FlowEvidenceStore(self.base["session_dir"], self.base["parent_id"],
-                                       self.base["workspace"], self.base["snapshot"])
+                                       self.base["workspace"], self.base["snapshot"],
+                                       baseline_digest=self.baseline_digest)
             return reader.manifest(reference["manifest_digest"])
 
         async def settled_read():

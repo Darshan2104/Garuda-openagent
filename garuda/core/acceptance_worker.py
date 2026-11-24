@@ -176,6 +176,8 @@ def dispatch(operation, data):
                "terminal": {"session_dir", "binding", "receipt"},
                "reconcile": {"session_dir", "binding"},
                "flow-evidence-begin": {"snapshot", "session_dir", "parent_id", "workspace"},
+               "flow-evidence-resume": {"snapshot", "session_dir", "parent_id", "workspace",
+                                        "candidate", "coverage", "baseline_digest"},
                "flow-evidence-version": {"snapshot", "session_dir", "parent_id", "workspace"},
                "flow-evidence-boundary": {"snapshot", "session_dir", "parent_id", "workspace",
                                           "ordinal", "step", "attempt"},
@@ -186,7 +188,11 @@ def dispatch(operation, data):
                "flow-verification-commit": {"snapshot", "session_dir", "parent_id",
                                             "phase", "phase_digest", "sources",
                                             "results", "references", "verdict"}}
-    if operation not in schemas or set(data) != schemas[operation]:
+    fields = set(data)
+    if operation in {"flow-evidence-version", "flow-evidence-boundary", "flow-evidence-finalize",
+                     "flow-verification-prepare", "flow-verification-commit"}:
+        fields.discard("baseline_digest")
+    if operation not in schemas or fields != schemas[operation]:
         raise ValueError("unsupported operation or fields")
     if operation == "admitted-sources":
         from garuda.config_sources import verify_sources
@@ -206,11 +212,14 @@ def dispatch(operation, data):
         _owner({"snapshot": data["snapshot"]})
         _sanitize_git_environment()
         store = FlowEvidenceStore(data["session_dir"], data["parent_id"],
-                                  data["workspace"], data["snapshot"])
+                                  data["workspace"], data["snapshot"],
+                                  baseline_digest=data.get("baseline_digest"))
         if operation == "flow-evidence-begin":
             return store.begin()
         if operation == "flow-evidence-version":
             return store.version()
+        if operation == "flow-evidence-resume":
+            return store.resume(data["candidate"], data["coverage"])
         if operation == "flow-evidence-boundary":
             return store.boundary(data["ordinal"], data["step"], data["attempt"])
         return store.finalize(data["coverage"])
@@ -243,7 +252,8 @@ def dispatch(operation, data):
                 {"status": "invalidated", "code": "verification.authority_changed"}):
             raise WorkspaceChanged("flow verification candidate changed")
         FlowEvidenceStore(data["session_dir"], data["parent_id"],
-                          phase["workspace"], snapshot).manifest(phase["evidence_digest"])
+                          phase["workspace"], snapshot,
+                          baseline_digest=data.get("baseline_digest")).manifest(phase["evidence_digest"])
         if operation == "flow-verification-prepare":
             return records.prepare(phase)
         return records.commit(data["phase_digest"], data["results"],

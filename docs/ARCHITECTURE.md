@@ -698,10 +698,15 @@ fastest way to learn the system.
    a candidate-bound check phase with original source identities and a
    verification commit before strict parent metadata publication. A completed
    protected flow can be read back only after the private commit, terminal
-   check receipts, and published parent receipt
-   metadata reconcile. Resume classifies unfinished records without launching,
-   signalling or replaying a check; uncertain or incomplete publication is a
-   typed refusal. Linux host checks can publish user-visible flow verification.
+   check receipts, and published parent receipt metadata reconcile. A settled
+   CLI step failure, missing output, or confinement refusal before phase intent
+   can resume under a new mutating lease. The engine binds the saved command
+   selection to the original check request, verifies source bytes, workspace
+   identity and candidate, and reuses the original baseline and settled attempt
+   boundaries. The cumulative manifest includes settled failed attempts. Once
+   a phase intent exists, resume only classifies records. Uncertain or incomplete
+   publication is a typed refusal. Linux host checks can publish user-visible
+   flow verification.
    Unsupported supervisors refuse check-enabled admission as unavailable without
    running a step or check command.
    The internal owned role service (#330) reuses that Linux
