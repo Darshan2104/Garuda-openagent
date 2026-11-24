@@ -150,6 +150,26 @@ async def test_malformed_slow_exit_and_version_pinned():
     await mismatch.close()
 
 
+async def test_a_timed_out_prompt_is_cancelled_over_acp_before_the_reap():
+    """#701: the agent is told `session/cancel` before its process is reaped."""
+    slow = _adapter("slow")
+    await slow.start(task="t", session_id="s2")
+    process = slow._process
+    sent = []
+    original = process.session_cancel
+
+    async def recording(session_id):
+        sent.append(session_id)
+        await original(session_id)
+
+    process.session_cancel = recording
+    with pytest.raises(AcpTimeoutError):
+        await slow.prompt("x", timeout=1)
+    assert sent == [slow.native_session_id]
+    assert slow.state is LifecycleState.FAILED and not process.is_running
+    await slow.close()
+
+
 async def test_approval_flow_and_cancel_paths():
     approval = _adapter("approval")
     await approval.start(task="t", session_id="a1")

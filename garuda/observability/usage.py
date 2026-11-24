@@ -200,6 +200,21 @@ def record_fallback_start(store, session_id: str, *, ledger: Ledger | None = Non
         return False
 
 
+def record_turn_acp_usage(store, session_id: str, events, *, runtime_id: str,
+                          adapter_version: str, segment: str) -> list[dict]:
+    """Record the last usage report among one ACP turn's normalized events.
+
+    The CLI and the SDK both account an external turn this way. Never raises.
+    """
+    reports = [e.payload["usage"] for e in events  # a report with no valid field is none
+               if e.kind.value == "message" and isinstance(e.payload.get("usage"), dict)
+               and e.payload["usage"]]
+    if not reports:
+        return []
+    return record_acp_usage(store, session_id, runtime_id=runtime_id,
+                            adapter_version=adapter_version, segment=segment, usage=reports[-1])
+
+
 def record_acp_usage(store, session_id: str, *, runtime_id: str, adapter_version: str,
                      segment: str, usage: dict, ledger: Ledger | None = None) -> list[dict]:
     """Record an external harness's last usage report of a turn as a snapshot (or what its

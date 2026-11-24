@@ -447,6 +447,8 @@ async def test_failed_acp_start_closes_the_adapter_and_retries_cleanly(tmp_path,
 class _StartFailingAdapter:
     """An adapter whose start fails and whose close fails or is slow (#629)."""
 
+    runtime_id = "faketest"
+
     def __init__(self, close_error=None):
         import asyncio
 
@@ -521,3 +523,98 @@ async def test_close_during_failed_acp_start_still_reaps_the_harness(tmp_path, m
             turn.cancel()
         await asyncio.gather(turn, return_exceptions=True)
         await conversation.close()
+
+
+class _SecretTool:
+    name = "secret_word"
+    description = "Returns the secret word"
+    parameters = {"type": "object", "properties": {}}
+
+    async def execute(self, arguments, env, ctx):
+        from garuda.types import ToolResult
+
+        return ToolResult(tool_call_id="", content="MANGO-42")
+
+
+@pytest.mark.parametrize("via", ["run", "conversation", "project_tools"])
+async def test_sdk_refuses_tools_an_acp_runtime_cannot_receive(tmp_path, monkeypatch, via):
+    """#702: a registered tool is refused before launch, never silently dropped."""
+    from garuda.config import agent_home
+    from garuda.core.sessions import SessionStore
+    from garuda.interfaces import runtime_cli
+    from garuda.sdk import ToolsUnsupportedOnRuntime
+
+    monkeypatch.setattr(agent_home, "resolve_agent_home", lambda workspace: _FakeHome(_fake_extra()))
+
+    def no_launch(*args, **kwargs):
+        pytest.fail("a refused run must not construct the harness")
+
+    monkeypatch.setattr(runtime_cli, "acp_adapter_for_workspace", no_launch)
+    store = SessionStore(tmp_path / "sessions")
+    agent = SoftwareAgent(workspace=tmp_path, runtime="faketest", store=store,
+                          load_project_tools=True if via == "project_tools" else None)
+    if via != "project_tools":
+        agent.register_tool(_SecretTool())
+    with pytest.raises(ToolsUnsupportedOnRuntime) as refused:
+        if via == "conversation":
+            conversation = agent.conversation()
+            try:
+                await conversation.run("call secret_word")
+            finally:
+                await conversation.close()
+        else:
+            await agent.run("call secret_word")
+    assert refused.value.code == "sdk.tools_unsupported"
+    assert isinstance(refused.value, ValueError)
+    assert ("secret_word" if via != "project_tools" else "load_project_tools") in str(refused.value)
+    assert store.list_sessions() == []
+
+
+@pytest.mark.parametrize("via", ["run", "conversation"])
+async def test_sdk_acp_session_records_the_harness_and_its_usage(tmp_path, monkeypatch, via):
+    """#702: meta names the harness that ran (as the CLI does) and the turn's
+    usage report reaches the usage ledger."""
+    from garuda.config import agent_home
+    from garuda.core.sessions import SessionStore
+    from garuda.observability.ledger import Ledger
+
+    runtimes = _fake_extra()
+    runtimes[0]["command"] = [*FAKE_ARGV, "--report-usage"]
+    monkeypatch.setattr(agent_home, "resolve_agent_home", lambda workspace: _FakeHome(runtimes))
+    store = SessionStore(tmp_path / "sessions")
+    agent = SoftwareAgent(workspace=tmp_path, runtime="faketest", store=store)
+    if via == "run":
+        result = await agent.run("hello via sdk")
+        session_id = result.metadata["session_id"]
+    else:
+        conversation = agent.conversation()
+        try:
+            result = await conversation.run("turn one")
+            await conversation.run("turn two")
+            session_id = result.metadata["session_id"]
+        finally:
+            await conversation.close()
+    meta = store.load_meta(session_id)
+    assert (meta["model"], meta["agent"]) == ("acp:faketest", "faketest")
+    assert meta["status"] == "success"
+    rows = [r for r in Ledger().records() if r.get("session_id") == session_id]
+    assert rows, "an SDK ACP turn must write a usage-ledger row like a CLI ACP run"
+    assert {r["kind"] for r in rows} == {"acp_usage_snapshot"}
+    assert {(r["model"], r["cost_usd"], r["harness"]) for r in rows} == {
+        ("fake-model-1", 0.0025, "faketest")}
+
+
+async def test_failed_sdk_acp_run_settles_its_session(tmp_path, monkeypatch):
+    from garuda.acp.protocol import AcpError
+    from garuda.config import agent_home
+    from garuda.core.sessions import SessionStore
+
+    runtimes = _fake_extra()
+    runtimes[0]["command"] = [*FAKE_ARGV[:-1], "remote-error"]
+    monkeypatch.setattr(agent_home, "resolve_agent_home", lambda workspace: _FakeHome(runtimes))
+    store = SessionStore(tmp_path / "sessions")
+    with pytest.raises(AcpError):
+        await SoftwareAgent(workspace=tmp_path, runtime="faketest", store=store).run("x")
+    (record,) = store.list_sessions()
+    meta = store.load_meta(record["session_id"])
+    assert (meta["status"], meta["state"]["outcome"]) == ("failed", "failed")
