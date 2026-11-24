@@ -281,6 +281,23 @@ def _from_error(exc: Exception) -> Diagnostic:
     return diagnostic(code, str(exc), level="error", path=getattr(exc, "path", "") or "(file)")
 
 
+def _is_definition_path(target: str) -> bool:
+    """A definition file path, not an agent name.
+
+    A qualified name (``garuda/build``, ``user/mine``, ``project/x``) is a name,
+    as everywhere else; any other target with a separator is a path.
+    """
+    if target.endswith(resolve.SINGLE_FILE_SUFFIXES):
+        return True
+    if os.sep not in target and "/" not in target:
+        return False
+    try:
+        resolve._split(target)
+    except spec.AgentSpecError:
+        return True
+    return False
+
+
 def check(target: str, workspace) -> list[Diagnostic]:
     """Every diagnostic for one agent (a name or a definition file path)."""
     from garuda.agents.authority import enforce_project_ceiling
@@ -289,8 +306,11 @@ def check(target: str, workspace) -> list[Diagnostic]:
 
     out: list[Diagnostic] = []
     try:
-        if os.sep in target or target.endswith((".yaml", ".yml", ".md")):
+        if _is_definition_path(target):
             path = Path(target)
+            if not os.path.lexists(path):
+                return [diagnostic("agent.not_found", f"no such agent or file: {target}",
+                                   level="error")]
             data = resolve._read(path, path.parent)
             source = resolve.Source(resolve.INLINE, path, hashlib.sha256(data).hexdigest(),
                                     f"project/{path.stem}", path.parent)
@@ -303,6 +323,9 @@ def check(target: str, workspace) -> list[Diagnostic]:
                                 source_path=profile.source_path, workspace=workspace,
                                 explicit_permission_mode=None,
                                 global_settings=resolve_agent_home(workspace).global_settings)
+    except FileNotFoundError as exc:
+        # An unknown name, or an agent its definition extends: say which one.
+        return [diagnostic("agent.not_found", str(exc), level="error")]
     except (ConfigError, OSError, UnicodeDecodeError) as exc:
         return [_from_error(exc)]
     for warning in agent.warnings:
