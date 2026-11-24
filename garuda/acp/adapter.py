@@ -39,7 +39,7 @@ from garuda.acp.authority import (
     negotiate,
 )
 from garuda.acp.client import AcpProcess
-from garuda.acp.normalize import AcpNormalizer
+from garuda.acp.normalize import AcpNormalizer, normalize_tool_kind
 from garuda.acp.protocol import (
     AcpCancelledError,
     AcpError,
@@ -84,6 +84,7 @@ class AcpRuntime:
         policy: dict[str, AuthorityPolicy] | None = None,
         extra_env: dict[str, str] | None = None,
         approval_handler: Callable[[str], Awaitable[bool]] | None = None,
+        confined_approval_handler: Callable[[str, str, bool], tuple[bool, str]] | None = None,
         setup_hint: str = "",
         store=None,
         persist_dir: str | None = None,
@@ -99,6 +100,7 @@ class AcpRuntime:
             raise RuntimeStartError("ACP session cwd must be an absolute path")
         self._cwd = cwd
         self._approval_handler = approval_handler
+        self._confined_approval_handler = confined_approval_handler
         self._runtime_id = runtime_id
         definition = agent_definition or {}
         self._agent_segment = {
@@ -802,7 +804,17 @@ class AcpRuntime:
                 ],
             },
         )
-        if self._approval_handler is not None:
+        if self._confined_approval_handler is not None:
+            tool_kind = normalize_tool_kind(tool_call.get("kind"))
+            allowed, reason = self._confined_approval_handler(
+                action, tool_kind, _pick_option(options, allow=True) is not None,
+            )
+            self._emit(RuntimeEventKind.LIFECYCLE, {
+                "state": "approval_settled", "approval_id": approval_id,
+                "tool_kind": tool_kind, "outcome": "allow" if allowed else "deny", "reason": reason,
+            })
+            await self.permission_response(approval_id=approval_id, allow=allowed)
+        elif self._approval_handler is not None:
             task = asyncio.ensure_future(self._answer_with_handler(approval_id, action))
             self._answer_tasks.add(task)
             task.add_done_callback(self._answer_tasks.discard)

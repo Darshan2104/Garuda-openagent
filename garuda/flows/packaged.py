@@ -1,8 +1,8 @@
 """Packaged flows (plan task C.6b, #158).
 
 Three flows ship with Garuda and run by name. Their scout, planner and
-reviewer steps are ``no-edits``, so with Claude Code and Codex as harnesses
-they need no Docker:
+reviewer steps are ``no-edits`` and require Docker confinement when run by an
+external harness:
 
 - ``plan-only`` — scout, then planner: a plan, no changes;
 - ``pair`` — coder, reviewed by reviewer (up to three rounds);

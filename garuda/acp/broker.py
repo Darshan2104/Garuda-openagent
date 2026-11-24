@@ -80,6 +80,7 @@ class ApprovalRecord:
     ceiling: str | None = None
     ceiling_source: str | None = None
     presented_at: float | None = None
+    tool_kind: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         record = {
@@ -93,6 +94,8 @@ class ApprovalRecord:
         if self.via is not None:
             record["via"] = self.via
             record["reason"] = self.reason
+        if self.tool_kind is not None:
+            record["tool_kind"] = self.tool_kind
         if self.request is not None:
             record.update(request_digest=self.request.digest,
                           ceiling=self.request.ceiling,
@@ -358,6 +361,26 @@ class ApprovalBroker:
                 return False, f"Ceiling denies {family}: {action}; {err}"
             return False, f"Ceiling denies {family}: {action}"
         return await self._park_and_wait(family, action, runtime_id, session_id, approval_id)
+
+    def decide_confined_acp(
+        self, action: str, tool_kind: str, allow_once: bool, *, session_id: str, runtime_id: str,
+    ) -> tuple[bool, str]:
+        """Audit a local policy answer for an ACP launch with proved read-only confinement."""
+        allowed = False
+        if tool_kind in {"execute", "read", "search", "fetch"}:
+            allowed = allow_once
+            reason = "confined-inspection" if allowed else "confined-allow-once-unavailable"
+        elif tool_kind in {"edit", "delete", "move"}:
+            reason = "confined-write-denied"
+        else:
+            reason = "confined-kind-denied"
+        if self._store is None or not session_id:
+            return False, "approval-audit-unavailable"
+        error = self._audit(
+            session_id, self._next_id(), ApprovalOutcome.ALLOW if allowed else ApprovalOutcome.DENY,
+            action, "approval", runtime_id, via="confined-readonly", reason=reason, tool_kind=tool_kind,
+        )
+        return (False, "approval-audit-failed") if error is not None else (allowed, reason)
 
     def _screen_family(self, family: str, action: str) -> PermissionDecision:
         if family == "terminal":

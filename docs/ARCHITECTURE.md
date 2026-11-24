@@ -709,6 +709,10 @@ fastest way to learn the system.
    no-edits roles run in a Docker container whose lifetime `DockerRoleOwner`
    owns alongside the supervised process tree. Preparation refuses with
    `workspace.readonly_unenforced` when no confinement image is configured.
+   After the ordinary or owned confinement proof, the readonly ACP launch
+   enables audited, one-time approvals for execute, read, search and fetch.
+   The container mount enforces workspace protection, and the harness keeps
+   its selected mode.
    Container absence must be proved before workspace/capacity release; ambiguous
    cleanup retains quarantine. Closure evidence feeds the cumulative flow
    manifest and final check eligibility decision.

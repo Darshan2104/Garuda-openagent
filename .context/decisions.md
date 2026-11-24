@@ -1,5 +1,14 @@
 # Durable decisions
 
+## 2026-11-24 — Proven readonly ACP confinement permits inspection (#689)
+
+After the Docker preflight or parent-owned confinement proof, readonly ACP
+runs grant only one-time approvals for `execute`, `read`, `search` and
+`fetch`. The broker denies write requests and every other tool kind, including
+missing kinds, and records each kind, outcome and reason. The read-only
+workspace bind mount is the boundary. The harness retains its selected mode,
+and host readonly approval remains deny-all.
+
 ## 2026-11-22 — Codex ACP 2.9.0 role options (#662)
 
 The no-prompt capability capture proves model, effort and harness mode

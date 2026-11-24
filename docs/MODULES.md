@@ -247,6 +247,9 @@ The preflight checks the selected workspace and `.git` are unwritable, scratch i
 the user is unprivileged and no socket, home or credential store is mounted. The adapter
 runs in the user's image with the workspace mounted read-only at `/workspace`.
 An absent image or failed proof returns `workspace.readonly_unenforced`.
+After proof, `interfaces/runtime_cli.py` attaches the broker's readonly ACP
+policy to the confined adapter. It audits one-time inspection approvals and
+denials by ACP tool kind in session evidence and the ACP trace.
 `no_edits.py` (C.10) builds a bounded, no-follow manifest of the workspace (ignored files,
 modes, symlinks, change times) and the repository's refs, HEAD, hooks, config and staged
 entries. Any difference or incomplete comparison withholds outputs.

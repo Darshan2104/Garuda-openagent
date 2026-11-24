@@ -29,6 +29,7 @@ import asyncio
 import json
 import logging
 import os
+from functools import partial
 from typing import Any
 
 from garuda.acp.catalog import (
@@ -835,7 +836,7 @@ async def run_acp_task(
             from garuda.workspace.no_edits import deny_all
 
             approval, external_approvals = deny_all, False
-        handler, _broker = broker_approval_handler(
+        handler, broker = broker_approval_handler(
             store, session_id, manifest.runtime_id, handler=approval, external=external_approvals
         )
         def make_runtime():
@@ -855,7 +856,9 @@ async def run_acp_task(
                         if owned_container is not None else docker_argv(workspace, confinement, command))
                 return adapter_for_manifest(
                     manifest, argv_override=argv,
-                    cwd=CONTAINER_WORKSPACE, store=store, approval_handler=handler,
+                    cwd=CONTAINER_WORKSPACE, store=store,
+                    confined_approval_handler=partial(
+                        broker.decide_confined_acp, session_id=session_id, runtime_id=manifest.runtime_id),
                     persist_dir=str(store.session_dir(session_id)),
                     agent_definition=definition,
                     extra_env=_docker_env(),

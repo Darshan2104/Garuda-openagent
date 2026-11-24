@@ -116,7 +116,7 @@ def test_fake_agent_script_has_no_package_imports():
     import garuda.acp.fake_agent as fake_agent_mod
 
     tree = ast.parse(open(fake_agent_mod.__file__, encoding="utf-8").read())
-    stdlib = {"__future__", "argparse", "json", "os", "sys", "time"}
+    stdlib = {"__future__", "argparse", "json", "os", "subprocess", "sys", "time"}
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:

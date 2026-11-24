@@ -343,7 +343,7 @@ one with untrusted code.
 
 `garuda run --no-edits` and a role's `write_policy: no-edits` impose read-only
 permissions. Native runs screen tool requests. ACP runs use the Docker
-confinement below and deny approval requests.
+confinement and approval policy below.
 
 The no-edits check can also catch changes from other processes. Once the
 run and everything it started have exited, Garuda compares the workspace
@@ -384,6 +384,14 @@ harnesses:
 
 Without a configured image, without Docker, or if the proof fails, the run
 refuses with `workspace.readonly_unenforced`. The image setting is user-only.
+
+Once confinement is proven, Garuda approves ACP requests of kind `execute`,
+`read`, `search` and `fetch` when the harness offers a one-time approval.
+It denies `edit`, `delete`, `move` and every other kind, including missing
+kinds. The read-only bind mount enforces workspace protection. The approval
+policy adds defense in depth. Garuda keeps the harness mode selected for the
+run and records the kind, outcome and reason in the session and trace. The
+host readonly approval policy remains deny-all.
 
 The no-edits manifest also follows a linked checkout's resolved Git
 administrative and common directories. It checks the active HEAD and staged

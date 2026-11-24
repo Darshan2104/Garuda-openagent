@@ -2177,8 +2177,7 @@ async def run_acp_command(args, task: str, catalog) -> int:
             runtime_id=args.runtime,
             workspace=args.workspace,
             catalog=catalog,
-            # A no-edits role's requests to edit or run commands are refused
-            # (and recorded); its output is held until the workspace is checked.
+            # The ACP launch selects its approval policy after confinement proof.
             approval=deny_all if no_edits else interactive_approval(),
             mode=getattr(args, "mode", None),
             no_edits=no_edits,

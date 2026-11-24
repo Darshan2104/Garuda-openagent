@@ -495,7 +495,8 @@ function externalTrailHtml(ext) {
       "</td><td>" + esc(t.tool_result) + "</td><td>" + esc(t.approval_request) + "</td><td>" + esc(t.error) + "</td></tr>";
   }).join("");
   var approvals = (ext.approvals || []).map(function (a) {
-    return "<li>" + esc(a.action || "permission") + " — " + esc(a.outcome || "unknown") + "</li>";
+    var detail = a.tool_kind && a.reason ? " (" + esc(a.tool_kind) + ", " + esc(a.reason) + ")" : "";
+    return "<li>" + esc(a.action || "permission") + " — " + esc(a.outcome || "unknown") + detail + "</li>";
   }).join("");
   return '<div class="card" id="external-trail"><h2>External harness</h2>' + facts +
     '<div class="table-wrap"><table class="table"><thead><tr><th>Turn</th><th>Message events</th><th>Tool calls</th>' +
