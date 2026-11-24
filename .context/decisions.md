@@ -1,5 +1,20 @@
 # Durable decisions
 
+## 2026-11-24 — Handoff, flow and agent-check references refuse typed (#698, #699, #670)
+
+`garuda runtime handoff` hands off only natively owned sessions. The preview
+and `--confirm` both refuse an externally owned source up front with
+`runtime.handoff_external_source`. The refusal points to
+`garuda run --resume S --as RUNTIME` and `garuda runtime reclaim`. Recovery's
+ownership checks are unchanged. `flow show` and `flow resume` resolve a flow
+reference like the session commands do (ID, unique prefix, name, or `latest`
+limited to flow sessions). An unknown reference refuses with
+`flow.session_not_found`, a non-flow session with `flow.not_a_flow`. A stopped
+flow's recorded `flow_stop` code, step and message appear in `flow show` and
+in the session flow projection. `garuda agent check` treats a qualified name
+(`garuda/`, `user/`, `project/`) as an agent, as other agent commands do. A
+missing agent or file is `agent.not_found`.
+
 ## 2026-11-24 — Proven readonly ACP confinement permits inspection (#689)
 
 After the Docker preflight or parent-owned confinement proof, readonly ACP

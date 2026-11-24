@@ -800,3 +800,38 @@ def test_direct_flow_admission_rejects_colliding_ids_without_creating_session(re
         FlowRunner(store, repo, "qa", flow, _resolved(), task="qa", launcher=None,
                    flow_session="ambiguous-flow")
     assert not store.session_dir("ambiguous-flow").exists()
+
+
+def test_flow_show_resolves_references_and_prints_the_stop_reason(repo, monkeypatch, capsys):
+    """#699: prefixes and `latest` resolve like session commands; a stop shows its reason."""
+    from garuda.core import read_model
+    from tests.test_runtime_cli import _main
+
+    gy.user_path().write_text(gy.dump(CONFIG))
+
+    async def failing(launch):
+        return StepResult(str(uuid.uuid4()), False, "")
+
+    monkeypatch.setattr("garuda.flows.launch.launch_step", Fake(repo, {"plan": _plan, "build": failing}))
+    code, out = _main(monkeypatch, capsys, "flow", "run", "pbr", "-t", "ship it",
+                      "--workspace", str(repo))
+    assert code == 3
+    store = SessionStore()
+    flow_id = next(m["session_id"] for m in store.list_sessions() if m.get("kind") == "flow")
+    step_id = "plain-session-1"
+    store.begin(step_id, task="t", model="m", agent="a", workspace=str(repo))
+
+    for ref in (flow_id, flow_id[:13], "latest"):  # latest skips the newer plain session
+        code, out = _main(monkeypatch, capsys, "flow", "show", ref, "--workspace", str(repo))
+        assert code == 0, out
+        assert out.splitlines()[0] == "flow pbr: stopped"
+        assert "  stopped at step build: flow.step_failed" in out
+    stop = read_model.flow(store, flow_id)["stop"]
+    assert stop["code"] == "flow.step_failed" and stop["step"] == "build" and stop["message"]
+
+    for ref, code_text in (("nonexist-id", "flow.session_not_found"),
+                           (step_id, "flow.not_a_flow")):
+        for command in ("show", "resume"):
+            code, out = _main(monkeypatch, capsys, "flow", command, ref, "--workspace", str(repo))
+            assert code == 2 and f"Error: {code_text}:" in out
+            assert "Errno" not in out and "Traceback" not in out

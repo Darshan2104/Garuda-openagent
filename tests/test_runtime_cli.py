@@ -579,11 +579,19 @@ def test_handoff_confirm_then_recover_end_to_end(tmp_path, monkeypatch, capsys):
         asyncio.run(
             cmd_resume(store=store, session_id="src-1", task="take it back", **_native_stack(ws))
         )
-    code, out = _main(
-        monkeypatch, capsys, "runtime", "handoff", "--session", "src-1", "--to", "fakeacp",
-        "--workspace", str(ws), "--confirm",
-    )
-    assert code == 1 and "native resume refused" in out
+    # #698: preview and --confirm agree, refusing an externally owned source up front.
+    before = store.load_meta("src-1")
+    for confirm in ((), ("--confirm",)):
+        code, out = _main(
+            monkeypatch, capsys, "runtime", "handoff", "--session", "src-1", "--to", "fakeacp",
+            "--workspace", str(ws), *confirm,
+        )
+        assert code == 2
+        assert out.startswith("Error: runtime.handoff_external_source: session src-1 is owned "
+                              "by external runtime 'fakeacp'")
+        assert "garuda run --resume src-1 --as <runtime>" in out
+        assert "explicit new handoff" not in out and "handoff preview" not in out
+    assert store.load_meta("src-1") == before
     assert store.load_unified("src-1").active.runtime_id == "fakeacp"
 
     # `external` is not a dead end: with the target recorded stopped and its
