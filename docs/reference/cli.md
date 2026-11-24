@@ -27,7 +27,7 @@ entry points remain callable by Garuda's subprocesses.
 | | `garuda sessions discard-worker S CANDIDATE_ID` | Explicitly discard one proven orphan's repository; rechecks ownership and settlement, requires released parent ownership |
 | | `garuda sessions remove-worktree S [--force]` | Remove a worktree session's worktree; refuses unpublished work without `--force` |
 | | `garuda approvals list S` | List a running session's parked approvals with each request digest |
-| | `garuda approvals answer S ID --allow [--digest D]` | Answer one from another terminal (`--deny` refuses); bound to that exact request, one answer only; `--digest` refuses unless the pending request is the one you listed |
+| | `garuda approvals answer S ID --allow [--digest D]` | Answer one from another terminal (`--deny` refuses); bound to that exact request, one answer only; `--digest` refuses unless the pending request is the one you listed; an id that could name a file outside the session's approvals folder refuses with `approval.invalid_id` (exit 2) |
 | | `garuda doctor [--runtime ID] [--json]` | Validate global settings and configuration, check the harnesses your roles use (executable, version, login), leases and worktrees; exits 1 on an error |
 | | `garuda doctor --recover-project-ids` | Rebuild session project ids after the project key was lost |
 | Flows | `garuda flow run NAME -t TASK [--check COMMAND]` | Run a flow, then run repeatable owned checks on Linux before releasing its workspace |
@@ -219,7 +219,8 @@ isolation boundary.
     `garuda mcp list [--workspace DIR] [--mcp-config PATH] [--no-connect]`
     shows the resolved config files and each server's tools. `--no-connect`
     lists servers without starting them. Untrusted project servers are listed
-    but never started.
+    but never started. A malformed required entry refuses with
+    `mcp.config_invalid` (exit 2), the same named error `garuda run` gives.
 
 === "mcp trust"
 
