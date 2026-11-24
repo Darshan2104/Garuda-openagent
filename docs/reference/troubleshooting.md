@@ -79,6 +79,10 @@ Click a problem to see the fix.
     - Bound runs with `--max-turns` and `--deadline-sec`.
     - Leave the collection model off unless you need it (`--no-collection`).
     - Your provider's billing page is the authority on cost.
+    - `harness.limit_reached: You've hit your usage limit ...` means an
+      external harness (for example Codex) refused the turn at its plan
+      limit. Wait for the reset time in the message, or use another harness
+      in the role's `fallback:` chain.
 
 ## Permissions and modes
 

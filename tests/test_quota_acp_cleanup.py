@@ -188,7 +188,9 @@ async def test_quota_transport_error_reaches_flow_only_after_real_child_cleanup(
     result = await asyncio.wait_for(running, 5)
 
     assert result.success is False
-    assert result.error == "agent error 429: usage limit reached; reset is pending"
+    # A usage-limit cause is typed (#684), keeping the harness's own words.
+    assert result.error == ("harness.limit_reached: usage limit reached; reset is pending "
+                            "(agent error 429)")
     assert result.closure == {"status": "closed"}
     child = _child(store, result.session_id)
     assert child["state"] == "exited"

@@ -283,7 +283,11 @@ check missed during sleep.
 Only eligible sequential CLI flows started after recovery was enabled are
 enrolled. Enabling it does not scan or adopt old half-finished flows. A Codex
 step must be safely closed and have a quota-shaped failure; permission denials
-and generic failures do not become quota retries. If the official quota read is
+and generic failures do not become quota retries. Codex's adapter reports a
+reached plan limit as a generic `-32603 Internal error` with the cause in the
+error's data; Garuda reads that cause and reports the step as
+`harness.limit_reached` with Codex's own message, including its reset time
+when Codex gives one, so the stop counts as quota-shaped. If the official quota read is
 missing or temporarily unavailable, the eligible stop remains waiting with that
 reason—it does not claim exhaustion or dispatch work.
 

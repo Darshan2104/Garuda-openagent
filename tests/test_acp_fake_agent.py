@@ -46,6 +46,7 @@ def test_public_profile_sets_are_pinned():
         "resume",
         "version-mismatch",
         "remote-error",
+        "usage-limit",
         "malformed-result",
         "odd-stop",
         "cancel-stop",

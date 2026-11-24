@@ -404,3 +404,51 @@ async def test_prompt_turns_have_no_call_deadline():
         assert result == {"stopReason": "end_turn"}
     finally:
         await process.close()
+
+
+# --- remote error causes (#684) --------------------------------------------------------
+
+
+def test_a_remote_error_keeps_its_data_cause_bounded():
+    from garuda.acp.protocol import MAX_ERROR_DETAIL_CHARS, AcpRemoteError, remote_error
+
+    plain = remote_error(-32603, "synthetic internal failure")
+    assert type(plain) is AcpRemoteError
+    assert str(plain) == "agent error -32603: synthetic internal failure"
+    detailed = remote_error(-32603, "Internal error", {"message": "model\n  overloaded"})
+    assert str(detailed) == "agent error -32603: Internal error: model overloaded"
+    assert detailed.remote_code == -32603 and detailed.detail == "model overloaded"
+    assert str(remote_error(-32603, "Internal error", {"details": "socket closed"})).endswith(
+        "Internal error: socket closed")
+    assert str(remote_error(-32603, "Internal error", {"other": 1})) == (
+        "agent error -32603: Internal error")
+    huge = remote_error(-32000, "x", "y" * 10_000)
+    assert len(huge.detail) == MAX_ERROR_DETAIL_CHARS and huge.detail.endswith("…")
+
+
+@pytest.mark.parametrize("data, reset", [
+    ({"message": "You've hit your usage limit. Upgrade to Pro or try again at 3:05 PM.",
+      "codexErrorInfo": "usageLimitExceeded"}, "3:05 PM"),
+    ({"message": "Codex stopped this turn.", "codexErrorInfo": "usageLimitExceeded"}, None),
+    ("Usage limit reached; try again in 2 hours", "2 hours"),
+    ({"codexErrorInfo": "usageLimitExceeded"}, None),  # no words: still not "Internal error"
+])
+def test_a_usage_limit_cause_is_typed_and_quota_recovery_reads_it(data, reset):
+    from garuda.acp.protocol import AcpUsageLimitError, remote_error
+    from garuda.core.failure_evidence import classify_exception
+    from garuda.flows.quota_recovery import NON_QUOTA, QUOTA_ERROR
+
+    error = remote_error(-32603, "Internal error", data)
+    assert isinstance(error, AcpUsageLimitError) and error.reset_hint == reset
+    assert str(error).startswith("harness.limit_reached: ")
+    assert classify_exception(error) == ("harness.limit_reached", "agent-response")
+    reason = f"step build did not complete: {error}"
+    assert QUOTA_ERROR.search(reason) and not NON_QUOTA.search(reason)
+
+
+def test_other_codex_error_infos_stay_generic():
+    from garuda.acp.protocol import AcpUsageLimitError, remote_error
+
+    error = remote_error(-32603, "Internal error",
+                         {"message": "Rate limited", "codexErrorInfo": "rateLimitExceeded"})
+    assert not isinstance(error, AcpUsageLimitError)
