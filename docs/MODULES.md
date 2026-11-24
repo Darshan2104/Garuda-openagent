@@ -870,11 +870,14 @@ and exit handling; `flow show` keeps its read-only receipt projection.
 facts, admitted role/runtime values and a durable operation binding. It rechecks
 those values under the flow lease before the first child and uses the same engine,
 approval broker, owned role execution and publication policies as CLI flows. The
-facade accepts an internal opt-in bounded `checks` tuple, freezes effective
+facade accepts a bounded `checks` tuple from `flow run --check`, freezes effective
 check authority with exact parsed source identities before admission, and
 refuses unsupported hosts before step launch. The engine revalidates sources
-under its parent lease and solely owns finalization. The public CLI does not
-select checks yet.
+under its parent lease and solely owns finalization. `verification_records.py`
+also stores the original CLI check selection privately. On a supported stop
+before phase intent, the engine verifies that selection, the stopped candidate,
+and the original `flow_evidence.py` baseline and attempt boundaries under a new
+lease. Once verification has started, the facade only reconciles phase records.
 
 `engine.py` runs a `garuda.yaml` flow in one workspace: the parent flow session
 is created exclusively after the engine takes its workspace lease (a busy

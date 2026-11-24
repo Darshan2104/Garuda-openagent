@@ -20,6 +20,7 @@ from garuda.runtime.strict_store import CorruptRecord, StorageUnavailable, prese
 
 PHASE = "verification-phase.json"
 COMMIT = "verification-commit.json"
+RESUME_REQUEST = "verification-request.json"
 TERMINAL = {"passed", "failed", "void", "unverified", "cancelled"}
 UNLAUNCHED = {"refused", "skipped"}
 
@@ -82,6 +83,50 @@ class FlowVerificationRecords:
             raise CorruptRecord("flow verification phase intent is missing")
         self.validate_phase(phase)
         return phase
+
+    def save_resume_request(self, request):
+        directory = self._open()
+        try:
+            preserve_private_backup(directory, RESUME_REQUEST,
+                                    json.dumps(request, sort_keys=True).encode())
+        finally:
+            os.close(directory)
+        return digest(request)
+
+    def resume_request(self, meta):
+        """Read the original request only for a settled, pre-check CLI stop."""
+        policy = meta.get("publication_policy")
+        if (meta.get("flow_state") != "stopped" or meta.get("status") != "failed"
+                or not isinstance(policy, dict) or policy.get("kind") != "flow-verification"
+                or any(key in meta for key in ("flow_operation", "background_operation",
+                                               "flow_verification_phase", "flow_verification_commit",
+                                               "acceptance_receipts", "flow_evidence_manifest"))
+                or not isinstance(meta.get("flow_resume_checkpoint"), dict)
+                or not _hex(meta.get("flow_resume_request"), 64)):
+            return None
+        directory = self._open()
+        try:
+            for name in (PHASE, COMMIT):
+                try:
+                    os.stat(name, dir_fd=directory, follow_symlinks=False)
+                except FileNotFoundError:
+                    continue
+                return None
+            request = read_record(directory, RESUME_REQUEST)
+            if (request is None or set(request) != {"version", "checks", "request", "flow"}
+                    or not isinstance(request["checks"], list)
+                    or digest(request) != meta["flow_resume_request"]):
+                raise CorruptRecord("original flow check request is missing or changed")
+        finally:
+            os.close(directory)
+        parent = open_directory(self.path.parent)
+        try:
+            with os.scandir(parent) as entries:
+                if any(entry.name.startswith("acceptance-") for entry in entries):
+                    raise CorruptRecord("flow has check records without a phase intent")
+        finally:
+            os.close(parent)
+        return request
 
     def validate_phase(self, phase):
         keys = {"version", "parent_id", "phase_id", "workspace", "workspace_identity",
@@ -389,7 +434,7 @@ class FlowVerificationRecords:
 class OwnedFlowVerification:
     """Async original-owner adapter for phase intent and final commitment."""
 
-    def __init__(self, store, owner, request, context, permissions):
+    def __init__(self, store, owner, request, context, permissions, *, baseline_digest=None):
         self.owner, self.request, self.context = owner, request, context
         self.permissions = permissions
         self.phase = phase_document(request, context, owner)
@@ -397,6 +442,8 @@ class OwnedFlowVerification:
                      "session_dir": str(store.session_dir(context.parent_id)),
                      "parent_id": context.parent_id, "phase": self.phase,
                      "sources": [source.document() for source in request.sources]}
+        if baseline_digest is not None:
+            self.base["baseline_digest"] = baseline_digest
 
     async def prepare(self):
         from garuda.core.acceptance_work import owned_call

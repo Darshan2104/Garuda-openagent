@@ -32,7 +32,7 @@ entry points remain callable by Garuda's subprocesses.
 | | `garuda doctor --recover-project-ids` | Rebuild session project ids after the project key was lost |
 | Flows | `garuda flow run NAME -t TASK [--check COMMAND]` | Run a flow, then run repeatable owned checks on Linux before releasing its workspace |
 | | `garuda flow show FLOW` | A flow's steps, attempts, receipts and outputs |
-| | `garuda flow resume FLOW` | Continue after the last completed step; an interrupted step is never replayed, and a reviewed step needs an approved review |
+| | `garuda flow resume FLOW` | Continue from settled steps. Checked CLI flows can retry a stopped step before checks start when their saved request, workspace and evidence still match. Interrupted steps and started checks are never replayed. |
 | Quota recovery | `garuda recovery enable [--root PATH]` | Enable future eligible flows and install the hourly user-cron entry; `--root` selects the store for this command only |
 | | `garuda recovery disable [--root PATH]` | Disable future automatic dispatch and remove Garuda's cron block; does not stop live work |
 | | `garuda recovery status [--root PATH]` | Print persisted enablement, verified local installation and mismatch reason, recorded tick health (last attempt, result, dispatch), plus continuation status; does not launch work or probe quota |

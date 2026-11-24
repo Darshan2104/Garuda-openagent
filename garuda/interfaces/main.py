@@ -1499,9 +1499,12 @@ def run_flow(args) -> int:
     import sys
 
     from garuda.config.garuda_yaml import GarudaConfigError
+    from garuda.core.acceptance_work import AcceptanceWorkError
     from garuda.core.sessions import SessionStore
     from garuda.flows import engine
     from garuda.flows.service import FlowExecutionService
+    from garuda.runtime.process_supervision import CleanupUncertain
+    from garuda.runtime.strict_store import StorageError
     from garuda.workspace.lease import LeaseError
 
     store = SessionStore()
@@ -1532,6 +1535,13 @@ def run_flow(args) -> int:
     except (GarudaConfigError, LeaseError, engine.FlowStopped, OSError, ValueError,
             KeyError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    except (AcceptanceWorkError, StorageError):
+        print("Error: flow.verification_reconciliation_required: protected flow evidence is unavailable",
+              file=sys.stderr)
+        return 2
+    except CleanupUncertain:
+        print("Error: flow.cleanup_unproved: owned flow work did not settle", file=sys.stderr)
         return 2
     result = outcome.flow
     for receipt in result.receipts:

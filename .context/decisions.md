@@ -4174,3 +4174,19 @@ before the harness starts. An absent image or failed proof returns
 `workspace.readonly_unenforced`. Known readonly harness modes require a
 proven adapter version and confirmation before the first prompt. The Docker
 mount enforces the workspace restriction for every admitted readonly harness.
+
+## 2026-11-23 — Resume checked CLI flows before phase intent (#683)
+
+Checked CLI flows save a private command selection bound to the frozen check
+request and flow definition. A settled step failure, missing output, or
+confinement refusal can publish a stopped candidate and receipt checkpoint.
+Explicit resume claims the checkpoint under a fresh mutating lease and verifies
+the original config sources, workspace identity and candidate, and complete
+settled attempt evidence. The original baseline and failed attempt boundaries
+still contribute to the final check manifest. A pending review retains its
+candidate and review round and must produce its own approval.
+
+Absent original authority, changed workspace or evidence, and any phase intent
+or partial check records fail closed. Started checks keep their existing
+read-only reconciliation path. Dashboard ownership and quota continuation
+retain their existing boundaries.

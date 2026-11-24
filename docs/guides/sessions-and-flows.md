@@ -172,6 +172,15 @@ garuda flow show FLOW_ID        # steps, attempts, receipts, outputs
 `flow show` and `flow resume` take the full flow ID printed at the end of
 `flow run`.
 
+After a checked CLI flow stops at a settled step failure, missing output, or
+confinement refusal, `garuda flow resume FLOW_ID` retries the pending step and
+continues with the original checks. If a reviewer returned no required output,
+the pending step is the reviewer. Resume requires the saved check request,
+unchanged workspace identity and candidate, matching configuration sources,
+and complete step and evidence records. Older checked sessions without a saved
+request need a new flow. Once the check phase has a durable intent, resume only
+reads and reconciles check records.
+
 The scout, planner and reviewer steps are `no-edits`: their requests to
 change files or run commands are refused, and afterwards Garuda checks that
 the workspace really is unchanged. If it is not, the flow stops, that step's

@@ -196,7 +196,13 @@ class FlowExecutionService:
 
     async def resume(self, flow_session: str, *, recovery_record=None,
                      recovery_root=None) -> FlowExecutionResult:
-        meta = self.store.load_meta(flow_session)
+        from garuda.runtime.strict_store import StorageError
+
+        try:
+            meta = self.store.load_meta(flow_session)
+        except StorageError as exc:
+            raise engine.FlowStopped("flow.verification_reconciliation_required",
+                                     "protected flow metadata is unavailable") from exc
         policy = meta.get("publication_policy")
         if isinstance(policy, dict) and policy.get("kind") == "owned-flow":
             raise engine.FlowStopped(
@@ -205,12 +211,11 @@ class FlowExecutionService:
                 "they are never resumed automatically")
         if policy is not None:
             from garuda.flows.verification_records import FlowVerificationRecords
-            from garuda.runtime.strict_store import StorageError
 
-            records = FlowVerificationRecords(self.store.session_dir(flow_session), flow_session)
             reference = meta.get("flow_verification_commit")
             if reference is not None:
                 try:
+                    records = FlowVerificationRecords(self.store.session_dir(flow_session), flow_session)
                     commit = records.committed(
                         reference, meta.get("acceptance_receipts"),
                         meta.get("flow_verification_phase"))
@@ -235,12 +240,23 @@ class FlowExecutionService:
                     engine.FlowResult(flow_session, engine.receipts(self.store, flow_session)),
                     meta.get("review"), meta.get("state"))
             try:
-                recovery = records.reconcile_unfinished()
+                records = FlowVerificationRecords(self.store.session_dir(flow_session), flow_session)
+                request = records.resume_request(meta)
+                if request is None:
+                    recovery = records.reconcile_unfinished()
             except (StorageError, OSError, ValueError) as exc:
                 raise engine.FlowStopped(
                     "flow.verification_reconciliation_required",
                     "protected flow check records are missing or corrupt; checks are never "
                     "replayed automatically") from exc
+            if request is not None:
+                if recovery_record is not None:
+                    raise engine.FlowStopped("flow.recovery_claim_invalid",
+                                             "checked flows require an explicit resume")
+                return await self._execute(meta["flow"]["name"], meta["task"], meta["workspace"],
+                                           flow_session=flow_session,
+                                           checks=tuple(request["checks"]),
+                                           checked_checkpoint=meta["flow_resume_checkpoint"])
             classification = recovery["classification"]
             code = ("flow.verification_uncertain" if classification == "uncertain" else
                     "flow.verification_publication_incomplete" if classification in {
@@ -286,7 +302,7 @@ class FlowExecutionService:
                        flow_session: str | None = None,
                        starter_record: dict | None = None,
                        checks: tuple[str, ...] | None = None,
-                       recovery=None) -> FlowExecutionResult:
+                       recovery=None, checked_checkpoint=None) -> FlowExecutionResult:
         from garuda.config_sources import SourceCapture
         from garuda.flows.launch import launch_step
         from garuda.flows.quota_recovery import FlowRecovery
@@ -328,6 +344,7 @@ class FlowExecutionService:
                                    starter_record=starter_record,
                                    verification_request=request,
                                    verification_permissions=permissions,
+                                   verification_cli_checks=checks if request is not None else None,
                                    configuration_sources=capture.facts())
         if recovery is not None:
             runner.quota_recovery = recovery
@@ -339,6 +356,6 @@ class FlowExecutionService:
                         "quota recovery does not support protected/check-enabled or parallel flows"}
                 else:
                     runner.quota_recovery = candidate
-        result = await runner.run(resume=flow_session is not None)
+        result = await runner.run(resume=flow_session is not None, checked_checkpoint=checked_checkpoint)
         meta = self.store.load_meta(result.flow_session)
         return FlowExecutionResult(result, meta.get("review"), meta.get("state"))
