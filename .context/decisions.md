@@ -12,6 +12,20 @@ per segment, summed across segments, labelled `adapter_reported`. It is display
 evidence: the session's `usage`/`cost` stay `unknown`, nothing is summed into
 ledger totals, and no spend cap counts it.
 
+## 2026-11-25 — SDK ACP runs refuse model and agent options; `--bg` refuses ACP limits at admission (#712)
+
+An SDK run or conversation on an ACP runtime raises
+`OptionsUnsupportedOnRuntime` (code `sdk.options_unsupported`) before the
+harness starts when it was given `model`, `reasoning_model`,
+`collection_model`, `model_binding` or a non-default `agent`: the harness runs
+its own configured model and agent, so these were silently ignored. No role
+option mapping is proven for the SDK, so nothing is mapped. `garuda run --bg`
+whose role or `--runtime` resolves to an ACP runtime refuses `--max-turns`, an
+invalid `--deadline-sec` and the run-tree spend caps at admission with the
+foreground run's message and exit status 2; nothing is queued or spawned. A
+background run whose runtime is only chosen later by routing is still refused
+when its worker selects ACP.
+
 ## 2026-11-25 — A withdrawn terminal approval stops its stdin reader (#675)
 
 On a POSIX terminal the approval prompt's reader thread waits in `select()`

@@ -996,3 +996,33 @@ def test_selected_diagnostics_use_the_public_cli_without_execution_setup(tmp_pat
     capture = json.loads(text)
     snapshot = session_dir / DIAGNOSTIC_DIR / (capture["snapshot_id"] + ".json")
     assert json.loads(snapshot.read_text())["preview"]["json"] == preview["json"]
+
+
+@pytest.mark.parametrize("flags", [["--max-turns", "1"], ["--deadline-sec", "0"],
+                                   ["--deadline-sec", "nan"], ["--max-run-tokens", "5000"],
+                                   ["--max-run-cost-usd", "1"]])
+def test_bg_run_runtime_acp_refuses_limits_at_admission(tmp_path, monkeypatch, capsys, flags):
+    """#712: `--bg` refuses an unenforceable ACP limit before queueing, with the
+    foreground run's message, instead of queueing a session that later fails."""
+    from garuda.interfaces import bg_sessions
+
+    ws = _git_workspace(tmp_path)
+    marker = tmp_path / "launched.txt"
+    _on_path(monkeypatch, tmp_path / "bin")
+    _install_shim(tmp_path / "bin", marker=marker)
+    _trusted_settings(tmp_path, monkeypatch)
+    spawned = []
+
+    def no_worker(session_id, **_kwargs):
+        spawned.append(session_id)
+        return type("NoWorker", (), {"pid": os.getpid(), "args": ["worker", session_id]})()
+
+    monkeypatch.setattr(bg_sessions, "_spawn_worker", no_worker)
+    argv = ("run", "-t", "must not run", "--workspace", str(ws), "--runtime", "fakeacp", *flags)
+    foreground = _main(monkeypatch, capsys, *argv)
+    background = _main(monkeypatch, capsys, *argv, "--bg")
+    assert foreground[0] == background[0] == 2, background
+    assert flags[0] in background[1]
+    assert background[1].strip() == foreground[1].strip()
+    assert not spawned and not marker.exists()
+    assert SessionStore().list_sessions() == []
