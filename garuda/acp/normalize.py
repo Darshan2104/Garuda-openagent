@@ -44,6 +44,17 @@ _TERMINAL_REASONS = {
     "failed": "failed",
 }
 
+_TOOL_KINDS = frozenset({
+    "read", "edit", "delete", "move", "search", "execute", "think", "fetch",
+    "switch_mode", "other",
+})
+
+
+def normalize_tool_kind(kind: object) -> str:
+    """Use the exact ACP discriminator and collapse unrecognized values."""
+    return kind if isinstance(kind, str) and kind in _TOOL_KINDS else "unknown"
+
+
 def _evidence_scalar(value: Any, statuses: dict, key: str) -> Any:
     if not isinstance(value, str):
         return value if isinstance(value, (int, float, bool, type(None))) else None
@@ -93,6 +104,8 @@ def evidence_payload(event: RuntimeEvent) -> dict[str, Any]:
     keys = allowed.get(event.kind)
     if keys is None:
         return {}
+    if event.kind is RuntimeEventKind.LIFECYCLE and event.payload.get("state") == "approval_settled":
+        keys += ("approval_id", "tool_kind", "outcome")
     selected = {
         key: safe
         for key in keys

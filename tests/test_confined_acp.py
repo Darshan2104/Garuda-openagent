@@ -1,5 +1,6 @@
 """Read-only ACP runs require Docker confinement (#158, #663)."""
 
+import json
 import os
 import shutil
 import subprocess
@@ -87,6 +88,81 @@ def test_a_writing_runtime_in_docker_changes_nothing_on_the_host(repo, tmp_path,
     assert sentinel.read_text() == "untouched\n"
     (meta,) = SessionStore().list_sessions()
     assert meta["confinement"] == {"kind": "docker", "image": IMAGE, "source": "read-only"}
+
+
+@pytest.mark.parametrize("kind, audited_kind, outcome, reason", [
+    ("execute", "execute", "allow", "confined-inspection"),
+    ("read", "read", "allow", "confined-inspection"),
+    ("search", "search", "allow", "confined-inspection"),
+    ("fetch", "fetch", "allow", "confined-inspection"),
+    ("edit", "edit", "deny", "confined-write-denied"),
+    ("delete", "delete", "deny", "confined-write-denied"),
+    ("move", "move", "deny", "confined-write-denied"),
+    ("switch_mode", "switch_mode", "deny", "confined-kind-denied"),
+    ("execute ", "unknown", "deny", "confined-kind-denied"),
+    (None, "unknown", "deny", "confined-kind-denied"),
+])
+def test_confined_readonly_approvals_are_kind_checked_and_audited(
+        repo, tmp_path, monkeypatch, capsys, fake_acp_confinement, kind, audited_kind, outcome, reason):
+    from tests.test_runtime_cli import _hard_deadline, _install_shim, _main, _on_path
+
+    _settings()
+    _roles()
+    _on_path(monkeypatch, tmp_path / "bin")
+    _install_shim(tmp_path / "bin", profile="approval", approval_kind=kind)
+    fake_acp_confinement("fakeacp")
+
+    with _hard_deadline(60):
+        code, out = _run(monkeypatch, capsys, repo, "-t", "abort if permission is denied")
+
+    assert code == (0 if outcome == "allow" else 1), out
+    store = SessionStore()
+    (meta,) = store.list_sessions()
+    assert meta["status"] == ("completed" if outcome == "allow" else "failed")
+    (decision,) = [value for key, value in meta.items() if key.startswith("approval:")]
+    assert (decision["tool_kind"], decision["outcome"], decision["reason"]) == (
+        audited_kind, outcome, reason)
+    rows = [json.loads(line) for line in
+            (store.session_dir(meta["session_id"]) / "acp-events.jsonl").read_text().splitlines()]
+    (request,) = [row["payload"] for row in rows if row["kind"] == "approval_request"]
+    (settled,) = [row["payload"] for row in rows
+                  if row.get("payload", {}).get("state") == "approval_settled"]
+    assert settled == {"state": "approval_settled", "approval_id": request["approval_id"],
+                       "tool_kind": audited_kind, "outcome": outcome, "reason": reason}
+    if kind == "execute":
+        (result,) = [row["payload"] for row in rows if row["kind"] == "tool_result"]
+        assert result["status"] == "completed"
+        assert f"'content': {str(repo)!r}" in out
+    code, out = _main(monkeypatch, capsys, "sessions", "show", meta["session_id"],
+                      "--workspace", str(repo), "--json")
+    assert code == 0, out
+    assert json.loads(out)["approval_decisions"] == [
+        {key: decision[key] for key in ("approval_id", "tool_kind", "outcome", "reason")}]
+
+
+async def test_host_readonly_approval_handler_still_denies_execute(
+        repo, tmp_path, monkeypatch, fake_acp_confinement):
+    from garuda.acp.protocol import AcpCancelledError
+    from garuda.interfaces.runtime_cli import run_acp_task
+    from garuda.workspace.no_edits import deny_all
+    from tests.test_runtime_cli import _install_shim, _on_path
+
+    _settings()
+    _roles()
+    _on_path(monkeypatch, tmp_path / "bin")
+    _install_shim(tmp_path / "bin", profile="approval", approval_kind="execute")
+    fake_acp_confinement("fakeacp")
+
+    # Public readonly runs refuse without confinement. Exercise the host
+    # adapter with the readonly deny-all callback, despite a configured image.
+    with pytest.raises(AcpCancelledError, match="kind=execute"):
+        await run_acp_task("abort if permission is denied", runtime_id="fakeacp",
+                           workspace=str(repo), approval=deny_all, prompt_timeout=15)
+
+    (meta,) = SessionStore().list_sessions()
+    assert "confinement" not in meta
+    (decision,) = [value for key, value in meta.items() if key.startswith("approval:")]
+    assert decision["outcome"] == "deny"
 
 
 @pytest.mark.parametrize("setup, message", [

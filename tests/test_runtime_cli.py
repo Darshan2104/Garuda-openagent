@@ -59,6 +59,7 @@ def _install_shim(
     marker: Path | None = None,
     report_cwd: bool = False,
     state_file: Path | None = None,
+    approval_kind: str | None = None,
 ) -> Path:
     """Install `fake-acp-shim` in `bin_dir`: a real executable on PATH.
 
@@ -75,6 +76,7 @@ def _install_shim(
         f"-m garuda.acp.fake_agent --profile {profile}"
         + (" --report-cwd" if report_cwd else "")
         + (" --state-file " + shlex.quote(str(state_file)) if state_file else "")
+        + (" --approval-kind " + shlex.quote(approval_kind) if approval_kind is not None else "")
         + ' "$@"'
     )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")

@@ -303,6 +303,12 @@ def session(store, session_id: str, *, queue=None) -> dict:
         )}
     row["approvals"] = approvals(store, session_id)
     row["approvals_pending"] = len(row["approvals"])
+    row["approval_decisions"] = [
+        {field: value.get(field) for field in ("approval_id", "tool_kind", "outcome", "reason")}
+        for key, value in meta.items()
+        if key.startswith("approval:") and isinstance(value, dict)
+        and value.get("via") == "confined-readonly"
+    ]
     from garuda.core.ownership_read_model import project as project_ownership
 
     # Joins leases, queue, capacity, children and quota without probing beyond the row's

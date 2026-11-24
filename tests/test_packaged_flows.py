@@ -74,15 +74,33 @@ def test_the_packaged_flows_validate_and_keep_readers_read_only():
     ("pair", ["build", "review"]),
     ("plan-build-review", ["plan", "build", "review"]),
 ])
-def test_each_packaged_flow_runs_against_fake_runtimes(repo, harnesses, monkeypatch, capsys,
-                                                       name, steps):
-    code, out = _main(monkeypatch, capsys, "flow", "run", name, "-t", "add a greeting",
-                      "--workspace", str(repo))
+def test_each_packaged_flow_runs_against_fake_runtimes(
+        repo, harnesses, tmp_path, monkeypatch, capsys, fake_acp_confinement, name, steps):
+    from tests.test_runtime_cli import _hard_deadline, _install_shim
+
+    confined_shim = _install_shim(tmp_path / "confined-bin", profile="artifacts",
+                                  approval_kind="execute")
+    fake_acp_confinement("fakea", "fakeb", command=str(confined_shim))
+    with _hard_deadline(60):
+        code, out = _main(monkeypatch, capsys, "flow", "run", name, "-t", "add a greeting",
+                          "--workspace", str(repo))
     assert code == 0, out
     for step in steps:
         assert f"[garuda] {step}: done" in out
     if "review" in steps:
         assert "review_approved after 1 round(s) (a review, not verification)" in out
+    store = SessionStore()
+    (flow,) = [meta for meta in store.list_sessions() if meta.get("flow")]
+    for receipt in engine.receipts(store, flow["session_id"]):
+        meta = store.load_meta(receipt["session_id"])
+        decisions = [value for key, value in meta.items() if key.startswith("approval:")]
+        if receipt["step"] == "build":
+            assert "confinement" not in meta and not decisions
+        else:
+            assert meta["confinement"]["kind"] == "docker"
+            (decision,) = decisions
+            assert (decision["tool_kind"], decision["outcome"], decision["reason"]) == (
+                "execute", "allow", "confined-inspection")
 
 
 def test_acp_artifacts_longer_than_the_stored_summary_reach_the_next_step(

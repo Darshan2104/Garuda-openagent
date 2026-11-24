@@ -97,8 +97,15 @@ Configure `harnesses.codex.confinement.image` in your user `garuda.yaml` for
 this command. Any readonly request on an ACP run requires Garuda to prove
 Docker confinement before starting the adapter, including for roles,
 continuations, queued runs and no-edits starters. Missing or unproven
-confinement returns `workspace.readonly_unenforced`. Garuda also selects the
-known readonly session mode for Codex or Claude Code before sending a prompt.
+confinement returns `workspace.readonly_unenforced`. Garuda also selects
+Codex's `read-only` mode or Claude Code's `default` or `plan` mode before
+sending a prompt.
+With confinement proven, Garuda grants one-time approval for ACP `execute`,
+`read`, `search` and `fetch` requests. This lets a harness run an inspection
+command even if its own sandbox cannot start inside Docker. Other kinds are
+denied. The decision, kind and reason appear in `garuda sessions show` and
+the trace.
+
 [Read-only external harnesses run in Docker](safety-and-workspaces.md#read-only-external-harnesses-run-in-docker).
 
 ## Route the initial runtime
