@@ -12,6 +12,18 @@ per segment, summed across segments, labelled `adapter_reported`. It is display
 evidence: the session's `usage`/`cost` stay `unknown`, nothing is summed into
 ledger totals, and no spend cap counts it.
 
+## 2026-11-25 — A withdrawn terminal approval stops its stdin reader (#675)
+
+On a POSIX terminal the approval prompt's reader thread waits in `select()`
+for a complete line, or for a wake-up byte, before it calls `input()`. When the
+prompt is withdrawn because the approval was answered from another terminal or
+the dashboard, timed out or was cancelled, the reader stops without consuming
+input, prints `approval withdrawn`, and no thread stays blocked in `input()`;
+the run finishes and the process exits. Previously the orphan `input()` thread
+kept `asyncio.run` and the interpreter exit waiting until the user pressed
+Enter. A reader that has already taken a line, piped stdin and Windows keep the
+previous behaviour: the next line is discarded and the prompt is reprinted.
+
 ## 2026-11-24 — Recipes are validated before any step runs (#682)
 
 `garuda recipe run` validates the whole recipe before it prepares a workspace.
