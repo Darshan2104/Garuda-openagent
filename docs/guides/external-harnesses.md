@@ -204,7 +204,11 @@ garuda runtime support --session latest
 | `support` | Prints a redacted bundle with the bounded causal projection, runtime lanes, kind tallies and timing metrics. `--preview`, digest-confirmed `--capture`, and `--export` select diagnostic categories without raw transcripts |
 
 ACP remote errors, malformed protocol, permission denial and cleanup uncertainty
-retain distinct causal codes for new sessions. A later quota recovery refusal is
+retain distinct causal codes for new sessions. A remote error keeps a bounded,
+one-line copy of its JSON-RPC `data` message in its text and causal detail. A
+usage-limit cause (Codex's `codexErrorInfo: usageLimitExceeded`, or the harness
+saying its usage limit is reached) is reported as `harness.limit_reached`, not
+`Internal error`, and the session's error event records that code. A later quota recovery refusal is
 shown beside the original failure when both records exist. Historical trails
 whose payloads were never saved remain explicitly unavailable. Inspection and
 export never launch a harness or query its login/quota state.

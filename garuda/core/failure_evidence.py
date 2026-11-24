@@ -182,8 +182,11 @@ def classify_exception(exc: BaseException) -> tuple[str, str]:
         AcpProtocolError,
         AcpRemoteError,
         AcpTimeoutError,
+        AcpUsageLimitError,
     )
 
+    if isinstance(exc, AcpUsageLimitError):
+        return "harness.limit_reached", "agent-response"
     if isinstance(exc, AcpRemoteError):
         suffix = "internal_error" if exc.remote_code == -32603 else "reported_error"
         return f"acp.remote.{suffix}", "agent-response"
