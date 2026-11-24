@@ -161,6 +161,15 @@ def _minimal_env() -> dict[str, str]:
     return {k: v for k, v in env.items() if v}
 
 
+class FailedProbeOutput(str):
+    """What a probe printed when it exited non-zero.
+
+    Only a documented logged-out answer is read from it (``codex login
+    status`` prints ``Not logged in`` and exits 1); a version or a logged-in
+    answer from a failing command is never trusted.
+    """
+
+
 def _run_probe(argv: tuple[str, ...], *, timeout: float) -> str | None:
     try:
         result = subprocess.run(
@@ -176,7 +185,7 @@ def _run_probe(argv: tuple[str, ...], *, timeout: float) -> str | None:
     except (OSError, subprocess.TimeoutExpired):
         return None
     if result.returncode != 0:
-        return None
+        return FailedProbeOutput(result.stdout + result.stderr)
     return result.stdout + result.stderr
 
 
@@ -479,6 +488,8 @@ def _inspect(manifest, run: Callable[..., str | None], timeout: float) -> Discov
     version = manifest.version
     if manifest.version_args:
         output = run(tuple(manifest.version_args), timeout=timeout)
+        if isinstance(output, FailedProbeOutput):
+            output = None
         if output is not None and manifest.version_pattern:
             match = re.search(manifest.version_pattern, output)
             version = match.group(1) if match and match.groups() else (
@@ -491,7 +502,13 @@ def _inspect(manifest, run: Callable[..., str | None], timeout: float) -> Discov
     auth = AuthStatus.UNKNOWN
     if manifest.auth_probe is not None:
         output = run(tuple(manifest.auth_probe.argv), timeout=timeout)
-        if output is not None:
+        if isinstance(output, FailedProbeOutput):
+            # A non-zero exit is read only for the documented logged-out answer.
+            if manifest.auth_probe.unauthenticated_pattern and re.search(
+                manifest.auth_probe.unauthenticated_pattern, output
+            ):
+                auth = AuthStatus.UNAUTHENTICATED
+        elif output is not None:
             if manifest.auth_probe.authenticated_pattern and re.search(
                 manifest.auth_probe.authenticated_pattern, output
             ):

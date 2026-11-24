@@ -812,7 +812,7 @@ by native runs, ACP runs, and CLI handoffs: the workspace lease with heartbeat a
 race, complete issuing-parent validation before delegation and borrowed
 capability creation/acquisition/start/race, and the P0.17 broker approval path), `server.py` + `jobs.py` (JSON-RPC header authentication before body reads, separate bounded header/body/run capacity with excess authenticated work refused, and job queue: submit/status/
 events/result/cancel), `session.py` (multi-turn state shared by CLI and SDK),
-`runner.py` (assembles a run and owns workspace teardown), `onboarding.py` (C.4: `garuda doctor` — global settings validated through shared runtime loaders/parsers with errors collected across sections, config with provenance, only the harnesses roles use, executable/version/login/capabilities, leases, worktrees — `garuda init` / `init --project` proposals that write only after confirmation, `config show`), `session_service.py`
+`runner.py` (assembles a run and owns workspace teardown), `onboarding.py` (C.4: `garuda doctor` — global settings validated through shared runtime loaders/parsers with errors collected across sections, config with provenance, only the harnesses roles use (fallback chains included), executable/version/login/capabilities, leases, worktrees — `garuda init` / `init --project` proposals that write only after confirmation, `config show`), `session_service.py`
 (B.6: the one session lifecycle every native entry point follows — workspace,
 capacity then lease, session record and baseline, approval broker, environment,
 then reap, teardown, persist and release last; `garuda chat`, dashboard chats and
