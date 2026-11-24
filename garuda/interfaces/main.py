@@ -2091,7 +2091,12 @@ async def _run_runtime_command(args) -> int:
                     store.root, byte_budget=16 * 1024 * 1024
                 ).resolve_ref(args.session)
             else:
-                session_id = store.resolve(args.session)
+                try:
+                    session_id = store.resolve(args.session)
+                except FileNotFoundError:
+                    # A session name is looked up in the current project (#676).
+                    session_id = store.resolve(args.session, workspace=os.getcwd(),
+                                               read_only=True)
         except (FileNotFoundError, ValueError) as exc:
             print(f"Error: {exc}", file=sys.stderr)
             return 2
