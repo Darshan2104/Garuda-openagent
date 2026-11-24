@@ -525,6 +525,68 @@ async def test_close_during_failed_acp_start_still_reaps_the_harness(tmp_path, m
         await conversation.close()
 
 
+def _mode_runtime(monkeypatch, *, proven: bool) -> None:
+    """A fake harness that starts in a mode broader than an SDK run allows (#700)."""
+    from garuda.config import agent_home
+    from garuda.runtime import roles
+
+    runtimes = [{"runtime_id": "fakemode", "kind": "acp", "version": "1", "setup": "fake",
+                 "command": [*FAKE_ARGV[:-1], "config-options", "--initial-mode", "judge",
+                             "--agent-info", '{"version": "1"}']}]
+    monkeypatch.setattr(agent_home, "resolve_agent_home", lambda workspace: _FakeHome(runtimes))
+    monkeypatch.setitem(roles.MODE_AUTHORITY, "fakemode",
+                        {"ask": "readonly", "edit": "smart", "judge": "auto", "everything": "yolo"})
+    monkeypatch.setitem(roles.DEFAULT_MODES, "fakemode", {"readonly": "ask", "smart": "edit"})
+    if proven:
+        monkeypatch.setitem(roles.PROVEN_OPTIONS, ("fakemode", "1"), {"harness_mode": "mode"})
+
+
+@pytest.mark.parametrize("surface", ["conversation", "software_agent"])
+async def test_sdk_acp_refuses_an_unenforceable_broader_mode_before_the_prompt(
+        tmp_path, monkeypatch, surface):
+    from garuda.core.sessions import SessionStore
+    from garuda.runtime.roles import RoleRefused
+
+    _mode_runtime(monkeypatch, proven=False)
+    store = SessionStore(tmp_path / "sessions")
+    asked: list[str] = []
+
+    async def deny(action: str) -> bool:
+        asked.append(action)
+        return False
+
+    if surface == "conversation":
+        runner = Conversation(workspace=tmp_path, runtime="fakemode", store=store,
+                              approval_handler=deny)
+    else:
+        runner = SoftwareAgent(workspace=str(tmp_path), runtime="fakemode", store=store)
+    try:
+        with pytest.raises(RoleRefused) as caught:
+            await runner.run("write outside the workspace")
+    finally:
+        if surface == "conversation":
+            await runner.close()
+    assert caught.value.code == "role.mode_unenforced"
+    assert "runs in mode 'judge', which needs permissions: auto" in str(caught.value)
+    (meta,) = store.list_sessions()
+    assert not meta.get("final_message") and "acp_mode" not in meta
+
+
+async def test_sdk_conversation_sets_and_records_the_mode_on_a_proven_adapter(tmp_path, monkeypatch):
+    from garuda.core.sessions import SessionStore
+
+    _mode_runtime(monkeypatch, proven=True)
+    store = SessionStore(tmp_path / "sessions")
+    conversation = Conversation(workspace=tmp_path, runtime="fakemode", store=store)
+    try:
+        result = await conversation.run("hello")
+    finally:
+        await conversation.close()
+    assert "done: hello" in result.final_message
+    meta = store.load_meta(result.metadata["session_id"])
+    assert meta["acp_mode"] == {"mode": "edit", "authority": "smart", "required": "edit",
+                                "source": "garuda"}
+
 class _SecretTool:
     name = "secret_word"
     description = "Returns the secret word"

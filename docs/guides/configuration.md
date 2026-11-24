@@ -610,7 +610,26 @@ with `workspace.readonly_unenforced`.
 Only an explicit mode under `permissions: yolo` can approve everything.
 Named modes and mapped readonly modes require a proven adapter version
 (Claude Code adapter 0.85.0 and Codex adapters 2.9.0 and 2.1.1). Other default
-modes apply on those proven versions, with the harness's own default elsewhere.
+modes apply on those proven versions. A run with no role, including an SDK
+run, may do at most what `permissions: smart` allows.
+
+Before the first prompt, the mode the agent reports must be no broader than the
+one the run requires, whether Garuda set it or not. Otherwise the run refuses
+with `role.mode_unenforced`. That covers an agent that reports no mode, a mode
+Garuda does not know, and an unproven adapter whose own default is broader.
+Claude Code adapter 0.110.1, for example, starts in `auto`, so a `smart` run
+refuses there. A `permissions: auto` role still runs on an unproven adapter that
+reports `auto`. The session records the mode in `acp_mode` (and in the role's
+`effective_mode`), with `source: garuda` when Garuda set it and `source: agent`
+when it is the agent's own.
+
+Options depend on the role's model, so Garuda sets the model first and checks
+effort and mode against what the agent then offers. A model the agent does not
+offer refuses with `role.model_unavailable` and lists the models it does offer.
+A mode the model cannot use refuses with `role.option_not_applied`, naming the
+model and the permissions that fit. For example, Claude Code 0.85.0 runs
+`haiku` in `acceptEdits` when `auto` is requested, so use `permissions: smart`
+with that model.
 For harnesses without a mapped readonly mode, the Docker mount enforces the
 workspace write restriction. The session records the selected mode with the
 model and effort. Codex quota-bound recovery and consult forwarding have

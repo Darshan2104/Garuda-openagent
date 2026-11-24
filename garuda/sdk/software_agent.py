@@ -230,6 +230,10 @@ class SoftwareAgent:
         try:
             await adapter.start(task=task, session_id=events.session_id)
             try:
+                # The harness must run in a mode that brokers its approvals (#700).
+                mode = await adapter.secure_mode()
+                if mode is not None:
+                    store.update_meta(events.session_id, {"acp_mode": mode})
                 turn = await adapter.prompt(task)
                 trail, _ = await adapter.poll_events(0)
             finally:
