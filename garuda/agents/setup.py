@@ -439,6 +439,7 @@ def prepare_background_runtime(args) -> BackgroundRuntimeBinding:
             raise RoleRefused("background.fallback_unbound",
                               "background roles with dynamic fallback need a persisted runtime "
                               "decision; use a role without fallback or run in the foreground")
+        plan.require_workspace_kind(getattr(args, "workspace_kind", "local"))
         reference = reference or resolved.selected_role()["harness"]
         agent_name = getattr(args, "agent", None)
         agent_file = getattr(args, "agent_file", None)

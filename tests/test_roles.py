@@ -8,6 +8,7 @@ import shlex
 import stat
 import sys
 from pathlib import Path
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 import yaml
@@ -135,8 +136,8 @@ def fake_acp(tmp_path, monkeypatch):
                     '--profile config-options --agent-info \'{"version": "1"}\' "$@"\n')
     shim.chmod(shim.stat().st_mode | stat.S_IXUSR)
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
-    settings = Path(os.environ["GARUDA_GLOBAL_SETTINGS"])
-    settings.parent.mkdir(parents=True, exist_ok=True)
+    settings = tmp_path / "settings.yaml"
+    monkeypatch.setenv("GARUDA_GLOBAL_SETTINGS", str(settings))
     settings.write_text("runtimes:\n  - runtime_id: fakecfg\n    kind: acp\n"
                         "    command: [fake-acp-shim]\n    version: '1'\n    setup: shim\n")
     return _repo(tmp_path / "ws")
@@ -160,7 +161,7 @@ def test_a_proven_adapter_gets_the_exact_options_before_the_prompt(fake_acp, mon
     _prove(monkeypatch)
     _user_file(ROLE.format(model="fake-large"))
 
-    code, out = _run(monkeypatch, capsys, fake_acp, "--role", "coder")
+    code, out = _run(monkeypatch, capsys, fake_acp, "--role", "coder", "--workspace-kind", "local")
 
     assert code == 0, out
     assert "done: hello (model=fake-large, effort=high)" in out
@@ -168,6 +169,88 @@ def test_a_proven_adapter_gets_the_exact_options_before_the_prompt(fake_acp, mon
     role = meta["role"]
     assert role["acp_options"] == {"model": "fake-large", "effort": "high"}
     assert role["adapter"]["runtime_id"] == "fakecfg" and role["model_id"] == "fake-large"
+
+
+@pytest.mark.parametrize("workspace_kind, extra", [
+    ("docker", ("--role", "coder", "--no-network")),
+    ("docker", ("--allow-network",)),
+    ("docker", ("--bg",)),
+    ("remote", ()),
+    ("sandbox", ()),
+    ("tmux", ()),
+])
+def test_acp_roles_refuse_nonlocal_workspaces(fake_acp, monkeypatch, capsys, workspace_kind, extra):
+    _prove(monkeypatch)
+    _user_file(ROLE.format(model="fake-large") + "defaults: {role: coder}\n")
+    acp = AsyncMock(return_value=0)
+    native = AsyncMock(side_effect=AssertionError("native model setup was reached"))
+    worker = Mock(side_effect=AssertionError("background worker was reached"))
+    monkeypatch.setattr("garuda.interfaces.main.run_acp_command", acp)
+    monkeypatch.setattr("garuda.agents.setup.prepare_agent_run", native)
+    monkeypatch.setattr("garuda.interfaces.bg_sessions._spawn_worker", worker)
+
+    code, out = _run(monkeypatch, capsys, fake_acp, "--workspace-kind", workspace_kind, *extra)
+
+    assert code == 2, out
+    assert out.splitlines() == [
+        "Error: role.workspace_unsupported: role coder runs on fakecfg, "
+        f"which cannot run in a {workspace_kind} workspace",
+    ]
+    acp.assert_not_called()
+    native.assert_not_called()
+    worker.assert_not_called()
+    assert SessionStore().list_sessions() == []
+
+
+def _start_as(fake_acp, tmp_path, monkeypatch, profile):
+    """Run the fakecfg harness as a real fake ACP agent with `profile`."""
+    shim = tmp_path / "bin" / f"fake-acp-{profile}"
+    shim.write_text(f"#!/bin/sh\nPYTHONPATH={shlex.quote(str(REPO))} exec "
+                    f"{shlex.quote(sys.executable)} -m garuda.acp.fake_agent --profile {profile} "
+                    "--agent-info '{\"version\": \"1\"}' \"$@\"\n")
+    shim.chmod(shim.stat().st_mode | stat.S_IXUSR)
+    settings = tmp_path / "settings.yaml"
+    settings.write_text(settings.read_text().replace("fake-acp-shim", f"fake-acp-{profile}"))
+
+
+START_CHAINS = ["", ", fallback: [{harness: native, model_id: fixture/model}]"]
+
+
+def _start_refusal(fake_acp, tmp_path, monkeypatch, capsys, fallback, profile):
+    """A role whose harness fails to start refuses with that cause; native never runs."""
+    _prove(monkeypatch)
+    _user_file("version: 1\nroles:\n"
+               f"  coder: {{harness: fakecfg, model_id: fake-large{fallback}}}\n")
+    _start_as(fake_acp, tmp_path, monkeypatch, profile)
+    native = AsyncMock(side_effect=AssertionError("native model setup was reached"))
+    monkeypatch.setattr("garuda.agents.setup.prepare_agent_run", native)
+
+    code, out = _run(monkeypatch, capsys, fake_acp, "--role", "coder", "--workspace-kind", "local")
+
+    assert code == 1, out
+    banner, error = out.splitlines()
+    assert banner == "[garuda] role coder: fakecfg (fake-large)"
+    assert error.startswith("Error: role.start_failed: role coder could not start on fakecfg: ")
+    native.assert_not_called()
+    (meta,) = SessionStore().list_sessions()
+    assert meta["status"] == "failed"
+    assert [segment["runtime_id"] for segment in meta["runtime_segments"]] == ["fakecfg"]
+    return error
+
+
+@pytest.mark.parametrize("fallback", START_CHAINS)
+def test_a_logged_out_acp_role_refuses_with_the_start_error(
+        fake_acp, tmp_path, monkeypatch, capsys, fallback):
+    error = _start_refusal(fake_acp, tmp_path, monkeypatch, capsys, fallback, "logged-out")
+    assert "login required" in error
+
+
+@pytest.mark.parametrize("fallback", START_CHAINS)
+def test_a_slow_start_acp_role_refuses_with_the_deadline(
+        fake_acp, tmp_path, monkeypatch, capsys, fallback):
+    monkeypatch.setattr("garuda.acp.client.HANDSHAKE_TIMEOUT", 0.5)
+    error = _start_refusal(fake_acp, tmp_path, monkeypatch, capsys, fallback, "slow-initialize")
+    assert error.endswith("role coder could not start on fakecfg: initialize exceeded its deadline")
 
 
 def test_a_model_the_agent_does_not_offer_refuses_before_the_prompt(fake_acp, monkeypatch, capsys):

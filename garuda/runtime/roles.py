@@ -109,6 +109,15 @@ class RolePlan:
     #: Review preflight uses this same non-executing registry as role resolution.
     identity_registry: RuntimeRegistry | None = field(default=None, repr=False, compare=False)
 
+    def require_workspace_kind(self, workspace_kind: str) -> None:
+        """Check the CLI workspace kind, independent of ACP's own confinement."""
+        if self.kind == "acp" and workspace_kind != "local":
+            raise RoleRefused(
+                "role.workspace_unsupported",
+                f"role {self.role} runs on {self.runtime_id}, "
+                f"which cannot run in a {workspace_kind} workspace",
+            )
+
     def record(self, *, adapter: dict | None = None, options: dict | None = None) -> dict:
         out = {"name": self.role, "runtime_id": self.runtime_id, "kind": self.kind,
                "model_id": self.model_id, "effort": self.effort,

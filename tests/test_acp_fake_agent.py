@@ -40,6 +40,8 @@ def test_public_profile_sets_are_pinned():
         "diff",
         "malformed",
         "slow",
+        "slow-initialize",
+        "logged-out",
         "exit-early",
         "resume",
         "version-mismatch",

@@ -1243,6 +1243,11 @@ Shared role selection returns that snapshot to CLI execution and consult
 narrowing; conflicting explicit agent files refuse before activation. The spec
 is runtime-only, excluded from role records/repr. Consult tool ceilings remain.
 
+Standalone CLI runs refuse a non-local workspace kind for a selected ACP role
+before dispatch, unless the role's configured pre-start chain supplies a
+native entry. Only that chain may change its harness. If the selected harness fails to start, the run reports the failure
+and retains the ACP session segment.
+
 Native role admission compares an explicitly selected model id with the
 agent’s declared/inherited binding through the trusted global alias table.
 Contradictory reasoning model ids or missing aliases refuse before activation;

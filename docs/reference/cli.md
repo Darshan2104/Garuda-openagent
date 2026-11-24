@@ -117,7 +117,7 @@ successful preview can still be refused by those steps after admission.
     |---|---|
     | `--workspace DIR` | Workspace root (default: current directory) |
     | `--isolation MODE` | `shared` (default): edit the workspace; `worktree`: a linked worktree on branch `garuda/<session>`; `auto`: a worktree only while another session edits. Uncommitted source changes are not carried over. Not confinement |
-    | `--workspace-kind KIND` | `local` (default), `sandbox`, `tmux`, `docker`, or `remote` |
+    | `--workspace-kind KIND` | `local` (default), `sandbox`, `tmux`, `docker`, or `remote`. ACP roles require `local`; a role's native fallback may run otherwise |
     | `--docker-image IMAGE` | Container image for docker/remote (default `ubuntu:22.04`) |
     | `--docker-host HOST` | Remote Docker daemon host |
     | `--docker-memory SIZE` | Container memory limit, e.g. `4g` (default `2g`) |

@@ -890,7 +890,24 @@ async def run_acp_task(
             else:
                 info = await runtime.start(task=task, session_id=session_id)
         except Exception as start_error:
-            if readonly or initial_plan is None or resume_plan is not None:
+            if resume_plan is not None:
+                raise
+            if role_plan is not None:
+                # A role is bound to its harness: its start failure (logged out,
+                # timed out, ...) refuses with that cause. Only the role's own
+                # pre-start chain (`choose`) can have chosen another runtime.
+                from garuda.context.redact import redact_text
+                from garuda.runtime.roles import RoleRefused
+
+                if isinstance(start_error, RoleRefused):
+                    raise
+                detail, _ = redact_text(str(start_error))
+                detail = " ".join(detail.splitlines()) or type(start_error).__name__
+                raise RoleRefused(
+                    "role.start_failed",
+                    f"role {role_plan.role} could not start on {manifest.runtime_id}: {detail}",
+                ) from start_error
+            if readonly or initial_plan is None:
                 raise
             from garuda.runtime.selection import (
                 SelectionError,
