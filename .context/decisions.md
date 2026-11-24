@@ -14,6 +14,18 @@ the owner. Without `/proc` the descendant scan cannot run and recovery refuses.
 Plain `recover()` and acquisition keep their previous refusals. `doctor`
 classifies leases by owner state and lists capacity slots.
 
+## 2026-11-24 — CLI storage, MCP and approval-id refusals are typed (#677, #672, #678, #704)
+
+`garuda run` reports a strict-storage failure as `storage.unavailable` or
+`storage.corrupt_record` (exit 2) instead of a traceback; storage still fails
+closed and nothing is written. `garuda mcp list` reports a malformed required
+entry as `mcp.config_invalid` (exit 2), the error `garuda run` already gives.
+`garuda approvals answer` refuses an approval id that could leave the session's
+approvals folder as `approval.invalid_id` (exit 2); the channel's id check is
+unchanged. Approval evidence names each record kind's counter explicitly, so a
+delivery record no longer makes `sessions show` or the dashboard session view
+fail.
+
 ## 2026-11-24 — Live-log polls and duplicate starts tolerate their writers' windows (#667)
 
 A background-task poll re-snapshots a running capture log when its timestamps

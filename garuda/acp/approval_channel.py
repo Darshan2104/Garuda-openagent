@@ -50,6 +50,10 @@ class ChannelError(Exception):
     """The channel could not publish or record; fail closed."""
 
 
+class UnsafeApprovalId(ChannelError):
+    """An approval id that could name a file outside the session's approvals directory."""
+
+
 def ceiling_fingerprint(engine) -> str:
     """A digest of what the permission ceiling would decide."""
     parts = []
@@ -149,7 +153,7 @@ class FileApprovalChannel:
 
     def _path(self, approval_id: str, kind: str) -> Path:
         if not approval_id or "/" in approval_id or approval_id.startswith("."):
-            raise ChannelError(f"unsafe approval id {approval_id!r}")
+            raise UnsafeApprovalId(f"unsafe approval id {approval_id!r}")
         return self.directory / f"{approval_id}.{kind}.json"
 
     def _ensure_dir(self) -> None:

@@ -262,3 +262,48 @@ async def test_the_cli_lists_and_answers_a_parked_approval(tmp_path, monkeypatch
     record = store.load_meta(SID)[f"approval:{request['approval_id']}"]
     assert record["request_digest"] == digest
     assert run_approvals(answer) == 2  # one answer only
+
+
+def test_the_cli_refuses_an_unsafe_approval_id_with_a_typed_error(tmp_path, capsys):
+    """#677: a path-traversal id is refused as a typed one-line error, not a traceback."""
+    from garuda.core.sessions import SessionStore
+    from garuda.interfaces.main import build_parser, run_approvals
+
+    store = SessionStore()
+    store.begin(SID, task="t", model="m", agent="a", workspace=str(tmp_path))
+    before = sorted(p.name for p in tmp_path.rglob("*"))
+    args = build_parser().parse_args(["approvals", "answer", SID, "../../../../tmp/x", "--deny",
+                                      "--workspace", str(tmp_path)])
+    assert run_approvals(args) == 2
+    err = capsys.readouterr().err
+    assert err.startswith("Error: approval.invalid_id: unsafe approval id")
+    assert "Traceback" not in err
+    assert sorted(p.name for p in tmp_path.rglob("*")) == before  # nothing written
+
+
+async def test_a_remotely_answered_approval_keeps_the_session_readable(tmp_path, capsys):
+    """#704: a delivered file-channel answer must not break the session's evidence readers."""
+    from garuda.core.failure_evidence import SessionFailureEvidence
+    from garuda.core.sessions import SessionStore
+    from garuda.interfaces.main import build_parser, run_approvals, run_sessions
+    from garuda.interfaces.run_guard import session_approval_channel
+
+    store = SessionStore()
+    store.begin(SID, task="t", model="m", agent="a", workspace=str(tmp_path))
+    channel = session_approval_channel(store, SID)
+    broker = ApprovalBroker(engine=PermissionEngine(), store=store, timeout_sec=3.0, channel=channel)
+    task = asyncio.ensure_future(broker.handler(session_id=SID)("bash(make release)"))
+    request = await _parked(channel)
+    parse = build_parser().parse_args
+    assert run_approvals(parse(["approvals", "answer", SID, request["approval_id"], "--allow",
+                                "--digest", request["digest"], "--workspace", str(tmp_path)])) == 0
+    assert bool(await task) is True
+    assert (channel.directory / f"{request['approval_id']}.delivery.json").is_file()
+
+    projection = SessionFailureEvidence(store).project(SID)
+    counts = projection["approvals"]["value"]
+    assert (counts["requests"], counts["decisions"], counts["deliveries"]) == (1, 1, 1)
+    assert counts["malformed"] == 0
+    capsys.readouterr()
+    assert run_sessions(parse(["sessions", "show", SID])) == 0
+    assert "Traceback" not in capsys.readouterr().err
