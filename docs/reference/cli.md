@@ -143,8 +143,8 @@ successful preview can still be refused by those steps after admission.
 
     | Flag | Use |
     |---|---|
-    | `--max-turns N` | Agent turn limit |
-    | `--deadline-sec N` | Wall-clock budget; the agent paces itself and reserves turns to finish |
+    | `--max-turns N` | Agent turn limit. Refused on an ACP runtime |
+    | `--deadline-sec N` | Wall-clock budget; the agent paces itself and reserves turns to finish. On an ACP runtime the turn is cancelled when it runs out and the session fails with `run.deadline_exceeded` |
     | `--max-run-tokens N` | Token budget (N ≥ 1) shared by the whole native run tree (main, auxiliary, collection worker, rigorous plan/critic and subagent calls); calls reserve before sending. Refused on an ACP runtime |
     | `--max-run-cost-usd X` | Stop admitting calls once reported spend reaches X (finite, > 0); unreported cost stops admission unless `--max-run-tokens` is set. Refused on an ACP runtime |
     | `--json` | Print JSONL events to stdout. Disables native live text. ACP summaries and errors go to stderr; an ACP payload that is not strict JSON is coerced (non-finite numbers become `null`, other values strings, keys named as `json.dumps` names them) and marked `payload_coerced` |

@@ -730,6 +730,7 @@ class AcpRuntime:
             timeout_error = AcpTimeoutError("prompt exceeded its deadline")
             self._note_error(timeout_error)
             self._record_failure(timeout_error, phase="prompt")
+            await self._notify_cancel()
             await self._close_process()
             self._emit(RuntimeEventKind.LIFECYCLE, {"state": "failed", "reason": "timeout"})
             self._move(LifecycleState.FAILED)
@@ -923,6 +924,19 @@ class AcpRuntime:
                 )
             except AcpError:
                 pass
+
+    async def _notify_cancel(self) -> None:
+        """Best effort `session/cancel` for a turn Garuda abandons (#701).
+
+        The process is reaped next whatever happens here, so a stuck or
+        closed transport is logged, never raised.
+        """
+        if self._process is None or not self._process.is_running:
+            return
+        try:
+            await asyncio.wait_for(self._process.session_cancel(self._agent_session_id or ""), 2)
+        except Exception:
+            logger.debug("session/cancel for a timed-out turn was not delivered", exc_info=True)
 
     async def _close_process(self) -> None:
         # No interactive answerer outlives the process it would answer.

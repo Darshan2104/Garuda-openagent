@@ -159,6 +159,8 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Append the session/new cwd to the default reply (launch-path tests).",
     )
+    parser.add_argument("--report-usage", action="store_true",
+                        help="Send a usage_update (cost and model) before the default reply.")
     parser.add_argument("--artifact-padding", type=int, default=0,
                         help="Lengthen each `artifacts` block body by this many characters.")
     parser.add_argument("--approval-kind",
@@ -295,7 +297,7 @@ def main(argv: list[str] | None = None) -> int:
                     cwd=session_cwd if (args.report_cwd or args.approval_kind == "execute"
                                         or profile in ("write-anyway", "probe-writes")) else None,
                     state_file=args.state_file, artifact_padding=args.artifact_padding,
-                    approval_kind=args.approval_kind,
+                    approval_kind=args.approval_kind, report_usage=args.report_usage,
                 )
             elif method == "session/cancel":
                 pass  # a notification; nothing is in flight outside a prompt
@@ -369,7 +371,7 @@ def _request_permission(
 def _handle_prompt(
     profile: str, call_id: int, params: dict, *, cwd: str | None = None,
     state_file: str | None = None, artifact_padding: int = 0,
-    approval_kind: str | None = None,
+    approval_kind: str | None = None, report_usage: bool = False,
 ) -> None:
     session_id = params.get("sessionId", "")
     text = _prompt_text(params.get("prompt"))
@@ -483,6 +485,10 @@ def _handle_prompt(
         _result(call_id, {"stopReason": "end_turn"})
     else:
         reply = f"done: {text}" if cwd is None else f"done: {text} (cwd={cwd})"
+        if report_usage:
+            _update(session_id, {"sessionUpdate": "usage_update", "used": 1200, "size": 200000,
+                                 "cost": {"amount": 0.0025, "currency": "USD"},
+                                 "_meta": {"_claude/model": "fake-model-1"}})
         _update(
             session_id,
             {"sessionUpdate": "agent_message_chunk", "content": _text(reply)},
