@@ -324,6 +324,10 @@ class Conversation:
             try:
                 store.ensure_unified(events.session_id)
                 await adapter.start(task=task, session_id=events.session_id)
+                # The harness must run in a mode that sends approvals here (#700).
+                mode = await adapter.secure_mode()
+                if mode is not None:
+                    store.update_meta(events.session_id, {"acp_mode": mode})
                 self._record_baseline(store, events.session_id)
                 attach_acp_segment(store, events.session_id, adapter)
                 from garuda.acp.broker import ApprovalBroker

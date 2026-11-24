@@ -204,6 +204,14 @@ async def test_switch_and_cancel_meet_the_contract():
     assert target.state is LifecycleState.CLOSED
 
 
+def _reported_mode(runtime_id: str) -> tuple[str, ...]:
+    """A vendor stand-in reports the mode a run with no role requires (#700)."""
+    from garuda.runtime.roles import DEFAULT_MODES
+
+    mode = DEFAULT_MODES.get(runtime_id, {}).get("smart")
+    return ("--initial-mode", mode) if mode else ()
+
+
 async def test_vendor_adapters_pass_the_common_suite_with_strict_v1_fixture():
     """This fixture rejects the former private framing/version/session/prompt
     shapes, so the common suite is protocol-compatibility evidence rather than
@@ -211,7 +219,8 @@ async def test_vendor_adapters_pass_the_common_suite_with_strict_v1_fixture():
     for manifest in _manifests():
         adapter = adapter_for_manifest(
             manifest,
-            argv_override=[sys.executable, "-m", "garuda.acp.fake_agent", "--profile", "strict-v1"],
+            argv_override=[sys.executable, "-m", "garuda.acp.fake_agent", "--profile", "strict-v1",
+                           *_reported_mode(manifest.runtime_id)],
         )
         assert adapter.runtime_id == manifest.runtime_id
         await run_conformance_suite(lambda adapter=adapter: adapter)

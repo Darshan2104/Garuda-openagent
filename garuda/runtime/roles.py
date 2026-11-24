@@ -19,8 +19,11 @@ names are resolved once, in interactive setup, and saved as the exact id).
   (``harness_mode``, :func:`harness_mode`). Each mode needs a minimum Garuda
   permission ceiling, and a no-edits step only a mode that cannot write. A
   role that names none gets the mode its ceiling allows (:data:`DEFAULT_MODES`)
-  on a proven adapter, and the adapter's own default elsewhere. Garuda never
-  selects a mode that bypasses approval by itself.
+  on a proven adapter. Garuda never selects a mode that bypasses approval by
+  itself. Whatever was set, the mode the agent reports after ``session/new``
+  and every set must be no broader than the one the run requires
+  (:func:`check_mode`): an unproven adapter whose own default is broader, or
+  an agent that reports no mode, refuses before the prompt (#700).
 
 The chosen ids and the adapter identity are recorded on the session.
 """
@@ -118,7 +121,8 @@ class RolePlan:
                 f"which cannot run in a {workspace_kind} workspace",
             )
 
-    def record(self, *, adapter: dict | None = None, options: dict | None = None) -> dict:
+    def record(self, *, adapter: dict | None = None, options: dict | None = None,
+               mode: dict | None = None) -> dict:
         out = {"name": self.role, "runtime_id": self.runtime_id, "kind": self.kind,
                "model_id": self.model_id, "effort": self.effort,
                "permissions": self.permissions, "write_policy": self.write_policy,
@@ -135,6 +139,9 @@ class RolePlan:
             out["adapter"] = adapter
         if options is not None:
             out["acp_options"] = options
+        if mode is not None:
+            # The mode the agent reported before the prompt, and who chose it.
+            out["effective_mode"] = mode
         return out
 
 
@@ -267,18 +274,103 @@ def check_provable(plan: RolePlan) -> None:
                           "proven adapter")
 
 
-def check_offered(options: dict[str, str], offered: list) -> None:
-    """Every requested value must be one the agent offered in ``session/new``."""
+def check_offered(options: dict[str, str], offered: list, *, model: str | None = None,
+                  runtime_id: str = "the agent") -> None:
+    """Every requested value must be one the agent offers this session.
+
+    The model is checked first: the other options (effort, mode) depend on it,
+    so a model the agent no longer offers is the cause to report (#694).
+    ``model`` names the role's model in the other options' refusals.
+    """
     by_id = {o.get("id"): o for o in offered or [] if isinstance(o, dict)}
-    for config_id, value in options.items():
+    for config_id, value in sorted(options.items(), key=lambda item: item[0] != "model"):
         option = by_id.get(config_id)
+        values = [v.get("value") for v in (option or {}).get("options") or []
+                  if isinstance(v, dict)]
+        listed = ", ".join(map(str, values)) or "none"
+        if config_id == "model":
+            if value not in values:
+                raise RoleRefused("role.model_unavailable",
+                                  f"{runtime_id} does not offer model {value!r} this session "
+                                  f"(offered: {listed})")
+            continue
+        for_model = f" for model {model!r}" if model else ""
         if option is None:
             raise RoleRefused("role.option_missing",
-                              f"the agent offers no {config_id!r} option this session")
-        values = [v.get("value") for v in option.get("options") or [] if isinstance(v, dict)]
+                              f"the agent offers no {config_id!r} option{for_model} this session")
         if value not in values:
-            raise RoleRefused(
-                "role.model_unavailable" if config_id == "model" else "role.option_unavailable",
-                f"{value!r} is not among the agent's {config_id} values "
-                f"({', '.join(map(str, values)) or 'none'})",
-            )
+            raise RoleRefused("role.option_unavailable",
+                              f"{value!r} is not among the agent's {config_id} values"
+                              f"{for_model} ({listed}){_mode_hint(runtime_id, config_id, values)}")
+
+
+def _mode_hint(runtime_id: str, config_id: str, modes: list) -> str:
+    """For a mode the agent did not take: the permissions that fit what it offers."""
+    authority = MODE_AUTHORITY.get(runtime_id, {})
+    if config_id != PROVEN_MODE_OPTION or not authority:
+        return ""
+    fits = [(mode, authority[mode]) for mode in modes if mode in authority
+            and authority[mode] != "yolo"]
+    if not fits:
+        return ""
+    mode, level = max(fits, key=lambda fit: PERMISSIONS.index(fit[1]))
+    return f"; use permissions: {level} (mode {mode}) or another model"
+
+
+def not_applied(runtime_id: str, config_id: str, value: str, now, *,
+                model: str | None = None) -> RoleRefused:
+    """The refusal for an option the agent did not take, with the likely cause."""
+    message = f"the agent reports {config_id}={now!r} after setting {value!r}"
+    if config_id == PROVEN_MODE_OPTION and model:
+        message += f": model {model!r} does not support mode {value!r} on {runtime_id}"
+    if config_id == PROVEN_MODE_OPTION and isinstance(now, str):
+        message += _mode_hint(runtime_id, config_id, [now])
+    return RoleRefused("role.option_not_applied", message)
+
+
+#: The ACP config option that holds the harness mode on every proven adapter.
+PROVEN_MODE_OPTION = "mode"
+
+
+def reported_mode(options: list, modes: dict | None) -> str | None:
+    """The permission mode an agent reports: its ``mode`` option, else ``modes``."""
+    for option in options or []:
+        if isinstance(option, dict) and option.get("id") == PROVEN_MODE_OPTION:
+            value = option.get("currentValue")
+            return value if isinstance(value, str) else None
+    current = (modes or {}).get("currentModeId")
+    return current if isinstance(current, str) else None
+
+
+def check_mode(runtime_id: str, required: str | None, reported: str | None, *,
+               adapter_version: str, permission: str, set_by_garuda: bool) -> dict | None:
+    """Refuse unless the agent's reported mode is no broader than ``required``.
+
+    Independent of proofs (#700): an unproven adapter's own default, a mode the
+    agent changed after a set, an unknown mode, or no reported mode at all
+    refuse before the prompt. ``None`` when Garuda knows no modes for the
+    harness (nothing to compare) or the run requires none.
+    """
+    authority = MODE_AUTHORITY.get(runtime_id)
+    if required is None or authority is None:
+        return None
+    needed = authority[required]
+    actual = authority.get(reported) if reported is not None else None
+    if actual is not None and PERMISSIONS.index(actual) <= PERMISSIONS.index(needed):
+        return {"mode": reported, "authority": actual, "required": required,
+                "source": "garuda" if set_by_garuda else "agent"}
+    proven = sorted(version for (runtime, version), options in PROVEN_OPTIONS.items()
+                    if runtime == runtime_id and "harness_mode" in options)
+    if reported is None:
+        found = "reports no permission mode"
+    elif actual is None:
+        found = f"runs in mode {reported!r}, which Garuda does not know"
+    else:
+        found = f"runs in mode {reported!r}, which needs permissions: {actual}"
+    remedy = ("" if set_by_garuda or (runtime_id, adapter_version) in PROVEN_OPTIONS
+              and "harness_mode" in PROVEN_OPTIONS[(runtime_id, adapter_version)]
+              else f"; Garuda cannot set the mode on this adapter version, so use a proven "
+                   f"one ({', '.join(proven) or 'none'})")
+    raise RoleRefused("role.mode_unenforced",
+                      f"{runtime_id} {adapter_version} {found}; this run allows mode "
+                      f"{required!r} (permissions: {permission}) at most{remedy}")

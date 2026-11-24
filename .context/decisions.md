@@ -1,5 +1,23 @@
 # Durable decisions
 
+## 2026-11-24 — ACP runs fail closed on the harness mode the agent reports (#700, #694)
+
+Every ACP run requires a harness mode, including runs with no role and SDK
+conversations, which may do at most what `smart` allows. Garuda sets that mode
+only on an adapter version where modes are proven. After `session/new` and
+every set, and before the first prompt, the mode the agent reports must be no
+broader than the required one. Otherwise the run refuses with
+`role.mode_unenforced`. That covers no reported mode, a mode Garuda does not
+know, and an unproven adapter whose own default is broader, such as Claude Code
+adapter 0.110.1 starting in `auto`. An explicit `permissions: auto` role
+therefore still runs on an unproven adapter that reports `auto`. Readonly
+confinement is unchanged. The session records the confirmed mode and whether
+Garuda or the agent chose it (`acp_mode`, role `effective_mode`). Role options
+are set model first, and each later option is checked against what the agent
+offers after the previous set. An unavailable model reports
+`role.model_unavailable` with the offered list, and a mode a model does not
+take names the model and the permissions that fit.
+
 ## 2026-11-24 — ACP runs enforce the deadline; SDK ACP runs refuse custom tools (#701, #702)
 
 `garuda run --deadline-sec` on an ACP runtime counts wall-clock time from launch.
