@@ -29,6 +29,7 @@ go to the right one.
 garuda init
 garuda doctor
 garuda config show
+garuda config check --probe
 ```
 
 **What happens**
@@ -42,6 +43,12 @@ garuda config show
   exits `1` on an error, so you can use it in scripts.
 - `garuda config show` prints the effective configuration and where each value
   came from.
+- `garuda config check --probe` starts each external harness once, without a
+  prompt, and checks each role's model, effort and permission mode against
+  what that harness offers for the model. A model with no effort setting, or
+  without the mode a role's `permissions` needs, is reported now instead of at
+  launch. Without `--probe` it runs nothing. See
+  [Configuration](../guides/configuration.md#a-roles-harness-mode).
 
 A `garuda.yaml` you might end up with:
 

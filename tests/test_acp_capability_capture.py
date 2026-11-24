@@ -73,6 +73,7 @@ def test_committed_captures_are_redacted_and_promptless(path):
 # What docs/guides/external-harnesses.md states for each captured version.
 EXPECTED = {
     "claude-0.85.0": {"model": "model", "effort": "effort"},
+    "claude-0.110.1": {"model": "model", "effort": "effort"},
     "codex-2.1.1": {"model": "model", "effort": "reasoning_effort"},
     "codex-2.9.0": {"model": "model", "effort": "reasoning_effort"},
 }
