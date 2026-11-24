@@ -169,8 +169,10 @@ garuda flow run plan-build-review -t "Add a --version flag"
 garuda flow show FLOW_ID        # steps, attempts, receipts, outputs
 ```
 
-`flow show` and `flow resume` take the full flow ID printed at the end of
-`flow run`.
+`flow show` and `flow resume` take the flow ID printed at the end of
+`flow run`, a unique prefix of it, its name or `latest` (the newest flow in
+this project). For a stopped flow, `flow show` prints the stop code, the step
+and the message.
 
 After a checked CLI flow stops at a settled step failure, missing output, or
 confinement refusal, `garuda flow resume FLOW_ID` retries the pending step and
