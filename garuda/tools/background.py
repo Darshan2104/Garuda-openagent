@@ -75,7 +75,7 @@ os.replace(temporary, sys.argv[2], src_dir_fd=directory, dst_dir_fd=directory)
 raise SystemExit(code)
 """
 
-_CAPTURE_READ = r"""import hashlib, json, os, re, stat, sys
+_CAPTURE_READ = r"""import hashlib, json, os, re, stat, sys, time
 
 def snapshot(info):
     return [info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns]
@@ -139,30 +139,40 @@ def read_capture():
         commitment = receipt(directory, name)
         fd = os.open(name, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW, dir_fd=directory)
         try:
-            before = os.fstat(fd)
-            if not stat.S_ISREG(before.st_mode):
-                raise ValueError('capture log is not a regular file')
-            if [before.st_dev, before.st_ino] != expected_binding[1]:
-                raise ValueError('capture log does not match its launch binding')
-            limit = max(1, min(int(sys.argv[4]), int(sys.argv[3])))
-            remaining = min(limit, before.st_size)
-            expected = remaining
-            os.lseek(fd, before.st_size - remaining, os.SEEK_SET)
-            data = bytearray()
-            while remaining:
-                block = os.read(fd, remaining)
-                if not block:
-                    raise ValueError('capture log was truncated')
-                data.extend(block)
-                remaining -= len(block)
-            after = snapshot(os.fstat(fd))
-            if after != snapshot(before):
+            for attempt in range(8):
+                before = os.fstat(fd)
+                if not stat.S_ISREG(before.st_mode):
+                    raise ValueError('capture log is not a regular file')
+                if [before.st_dev, before.st_ino] != expected_binding[1]:
+                    raise ValueError('capture log does not match its launch binding')
+                limit = max(1, min(int(sys.argv[4]), int(sys.argv[3])))
+                remaining = min(limit, before.st_size)
+                expected = remaining
+                os.lseek(fd, before.st_size - remaining, os.SEEK_SET)
+                data = bytearray()
+                while remaining:
+                    block = os.read(fd, remaining)
+                    if not block:
+                        raise ValueError('capture log was truncated')
+                    data.extend(block)
+                    remaining -= len(block)
+                after = snapshot(os.fstat(fd))
+                if after == snapshot(before):
+                    break
                 # A running capture appends to its own log, so growth of the
                 # bound file is expected; the bytes already read are unchanged.
                 # Any other change, or any change once a receipt exists, is not.
                 if (commitment is not None or after[:2] != snapshot(before)[:2]
-                        or after[2] <= before.st_size):
+                        or after[2] < before.st_size):
                     raise ValueError('capture log changed during reading')
+                if after[2] > before.st_size:
+                    break
+                # An in-flight append updates the timestamps before the size,
+                # so an unchanged size with new timestamps is not yet proof of
+                # growth. Take a fresh snapshot instead of failing the poll.
+                time.sleep(0.002 * (attempt + 1))
+            else:
+                raise ValueError('capture log changed during reading')
             if commitment is not None:
                 if commitment['snapshot'] != snapshot(before):
                     raise ValueError('capture log does not match its receipt')

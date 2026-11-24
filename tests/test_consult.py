@@ -717,14 +717,18 @@ async def test_a_child_that_cannot_be_reaped_is_quarantined_and_keeps_its_slot(
         _settings()
     settings.write_text((settings.read_text() if settings.exists() else "")
                         + f"capacity: {{{runtime}: 1}}\n")
-    doc = {**DOC, "consults": {"timeout_sec": 2}}
+    # The delegated child is dispatched only after the real Docker confinement
+    # preflight, which runs inside the consult budget. Two seconds let a slow
+    # Docker host time the consult out before the stubborn child ever started.
+    timeout = 15 if delegated else 2
+    doc = {**DOC, "consults": {"timeout_sec": timeout}}
     if delegated:
         harness = gy.load_text("version: 1\nharnesses:\n  fakeacp:\n    confinement:\n"
                                + CONFINED)["harnesses"]["fakeacp"]
         doc = {"version": 1, "harnesses": {"fakeacp": harness},
                "roles": {"coder": {"harness": "native", "consult": ["reviewer"]},
                          "reviewer": {"harness": "fakeacp", "permissions": "readonly"}},
-               "consults": {"timeout_sec": 2}}
+               "consults": {"timeout_sec": timeout}}
     monkeypatch.setattr(svc, "REAP_GRACE", 0.1)
     resolved = make_resolved(doc)
     admissions, tasks = [], []

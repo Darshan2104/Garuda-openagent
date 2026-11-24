@@ -209,6 +209,15 @@ Click a problem to see the fix.
     broker has the file: if the permission ceiling changed meanwhile, the broker
     denies it and says why in the session's approval decision.
 
+??? question "A run refuses with `storage.unavailable: session store unavailable`"
+
+    Garuda couldn't create or lock its session store (by default
+    `~/.agent/sessions`, or `GARUDA_SESSIONS_DIR`), usually because the
+    directory isn't writable by you. Nothing was started or written. Make the
+    directory writable and owner-only (`chmod 700`), or point
+    `GARUDA_SESSIONS_DIR` at one that is. `storage.corrupt_record` means a stored
+    record is unreadable, malformed or from a newer Garuda version.
+
 ??? question "A `--bg` session stays `queued`"
 
     It's waiting for a free slot: its runtime is at its `capacity` limit, which

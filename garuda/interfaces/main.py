@@ -1642,7 +1642,12 @@ def run_approvals(args) -> int:
     import json
     import sys
 
-    from garuda.acp.approval_channel import FileApprovalChannel, write_answer
+    from garuda.acp.approval_channel import (
+        ChannelError,
+        FileApprovalChannel,
+        UnsafeApprovalId,
+        write_answer,
+    )
     from garuda.core.project_identity import ProjectIdentityError
     from garuda.core.sessions import SessionStore
 
@@ -1659,6 +1664,14 @@ def run_approvals(args) -> int:
                          expect_digest=getattr(args, "digest", None))
         except FileExistsError:
             print(f"Error: approval {args.approval_id} already has an answer", file=sys.stderr)
+            return 2
+        except UnsafeApprovalId as exc:
+            # Refused before any path is touched: the id could leave the approvals directory.
+            print(f"Error: approval.invalid_id: {exc}", file=sys.stderr)
+            return 2
+        except ChannelError as exc:
+            print(f"Error: approval.unavailable: cannot answer {args.approval_id!r}: {exc}",
+                  file=sys.stderr)
             return 2
         except (OSError, ValueError) as exc:
             print(f"Error: cannot answer {args.approval_id}: {exc}", file=sys.stderr)
@@ -1837,7 +1850,11 @@ def _print_mcp_states(states: list[dict]) -> None:
 
 async def run_mcp_list(args) -> int:
     """Show which MCP config file(s) resolve and the tools each server exposes."""
+    import sys
+
+    from garuda.mcp.client import McpStartupError
     from garuda.mcp.config import partition_mcp_servers, resolve_mcp_config_paths
+    from garuda.model.config import ConfigError
 
     paths = resolve_mcp_config_paths(args.workspace, args.mcp_config)
     if not paths:
@@ -1852,9 +1869,14 @@ async def run_mcp_list(args) -> int:
         print(f"  {path}")
 
     user_paths = [args.mcp_config] if args.mcp_config else []
-    servers, untrusted = partition_mcp_servers(
-        paths, workspace=args.workspace, user_paths=user_paths
-    )
+    try:
+        servers, untrusted = partition_mcp_servers(
+            paths, workspace=args.workspace, user_paths=user_paths
+        )
+    except ConfigError as exc:
+        # The same bounded, named refusal `garuda run` gives for this file.
+        print(f"Error: mcp.config_invalid: {exc}", file=sys.stderr)
+        return 2
     if not servers and not untrusted:
         print("\nNo servers defined in the resolved config.")
         return 0
@@ -1874,8 +1896,6 @@ async def run_mcp_list(args) -> int:
     if args.no_connect:
         return 0
 
-    from garuda.mcp.client import McpStartupError
-
     print("\nConnecting to enumerate tools...")
     try:
         tools, manager = await build_toolkit(
@@ -1885,6 +1905,9 @@ async def run_mcp_list(args) -> int:
         _print_mcp_states(exc.states)
         print(f"\nError: {exc}")
         return 1
+    except ConfigError as exc:
+        print(f"Error: mcp.config_invalid: {exc}", file=sys.stderr)
+        return 2
     try:
         _print_mcp_states(manager.server_states() if manager is not None else [])
         print("Tools:")
@@ -2520,6 +2543,7 @@ async def run_task_guarded(args) -> int:
     from garuda.runtime.registry import RegistryError
     from garuda.runtime.resume import ResumeRefused
     from garuda.runtime.roles import RoleRefused
+    from garuda.runtime.strict_store import CorruptRecord, StorageError
     from garuda.workspace.lease import LeaseError
     from garuda.workspace.worktrees import WorktreeError
 
@@ -2527,6 +2551,13 @@ async def run_task_guarded(args) -> int:
         return await run_task(args)
     except (RegistryError, RuntimeSettingsError) as exc:
         return _print_runtime_refusal(exc)
+    except StorageError as exc:
+        # Strict storage already failed closed (nothing was changed); report it, typed.
+        import sys
+
+        code = "storage.corrupt_record" if isinstance(exc, CorruptRecord) else "storage.unavailable"
+        print(f"Error: {code}: session store unavailable: {exc}", file=sys.stderr)
+        return 2
     except (LeaseError, CapacityError, WorktreeError, TagError, BriefBudgetExceeded,
             ResumeRefused, GarudaConfigError, RoleRefused) as exc:
         # The workspace is held by another run, the runtime is at its
