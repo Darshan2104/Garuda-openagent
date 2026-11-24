@@ -141,6 +141,32 @@ def test_doctor_probes_only_the_harnesses_your_roles_use(two_harnesses, monkeypa
     assert "config.ok" in _codes(report)
 
 
+def test_doctor_checks_a_harness_used_only_as_a_role_fallback(two_harnesses, monkeypatch, capsys):
+    """#680: a fallback harness is used by your roles; missing, it is a warning."""
+    gy.user_path().write_text(
+        "version: 1\nroles: {coder: {harness: fakea, fallback: [{harness: fakeb}]}}\n")
+    report = onboarding.doctor_report(two_harnesses, login_run=lambda argv, t: (0, "Logged in"))
+    by_runtime = {d.message.split(":")[0].split()[0]: d for d in report
+                  if d.code.startswith("harness.")}
+    assert by_runtime["fakeb"].code == "harness.ok"
+
+    (two_harnesses.parent / "bin" / "fake-b").unlink()
+    report = onboarding.doctor_report(two_harnesses, login_run=lambda argv, t: (0, "Logged in"))
+    missing = [d for d in report if d.code == "harness.cli_missing"]
+    assert len(missing) == 1 and missing[0].message.startswith("fakeb:")
+    assert missing[0].level == "warning" and "fallback" in missing[0].message
+    assert "install fake-b" in missing[0].fix
+    assert not [d for d in report if d.code == "harness.not_checked" and "fakeb" in d.message]
+
+    from garuda.acp.login_probe import _cache_path
+
+    _cache_path().unlink()  # login conclusions are cached for a minute
+    report = onboarding.doctor_report(
+        two_harnesses, login_run=lambda argv, t: (1, "Not logged in"))
+    primary = [d for d in report if d.code == "harness.logged_out"]
+    assert [d.level for d in primary] == ["error"]  # the role's own harness still fails doctor
+
+
 @pytest.mark.parametrize("answer, code", [
     ((0, "Logged in"), "harness.ok"),
     ("timeout", "harness.login_timeout"),

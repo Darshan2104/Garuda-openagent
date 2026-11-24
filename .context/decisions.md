@@ -12,6 +12,16 @@ per segment, summed across segments, labelled `adapter_reported`. It is display
 evidence: the session's `usage`/`cost` stay `unknown`, nothing is summed into
 ledger totals, and no spend cap counts it.
 
+## 2026-11-25 — A logged-out status that exits non-zero is logged out; doctor checks fallbacks (#669, #680)
+
+Runtime discovery (`runtime inspect`/`list`) now reads a login status command
+that exits non-zero for its documented logged-out answer only, so a logged-out
+Codex (`codex login status` prints `Not logged in`, exit 1) shows
+`unauthenticated` instead of `unknown`. A failing command is never trusted for
+a logged-in answer or a version. `garuda doctor` checks harnesses used only in
+a role's `fallback:` chain; a missing or logged-out fallback-only harness is a
+warning, since the role can still start but that fallback can never be taken.
+
 ## 2026-11-25 — SDK ACP runs refuse model and agent options; `--bg` refuses ACP limits at admission (#712)
 
 An SDK run or conversation on an ACP runtime raises
