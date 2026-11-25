@@ -56,6 +56,17 @@ harness adapter itself reported, the latest report per segment. It is labelled
 adapter-reported because Garuda did not meter or price it, so the session's own
 `usage` and `cost` stay `unknown` and no spend cap counts it.
 
+`sessions show` also says what an external run met on the way:
+`approval_summary` counts its tool approval requests (`requested`, `allowed`,
+`denied`, `all_denied`, and each outcome; timed out, disconnected and cancelled
+requests count as denied). A run whose tool calls were refused can still end its
+turn `completed`, so `garuda run` then prints a warning such as `1 of 1 tool
+approval requests were not allowed (every one was blocked)`; its exit status is
+unchanged. `acp_session` is what the agent offered at start, and `error` the code
+and message of a failed run, for example `role.option_missing` with the options
+the agent did offer. See [Study traces](configuration.md#study-traces) for the
+opt-in tool detail.
+
 ### Names and references
 
 - `--name NAME` names a session (unique in the project). Without it, Garuda

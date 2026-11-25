@@ -1093,6 +1093,10 @@ def run_sessions(args) -> int:
             print("\n".join(f"{k}: {v}" for k, v in shown.items() if k != "spend"))
             if reported:
                 print(f"Reported usage: {reported_usage_line(reported)}")
+            from garuda.core.approval_outcome import approval_summary_line
+
+            if (denied := approval_summary_line(row.get("approval_summary"))) is not None:
+                print(f"Approvals: {denied}")
             spend = row["spend"]
             if spend is None:
                 print("Spend: not recorded")
@@ -2359,6 +2363,10 @@ async def run_acp_command(args, task: str, catalog) -> int:
         "the ACP result is not verified by Garuda)",
         file=summary_output,
     )
+    from garuda.core.approval_outcome import approval_summary_line
+
+    if (denied := approval_summary_line(summary.get("approvals"))) is not None:
+        print(f"[garuda] warning: {denied}", file=summary_output)
     _accept_session(args, summary.get("session_id"))
     return 0 if summary["status"] == "completed" else 1
 

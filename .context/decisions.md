@@ -1,5 +1,18 @@
 # Durable decisions
 
+## 2026-11-25 — Opt-in study traces, offered options, failure codes and denial counts (#691)
+
+`observability.trace_detail` (user settings only; `metadata` default, or
+`commands`) decides what an external run's persisted trail keeps. `metadata`
+is unchanged. `commands` adds each tool call's title, command, up to five
+named paths and harness-subagent parent call, and the message of a failed tool
+call or error event, each redacted and bounded; tool output is never kept and
+an unknown value keeps `metadata`. Every ACP session records the agent's
+offered options and modes (`acp_session`) before applying any, and a failed
+run's `error_code` and redacted `error_detail`. `sessions show` adds
+`approval_summary`; `garuda run` warns when approvals were refused, without
+changing its exit status (a completed turn stays completed).
+
 ## 2026-11-25 — External usage is recorded on every outcome and shown as adapter-reported (#690, #691)
 
 An ACP run records its adapter's last usage report after the harness closes,

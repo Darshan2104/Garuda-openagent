@@ -368,6 +368,31 @@ Open **Usage** (`#/usage`) and **Providers** (`#/providers`).
 - The ledger is one owner-only file per month in `~/.agent/usage/`, kept for
   13 months. It holds identities and counts only.
 
+## Study an external harness run
+
+<p class="gd-facts">Data: the session's trail and record · Never: tool output, messages or secrets</p>
+
+**Use it when** you want to see what a Claude Code or Codex step actually did, to
+find where a workflow wasted turns or was blocked.
+
+```yaml
+# ~/.agent/settings.yaml
+observability:
+  trace_detail: commands
+```
+
+```bash
+garuda sessions show latest --json
+```
+
+- Each tool call in the session's `acp-events.jsonl` now keeps its title, command,
+  the paths it names and, inside a harness subagent, its parent call; a failed
+  call keeps its error message. Every field is redacted and bounded.
+- `approval_summary` says how many tool calls were refused, so a run that was
+  blocked is not mistaken for one that did the work.
+- `reported_usage` is the cost the harness reported; `acp_session` the models,
+  efforts and modes it offered; `error` why a failed run stopped.
+
 ---
 
 **Next:** give each kind of work its own model and harness in
