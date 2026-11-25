@@ -15,6 +15,48 @@ stays fail closed: a live unreadable process with no older ancestry still
 makes the scan inconclusive, and the refusal now names that pid instead of
 blaming a missing `/proc` or owner identity.
 
+## 2026-11-25 — A checked flow step refused before its prompt stops with its own code (#738)
+
+An owned role worker (every step of a `--check` or dashboard-owned flow) now
+reports a `RoleRefused` from its role pipeline, such as `role.start_failed`
+(logged-out harness) or `role.model_unavailable`, as a typed result
+`{"refusal": {"code", "message"}}` instead of crashing out of the worker. A
+crash left no result, so the step lost its code and, before #723, was treated
+as unproved cleanup (`flow.cleanup_unproved`, flow quarantined, lease and
+harness slot kept forever). The parent accepts a refusal only as a failed
+result with no output and a `role.`, `harness.` or `config.` code, bounded and
+redacted. The attempt keeps the full closure and evidence-boundary proof of any
+other failed step; only then is its receipt `stopped` with the role's code and
+`stop.refused: true`, and a checked flow records its resume checkpoint, so
+`flow resume` retries it under the original checks (#683). A refusal reported
+after the worker asked to retain ownership is still `CleanupUncertain`, so
+genuinely unproved cleanup still quarantines. Unchecked in-process flows are
+unchanged.
+
+## 2026-11-25 — A run on a logged-out harness refuses with `harness.logged_out` (#739, #668)
+
+Since discovery reads a logged-out Codex as `unauthenticated` (#715),
+initial selection refused an explicitly named runtime (`--runtime`, a role's
+harness, `defaults.role`) with an untyped `SelectionError`, which reached the
+user as a traceback (rc 1), and a `--bg` session ended `failed` with no
+recorded error. Selection now raises `HarnessLoggedOut` (a `SelectionError`
+subclass) for a named candidate whose auth is `unauthenticated` or
+`expired`, and `role_execution.run_task` turns it into
+`RoleRefused("harness.logged_out", ...)`: "role <r> runs on <h>, which is not
+logged in." (or "runtime <h> is not logged in.") plus the manifest's login
+instructions, exit 2, before any session or runtime exists. It never falls
+back to native or `routing.fallback_runtime`; a role's own `fallback:` chain
+is still walked first by `_apply_role`, unchanged. `garuda run --bg` runs the
+same documented login check, fresh, at admission and refuses there; only the
+documented logged-out answer refuses, an unknown or failed check does not. A
+worker whose harness logged out after admission, or that meets any other
+`RoleRefused`, settles its session `refused` with `error_code`,
+`background_refusal` and `refusal_reason` (a session another path already
+settled keeps its outcome). Any other `SelectionError` reaching
+`run_task_guarded` is reported as `runtime.selection_refused` (exit 2)
+instead of a traceback. Flow steps and dashboard starts launch through the
+owned role path, which already refused with `role.start_failed`.
+
 ## 2026-11-25 — Sessions record what they ran as (#726)
 
 Every session records its `workspace_kind` (an ACP run `local`, at session
