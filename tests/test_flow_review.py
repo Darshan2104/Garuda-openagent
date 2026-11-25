@@ -198,7 +198,8 @@ def test_a_reviewer_that_is_not_independent_is_rejected(repo, change):
 
     result = asyncio.run(_run(repo, script, config).run())
     assert result.stopped.code == "flow.review_not_independent"
-    assert script.sequence == [("plan", 1)]  # refused before the reviewed step ran
+    assert script.sequence == []  # refused before the first step, not just the reviewed one (#753)
+    assert result.receipts == []
 
 
 async def test_independence_can_be_waived(repo):
@@ -206,6 +207,70 @@ async def test_independence_can_be_waived(repo):
     config["roles"]["reviewer"]["model_id"] = "c/1"
     result = await _run(repo, Script([APPROVE]), config).run()
     assert result.completed
+
+
+def _same_harness(flow):
+    """#753's shape: coder and reviewer on one identity, run through a packaged flow."""
+    from garuda.flows import packaged
+
+    config = _config()
+    config["roles"]["reviewer"]["model_id"] = "c/1"
+    config["flows"] = {"pbr": packaged.FLOWS[flow]}
+    return config
+
+
+@pytest.mark.parametrize("flow", ["plan-build-review", "pair"])
+async def test_a_packaged_flow_refuses_a_dependent_reviewer_before_any_step(repo, flow):
+    """#753: no step session, receipt or intent before the independence refusal."""
+    store = SessionStore()
+    script = Script([APPROVE])
+    result = await _run(repo, script, _same_harness(flow)).run()
+
+    assert result.stopped.code == "flow.review_not_independent"
+    assert result.stopped.step == "review"
+    assert script.sequence == []
+    assert result.receipts == []
+    assert 'role "reviewer" would run as native · c/1' in str(result.stopped)
+    assert 'the same identity role "coder" runs' in str(result.stopped)
+    meta = store.load_meta(result.flow_session)
+    assert meta["flow_stop"]["code"] == "flow.review_not_independent"
+    assert meta["state"]["outcome"] == "failed"
+
+
+@pytest.mark.parametrize("flow", ["plan-build-review", "pair"])
+async def test_a_waived_packaged_review_still_runs(repo, flow):
+    config = _same_harness(flow)
+    steps = [dict(step) for step in config["flows"]["pbr"]["steps"]]
+    for step in steps:
+        if "review" in step:
+            step["review"] = {**step["review"], "independent": False}
+    config["flows"]["pbr"] = {**config["flows"]["pbr"], "steps": steps}
+    script = Script([APPROVE])
+    result = await _run(repo, script, config).run()
+    assert result.completed
+    assert script.sequence[-2:] == [("build", 1), ("review", 1)]
+
+
+async def test_a_resume_refuses_a_dependent_reviewer_before_its_next_step(repo):
+    """#753: a resume preflights the reviews it will still run, before any step."""
+    async def build_fails(launch):
+        if launch.step_id != "plan":
+            return StepResult(str(uuid.uuid4()), False, "", error="boom")
+        return StepResult(str(uuid.uuid4()), True, _block("plan", "do it"))
+
+    first = await _run(repo, build_fails, _config()).run()
+    assert first.stopped.code == "flow.step_failed"
+
+    async def must_not_run(launch):
+        raise AssertionError(f"{launch.step_id} ran")
+
+    config = _config()
+    config["roles"]["reviewer"]["model_id"] = "c/1"
+    resolved = gy.resolve(gy.parse(config), None)
+    resumed = await FlowRunner(SessionStore(), repo, "pbr", resolved.config["flows"]["pbr"],
+                               resolved, task="t", launcher=must_not_run,
+                               flow_session=first.flow_session).run(resume=True)
+    assert resumed.stopped.code == "flow.review_not_independent"
 
 
 def test_review_by_must_be_the_terminal_reviewer():
