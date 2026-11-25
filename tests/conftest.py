@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 import pytest
 
 
@@ -30,15 +33,22 @@ class _FakeModeTables(dict):
         return self._fallback
 
 
+#: Shipped harness ids, read without importing the runtime (a docs-only job has
+#: none of its dependencies).
+_SHIPPED = frozenset({"native"} | {
+    json.loads(path.read_text())["runtime_id"]
+    for path in (Path(__file__).resolve().parents[1] / "garuda" / "acp" / "builtin").glob("*.json")})
+
+
 @pytest.fixture(autouse=True)
 def _fake_harness_modes(monkeypatch):
     """A test of an unclassified harness uses a shipped id, or replaces
     ``roles.MODE_AUTHORITY`` with a plain dict."""
-    from garuda.acp.catalog import builtin_manifest_dicts
-    from garuda.runtime import roles
-
-    shipped = {item["runtime_id"] for item in builtin_manifest_dicts()} | {"native"}
-    monkeypatch.setattr(roles, "MODE_AUTHORITY", _FakeModeTables(roles.MODE_AUTHORITY, shipped))
+    try:
+        from garuda.runtime import roles
+    except ImportError:  # a minimal job without the runtime's dependencies
+        return
+    monkeypatch.setattr(roles, "MODE_AUTHORITY", _FakeModeTables(roles.MODE_AUTHORITY, _SHIPPED))
 
 
 @pytest.fixture(autouse=True)

@@ -202,11 +202,15 @@ def _acp_entries() -> list[AdapterEntry]:
     if unknown:
         raise ValueError(f"contract profiles not in fake_agent.PROFILES: {sorted(unknown)}")
 
+    from garuda.acp.fake_agent import MODE_AUTHORITY as FAKE_MODES
+
     def make(profile: str):
         def _make(scratch: Path, _p=profile) -> AcpRuntime:
+            # Garuda's own fake agent: its modes are classified by the fake itself (#732).
             return AcpRuntime(
                 [sys.executable, "-m", "garuda.acp.fake_agent", "--profile", _p],
                 runtime_id=f"acp-{_p}",
+                declared_modes=FAKE_MODES,
             )
 
         return _make

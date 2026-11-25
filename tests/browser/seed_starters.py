@@ -31,8 +31,11 @@ def seed(workdir):
     os.environ["PATH"] = str(bin_dir) + os.pathsep + os.environ["PATH"]
     settings = Path(os.environ["GARUDA_GLOBAL_SETTINGS"])
     settings.parent.mkdir(parents=True)
+    from garuda.acp.fake_agent import MODE_AUTHORITY
+
     settings.write_text(gy.dump({"runtimes": [{"runtime_id": "producer", "kind": "acp", "version": "1",
-                                               "command": [str(bin_dir / "fake-acp-shim")]}]}))
+                                               "command": [str(bin_dir / "fake-acp-shim")],
+                                               "modes": MODE_AUTHORITY}]}))
     gy.user_path().write_text(gy.dump({"version": 1, "roles": {
         role: {"harness": "producer"} for role in ("scout", "planner", "coder", "reviewer")}}))
     service = StarterService(SessionStore())

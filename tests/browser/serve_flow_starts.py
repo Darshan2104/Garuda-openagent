@@ -13,6 +13,7 @@ from pathlib import Path
 
 import yaml
 
+from garuda.acp.fake_agent import MODE_AUTHORITY as FAKE_AGENT_MODES
 from garuda.config import garuda_yaml as gy
 from garuda.interfaces.web import DashboardConfig, build_context
 from garuda.interfaces.web import http as http_module
@@ -79,7 +80,9 @@ def prepare(workspace: Path, settings: Path, model_port: int) -> None:
         "model_bindings": {"default": {"reasoning": "browser"}},
         "capacity": {"native": 1, "browser-acp": 1},
         "runtimes": [{"runtime_id": "browser-acp", "kind": "acp", "version": "1",
-                      "command": [sys.executable, "-m", "garuda.acp.fake_agent", "--profile", "success"]}],
+                      "command": [sys.executable, "-m", "garuda.acp.fake_agent", "--profile", "success"],
+                      # The fake's own modes: every ACP run checks the reported mode (#732).
+                      "modes": FAKE_AGENT_MODES}],
     }))
     (settings.parent / "garuda.yaml").write_text(gy.dump({
         "version": 1,
