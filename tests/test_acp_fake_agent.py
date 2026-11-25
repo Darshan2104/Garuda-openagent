@@ -54,6 +54,7 @@ def test_public_profile_sets_are_pinned():
         "config-options",
         "write-anyway",
         "artifacts",
+        "edits-unless-read-only",
         "probe-writes",
     }
     assert set(PROFILES) == set(BASE_PROFILES) | {

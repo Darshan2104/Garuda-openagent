@@ -1,5 +1,21 @@
 # Durable decisions
 
+## 2026-11-26 — A read-only flow step's prompt says it is read-only (#762)
+
+A `no-edits` step, a role with `permissions: readonly` and every parallel
+reviewer member get `[garuda] The overall task is:` + the task, then the step
+line and `engine.read_only_instruction(outputs)`: "This step is read-only. Your
+job in this step is to <job by output: notes/plan/review>, without editing
+files...; Produce only your <outputs> artifact(s)." A task worded "Fix ..." no
+longer invites a scout/planner/reviewer to patch; Codex ends its turn when such
+an edit is denied, which failed `plan-only`. Writable steps' prompts and a
+`launch_kind: run` parent's exact task are unchanged. Guidance only:
+confinement, permission brokering and the no-edits check are unchanged. A
+read-only step that fails after Garuda denied an `edit`/`delete`/`move` call
+keeps `flow.step_failed`; its message adds "(the agent attempted to change
+files in a read-only step)". The fake ACP agent's `edits-unless-read-only`
+profile keys on the phrase `This step is read-only.`
+
 ## 2026-11-25 — An ACP usage snapshot belongs to its Garuda session (#758)
 
 A snapshot row's key digest now includes the Garuda `session_id` besides the
