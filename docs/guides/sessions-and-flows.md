@@ -322,6 +322,18 @@ and complete step and evidence records. Older checked sessions without a saved
 request need a new flow. Once the check phase has a durable intent, resume only
 reads and reconciles check records.
 
+SIGTERM or Ctrl-C during a checked step cancels it. Once the step's worker tree
+(and any confinement container) is proved closed, the attempt is recorded as a
+settled `flow.interrupted` stop with its evidence, so `flow resume` reruns it.
+The lease and slot are released, and `flow run` exits 143 on SIGTERM. A flow
+whose process was killed outright stays `running` until
+`garuda runtime recover --session FLOW_ID` proves its owner, step workers,
+lineage descendants and recorded containers are gone. That command releases the
+lease and slot and records the flow `interrupted` (`flow.owner_lost`). A
+checked flow in that state refuses `flow resume` with
+`flow.interrupted_unsettled`, and one still recorded `running` refuses with
+`flow.recovery_required`.
+
 The scout, planner and reviewer steps are `no-edits`: their requests to
 change files or run commands are refused, and afterwards Garuda checks that
 the workspace really is unchanged. If it is not, the flow stops, that step's

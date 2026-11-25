@@ -19,6 +19,32 @@ they refuse with a message naming that rule. The saved request format is
 unchanged. Background admission records already resolve their roots; no other
 frozen record took the cwd.
 
+## 2026-11-26 — A SIGTERM'd checked flow settles; a killed flow is recoverable (#760)
+
+`flow run` and `flow resume` cancel the flow on SIGTERM as asyncio does on
+SIGINT, so the engine's settlement runs instead of the process dying with the
+lease and slot held. When an owned step is cancelled after activation and its
+supervisor's ECHILD receipt (outcome `cancelled`) and any Docker confinement
+closure are proved, `execute_owned_role` raises `StepInterrupted` (a
+`CancelledError` carrying the bound closure). Only a checked CLI flow absorbs
+it (`uncancel`): the attempt gets its evidence boundary and a `stopped`
+receipt with `flow.interrupted`, which is in `RESUMABLE_CHECKED_STOPS`. The
+flow then stops through the ordinary checkpointed path, so `flow resume` reruns
+the step. `_closed_step` accepts `cancelled` only for that stop code. Every
+other caller, and any unproved closure, keeps the plain cancellation
+(`interrupted` or `quarantined`). `garuda runtime recover` on a flow parent no
+longer classifies it as a native session (`RestartState.FLOW`; never a native
+resume). Before it reclaims anything it requires every step session's recorded
+worker to be proved dead, and every `owned-docker` record of the flow without
+`closure.json` to have its containers proved absent by name (`docker` missing
+or failing refuses). Then the #711 lineage proof runs as before. A flow left
+`running` by a dead owner with nothing held is recorded `interrupted` with
+`flow_stop.code: flow.owner_lost`. `flow resume` on a checked flow before its
+check phase refuses `flow.recovery_required` (still `running`) or
+`flow.interrupted_unsettled` (a launched attempt never settled) instead of
+reporting corrupt check records. A step session's recovery refusal names its
+flow.
+
 ## 2026-11-26 — A read-only flow step's prompt says it is read-only (#762)
 
 A `no-edits` step, a role with `permissions: readonly` and every parallel

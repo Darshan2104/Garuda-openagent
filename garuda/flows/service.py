@@ -270,6 +270,10 @@ class FlowExecutionService:
                 "flow.operation_managed",
                 "dashboard-owned flow operations are projected from their durable intent; "
                 "they are never resumed automatically")
+        if (isinstance(policy, dict) and policy.get("kind") == "flow-verification"
+                and meta.get("flow_verification_phase") is None
+                and meta.get("flow_verification_commit") is None):
+            _refuse_unsettled_checked(self.store, flow_session, meta)
         if policy is not None:
             from garuda.flows.verification_records import FlowVerificationRecords
 
@@ -429,3 +433,31 @@ class FlowExecutionService:
         result = await runner.run(resume=flow_session is not None, checked_checkpoint=checked_checkpoint)
         meta = self.store.load_meta(result.flow_session)
         return FlowExecutionResult(result, meta.get("review"), meta.get("state"))
+
+
+def _refuse_unsettled_checked(store, flow_session: str, meta: dict) -> None:
+    """Say why a checked flow stopped before its check phase cannot resume (#760).
+
+    A settled stop (``stopped`` with its checkpoint) resumes. A flow still
+    recorded ``running`` needs its dead owner recovered first; one that was
+    interrupted or killed with a launched step that never settled has no
+    provable check evidence for that attempt, so it is never resumed.
+    """
+    state = meta.get("flow_state")
+    if state == "running":
+        raise engine.FlowStopped(
+            "flow.recovery_required",
+            f"checked flow {flow_session} is still recorded running; if its process was "
+            f"killed, run `garuda runtime recover --session {flow_session}` first")
+    if state not in {"interrupted", "quarantined"}:
+        return
+    pending = engine.unsettled_attempts(store, flow_session)
+    if not pending:
+        return
+    step, attempt = pending[0]
+    raise engine.FlowStopped(
+        "flow.interrupted_unsettled",
+        f"checked flow {flow_session} was {state} while step {step} (attempt {attempt}) was "
+        "running and that attempt never settled, so its check evidence cannot be proved; "
+        "checks are never replayed past it: start a new flow", step=step)
+
