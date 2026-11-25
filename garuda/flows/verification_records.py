@@ -466,3 +466,114 @@ class OwnedFlowVerification:
         return await self.owner.race(owned_call("flow-verification-commit", {
             **self.base, "phase_digest": phase_digest, "results": summaries,
             "references": result.receipt_refs, "verdict": result.verification}, timeout=60))
+
+
+def _study_receipt(acceptance: Path, binding: dict, expected: str | None):
+    """One check's receipt read without its store lock, bound to its phase (#752)."""
+    try:
+        directory = open_directory(acceptance)
+    except FileNotFoundError:
+        return None, "absent"
+    try:
+        receipt = read_record(directory, f"receipt-{binding['attempt_id']}.json")
+    finally:
+        os.close(directory)
+    if receipt is None:
+        return None, "absent"
+    if (not isinstance(receipt.get("binding"), dict)
+            or digest(receipt["binding"]) != digest(binding)
+            or not isinstance(receipt.get("result"), dict)
+            or (expected is not None and digest(receipt) != expected)):
+        return None, "differs"
+    return receipt, "committed" if expected is not None else "uncommitted"
+
+
+def study(session_dir, parent_id: str, meta: dict, verdict: dict | None) -> dict:
+    """What a flow's check phase recorded, for study (#752): the verdict and, per
+    check, its identity, command (redacted), mode, exit code, duration and the
+    candidate it ran against.
+
+    Read only: no store lock is taken and nothing is reconciled, repaired or
+    launched. ``coverage`` says how far the records were proved: ``committed``
+    (the published commitment and each terminal receipt match by digest),
+    ``uncommitted`` (a phase intent without a published commitment, e.g. an
+    interrupted check phase), ``not_started`` (checks requested, none prepared),
+    ``none`` (no checks) or ``unreadable`` (``reason`` says why).
+    """
+    from garuda.context.redact import redact_text
+    from garuda.runtime.strict_store import StorageError
+
+    def text(value, limit=2000):
+        return redact_text(value)[0][:limit] if isinstance(value, str) else None
+
+    verdict = verdict if isinstance(verdict, dict) else {}
+    out = {"status": verdict.get("status") or "unavailable",
+           "authority": verdict.get("authority"), "code": verdict.get("code"),
+           "phase_id": None, "candidate": None, "coverage": "none", "reason": None,
+           "checks": []}
+    phase_ref = meta.get("flow_verification_phase")
+    commit_ref = meta.get("flow_verification_commit")
+    flow_dir = Path(session_dir) / "flow"
+    try:
+        if phase_ref is None and not (flow_dir / PHASE).exists():
+            if not (flow_dir / RESUME_REQUEST).exists():
+                return out
+            records = FlowVerificationRecords(session_dir, parent_id)
+            directory = records._open()
+            try:
+                request = read_record(directory, RESUME_REQUEST)
+            finally:
+                os.close(directory)
+            commands = request.get("checks") if isinstance(request, dict) else None
+            out["coverage"] = "not_started"
+            out["checks"] = [{"index": index, "check_id": None, "authority": None, "mode": None,
+                              "status": "not_started", "command": text(command),
+                              "exit_code": None, "duration_s": None, "started_at": None,
+                              "candidate": None, "receipt": "absent"}
+                             for index, command in enumerate(
+                                 commands if isinstance(commands, list) else [])]
+            return out
+        records = FlowVerificationRecords(session_dir, parent_id)
+        directory = records._open()
+        try:
+            phase = records._phase(directory)
+            if phase_ref is not None and phase_ref != {"phase_id": phase["phase_id"],
+                                                        "digest": digest(phase)}:
+                raise CorruptRecord("published flow check phase differs from intent")
+            commit = read_record(directory, COMMIT)
+        finally:
+            os.close(directory)
+        committed = (commit_ref is not None and isinstance(commit, dict)
+                     and isinstance(commit_ref, dict)
+                     and digest(commit) == commit_ref.get("commit_digest")
+                     and commit.get("phase_digest") == digest(phase)
+                     and isinstance(commit.get("checks"), list)
+                     and isinstance(commit.get("verification"), dict))
+        if commit_ref is not None and not committed:
+            raise CorruptRecord("published flow check commitment differs from its record")
+        out.update(phase_id=phase["phase_id"], candidate=phase["candidate"],
+                   coverage="committed" if committed else "uncommitted")
+        if committed:
+            out.update(status=commit["verification"].get("status") or out["status"],
+                       authority=commit["verification"].get("authority"),
+                       code=commit["verification"].get("code"))
+        rows = commit["checks"] if committed else []
+        acceptance = Path(session_dir) / f"acceptance-{phase['phase_id']}"
+        for index, check in enumerate(phase["checks"]):
+            summary = rows[index] if index < len(rows) and isinstance(rows[index], dict) else {}
+            binding = FlowVerificationRecords._binding(phase, index, check)
+            expected = summary.get("receipt_digest") if committed else None
+            receipt, state = _study_receipt(acceptance, binding, expected)
+            if committed and summary.get("status") in TERMINAL and receipt is None:
+                raise CorruptRecord("terminal flow check receipt is missing or changed")
+            result = receipt["result"] if receipt else {}
+            out["checks"].append({
+                "index": index, "check_id": check["check_id"], "authority": check["authority"],
+                "mode": check["mode"],
+                "status": summary.get("status") or result.get("status") or "not_recorded",
+                "command": text(result.get("run")), "exit_code": result.get("exit_code"),
+                "duration_s": result.get("duration_s"), "started_at": result.get("started_at"),
+                "candidate": result.get("fingerprint"), "receipt": state})
+    except (StorageError, OSError, ValueError, TypeError, KeyError) as exc:
+        out.update(coverage="unreadable", reason=f"{type(exc).__name__}: {exc}"[:300], checks=[])
+    return out

@@ -1,5 +1,25 @@
 # Durable decisions
 
+## 2026-11-25 — A flow trajectory names what ran and carries its checks (#752)
+
+An attempt's `model`/`adapter_version` come from the receipt's role plan when it
+recorded them, else from the step session, never by changing receipts (they are
+covered by checked-flow resume digests, #683/#696): `model_source` is `role`
+(configured `model_id`), `agent` (the session's `reported_model`: the model the
+ACP agent confirmed selecting, else the `model` option's current value it
+offered at `session/new`) or `session` (a native step's model);
+`adapter_version` is `role.adapter.version`, else the agent segment's
+`reported_version`. `sessions show` keeps `model` (`acp:<harness>`) and adds
+`reported_model` beside it. Ledger rows are not back-filled: `UsageReport.model`
+stays "only when the adapter reported it", so an opencode snapshot still has no
+model and the attempt's `model`/`model_source` answer the question instead.
+The trajectory's `verification` (and one `check` export record per check, plain
+`flow show` lines) is read by `verification_records.study`: phase, commitment
+and receipts are read without the check store's lock and bound by digest to the
+published references; nothing is reconciled or repaired, and a mismatch reads
+as `coverage: unreadable` with no checks rather than a guessed result. Commands
+are redacted; output tails are not exported.
+
 ## 2026-11-25 — A failed step's cause stays on the flow's stop (#749)
 
 When a step fails (`flow.step_failed`, or `flow.quota_wait`), the engine reads

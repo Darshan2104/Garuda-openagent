@@ -1635,6 +1635,33 @@ def _flow_stop_line(stop) -> str | None:
     return line
 
 
+def _flow_verification_lines(store, flow_session: str, meta: dict) -> list[str]:
+    """A checked flow's verdict and each check's outcome, read only (#752)."""
+    from garuda.flows.trajectory import verification
+
+    checked = verification(store, flow_session, meta)
+    if checked["coverage"] == "none":
+        return []
+    authority = f" ({checked['authority']})" if checked.get("authority") else ""
+    code = f"; {checked['code']}" if checked.get("code") else ""
+    lines = [f"  verification: {checked['status']}{authority}{code}"]
+    if checked["coverage"] == "unreadable":
+        lines.append(f"    check records unreadable: {checked['reason']}")
+    for check in checked["checks"]:
+        parts = [check["status"]]
+        if check.get("mode"):
+            parts.append(check["mode"])
+        if check.get("exit_code") is not None:
+            parts.append(f"exit {check['exit_code']}")
+        if isinstance(check.get("duration_s"), (int, float)):
+            parts.append(f"{check['duration_s']:.1f}s")
+        command = " ".join(str(check.get("command") or "").split())
+        command = command[:117] + "..." if len(command) > 120 else command
+        lines.append(f"    check {check['index'] + 1}: {', '.join(parts)}"
+                     + (f": {command}" if command else ""))
+    return lines
+
+
 def run_flow(args) -> int:
     """`garuda flow run|show|resume` (C.6a)."""
     import asyncio
@@ -1677,6 +1704,8 @@ def run_flow(args) -> int:
             print(f"  quota recovery: {recovery.get('state')}; {recovery.get('reason', '')}")
             if recovery.get("next_check"):
                 print(f"  next quota check (epoch): {recovery['next_check']}")
+        for line in _flow_verification_lines(store, args.flow_session, meta):
+            print(line)
         for receipt in engine.receipts(store, args.flow_session):
             outs = ", ".join(o["type"] for o in receipt.get("outputs", [])) or "-"
             plan = receipt.get("role_plan") if isinstance(receipt.get("role_plan"), dict) else {}
