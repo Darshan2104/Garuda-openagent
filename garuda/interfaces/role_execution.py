@@ -39,6 +39,27 @@ def acp_limit_refusal(args, runtime_id: str) -> str | None:
     return None
 
 
+def _settle_background_refusal(args, refusal: str) -> None:
+    """Settle a background worker's session as refused, with the reason (#724).
+
+    Admission refuses what it can resolve; a runtime chosen only when the
+    worker runs (an enabled classifier) is refused here, and the queued
+    session reads ``refused`` with the foreground's message instead of a
+    bare ``failed``.
+    """
+    session_id = getattr(args, "_session_id", None)
+    store = getattr(args, "_store", None)
+    if session_id is None or store is None or not getattr(args, "_queue_claim", False):
+        return
+    from garuda.runtime import session_state
+
+    state = session_state.validate(
+        {**session_state.interrupted(), "work": "stopped", "outcome": "refused"})
+    store.update_meta(session_id, {"status": "refused", "state": state,
+                                   "background_refusal": "run.acp_limit_unenforceable",
+                                   "refusal_reason": refusal})
+
+
 async def run_task(args) -> int:
     import sys
 
@@ -207,6 +228,7 @@ async def run_task(args) -> int:
                                   f"but the run selected {selected.runtime_id}")
             refusal = acp_limit_refusal(args, args.runtime)
             if refusal is not None:
+                _settle_background_refusal(args, refusal)
                 print(f"Error: {refusal}", file=sys.stderr)
                 return 2
             try:

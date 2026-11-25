@@ -14,6 +14,44 @@ from a role's own fallback chain is recorded in `initial_selection` as
 `source: fallback` with `fallback_from` naming the primary harness, instead of
 `explicit`. No trace level or default changes.
 
+## 2026-11-25 — A killed role worker with a proved cleanup receipt releases its holdings (#723)
+
+When an owned role worker (a flow step, or a dashboard `run-with-role` /
+`ask-role` run) dies without reporting its result, but its Linux subreaper
+supervisor still publishes a valid terminal receipt (outcome `exited`,
+`linux-subreaper` cleanup with ECHILD), the step is a failed step
+(`flow.step_failed`, "the role worker exited without a result"), not
+unproved cleanup. The receipt proves the worker's whole process tree,
+detached `setsid` children included, has been reaped, and the role's only
+out-of-tree resource (owned Docker confinement) is closed by the parent as on
+any exit, so nothing that could write remains. The parent therefore releases
+the workspace lease and the step's capacity slot itself, while the dashboard
+is still running, and nothing is left `quarantined: true` once it stops.
+Quarantine is kept, as before, when the supervisor's receipt is missing or
+invalid, when the outcome is not `exited`, when a result names another
+session, when docker confinement close fails, and when the worker itself
+asked to retain ownership (`quarantine` on its control channel, now recorded
+as `RoleControl.quarantine_requested`) before dying. `garuda runtime recover`
+is unchanged and still never releases a quarantined holding.
+
+## 2026-11-25 — SDK refuses mode and mcp_config on ACP; routed --bg limits refused at admission (#724)
+
+`SoftwareAgent` and `Conversation` on an ACP runtime raise
+`OptionsUnsupportedOnRuntime` (`sdk.options_unsupported`) before the harness
+starts for `mcp_config=` (MCP servers are not forwarded to external harnesses)
+and for any `mode=` other than `None`, `standard` or `interactive`. The SDK
+harness path secures only the default permission's harness mode (#700/#709);
+the CLI's readonly ACP path needs confinement the SDK does not set up, so a
+`readonly` request is refused rather than silently widened, and `eval`/
+`rigorous` gates exist only in the native loop. `garuda run --bg` with no named
+runtime or role, when it carries a limit ACP cannot enforce, now repeats the
+foreground's deterministic selection (trusted routing, rules, default) at
+admission (`setup.predict_routed_runtime`) and refuses with the foreground's
+message and exit 2 if it selects ACP. Only when an enabled classifier would be
+consulted is the route unknown at admission; the worker then refuses and settles
+the session `refused` (`background_refusal: run.acp_limit_unenforceable`,
+`refusal_reason`), not `failed`.
+
 ## 2026-11-25 — Remote ACP error text is redacted, failed tool output is not traced, disk quota is not a usage limit (#729, #727, #728)
 
 The `data` cause copied from an agent's JSON-RPC error (#721) and the error's
