@@ -90,6 +90,8 @@ class AcpRuntime:
         persist_dir: str | None = None,
         metrics=None,
         agent_definition: dict | None = None,
+        handshake_timeout: float | None = None,
+        handshake_hint: str = "",
     ):
         from garuda.observability.runtime_metrics import RuntimeMetrics
 
@@ -111,6 +113,9 @@ class AcpRuntime:
         self._policy = dict(policy or {})
         self._extra_env = dict(extra_env or {})
         self._setup_hint = setup_hint
+        # The startup (handshake) deadline; ``None`` keeps the client default.
+        self._handshake_timeout = handshake_timeout
+        self._handshake_hint = handshake_hint
         self._store = store
         self._recorded_child_pid: int | None = None
         # Handoff targets start store-less; a `PreparedChildRecorder` lets
@@ -398,6 +403,11 @@ class AcpRuntime:
             self._retire_prepared_child()
         return cleanup_error
 
+    def _new_process(self) -> AcpProcess:
+        return AcpProcess(self._argv, extra_env=self._extra_env,
+                          handshake_timeout=self._handshake_timeout,
+                          handshake_hint=self._handshake_hint)
+
     async def start(self, *, task: str, session_id: str | None = None) -> RuntimeInfo:
         if self._state is not LifecycleState.DISCOVERED:
             raise RuntimeStartError(f"already started (state={self._state.value})")
@@ -405,10 +415,7 @@ class AcpRuntime:
             raise RuntimeStartError("task must not be empty")
         self._move(LifecycleState.STARTING)
         self._garuda_session_id = session_id or str(uuid.uuid4())
-        process = AcpProcess(
-            self._argv,
-            extra_env=self._extra_env,
-        )
+        process = self._new_process()
         try:
             with self._timed("startup"):
                 await process.launch()
@@ -601,7 +608,7 @@ class AcpRuntime:
             return self._info()
         self._move(LifecycleState.STARTING)
         self._garuda_session_id = session_id or str(uuid.uuid4())
-        process = AcpProcess(self._argv, extra_env=self._extra_env)
+        process = self._new_process()
         try:
             with self._timed("startup"):
                 await process.launch()

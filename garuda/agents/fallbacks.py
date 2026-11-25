@@ -9,11 +9,16 @@ first; a candidate is skipped only for a recorded reason:
 - ``harness.limit_reached`` — a refresh made just now shows a proved,
   same-account exhaustion with a fresh reading and a known future reset
   (E.2's ``LimitStore.assess``); never inferred, and any doubt keeps the
-  candidate.
+  candidate;
+- ``role.model_unavailable`` — the candidate names a model, and a no-prompt
+  probe of its adapter (:mod:`garuda.acp.options_probe`) shows a new session
+  that does not offer it (#714). Only a proven adapter's model option is read,
+  and the chain's last entry is not probed (its launch checks the same).
 
 Anything uncertain — an unknown, failed or timed-out login check, an unknown
-limit — is **not** a reason: the candidate is taken. Trust, configuration
-and confinement errors refuse; they never fall back. Nothing falls back
+limit, a model probe that could not tell — is **not** a reason: the candidate
+is taken. Trust, configuration and confinement errors refuse; they never fall
+back, and neither does an effort or mode the model does not offer. Nothing falls back
 after a prompt has been sent: the decision is recorded with the role on the
 session (and a flow step's receipt) before the runtime starts. If every
 candidate is skipped, the run refuses with each reason.
@@ -46,7 +51,15 @@ def default_limit_check(catalog, runtime_id: str, *, refresh=None) -> bool:
         return False  # anything uncertain is not a reason
 
 
-def _skip_reason(catalog, runtime_id: str, *, login_run=None, limit_check=None) -> str | None:
+def default_model_check(manifest, record, model_id: str) -> bool:
+    """Whether a no-prompt probe proves the agent does not offer ``model_id`` now."""
+    from garuda.acp.options_probe import model_offered
+
+    return model_offered(manifest, record, model_id) is False
+
+
+def _skip_reason(catalog, runtime_id: str, *, model_id: str | None = None, login_run=None,
+                 limit_check=None, model_check=None) -> str | None:
     from garuda.acp.login_probe import LoginState, probe_login
 
     resolved = catalog.registry.get(runtime_id)
@@ -62,6 +75,8 @@ def _skip_reason(catalog, runtime_id: str, *, login_run=None, limit_check=None) 
         return "harness.logged_out"
     if (limit_check or (lambda rid: default_limit_check(catalog, rid)))(resolved.runtime_id):
         return "harness.limit_reached"
+    if model_id and (model_check or default_model_check)(manifest, records[0], model_id):
+        return "role.model_unavailable"
     return None  # unknown, failed or timed out is never a reason
 
 
@@ -87,7 +102,7 @@ def candidates(plan: RolePlan, resolved, catalog) -> tuple[RolePlan, ...]:
 
 
 def choose(plan: RolePlan, resolved, catalog, *, login_run=None, limit_check=None,
-           mode=None, no_edits=False, ceiling=None, workspace_kind="local") -> RolePlan:
+           model_check=None, mode=None, no_edits=False, ceiling=None, workspace_kind="local") -> RolePlan:
     """The plan to start, with the fallback decision recorded on it.
 
     An ACP candidate cannot run in a non-local workspace kind (Garuda's
@@ -105,8 +120,11 @@ def choose(plan: RolePlan, resolved, catalog, *, login_run=None, limit_check=Non
             continue
         confined = candidate.kind == "acp" and acp_permission(
             candidate, mode=mode, no_edits=no_edits, ceiling=ceiling) == "readonly"
+        # The last entry's model is not probed: its launch checks the same thing.
         reason = None if confined else _skip_reason(
-            catalog, candidate.runtime_id, login_run=login_run, limit_check=limit_check)
+            catalog, candidate.runtime_id,
+            model_id=candidate.model_id if index < len(choices) - 1 else None,
+            login_run=login_run, limit_check=limit_check, model_check=model_check)
         if reason is None:
             decision = {
                 "primary": {"harness": plan.runtime_id, "model_id": plan.model_id},

@@ -12,6 +12,36 @@ per segment, summed across segments, labelled `adapter_reported`. It is display
 evidence: the session's `usage`/`cost` stay `unknown`, nothing is summed into
 ledger totals, and no spend cap counts it.
 
+## 2026-11-25 — Claude Code adapter 0.110.1 role options; model fallbacks; config check (#695, #714)
+
+The no-prompt capability capture proves model, effort and harness mode
+selection on Claude Code adapter 0.110.1 (Haiku 5.5, efforts and `auto`), so
+role option proofs cover Claude 0.110.1 and 0.85.0. Proofs stay per exact
+version. Consult forwarding keeps its 0.85.0-only proof. A different adapter
+binary is chosen by replacing the shipped manifest in trusted global
+settings (`runtimes:`), not with a `harnesses.<id>.command` key: launch
+commands stay in the one trusted place.
+
+`role.model_unavailable` is now a pre-start fallback reason. For a chain entry
+that names a model and is not the last, Garuda starts the adapter once
+without a prompt and reads the models a new session offers. Only a proven
+adapter's answer counts, and a probe that cannot tell is not a reason. An effort
+or mode that the model does not offer still refuses. `garuda config check`
+checks every role and fallback entry before a run; with `--probe` it sets the
+options on a scratch session, so model-dependent efforts and modes are checked
+against the installed adapter.
+
+## 2026-11-25 — The ACP startup deadline is configurable per harness (#687)
+
+`harnesses.<id>.handshake_timeout_sec` in the user `garuda.yaml` (an integer
+from 5 to 600; default 30) bounds an ACP harness's startup calls: initialize,
+session/new, session/load and role option sets. It is user-only; a project
+file that sets it is refused as `config.project_widening`. Every launch path
+that builds an ACP runtime through the manifest factory reads it. A user file
+that cannot be read keeps the default, because the deadline bounds a wait and
+authorizes nothing. A startup timeout now names its deadline and the setting
+that raises it.
+
 ## 2026-11-25 — An ACP usage-limit error is typed `harness.limit_reached` (#684)
 
 A JSON-RPC error from an ACP agent keeps a bounded, one-line copy of its

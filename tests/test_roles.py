@@ -250,7 +250,30 @@ def test_a_slow_start_acp_role_refuses_with_the_deadline(
         fake_acp, tmp_path, monkeypatch, capsys, fallback):
     monkeypatch.setattr("garuda.acp.client.HANDSHAKE_TIMEOUT", 0.5)
     error = _start_refusal(fake_acp, tmp_path, monkeypatch, capsys, fallback, "slow-initialize")
-    assert error.endswith("role coder could not start on fakecfg: initialize exceeded its deadline")
+    # The message names the deadline and how to raise it (#687).
+    assert error.endswith("role coder could not start on fakecfg: initialize exceeded its 0.5s "
+                          f"deadline; raise harnesses.fakecfg.handshake_timeout_sec in {gy.user_path()}")
+
+
+@pytest.mark.parametrize("configured, code", [("", 1), (", handshake_timeout_sec: 30", 0)])
+def test_a_slow_starting_harness_starts_within_its_configured_deadline(
+        fake_acp, tmp_path, monkeypatch, capsys, configured, code):
+    """#687: `harnesses.<id>.handshake_timeout_sec` raises the ACP startup deadline."""
+    _prove(monkeypatch)
+    monkeypatch.setattr("garuda.acp.client.HANDSHAKE_TIMEOUT", 0.5)  # the default, shortened
+    shim = tmp_path / "bin" / "fake-acp-shim"
+    shim.write_text(shim.read_text().replace("#!/bin/sh\n", "#!/bin/sh\nsleep 2\n", 1))
+    _user_file(ROLE.format(model="fake-large")
+               + f"harnesses: {{fakecfg: {{max_parallel: 1{configured}}}}}\n")
+
+    exit_code, out = _run(monkeypatch, capsys, fake_acp, "--role", "coder",
+                          "--workspace-kind", "local")
+
+    assert exit_code == code, out
+    if code:
+        assert "initialize exceeded its 0.5s deadline" in out
+    else:
+        assert "done: hello (model=fake-large, effort=high)" in out
 
 
 def test_a_model_the_agent_does_not_offer_refuses_before_the_prompt(fake_acp, monkeypatch, capsys):
@@ -438,6 +461,27 @@ def test_codex_adapter_accepts_the_role_options_it_offers(version, model):
     assert caught.value.code == "role.options_unproven"
 
 
+def test_claude_adapter_0_110_1_accepts_haiku_with_effort_and_auto():
+    """#695: the current Claude adapter offers Haiku 5.5 with effort and `auto`."""
+    capture = REPO / "tests" / "fixtures" / "acp" / "claude" / "claude-0.110.1.json"
+    offered = json.loads(capture.read_text())["session_new"]["configOptions"]
+    plan = roles.RolePlan(role="h-coder", runtime_id="claude", kind="acp", model_id="haiku",
+                          effort="high", permissions="auto")
+
+    options = roles.acp_options(plan, "0.110.1")
+
+    assert options == {"model": "haiku", "effort": "high", "mode": "auto"}
+    roles.check_offered(options, offered, model="haiku", runtime_id="claude")
+    models = next(o for o in offered if o["id"] == "model")["options"]
+    assert next(o["name"] for o in models if o["value"] == "haiku") == "Haiku 5.5"
+    # A smart role gets acceptEdits set, not the adapter's own default of auto.
+    smart = roles.RolePlan(role="r", runtime_id="claude", kind="acp", permissions="smart")
+    assert roles.acp_options(smart, "0.110.1") == {"mode": "acceptEdits"}
+    with pytest.raises(RoleRefused) as caught:
+        roles.acp_options(plan, "0.110.2")
+    assert caught.value.code == "role.options_unproven"
+
+
 def test_a_known_readonly_mode_cannot_fall_back_to_an_unproven_adapter_default():
     plan = roles.RolePlan(role="r", runtime_id="codex", kind="acp")
     with pytest.raises(RoleRefused, match="role.options_unproven"):
@@ -497,17 +541,18 @@ def test_reported_mode_prefers_the_mode_option_over_the_session_modes():
 
 
 @pytest.mark.parametrize("required, reported, permission, version, refused", [
-    # claude-agent-acp 0.110.1 starts in `auto`: a smart run must not act in it (#700).
-    ("acceptEdits", "auto", "smart", "0.110.1", "cannot set the mode on this adapter version"),
-    ("acceptEdits", "bypassPermissions", "smart", "0.110.1", "needs permissions: yolo"),
+    # An unproven claude-agent-acp (0.110.1 before #695) starts in `auto`: a smart run
+    # must not act in it (#700).
+    ("acceptEdits", "auto", "smart", "0.120.0", "cannot set the mode on this adapter version"),
+    ("acceptEdits", "bypassPermissions", "smart", "0.120.0", "needs permissions: yolo"),
     ("default", "acceptEdits", "readonly", "0.85.0", "needs permissions: smart"),
-    ("acceptEdits", None, "smart", "0.110.1", "reports no permission mode"),
-    ("acceptEdits", "sideways", "smart", "0.110.1", "which Garuda does not know"),
-    ("auto", "bypassPermissions", "yolo", "0.110.1", "needs permissions: yolo"),
+    ("acceptEdits", None, "smart", "0.120.0", "reports no permission mode"),
+    ("acceptEdits", "sideways", "smart", "0.120.0", "which Garuda does not know"),
+    ("auto", "bypassPermissions", "yolo", "0.120.0", "needs permissions: yolo"),
     # An explicit auto role on an unproven adapter runs when the agent reports auto.
-    ("auto", "auto", "auto", "0.110.1", None),
-    ("acceptEdits", "default", "smart", "0.110.1", None),
-    ("acceptEdits", "acceptEdits", "smart", "0.110.1", None),
+    ("auto", "auto", "auto", "0.120.0", None),
+    ("acceptEdits", "default", "smart", "0.120.0", None),
+    ("acceptEdits", "acceptEdits", "smart", "0.120.0", None),
 ])
 def test_check_mode(required, reported, permission, version, refused):
     def check():

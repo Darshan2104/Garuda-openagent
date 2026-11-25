@@ -259,8 +259,11 @@ python scripts/capture_consult_transport.py --name claude --out tests/fixtures/c
       (`npm install -g @anthropic-ai/claude-code`, then run `claude` once),
       then install the pinned ACP package globally and verify
       `claude-agent-acp --version`.
-    - Pin the ACP package to `@0.85.0` to use role model, effort, and harness
-      mode options; see [Install a harness](../use-cases/advanced.md#install-a-harness).
+    - Pin the ACP package to `@0.110.1` (or `@0.85.0`) to use role model,
+      effort, and harness mode options; see
+      [Install a harness](../use-cases/advanced.md#install-a-harness). On
+      0.110.1, `haiku` is Haiku 5.5 with effort levels and `auto`; on 0.85.0
+      it is Haiku 4.5, with neither. Consult forwarding is proven only on 0.85.0.
     - Authentication stays in the Claude Code login. Don't set
       `ANTHROPIC_API_KEY` when you intend to use subscription billing.
 
@@ -399,9 +402,9 @@ turn and no subscription quota was used). **Supported** means it was exercised
 and worked; **declared** means it is advertised but not proven here;
 **unknown** means it is not advertised or needs a prompt to prove.
 
-| Capability | Claude adapter `@agentclientprotocol/claude-agent-acp` 0.85.0 | Codex adapter `@agentclientprotocol/codex-acp` 2.9.0 and 2.1.1 | When not supported |
+| Capability | Claude adapter `@agentclientprotocol/claude-agent-acp` 0.110.1 and 0.85.0 | Codex adapter `@agentclientprotocol/codex-acp` 2.9.0 and 2.1.1 | When not supported |
 |---|---|---|---|
-| Model selection | Supported: `session/set_config_option` id `model`; values are aliases such as `opus`, `sonnet`, `haiku`, `default` | Supported: id `model`; values are exact model ids, including `gpt-6.2-sol` on 2.9.0 | Refuse before the prompt |
+| Model selection | Supported: `session/set_config_option` id `model`; values are aliases such as `opus`, `sonnet`, `haiku`, `default`. `haiku` is Haiku 5.5 on 0.110.1 and Haiku 4.5 on 0.85.0 | Supported: id `model`; values are exact model ids, including `gpt-6.2-sol` on 2.9.0 | Refuse before the prompt |
 | Effort selection | Supported: id `effort` (category `thought_level`): `default`, `low` … `max` | Supported: id `reasoning_effort`: `low` … `ultra` | Refuse before the prompt |
 | `session/close` | Supported | Supported | Close the process |
 | `session/load` | Declared; an unprompted session isn't persisted, so load is unproven | Declared; load of an unprompted session returned an internal error | Start a linked session from a brief |
@@ -409,7 +412,7 @@ and worked; **declared** means it is advertised but not proven here;
 | Stdio MCP servers in `session/new` | Supported (an `mcpServers` list is accepted) | Supported | No MCP tools for that session |
 | HTTP MCP servers | Declared | Declared | Not used |
 | Permission mode selection | Supported: id `mode`; every value (`default`, `acceptEdits`, `plan`, `auto`, `bypassPermissions`) selected and reported back | Supported: id `mode`; every value (`read-only`, `workspace-write`, `agent`, `agent-full-access`) selected and reported back | Named modes and mapped readonly modes require a proven adapter version |
-| `usage_update` accounting | Context snapshot each turn: `used`, `size`, an estimated `cost` in USD and the model that ran (`_meta`), observed with a prompt | Context snapshot each turn on 2.1.1: `used`, `size`. Unknown on 2.9.0. | Recorded as snapshots, never summed or counted as turns |
+| `usage_update` accounting | Context snapshot each turn on 0.85.0: `used`, `size`, an estimated `cost` in USD and the model that ran (`_meta`), observed with a prompt. Unknown on 0.110.1. | Context snapshot each turn on 2.1.1: `used`, `size`. Unknown on 2.9.0. | Recorded as snapshots, never summed or counted as turns |
 
 Both adapters also advertise permission modes that bypass approval (Claude
 `bypassPermissions`, Codex `agent-full-access`). Garuda never selects these
@@ -451,6 +454,34 @@ runtimes:
     setup: Install my-agent-acp and authenticate with its own CLI.
 disabled_runtimes: [codex]
 ```
+
+To run a shipped harness on another adapter binary, for example a newer
+Claude Code adapter installed outside `PATH`, replace its manifest with the
+same `runtime_id` and an absolute `command`. Keep the `version_args`,
+`version_pattern` and `auth_probe` fields, so Garuda can still read the version
+and login. Role options are proven per exact version, and the version that
+adapter reports is the one that is checked. `garuda runtime inspect` shows a
+`generic adapter` warning for a command other than the shipped one.
+
+```yaml
+# ~/.agent/settings.yaml
+runtimes:
+  - runtime_id: claude
+    kind: acp
+    command: [/opt/acp-next/node_modules/.bin/claude-agent-acp]
+    version: unknown
+    capabilities: [prompt, cancel]
+    version_args: [/opt/acp-next/node_modules/.bin/claude-agent-acp, --version]
+    version_pattern: '^(\d+\.\d+\.\d+)'
+    auth_probe: {argv: [claude, auth, status, --json],
+                 authenticated_pattern: '"loggedIn":\s*true',
+                 unauthenticated_pattern: '"loggedIn":\s*false'}
+    setup: Install claude-agent-acp under /opt/acp-next.
+```
+
+A launch command is set only here, in trusted global settings. The
+`harnesses` section of `garuda.yaml` has no `command` key: it configures how
+roles use a harness, and a project file can change parts of it.
 
 Project `.agent/settings.yaml` may add `runtime_refs` aliases to these IDs but
 can't declare commands. Generic adapters get no vendor-specific guarantees

@@ -1,0 +1,1623 @@
+{
+  "adapter_command": [
+    "~/.local/acp-next/node_modules/.bin/claude-agent-acp"
+  ],
+  "capabilities": {
+    "close_session": "supported",
+    "effort_selection": "supported",
+    "load_session": "declared",
+    "mcp_http": "declared",
+    "mcp_stdio": "supported",
+    "mode_selection": "supported",
+    "model_selection": "supported",
+    "resume_session": "declared",
+    "usage_update": "unknown"
+  },
+  "captured_at": "2026-11-24T20:06:49+00:00",
+  "client_protocol_version": 1,
+  "exercised": {
+    "close_session": {
+      "ok": true,
+      "reply": {}
+    },
+    "effort_selection": {
+      "method": "session/set_config_option",
+      "ok": true,
+      "reply": {
+        "configOptions": [
+          {
+            "category": "model",
+            "currentValue": "haiku",
+            "description": "AI model to use",
+            "id": "model",
+            "name": "Model",
+            "options": [
+              {
+                "description": "Opus 5.5",
+                "name": "Default (recommended)",
+                "value": "default"
+              },
+              {
+                "description": "For complex work and everyday tasks",
+                "name": "Opus 5.5",
+                "value": "opus"
+              },
+              {
+                "description": "For your toughest challenges",
+                "name": "Fable 5.2",
+                "value": "fable"
+              },
+              {
+                "description": "Most efficient for simpler tasks",
+                "name": "Sonnet 5.5",
+                "value": "sonnet"
+              },
+              {
+                "description": "Fastest for quick answers",
+                "name": "Haiku 5.5",
+                "value": "haiku"
+              },
+              {
+                "description": "Most capable for your hardest and longest-running tasks",
+                "name": "Fable 5.1",
+                "value": "claude-fable-5-1"
+              },
+              {
+                "description": "Fastest for quick answers",
+                "name": "Haiku 4.5",
+                "value": "claude-haiku-4-5-20251001"
+              },
+              {
+                "description": "Efficient for routine tasks",
+                "name": "Sonnet 5",
+                "value": "claude-sonnet-5"
+              },
+              {
+                "description": "Best for everyday, complex tasks",
+                "name": "Opus 5",
+                "value": "claude-opus-5"
+              },
+              {
+                "description": "Most capable for your hardest and longest-running tasks",
+                "name": "Fable 5",
+                "value": "claude-fable-5"
+              },
+              {
+                "description": "Best for everyday, complex tasks",
+                "name": "Opus 4.8",
+                "value": "claude-opus-4-8"
+              },
+              {
+                "description": "Best for everyday, complex tasks",
+                "name": "Opus 4.7",
+                "value": "claude-opus-4-7"
+              },
+              {
+                "description": "Best for everyday, complex tasks",
+                "name": "Opus 4.6",
+                "value": "claude-opus-4-6"
+              },
+              {
+                "description": "Efficient for routine tasks",
+                "name": "Sonnet 4.6",
+                "value": "claude-sonnet-4-6"
+              }
+            ],
+            "type": "select"
+          },
+          {
+            "category": "thought_level",
+            "currentValue": "default",
+            "description": "Available effort levels for this model",
+            "id": "effort",
+            "name": "Effort",
+            "options": [
+              {
+                "name": "Default",
+                "value": "default"
+              },
+              {
+                "name": "Low",
+                "value": "low"
+              },
+              {
+                "name": "Medium",
+                "value": "medium"
+              },
+              {
+                "name": "High",
+                "value": "high"
+              },
+              {
+                "name": "Xhigh",
+                "value": "xhigh"
+              },
+              {
+                "name": "Max",
+                "value": "max"
+              }
+            ],
+            "type": "select"
+          },
+          {
+            "category": "model_config",
+            "currentValue": "off",
+            "description": "Dynamic workflows on every task, at any effort level",
+            "id": "ultracode",
+            "name": "Ultracode",
+            "options": [
+              {
+                "name": "On",
+                "value": "on"
+              },
+              {
+                "name": "Off",
+                "value": "off"
+              }
+            ],
+            "type": "select"
+          },
+          {
+            "category": "mode",
+            "currentValue": "auto",
+            "description": "Session permission mode",
+            "id": "mode",
+            "name": "Mode",
+            "options": [
+              {
+                "description": "Always ask before making changes",
+                "name": "Manual",
+                "value": "default"
+              },
+              {
+                "description": "Automatically accept all file edits",
+                "name": "Accept edits",
+                "value": "acceptEdits"
+              },
+              {
+                "description": "Create a plan before making changes",
+                "name": "Plan",
+                "value": "plan"
+              },
+              {
+                "description": "Claude handles permission decisions",
+                "name": "Auto",
+                "value": "auto"
+              },
+              {
+                "description": "Accepts all permissions",
+                "name": "Bypass permissions",
+                "value": "bypassPermissions"
+              }
+            ],
+            "type": "select"
+          }
+        ]
+      }
+    },
+    "load_session": {
+      "ok": false,
+      "reply": "AcpRemoteError: agent error -32002: Resource not found"
+    },
+    "mode_selection": {
+      "id": "mode",
+      "method": "session/set_config_option",
+      "restored": "auto",
+      "selected": {
+        "acceptEdits": true,
+        "auto": true,
+        "bypassPermissions": true,
+        "default": true,
+        "plan": true
+      }
+    },
+    "model_selection": {
+      "method": "session/set_config_option",
+      "ok": true,
+      "reply": {
+        "configOptions": [
+          {
+            "category": "model",
+            "currentValue": "haiku",
+            "description": "AI model to use",
+            "id": "model",
+            "name": "Model",
+            "options": [
+              {
+                "description": "Opus 5.5",
+                "name": "Default (recommended)",
+                "value": "default"
+              },
+              {
+                "description": "For complex work and everyday tasks",
+                "name": "Opus 5.5",
+                "value": "opus"
+              },
+              {
+                "description": "For your toughest challenges",
+                "name": "Fable 5.2",
+                "value": "fable"
+              },
+              {
+                "description": "Most efficient for simpler tasks",
+                "name": "Sonnet 5.5",
+                "value": "sonnet"
+              },
+              {
+                "description": "Fastest for quick answers",
+                "name": "Haiku 5.5",
+                "value": "haiku"
+              },
+              {
+                "description": "Most capable for your hardest and longest-running tasks",
+                "name": "Fable 5.1",
+                "value": "claude-fable-5-1"
+              },
+              {
+                "description": "Fastest for quick answers",
+                "name": "Haiku 4.5",
+                "value": "claude-haiku-4-5-20251001"
+              },
+              {
+                "description": "Efficient for routine tasks",
+                "name": "Sonnet 5",
+                "value": "claude-sonnet-5"
+              },
+              {
+                "description": "Best for everyday, complex tasks",
+                "name": "Opus 5",
+                "value": "claude-opus-5"
+              },
+              {
+                "description": "Most capable for your hardest and longest-running tasks",
+                "name": "Fable 5",
+                "value": "claude-fable-5"
+              },
+              {
+                "description": "Best for everyday, complex tasks",
+                "name": "Opus 4.8",
+                "value": "claude-opus-4-8"
+              },
+              {
+                "description": "Best for everyday, complex tasks",
+                "name": "Opus 4.7",
+                "value": "claude-opus-4-7"
+              },
+              {
+                "description": "Best for everyday, complex tasks",
+                "name": "Opus 4.6",
+                "value": "claude-opus-4-6"
+              },
+              {
+                "description": "Efficient for routine tasks",
+                "name": "Sonnet 4.6",
+                "value": "claude-sonnet-4-6"
+              }
+            ],
+            "type": "select"
+          },
+          {
+            "category": "thought_level",
+            "currentValue": "default",
+            "description": "Available effort levels for this model",
+            "id": "effort",
+            "name": "Effort",
+            "options": [
+              {
+                "name": "Default",
+                "value": "default"
+              },
+              {
+                "name": "Low",
+                "value": "low"
+              },
+              {
+                "name": "Medium",
+                "value": "medium"
+              },
+              {
+                "name": "High",
+                "value": "high"
+              },
+              {
+                "name": "Xhigh",
+                "value": "xhigh"
+              },
+              {
+                "name": "Max",
+                "value": "max"
+              }
+            ],
+            "type": "select"
+          },
+          {
+            "category": "model_config",
+            "currentValue": "off",
+            "description": "Dynamic workflows on every task, at any effort level",
+            "id": "ultracode",
+            "name": "Ultracode",
+            "options": [
+              {
+                "name": "On",
+                "value": "on"
+              },
+              {
+                "name": "Off",
+                "value": "off"
+              }
+            ],
+            "type": "select"
+          },
+          {
+            "category": "mode",
+            "currentValue": "auto",
+            "description": "Session permission mode",
+            "id": "mode",
+            "name": "Mode",
+            "options": [
+              {
+                "description": "Always ask before making changes",
+                "name": "Manual",
+                "value": "default"
+              },
+              {
+                "description": "Automatically accept all file edits",
+                "name": "Accept edits",
+                "value": "acceptEdits"
+              },
+              {
+                "description": "Create a plan before making changes",
+                "name": "Plan",
+                "value": "plan"
+              },
+              {
+                "description": "Claude handles permission decisions",
+                "name": "Auto",
+                "value": "auto"
+              },
+              {
+                "description": "Accepts all permissions",
+                "name": "Bypass permissions",
+                "value": "bypassPermissions"
+              }
+            ],
+            "type": "select"
+          }
+        ]
+      }
+    }
+  },
+  "initialize": {
+    "_meta": {
+      "steering": {
+        "supported": true
+      }
+    },
+    "agentCapabilities": {
+      "_meta": {
+        "authStatus": {},
+        "claudeCode": {
+          "promptQueueing": true
+        }
+      },
+      "auth": {
+        "logout": {},
+        "status": {}
+      },
+      "loadSession": true,
+      "mcpCapabilities": {
+        "acp": true,
+        "http": true,
+        "sse": true
+      },
+      "promptCapabilities": {
+        "embeddedContext": true,
+        "image": true
+      },
+      "providers": {},
+      "sessionCapabilities": {
+        "additionalDirectories": {},
+        "close": {},
+        "delete": {},
+        "fork": {},
+        "list": {},
+        "options": {},
+        "resume": {},
+        "status": {},
+        "systemPrompt": {
+          "mode": {
+            "override": {}
+          }
+        },
+        "title": {}
+      }
+    },
+    "agentInfo": {
+      "name": "@agentclientprotocol/claude-agent-acp",
+      "title": "Claude Agent",
+      "version": "0.110.1"
+    },
+    "authMethods": [],
+    "protocolVersion": 1
+  },
+  "notifications": [
+    {
+      "jsonrpc": "2.0",
+      "method": "_auth/status_update",
+      "params": {
+        "authStatus": {
+          "account": {
+            "email": "<email>",
+            "organization": "<email>'s Organization",
+            "plan": "max"
+          },
+          "kind": "account",
+          "label": "Claude Ultra"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "auth/status_update",
+      "params": {
+        "accounts": [
+          {
+            "_meta": {
+              "claudeCode": {
+                "kind": "account",
+                "plan": "max"
+              }
+            },
+            "active": true,
+            "email": "<email>",
+            "label": "Claude Ultra",
+            "organization": "<email>'s Organization"
+          }
+        ],
+        "state": "authenticated"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "_auth/status_update",
+      "params": {
+        "authStatus": {
+          "account": {
+            "email": "<email>",
+            "organization": "<email>'s Organization",
+            "plan": "Claude Ultra"
+          },
+          "kind": "account",
+          "label": "Claude Ultra"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "auth/status_update",
+      "params": {
+        "accounts": [
+          {
+            "_meta": {
+              "claudeCode": {
+                "kind": "account",
+                "plan": "Claude Ultra"
+              }
+            },
+            "active": true,
+            "email": "<email>",
+            "label": "Claude Ultra",
+            "organization": "<email>'s Organization"
+          }
+        ],
+        "state": "authenticated"
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "0ac55469-329c-47c3-8057-9e1a968f2c3c",
+        "update": {
+          "availableCommands": [
+            {
+              "description": "Deep research harness \u2014 fan-out web searches, fetch sources, adversarially verify claims, synthesize a cited report. (dynamic workflow)",
+              "input": null,
+              "name": "deep-research"
+            },
+            {
+              "description": "Grant or revoke Claude agent access to your Design projects",
+              "input": {
+                "hint": "consent | revoke"
+              },
+              "name": "design"
+            },
+            {
+              "description": "Sync a React design system to Claude Design. Bundles the real component code (from Storybook or a bare package) and uploads it. Use when the user runs /design-sync or says \"sync my design system to Claude Design.\"",
+              "input": {
+                "hint": "[<project hint, e.g. \"Acme DS\">]"
+              },
+              "name": "design-sync"
+            },
+            {
+              "description": "Use this skill whenever you are about to create ANY chart, graph, plot, dashboard, or data visualization, in ANY output medium \u2014 an HTML or React artifact, inline SVG, plotting code in any library (matplotlib, plotly, d3, Recharts, \u2026), an image/PNG you will render and upload, or a chart shared into Slack. Read it BEFORE writing the first line of chart code, choosing chart colors, building a stat tile / meter / KPI row, or laying out a dashboard. When the destination is a first-party document connector (host-designated, never self-described) that renders live charts, hand it the rows (inline, or as an uploaded data file the chart cites) rather than a rendered PNG/SVG \u2014 a picture of a chart loses hover, data inspection and per-value comments. Produces visualizations that read as one system \u2014 elegant, accessible, consistent in light and dark \u2014 using a brand-neutral placeholder palette you swap for your own. Teaches a design-system-agnostic method: a form heuristic, a color formula with a runnable validator, mark specs, and interaction rules. A validated default palette is documented in `references/palette.md` \u2014 swap that file's values for your brand's. Triggers on: \"chart\", \"graph\", \"plot\", \"data viz\", \"visualization\", \"dashboard\", \"analytics\", \"visualize data\", \"categorical colors\", \"sequential / diverging palette\", \"stat tile\", \"sparkline\", \"heatmap\", \"legend\", \"axis\", \"tooltip\", \"chart colors\", \"color by series\".",
+              "input": null,
+              "name": "dataviz"
+            },
+            {
+              "description": "Use this skill to configure the Claude Code harness via settings.json. Automated behaviors (\"from now on when X\", \"each time X\", \"whenever X\", \"before/after X\") require hooks configured in settings.json - the harness executes these, not Claude, so memory/preferences cannot fulfill them. Also use for: permissions (\"allow X\", \"add permission\", \"move permission to\"), env vars (\"set X=Y\"), hook troubleshooting, or any changes to settings.json/settings.local.json files. Examples: \"allow npm commands\", \"add bq permission to global settings\", \"move permission to user settings\", \"set DEBUG=true\", \"when claude stops show X\". For simple settings like theme/model, suggest the /config command.",
+              "input": null,
+              "name": "update-config"
+            },
+            {
+              "description": "Verify that a code change actually does what it's supposed to by exercising it end-to-end and observing behavior \u2014 drive the affected flow, not just tests or typecheck. Run before committing nontrivial changes; bootstraps this repo's project verify skill if none exists yet. Don't invoke it on a diff that only touches tests, docs, or other code with no runtime surface to drive (a change to product source always has one) \u2014 there's nothing to observe.",
+              "input": null,
+              "name": "verify"
+            },
+            {
+              "description": "Enable debug logging for this session and help diagnose issues",
+              "input": {
+                "hint": "[issue description]"
+              },
+              "name": "debug"
+            },
+            {
+              "description": "Review the current diff, or a PR number/branch/path target, for correctness bugs (plus broken CLAUDE.md rules and cleanups where the model's recipe covers them; see /simplify) at the effort level given first, before any target (low|medium|high|xhigh|max: from few high-confidence findings to many, some uncertain; ultra: deep multi-agent review in the cloud); with no level given, it reuses the level you typed last. Pass --comment to post findings as inline PR comments, or --fix to apply them to the working tree after the review. Pass --max-findings <n> to report up to n findings, or --max-findings all for every finding. The choice stays until you pass --max-findings default. For ultra on a GitHub.com PR target, --post asks to post the finished review\u2019s findings to the PR as a single comment from the user\u2019s GitHub account (not a review; the launch dialog still confirms in interactive sessions, while non-interactive mode posts on the flag alone) and --no-post hides that option.",
+              "input": {
+                "hint": "[low|medium|high|xhigh|max|ultra] [--fix] [--comment] [<pr#>|<branch>|<path>] [--max-findings <n>|all]"
+              },
+              "name": "code-review"
+            },
+            {
+              "description": "Review the changed code for reuse, simplification, efficiency, and altitude cleanups, then apply the fixes. Quality only \u2014 it does not hunt for bugs; use /code-review for that.",
+              "input": {
+                "hint": "[<target>]"
+              },
+              "name": "simplify"
+            },
+            {
+              "description": "Research and plan a large-scale change, then execute it in parallel across 5\u201330 isolated worktree agents that each open a PR.",
+              "input": {
+                "hint": "<instruction>"
+              },
+              "name": "batch"
+            },
+            {
+              "description": "Scan your transcripts for common read-only Bash and MCP tool calls, then add a prioritized allowlist to project .claude/settings.json to reduce permission prompts.",
+              "input": null,
+              "name": "fewer-permission-prompts"
+            },
+            {
+              "description": "Health-check the user's Claude Code setup and fix issues: diagnose installation health \u2014 what the `claude doctor` terminal diagnostics cover \u2014 from local data (duplicate or leftover installs, PATH, unparseable settings files, broken or colliding agent definitions, skills whose frontmatter fails to parse); find unused skills, MCP servers, and plugins versus their context cost and disable dead weight; deduplicate local CLAUDE.md files against checked-in ones; trim checked-in CLAUDE.md files by cutting content a session could derive from the codebase (directory layouts, tech-stack lists, architecture overviews) while keeping gotchas, rationale, and non-standard conventions; migrate always-loaded CLAUDE.md guidance into lazy skills and nested CLAUDE.md files; flag slow hooks and context-heavy extensions; check the installed version is current; make auto mode the default permission mode; and pre-approve frequently denied read-only commands. Use when the user asks for a doctor run, checkup, audit, tune-up, or cleanup of their Claude Code setup or configuration.",
+              "input": {
+                "hint": "[prompt-audit [<path>]]"
+              },
+              "name": "doctor"
+            },
+            {
+              "description": "Run a prompt or slash command on a recurring interval (e.g. /loop 5m /foo). Omit the interval to let the model self-pace.",
+              "input": {
+                "hint": "[interval] [prompt]"
+              },
+              "name": "loop"
+            },
+            {
+              "description": "Create, update, list, or run scheduled cloud agents (routines) that execute on a cron schedule.",
+              "input": null,
+              "name": "schedule"
+            },
+            {
+              "description": "Send this session's work to a Claude Project",
+              "input": {
+                "hint": "[\"project name\" or id] [message]"
+              },
+              "name": "send-to-project"
+            },
+            {
+              "description": "Reference for the Claude API / Anthropic SDK \u2014 model ids, pricing, params, streaming, tool use, MCP, agents, caching, token counting, model migration.\nTRIGGER \u2014 read FIRST, before you answer, run a command or open a file (already started? read it now); don't skip because it \"looks like a one-liner\" \u2014 whenever: the prompt names Claude/Anthropic in any form (Claude, Anthropic, Fable, Opus, Sonnet, Haiku, `anthropic`, `@anthropic-ai`, `claude-*`, `us.anthropic.*`, `[1m]`); the user asks about an LLM (pricing/model choice/limits/caching) \u2014 never answer from memory; OR the task is LLM-shaped with provider unstated (agent/MCP/tool-definition/multi-agent/RAG/LLM-judge/computer-use; generate/summarize/extract/classify/rewrite/converse over NL; debugging refusals/cutoffs/streaming/tool-calls/tokens).\nSKIP only when another provider is being worked on (overrides all triggers): OpenAI/GPT/Gemini/Llama/Mistral/Cohere/Ollama named in the query; OR `grep -rE 'openai|langchain_openai|google.generativeai|genai|mistralai|cohere|ollama'` over the project hits (run this grep FIRST if no provider named \u2014 don't Read the file; if nothing hits, load this skill).",
+              "input": null,
+              "name": "claude-api"
+            },
+            {
+              "description": "Reference for writing a Workflow tool script (script API and gotchas, resume, quality patterns, worked examples). Load before authoring a script for a workflow the user already opted into; it does not itself authorize running one.",
+              "input": null,
+              "name": "workflow-authoring"
+            },
+            {
+              "description": "Launch and drive this project's app to see a change working. Use when asked to run, start, or screenshot the app, or to confirm a change works in the real app (not just tests). First looks for a project skill that already covers launching the app; otherwise falls back to built-in patterns per project type (CLI, server, TUI, Electron, browser-driven, library).",
+              "input": null,
+              "name": "run"
+            },
+            {
+              "description": "Author or improve the run-<unit> skill - a per-project skill that tells agents how to build, launch, and drive this project's app. Use when the user asks to set up the project, get it running, write run instructions, or verify build/run steps work from a clean environment.",
+              "input": null,
+              "name": "run-skill-generator"
+            },
+            {
+              "description": "Make a mod: a change to Claude's own interface or behaviour, such as a theme, a panel or pane that stays beside the chat and updates, a band, status line, toast, slash command, or hook on tool calls. Use to make, change or debug a mod or its hooks module.",
+              "input": null,
+              "name": "plugin-authoring"
+            },
+            {
+              "description": "Let Claude consult a stronger model at key moments",
+              "input": {
+                "hint": "[fable|opus|sonnet|off]"
+              },
+              "name": "advisor"
+            },
+            {
+              "description": "(removed) Ask Claude to create/manage subagents, or edit .claude/agents/",
+              "input": null,
+              "name": "agents"
+            },
+            {
+              "description": "Teach auto mode about your environment, plus optional rule tweaks",
+              "input": {
+                "hint": "[--request-id <uuid>] (--wizard posture=\u2026 scope=\u2026 depth=\u2026 --propose | --expect-sha256 <64-hex> --apply-file <path>)"
+              },
+              "name": "auto-mode-setup"
+            },
+            {
+              "description": "Set how full the context gets before auto-summarizing",
+              "input": {
+                "hint": "[auto|<tokens>]"
+              },
+              "name": "autocompact"
+            },
+            {
+              "description": "Set the prompt bar color for this session",
+              "input": {
+                "hint": "[red|blue|green|yellow|purple|orange|pink|cyan|default]"
+              },
+              "name": "color"
+            },
+            {
+              "description": "Free up context by summarizing the conversation so far",
+              "input": {
+                "hint": "<optional custom summarization instructions>"
+              },
+              "name": "compact"
+            },
+            {
+              "description": "Set a setting by key",
+              "input": {
+                "hint": "key=value"
+              },
+              "name": "config"
+            },
+            {
+              "description": "List output styles or switch to one",
+              "input": {
+                "hint": "[style]"
+              },
+              "name": "output-style"
+            },
+            {
+              "description": "Show current context usage",
+              "input": null,
+              "name": "context"
+            },
+            {
+              "description": "Set the model's effort level",
+              "input": {
+                "hint": "<low|medium|high|xhigh|max|auto|ultracode [on|off]>"
+              },
+              "name": "effort"
+            },
+            {
+              "description": "Toggle fast mode (Opus 5.5)",
+              "input": {
+                "hint": "[on|off]"
+              },
+              "name": "fast"
+            },
+            {
+              "description": "Toggle focus view: just your prompt, summary, and response",
+              "input": {
+                "hint": "[on|off]"
+              },
+              "name": "focus"
+            },
+            {
+              "description": "Dump the JS heap to the Desktop; on Linux with no Desktop folder, the home directory",
+              "input": null,
+              "name": "heapdump"
+            },
+            {
+              "description": "Initialize a new CLAUDE.md file with codebase documentation",
+              "input": null,
+              "name": "init"
+            },
+            {
+              "description": "Import config from another AI coding agent",
+              "input": null,
+              "name": "import"
+            },
+            {
+              "description": "Set the AI model for Claude Code",
+              "input": {
+                "hint": "<model>"
+              },
+              "name": "model"
+            },
+            {
+              "description": "Run the workflow script delivered in this session environment (server-launched sessions only)",
+              "input": null,
+              "name": "__remote-workflow"
+            },
+            {
+              "description": "Execute a server-launched workflow handoff (workflow_launch event sessions only)",
+              "input": null,
+              "name": "workflow-launch-exec"
+            },
+            {
+              "description": "Activate pending plugin changes in the current session",
+              "input": {
+                "hint": "[--force]"
+              },
+              "name": "reload-plugins"
+            },
+            {
+              "description": "Pick up skills added or changed on disk during this session",
+              "input": null,
+              "name": "reload-skills"
+            },
+            {
+              "description": "Rename the current conversation",
+              "input": {
+                "hint": "[name]"
+              },
+              "name": "rename"
+            },
+            {
+              "description": "Start a cloud agent that finds and verifies bugs in your branch (~5-15 min, $5-$25 USD) \u00b7 Runs in a cloud session. See https://code.claude.com/docs/en/claude-code-on-the-web",
+              "input": null,
+              "name": "ultrareview"
+            },
+            {
+              "description": "Complete a security review of the pending changes on the current branch",
+              "input": null,
+              "name": "security-review"
+            },
+            {
+              "description": "Configure usage credits or request them from your admin when you hit a limit",
+              "input": null,
+              "name": "usage-credits"
+            },
+            {
+              "description": "Renamed to /usage-credits",
+              "input": null,
+              "name": "extra-usage"
+            },
+            {
+              "description": "Show session cost, plan usage, and what's contributing to your limits",
+              "input": null,
+              "name": "usage"
+            },
+            {
+              "description": "Generate a report analyzing your Claude Code sessions",
+              "input": null,
+              "name": "insights"
+            },
+            {
+              "description": "Generate a one-line session recap now",
+              "input": null,
+              "name": "recap"
+            },
+            {
+              "description": "Show which loaded skills are unused and costing context",
+              "input": null,
+              "name": "skill-doctor"
+            },
+            {
+              "description": "Set a goal \u2014 keep working until the condition is met",
+              "input": null,
+              "name": "goal"
+            },
+            {
+              "description": "Grant Claude agent access to your Design projects",
+              "input": null,
+              "name": "design-consent"
+            },
+            {
+              "description": "Revoke Claude agent access to your Design projects",
+              "input": null,
+              "name": "design-revoke"
+            },
+            {
+              "description": "List subagents, teammates, and other Claude sessions you can message",
+              "input": null,
+              "name": "list-agents"
+            },
+            {
+              "description": "Help teammates ramp on Claude Code with a guide from your usage",
+              "input": null,
+              "name": "team-onboarding"
+            },
+            {
+              "description": "Read this skill before the first step that uses the built-in browser, the browser pane inside the Claude desktop app (also called the in-app browser, the browser pane, Claude's browser, or \"your own browser\"), whose tools are named mcp__Claude_Browser__* when the session runs in the desktop app and mcp__remote-devices__Claude_Browser__* when a cloud session is linked to the person's computer; before those tools are turned on there may be a single <redacted> tool instead. It covers the pane's persistent sign-ins, tabs and preview_start, reading pages as text, site approvals, what the pane cannot open, and what to do when it cannot be reached. It is not for Claude in Chrome (mcp__claude-in-chrome__* tools), which has its own skill, and it does not decide which browser to use. (claude.ai sync)",
+              "input": null,
+              "name": "built-in-browser"
+            },
+            {
+              "description": "Read this skill before the first step that uses Claude in Chrome, the browser extension whose tools are named mcp__claude-in-chrome__* (also called Chrome, the browser extension, or the external browser) and which acts in the person's real Chrome with their own sign-ins; before those tools are turned on there may be a single enable__mcp__claude-in-chrome tool instead. It covers loading the tools in one ToolSearch call, checking the person's open tabs and working in a new tab, site permissions, GIF recordings, console logs, dialogs to avoid, and when to stop and ask. It is not for the built-in browser (mcp__Claude_Browser__* or mcp__remote-devices__Claude_Browser__* tools), which has its own skill, and it does not decide which browser to use. (claude.ai sync)",
+              "input": null,
+              "name": "chrome-browser"
+            },
+            {
+              "description": "Read this skill before the first step of any request to do something in an app on the person's own computer (Notes, Finder, System Settings, any desktop app), to look at their screen, or for \"computer use\". Computer use (desktop control) lets Claude take screenshots of the person's desktop and control it with clicks, typing and scrolling through the Claude desktop app; its tools are named mcp__computer-use__* when the session runs in the desktop app and mcp__remote-devices__computer_* when a cloud session is linked to the person's computer; before computer use is turned on for a conversation there may be no such tools, only an enable__mcp__remote-devices__computer tool, which turns it on. It covers turning it on, picking the right tool, the access flow, and the safety rules for tiered apps, links and financial actions. It is not for websites, which go through Claude in Chrome or the built-in browser and their own skills. (claude.ai sync)",
+              "input": null,
+              "name": "computer-use"
+            },
+            {
+              "description": "Use this skill when the user's prompt requires (1) researching a topic across multiple sources, comparing options or alternatives, analyzing trends or history, understanding markets or industries, or reviewing literature or studies and (2) synthesizing that research into a comprehensive, narrative report. If you're planning to search the web or internal knowledge bases, consider using this skill. This skill coordinates research subagents, so use it only when you have a tool for spawning subagents (the Agent or Task tool); otherwise, research the question directly. (claude.ai sync)",
+              "input": null,
+              "name": "anthropic-skills:deep-research"
+            },
+            {
+              "description": "docs (editable docs people share and comment on; the default for any document, named as a doc or not: a document, report, proposal, resume, cover letter, letter, contract, policy, form, template, worksheet, essay, handbook, guide, how-to, cheat sheet, SOP or other writing to keep, share, collaborate on, send, submit, print or sign; a doc exports to Word, PDF, Markdown or Google Docs, so needing a file to send, attach, upload, submit or print is no reason to pick Word, and a file nobody asked for is a doc, not Word; a plan, comparison, summary or notes asked in chat stays in chat; a pasted claude.ai artifact link may be a doc: check with docs tools first; Word or another file format named, tracked changes wanted, or a .docx to change or use as a template \u2192 that format's skill): making one \u2192 if no docs-connector instructions are in context, call its `guide` (topic.instructions) first; then create the doc (headings only, no body) before any search, file read or plan, even with files attached. (claude.ai sync)",
+              "input": null,
+              "name": "docs"
+            },
+            {
+              "description": "Use this skill whenever the user wants to create, read, edit, or manipulate Word documents (.docx) or Word templates (.dotx). Triggers include: any mention of Microsoft Word Documents, such as 'Word doc', 'word document', '.docx', '.dotx', 'microsoft doc'. Also use when extracting or reorganizing content from .docx or .dotx files, inserting or replacing images in documents, find-and-replace in Word files, working with tracked changes or comments, or converting content into a polished Word document. If the user asks for a deliverable as a Word or .docx file (to download, email or print), use this skill. However, if they ask for a document, page, report, memo, or notes WITHOUT naming a file format and the session offers Claude's own dedicated document or page skill or connector, use that instead, even if they will email or print it. Do NOT use for PDFs, spreadsheets, Google Docs, or coding unrelated to document generation. (claude.ai sync)",
+              "input": null,
+              "name": "docx"
+            },
+            {
+              "description": "Read this before the first Google Drive, Docs, Sheets or Slides connector call whenever the task creates or changes a Google file. Use this skill whenever the user wants to create or change a Google Doc, Sheet or Slides file in their Google Drive. Triggers include: a request that names Google Docs, Sheets, Slides or Drive and asks to make, edit, format, copy, rename, move or trash a file; a docs.google.com link with a request to change that file, even a one-line fix or suggested edits; and any follow-up change to a Google file from earlier in the chat, even \"change it\" or \"add a tab\". Includes helper scripts for document positions, cell ranges and slide layout. However, if the user asks for a doc, deck or spreadsheet without naming Google, or gives a Google file only as source material for something new, use Claude's own output type instead. Do NOT use for read-only questions about a Google file, or for Word, Excel, PowerPoint or PDF files. (claude.ai sync)",
+              "input": null,
+              "name": "google-workspace"
+            },
+            {
+              "description": "Import a memory export from another AI assistant into Claude's memory \u2014 conversationally, additively, and with the content treated as data. (claude.ai sync)",
+              "input": null,
+              "name": "import-memory"
+            },
+            {
+              "description": "Render the user's morning brief as a styled HTML artifact, or set it up as a recurring weekday task. Use only when the user explicitly asks to run, see, or set up their morning brief, or if they invoke /morning by name. A question about their day, schedule, or calendar is not by itself a request for the brief; answer it directly instead. (claude.ai sync)",
+              "input": null,
+              "name": "morning"
+            },
+            {
+              "description": "Use this skill whenever the user wants to do anything with PDF files. This includes reading or extracting text/tables from PDFs, combining or merging multiple PDFs into one, splitting PDFs apart, rotating pages, adding watermarks, creating new PDFs, filling PDF forms, encrypting/decrypting PDFs, extracting images, and OCR on scanned PDFs to make them searchable. If the user mentions a .pdf file or asks to produce one, use this skill. (claude.ai sync)",
+              "input": null,
+              "name": "pdf"
+            },
+            {
+              "description": "Use this skill any time a .pptx or .potx file is involved in any way \u2014 as input, output, or both. This includes: creating slide decks, pitch decks, or presentations as PowerPoint (.pptx) files; reading, parsing, or extracting text from any .pptx or .potx file (even if the extracted content will be used elsewhere, like in an email, summary, or creating a different type of slide deck); editing, modifying, or updating existing presentations; combining or splitting slide files; working with templates (.potx), layouts, speaker notes, or comments. Trigger whenever the user asks for a PowerPoint or .pptx file, or references a .pptx or .potx filename, regardless of what they plan to do with the content afterward. However, when the user asks for a deck, slides, a slide deck, or a presentation without naming a file format, default to using a dedicated slide-deck artifact type or a separate slides skill if this session offers one; otherwise, use this skill. (claude.ai sync)",
+              "input": null,
+              "name": "pptx"
+            },
+            {
+              "description": "Create new skills, modify and improve existing skills, and measure skill performance. Use when users want to create a skill from scratch, edit, or optimize an existing skill, run evals to test a skill, benchmark skill performance with variance analysis, or optimize a skill's description for better triggering accuracy. (claude.ai sync)",
+              "input": null,
+              "name": "skill-creator"
+            },
+            {
+              "description": "Use this skill any time a spreadsheet file is the primary input or output. This means any task where the user wants to: open, read, edit, or fix an existing .xlsx, .xlsm, .xltx, .csv, or .tsv file (e.g., adding columns, computing formulas, formatting, charting, cleaning messy data); create a new spreadsheet from scratch or from other data sources; or convert between tabular file formats. Trigger especially when the user references a spreadsheet file by name or path \u2014 even casually (like \"the xlsx in my downloads\") \u2014 and wants something done to it or produced from it. Also trigger for cleaning or restructuring messy tabular data files (malformed rows, misplaced headers, junk data) into proper spreadsheets. The deliverable must be a spreadsheet file. Do NOT trigger when the primary deliverable is a Word document, HTML report, standalone Python script, database pipeline, or Google Sheets API integration, even if tabular data is involved. (claude.ai sync)",
+              "input": null,
+              "name": "xlsx"
+            },
+            {
+              "description": "Show the MCP servers and their status, or reconnect, enable, or disable a server",
+              "input": {
+                "hint": "[reconnect|enable|disable [<server>|all]]"
+              },
+              "name": "mcp"
+            },
+            {
+              "description": "Continue this session from claude.ai/code or the Claude mobile app; `off` disconnects",
+              "input": {
+                "hint": "[session name | off]"
+              },
+              "name": "remote-control"
+            }
+          ],
+          "sessionUpdate": "available_commands_update"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "0ac55469-329c-47c3-8057-9e1a968f2c3c",
+        "update": {
+          "currentModeId": "default",
+          "sessionUpdate": "current_mode_update"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "0ac55469-329c-47c3-8057-9e1a968f2c3c",
+        "update": {
+          "currentModeId": "acceptEdits",
+          "sessionUpdate": "current_mode_update"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "0ac55469-329c-47c3-8057-9e1a968f2c3c",
+        "update": {
+          "currentModeId": "plan",
+          "sessionUpdate": "current_mode_update"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "0ac55469-329c-47c3-8057-9e1a968f2c3c",
+        "update": {
+          "configOptions": [
+            {
+              "category": "model",
+              "currentValue": "sonnet",
+              "description": "AI model to use",
+              "id": "model",
+              "name": "Model",
+              "options": [
+                {
+                  "description": "Opus 5.5",
+                  "name": "Default (recommended)",
+                  "value": "default"
+                },
+                {
+                  "description": "For complex work and everyday tasks",
+                  "name": "Opus 5.5",
+                  "value": "opus"
+                },
+                {
+                  "description": "For your toughest challenges",
+                  "name": "Fable 5.2",
+                  "value": "fable"
+                },
+                {
+                  "description": "Most efficient for simpler tasks",
+                  "name": "Sonnet 5.5",
+                  "value": "sonnet"
+                },
+                {
+                  "description": "Fastest for quick answers",
+                  "name": "Haiku 5.5",
+                  "value": "haiku"
+                },
+                {
+                  "description": "Most capable for your hardest and longest-running tasks",
+                  "name": "Fable 5.1",
+                  "value": "claude-fable-5-1"
+                },
+                {
+                  "description": "Fastest for quick answers",
+                  "name": "Haiku 4.5",
+                  "value": "claude-haiku-4-5-20251001"
+                },
+                {
+                  "description": "Efficient for routine tasks",
+                  "name": "Sonnet 5",
+                  "value": "claude-sonnet-5"
+                },
+                {
+                  "description": "Best for everyday, complex tasks",
+                  "name": "Opus 5",
+                  "value": "claude-opus-5"
+                },
+                {
+                  "description": "Most capable for your hardest and longest-running tasks",
+                  "name": "Fable 5",
+                  "value": "claude-fable-5"
+                },
+                {
+                  "description": "Best for everyday, complex tasks",
+                  "name": "Opus 4.8",
+                  "value": "claude-opus-4-8"
+                },
+                {
+                  "description": "Best for everyday, complex tasks",
+                  "name": "Opus 4.7",
+                  "value": "claude-opus-4-7"
+                },
+                {
+                  "description": "Best for everyday, complex tasks",
+                  "name": "Opus 4.6",
+                  "value": "claude-opus-4-6"
+                },
+                {
+                  "description": "Efficient for routine tasks",
+                  "name": "Sonnet 4.6",
+                  "value": "claude-sonnet-4-6"
+                }
+              ],
+              "type": "select"
+            },
+            {
+              "category": "thought_level",
+              "currentValue": "default",
+              "description": "Available effort levels for this model",
+              "id": "effort",
+              "name": "Effort",
+              "options": [
+                {
+                  "name": "Default",
+                  "value": "default"
+                },
+                {
+                  "name": "Low",
+                  "value": "low"
+                },
+                {
+                  "name": "Medium",
+                  "value": "medium"
+                },
+                {
+                  "name": "High",
+                  "value": "high"
+                },
+                {
+                  "name": "Xhigh",
+                  "value": "xhigh"
+                },
+                {
+                  "name": "Max",
+                  "value": "max"
+                }
+              ],
+              "type": "select"
+            },
+            {
+              "category": "model_config",
+              "currentValue": "off",
+              "description": "Dynamic workflows on every task, at any effort level",
+              "id": "ultracode",
+              "name": "Ultracode",
+              "options": [
+                {
+                  "name": "On",
+                  "value": "on"
+                },
+                {
+                  "name": "Off",
+                  "value": "off"
+                }
+              ],
+              "type": "select"
+            },
+            {
+              "category": "mode",
+              "currentValue": "plan",
+              "description": "Session permission mode",
+              "id": "mode",
+              "name": "Mode",
+              "options": [
+                {
+                  "description": "Always ask before making changes",
+                  "name": "Manual",
+                  "value": "default"
+                },
+                {
+                  "description": "Automatically accept all file edits",
+                  "name": "Accept edits",
+                  "value": "acceptEdits"
+                },
+                {
+                  "description": "Create a plan before making changes",
+                  "name": "Plan",
+                  "value": "plan"
+                },
+                {
+                  "description": "Claude handles permission decisions",
+                  "name": "Auto",
+                  "value": "auto"
+                },
+                {
+                  "description": "Accepts all permissions",
+                  "name": "Bypass permissions",
+                  "value": "bypassPermissions"
+                }
+              ],
+              "type": "select"
+            }
+          ],
+          "sessionUpdate": "config_option_update"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "0ac55469-329c-47c3-8057-9e1a968f2c3c",
+        "update": {
+          "currentModeId": "auto",
+          "sessionUpdate": "current_mode_update"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "0ac55469-329c-47c3-8057-9e1a968f2c3c",
+        "update": {
+          "configOptions": [
+            {
+              "category": "model",
+              "currentValue": "haiku",
+              "description": "AI model to use",
+              "id": "model",
+              "name": "Model",
+              "options": [
+                {
+                  "description": "Opus 5.5",
+                  "name": "Default (recommended)",
+                  "value": "default"
+                },
+                {
+                  "description": "For complex work and everyday tasks",
+                  "name": "Opus 5.5",
+                  "value": "opus"
+                },
+                {
+                  "description": "For your toughest challenges",
+                  "name": "Fable 5.2",
+                  "value": "fable"
+                },
+                {
+                  "description": "Most efficient for simpler tasks",
+                  "name": "Sonnet 5.5",
+                  "value": "sonnet"
+                },
+                {
+                  "description": "Fastest for quick answers",
+                  "name": "Haiku 5.5",
+                  "value": "haiku"
+                },
+                {
+                  "description": "Most capable for your hardest and longest-running tasks",
+                  "name": "Fable 5.1",
+                  "value": "claude-fable-5-1"
+                },
+                {
+                  "description": "Fastest for quick answers",
+                  "name": "Haiku 4.5",
+                  "value": "claude-haiku-4-5-20251001"
+                },
+                {
+                  "description": "Efficient for routine tasks",
+                  "name": "Sonnet 5",
+                  "value": "claude-sonnet-5"
+                },
+                {
+                  "description": "Best for everyday, complex tasks",
+                  "name": "Opus 5",
+                  "value": "claude-opus-5"
+                },
+                {
+                  "description": "Most capable for your hardest and longest-running tasks",
+                  "name": "Fable 5",
+                  "value": "claude-fable-5"
+                },
+                {
+                  "description": "Best for everyday, complex tasks",
+                  "name": "Opus 4.8",
+                  "value": "claude-opus-4-8"
+                },
+                {
+                  "description": "Best for everyday, complex tasks",
+                  "name": "Opus 4.7",
+                  "value": "claude-opus-4-7"
+                },
+                {
+                  "description": "Best for everyday, complex tasks",
+                  "name": "Opus 4.6",
+                  "value": "claude-opus-4-6"
+                },
+                {
+                  "description": "Efficient for routine tasks",
+                  "name": "Sonnet 4.6",
+                  "value": "claude-sonnet-4-6"
+                }
+              ],
+              "type": "select"
+            },
+            {
+              "category": "thought_level",
+              "currentValue": "default",
+              "description": "Available effort levels for this model",
+              "id": "effort",
+              "name": "Effort",
+              "options": [
+                {
+                  "name": "Default",
+                  "value": "default"
+                },
+                {
+                  "name": "Low",
+                  "value": "low"
+                },
+                {
+                  "name": "Medium",
+                  "value": "medium"
+                },
+                {
+                  "name": "High",
+                  "value": "high"
+                },
+                {
+                  "name": "Xhigh",
+                  "value": "xhigh"
+                },
+                {
+                  "name": "Max",
+                  "value": "max"
+                }
+              ],
+              "type": "select"
+            },
+            {
+              "category": "model_config",
+              "currentValue": "off",
+              "description": "Dynamic workflows on every task, at any effort level",
+              "id": "ultracode",
+              "name": "Ultracode",
+              "options": [
+                {
+                  "name": "On",
+                  "value": "on"
+                },
+                {
+                  "name": "Off",
+                  "value": "off"
+                }
+              ],
+              "type": "select"
+            },
+            {
+              "category": "mode",
+              "currentValue": "auto",
+              "description": "Session permission mode",
+              "id": "mode",
+              "name": "Mode",
+              "options": [
+                {
+                  "description": "Always ask before making changes",
+                  "name": "Manual",
+                  "value": "default"
+                },
+                {
+                  "description": "Automatically accept all file edits",
+                  "name": "Accept edits",
+                  "value": "acceptEdits"
+                },
+                {
+                  "description": "Create a plan before making changes",
+                  "name": "Plan",
+                  "value": "plan"
+                },
+                {
+                  "description": "Claude handles permission decisions",
+                  "name": "Auto",
+                  "value": "auto"
+                },
+                {
+                  "description": "Accepts all permissions",
+                  "name": "Bypass permissions",
+                  "value": "bypassPermissions"
+                }
+              ],
+              "type": "select"
+            }
+          ],
+          "sessionUpdate": "config_option_update"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "0ac55469-329c-47c3-8057-9e1a968f2c3c",
+        "update": {
+          "currentModeId": "bypassPermissions",
+          "sessionUpdate": "current_mode_update"
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "0ac55469-329c-47c3-8057-9e1a968f2c3c",
+        "update": {
+          "currentModeId": "auto",
+          "sessionUpdate": "current_mode_update"
+        }
+      }
+    }
+  ],
+  "prompt_sent": false,
+  "schema": 1,
+  "session_new": {
+    "configOptions": [
+      {
+        "category": "model",
+        "currentValue": "haiku",
+        "description": "AI model to use",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "description": "Opus 5.5",
+            "name": "Default (recommended)",
+            "value": "default"
+          },
+          {
+            "description": "For complex work and everyday tasks",
+            "name": "Opus 5.5",
+            "value": "opus"
+          },
+          {
+            "description": "For your toughest challenges",
+            "name": "Fable 5.2",
+            "value": "fable"
+          },
+          {
+            "description": "Most efficient for simpler tasks",
+            "name": "Sonnet 5.5",
+            "value": "sonnet"
+          },
+          {
+            "description": "Fastest for quick answers",
+            "name": "Haiku 5.5",
+            "value": "haiku"
+          },
+          {
+            "description": "Most capable for your hardest and longest-running tasks",
+            "name": "Fable 5.1",
+            "value": "claude-fable-5-1"
+          },
+          {
+            "description": "Fastest for quick answers",
+            "name": "Haiku 4.5",
+            "value": "claude-haiku-4-5-20251001"
+          },
+          {
+            "description": "Efficient for routine tasks",
+            "name": "Sonnet 5",
+            "value": "claude-sonnet-5"
+          },
+          {
+            "description": "Best for everyday, complex tasks",
+            "name": "Opus 5",
+            "value": "claude-opus-5"
+          },
+          {
+            "description": "Most capable for your hardest and longest-running tasks",
+            "name": "Fable 5",
+            "value": "claude-fable-5"
+          },
+          {
+            "description": "Best for everyday, complex tasks",
+            "name": "Opus 4.8",
+            "value": "claude-opus-4-8"
+          },
+          {
+            "description": "Best for everyday, complex tasks",
+            "name": "Opus 4.7",
+            "value": "claude-opus-4-7"
+          },
+          {
+            "description": "Best for everyday, complex tasks",
+            "name": "Opus 4.6",
+            "value": "claude-opus-4-6"
+          },
+          {
+            "description": "Efficient for routine tasks",
+            "name": "Sonnet 4.6",
+            "value": "claude-sonnet-4-6"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "thought_level",
+        "currentValue": "default",
+        "description": "Available effort levels for this model",
+        "id": "effort",
+        "name": "Effort",
+        "options": [
+          {
+            "name": "Default",
+            "value": "default"
+          },
+          {
+            "name": "Low",
+            "value": "low"
+          },
+          {
+            "name": "Medium",
+            "value": "medium"
+          },
+          {
+            "name": "High",
+            "value": "high"
+          },
+          {
+            "name": "Xhigh",
+            "value": "xhigh"
+          },
+          {
+            "name": "Max",
+            "value": "max"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "model_config",
+        "currentValue": "off",
+        "description": "Dynamic workflows on every task, at any effort level",
+        "id": "ultracode",
+        "name": "Ultracode",
+        "options": [
+          {
+            "name": "On",
+            "value": "on"
+          },
+          {
+            "name": "Off",
+            "value": "off"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "mode",
+        "currentValue": "auto",
+        "description": "Session permission mode",
+        "id": "mode",
+        "name": "Mode",
+        "options": [
+          {
+            "description": "Always ask before making changes",
+            "name": "Manual",
+            "value": "default"
+          },
+          {
+            "description": "Automatically accept all file edits",
+            "name": "Accept edits",
+            "value": "acceptEdits"
+          },
+          {
+            "description": "Create a plan before making changes",
+            "name": "Plan",
+            "value": "plan"
+          },
+          {
+            "description": "Claude handles permission decisions",
+            "name": "Auto",
+            "value": "auto"
+          },
+          {
+            "description": "Accepts all permissions",
+            "name": "Bypass permissions",
+            "value": "bypassPermissions"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "modes": {
+      "availableModes": [
+        {
+          "description": "Always ask before making changes",
+          "id": "default",
+          "name": "Manual"
+        },
+        {
+          "description": "Automatically accept all file edits",
+          "id": "acceptEdits",
+          "name": "Accept edits"
+        },
+        {
+          "description": "Create a plan before making changes",
+          "id": "plan",
+          "name": "Plan"
+        },
+        {
+          "description": "Claude handles permission decisions",
+          "id": "auto",
+          "name": "Auto"
+        },
+        {
+          "description": "Accepts all permissions",
+          "id": "bypassPermissions",
+          "name": "Bypass permissions"
+        }
+      ],
+      "currentModeId": "auto"
+    },
+    "sessionId": "0ac55469-329c-47c3-8057-9e1a968f2c3c"
+  },
+  "session_summary": {
+    "config_options": [
+      {
+        "category": "model",
+        "current": "haiku",
+        "id": "model",
+        "type": "select",
+        "values": [
+          "default",
+          "opus",
+          "fable",
+          "sonnet",
+          "haiku",
+          "claude-fable-5-1",
+          "claude-haiku-4-5-20251001",
+          "claude-sonnet-5",
+          "claude-opus-5",
+          "claude-fable-5",
+          "claude-opus-4-8",
+          "claude-opus-4-7",
+          "claude-opus-4-6",
+          "claude-sonnet-4-6"
+        ]
+      },
+      {
+        "category": "thought_level",
+        "current": "default",
+        "id": "effort",
+        "type": "select",
+        "values": [
+          "default",
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ]
+      },
+      {
+        "category": "model_config",
+        "current": "off",
+        "id": "ultracode",
+        "type": "select",
+        "values": [
+          "on",
+          "off"
+        ]
+      },
+      {
+        "category": "mode",
+        "current": "auto",
+        "id": "mode",
+        "type": "select",
+        "values": [
+          "default",
+          "acceptEdits",
+          "plan",
+          "auto",
+          "bypassPermissions"
+        ]
+      }
+    ],
+    "modes": {
+      "available": [
+        "default",
+        "acceptEdits",
+        "plan",
+        "auto",
+        "bypassPermissions"
+      ],
+      "current": "auto"
+    }
+  }
+}

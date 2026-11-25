@@ -512,7 +512,7 @@ version: 1
 defaults: {role: coder}
 harnesses:
   claude: {allowed_models: [<exact-id>], max_parallel: 2}
-  codex: {allowed_models: [<exact-id>]}
+  codex: {allowed_models: [<exact-id>], handshake_timeout_sec: 90}
 roles:
   planner:  {harness: claude, model_id: <exact-id>, permissions: smart, write_policy: no-edits}
   coder:    {harness: codex, model_id: <exact-id>, effort: high,
@@ -540,6 +540,14 @@ anything starts. A `settings.yaml` key such as `routing` in a `garuda.yaml`, a
 `max_parallel` that disagrees with `capacity`, or a `--runtime` that
 contradicts the selected role is refused as `config.conflict`.
 
+`harnesses.<id>.handshake_timeout_sec` is how long Garuda waits for an
+external (ACP) harness to answer its startup calls (`initialize`,
+`session/new`, `session/load` and setting role options), in whole seconds
+from 5 to 600; the default is 30. Raise it when a harness starts slowly on a
+loaded machine and runs fail with `initialize exceeded its 30s deadline`; the
+error names the setting to raise. It applies to every run of that harness,
+with or without a role, and only your user file may set it.
+
 `garuda config migrate` previews the user `garuda.yaml` that carries what
 `settings.yaml` already says (trusted runtimes as `harnesses`, `capacity` as
 `max_parallel`); `--write` applies it, keeping a backup of any existing file.
@@ -564,8 +572,10 @@ of the two. Model ids are used exactly as written, never matched loosely.
 
 For an ACP harness, Garuda sets the agent's own model and effort options
 (`session/set_config_option`) before the first prompt, and only on an adapter
-version where that was proven (Claude Code adapter 0.85.0 and Codex adapters
-2.9.0 and 2.1.1). Install Codex ACP 2.9.0 for models such as `gpt-6.2-sol`.
+version where that was proven (Claude Code adapters 0.110.1 and 0.85.0, and
+Codex adapters 2.9.0 and 2.1.1). Install Codex ACP 2.9.0 for models such as
+`gpt-6.2-sol`, and Claude Code adapter 0.110.1 for Haiku 5.5 (`haiku`) with
+effort levels and `auto`; on 0.85.0, `haiku` is Haiku 4.5.
 The agent must offer the exact id in its session. Garuda refuses before the
 prompt if the id is missing or changed, or if the adapter version is unproven.
 Roles that omit all three options can use other adapter versions when the run
@@ -613,7 +623,7 @@ with `workspace.readonly_unenforced`.
 
 Only an explicit mode under `permissions: yolo` can approve everything.
 Named modes and mapped readonly modes require a proven adapter version
-(Claude Code adapter 0.85.0 and Codex adapters 2.9.0 and 2.1.1). Other default
+(Claude Code adapters 0.110.1 and 0.85.0, and Codex adapters 2.9.0 and 2.1.1). Other default
 modes apply on those proven versions. A run with no role, including an SDK
 run, may do at most what `permissions: smart` allows.
 
@@ -621,9 +631,10 @@ Before the first prompt, the mode the agent reports must be no broader than the
 one the run requires, whether Garuda set it or not. Otherwise the run refuses
 with `role.mode_unenforced`. That covers an agent that reports no mode, a mode
 Garuda does not know, and an unproven adapter whose own default is broader.
-Claude Code adapter 0.110.1, for example, starts in `auto`, so a `smart` run
-refuses there. A `permissions: auto` role still runs on an unproven adapter that
-reports `auto`. The session records the mode in `acp_mode` (and in the role's
+Claude Code adapter 0.110.1, for example, starts in `auto`. It is proven, so
+Garuda sets `acceptEdits` for a `smart` run there; on an unproven version with
+that default, a `smart` run refuses. A `permissions: auto` role still runs on an
+unproven adapter that reports `auto`. The session records the mode in `acp_mode` (and in the role's
 `effective_mode`), with `source: garuda` when Garuda set it and `source: agent`
 when it is the agent's own.
 
@@ -633,7 +644,26 @@ offer refuses with `role.model_unavailable` and lists the models it does offer.
 A mode the model cannot use refuses with `role.option_not_applied`, naming the
 model and the permissions that fit. For example, Claude Code 0.85.0 runs
 `haiku` in `acceptEdits` when `auto` is requested, so use `permissions: smart`
-with that model.
+with that model, or adapter 0.110.1.
+
+To find these before a run, `garuda config check` checks every role and
+`fallback` entry. Without options it runs nothing: it checks that each model,
+effort and mode is settable on some proven adapter version. With `--probe` it
+launches each external harness once per entry, without a prompt, in an empty
+scratch folder. It then sets the model, effort and mode as a launch would and
+reports what the installed adapter refuses. It exits `1` on any error.
+
+```bash
+garuda config check --probe
+```
+
+```text
+[ok] coder: claude haiku — claude 0.85.0 offers mode=acceptEdits, model=haiku
+[error] fast-coder: claude haiku — claude 0.85.0: role.option_missing: the agent offers no 'effort' option for model 'haiku' this session
+```
+
+A read-only ACP role is not probed, because it runs in its Docker image's
+adapter. A harness that does not answer is reported as `not-checked`.
 For harnesses without a mapped readonly mode, the Docker mount enforces the
 workspace write restriction. The session records the selected mode with the
 model and effort. Codex quota-bound recovery and consult forwarding have
@@ -696,9 +726,15 @@ native runs.
 A role's `fallback` list (your user file only; a project file may only remove
 entries) is tried once, before the run starts. Garuda moves past the role's
 own harness, or an entry, only when its CLI is not installed
-(`harness.cli_missing`) or its documented login check says you are logged
-out (`harness.logged_out`). A login check that fails, times out or answers
-something unexpected is not a reason to move on. Once a prompt is sent there
+(`harness.cli_missing`), its documented login check says you are logged
+out (`harness.logged_out`), its quota is proved exhausted
+(`harness.limit_reached`), or it no longer offers the entry's model
+(`role.model_unavailable`). For the model check, Garuda starts the adapter
+once without a prompt and reads the models a new session offers. This happens
+only for an entry that names a model and has another entry after it, and only
+a proven adapter version's answer counts. A login check or model probe that fails, times out
+or answers something unexpected is not a reason to move on. An effort or mode
+that the model does not offer refuses rather than falls back. Once a prompt is sent there
 is no fallback, and trust, configuration or confinement errors refuse rather
 than fall back. The session records which harness was planned, which one ran
 and why; if none can start, the run refuses and lists every reason.
