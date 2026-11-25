@@ -1096,6 +1096,8 @@ def run_sessions(args) -> int:
             from garuda.observability.usage import reported_usage_line
 
             shown = {**row, "consults": row.get("consults", {}).get("line") or "none"}
+            if shown.get("trace_detail") is None:
+                shown["trace_detail"] = "unknown (not recorded)"
             reported = shown.pop("reported_usage", None)
             if reported:
                 for key in ("usage", "cost"):

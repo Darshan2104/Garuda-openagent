@@ -458,6 +458,14 @@ error message); a cut field says `truncated`, a scrubbed one `redacted`. Tool
 output is never kept, not even a failed call's: a failed tool result keeps only
 its `status: failed`. An unknown value keeps `metadata`.
 
+Each ACP session records the level its trail was kept at as `trace_detail`
+(`metadata` or `commands`), and `sessions show` (text and `--json`) and the flow
+trajectory and export report it, so a study knows which detail it can rely on.
+Sessions recorded before this was added report `null` (text: `unknown (not
+recorded)`); so does a native session, which keeps no ACP trail. The level is
+read when the run starts: changing the setting later does not relabel an
+existing trail, and a resumed session records the level of its latest run.
+
 Independently of the level, an ACP session records what the agent offered
 (`acp_session`: its `initialize` identity, each session option with its current
 value and choices, and its modes), the code and a redacted message of a run that

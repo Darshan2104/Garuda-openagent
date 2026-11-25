@@ -392,6 +392,9 @@ garuda sessions show latest --json
   blocked is not mistaken for one that did the work.
 - `reported_usage` is the cost the harness reported; `acp_session` the models,
   efforts and modes it offered; `error` why a failed run stopped.
+- `trace_detail` is the level the trail was kept at (`metadata` or `commands`),
+  so you know whether the tool detail above can be there; `null` for a session
+  recorded before Garuda kept it.
 
 ---
 

@@ -106,7 +106,8 @@ def _session(store, session_id: str | None, rows: list[dict] | None) -> tuple[di
     row = read_model.session_row(store, meta)
     out: dict[str, Any] = {"session_id": session_id, "readable": True,
                            **{key: row.get(key) for key in _SESSION_FIELDS},
-                           "workspace_kind": meta.get("workspace_kind")}
+                           "workspace_kind": meta.get("workspace_kind"),
+                           "trace_detail": read_model.trace_detail(meta)}
     role = meta.get("role")
     out["role"] = role if isinstance(role, dict) else None
     out["initial_selection"] = meta.get("initial_selection")

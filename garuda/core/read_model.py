@@ -332,6 +332,15 @@ def sessions(store, *, limit: int | None = 20, queue=None) -> list[dict]:
     return rows
 
 
+def trace_detail(meta: dict) -> str | None:
+    """The recorded ``observability.trace_detail`` level of a session's ACP events
+    (#691): ``metadata``, ``commands``, or ``None`` when it was not recorded."""
+    from garuda.acp.normalize import TRACE_LEVELS
+
+    value = meta.get("trace_detail")
+    return value if isinstance(value, str) and value in TRACE_LEVELS else None
+
+
 def session(store, session_id: str, *, queue=None) -> dict:
     meta = store.load_meta(session_id)
     # One queue read feeds both the row and the ownership projection.
@@ -356,6 +365,8 @@ def session(store, session_id: str, *, queue=None) -> dict:
     row["approval_summary"] = approval_summary(meta)
     acp_session = meta.get("acp_session")
     row["acp_session"] = acp_session if isinstance(acp_session, dict) else None
+    # The study-trace level its ACP events were persisted at; None before #691 recorded it.
+    row["trace_detail"] = trace_detail(meta)
     role = meta.get("role") if isinstance(meta.get("role"), dict) else {}
     # What the run ran with, beside what was offered (#726).
     row["acp_mode"] = meta.get("acp_mode") or role.get("effective_mode")

@@ -124,6 +124,11 @@ def test_a_blocked_run_is_flagged_and_its_tool_calls_keep_their_detail(
     shown = json.loads(out)
     assert shown["approval_summary"]["all_denied"] is True
     assert shown["error"] is None
+    # The session says which trace level its trail was kept at (#691).
+    assert meta["trace_detail"] == shown["trace_detail"] == "commands"
+    code, out = _main(monkeypatch, capsys, "sessions", "show", meta["session_id"],
+                      "--workspace", str(repo))
+    assert code == 0 and "trace_detail: commands" in out, out
 
 
 def test_a_run_refused_at_role_application_keeps_the_offer_and_the_code(
@@ -175,3 +180,59 @@ def test_a_failed_tool_calls_output_is_never_kept():
         assert "Exit code" not in kept
     detail = evidence_payload(result, "commands")
     assert detail["status"] == "failed" and "error" not in detail
+
+
+def test_a_default_run_records_the_metadata_level(
+        repo, tmp_path, monkeypatch, capsys, fake_acp_confinement):  # noqa: F811
+    from tests.test_runtime_cli import _hard_deadline, _install_shim, _main, _on_path
+
+    _settings()
+    _roles()
+    _on_path(monkeypatch, tmp_path / "bin")
+    _install_shim(tmp_path / "bin", profile="success")
+    fake_acp_confinement("fakeacp")
+
+    with _hard_deadline(60):
+        code, out = _run(monkeypatch, capsys, repo, "-t", "say hi")
+
+    assert code == 0, out
+    (meta,) = SessionStore().list_sessions()
+    assert meta["trace_detail"] == "metadata"
+    code, out = _main(monkeypatch, capsys, "sessions", "show", meta["session_id"],
+                      "--workspace", str(repo), "--json")
+    assert code == 0, out
+    assert json.loads(out)["trace_detail"] == "metadata"
+
+
+@pytest.mark.parametrize("recorded, shown", [
+    (None, None), ("metadata", "metadata"), ("commands", "commands"), ("full", None), (3, None),
+])
+def test_a_session_without_a_recorded_level_reads_as_unknown(recorded, shown):
+    """Sessions from before #691 recorded the level (or with a value Garuda never
+    writes) read as ``None``, never as a guessed level."""
+    from garuda.core.read_model import trace_detail
+
+    meta = {} if recorded is None else {"trace_detail": recorded}
+    assert trace_detail(meta) == shown
+
+
+def test_only_a_persisting_store_backed_adapter_records_its_level(tmp_path, monkeypatch):
+    from garuda.acp.adapter import AcpRuntime
+
+    monkeypatch.setattr("garuda.observability.trace_detail.configured_level",
+                        lambda settings=None: "commands")
+    store = SessionStore(tmp_path / "sessions")
+    store.begin("s1", task="t", model="m", agent="a", workspace=str(tmp_path))
+    adapter = AcpRuntime(["true"], runtime_id="fakeacp", store=store,
+                                persist_dir=str(store.session_dir("s1")))
+    assert adapter.trace_detail == "commands"
+    adapter._garuda_session_id = "s1"
+    adapter._record_trace_detail()
+    assert store.load_meta("s1")["trace_detail"] == "commands"
+
+    bare = AcpRuntime(["true"], runtime_id="fakeacp", store=store)
+    assert bare.trace_detail is None
+    bare._garuda_session_id = "s1"
+    store.update_meta("s1", {"trace_detail": "metadata"})
+    bare._record_trace_detail()  # persists no events, so records no level
+    assert store.load_meta("s1")["trace_detail"] == "metadata"

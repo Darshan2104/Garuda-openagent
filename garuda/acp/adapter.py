@@ -486,6 +486,7 @@ class AcpRuntime:
             raise RuntimeStartError("task must not be empty")
         self._move(LifecycleState.STARTING)
         self._garuda_session_id = session_id or str(uuid.uuid4())
+        self._record_trace_detail()
         process = self._new_process()
         try:
             with self._timed("startup"):
@@ -659,6 +660,26 @@ class AcpRuntime:
         except Exception:
             self._store = None
             raise
+        self._record_trace_detail()
+
+    @property
+    def trace_detail(self) -> str | None:
+        """The study-trace level this runtime persists its events at, or ``None``
+        when it persists none (#691)."""
+        return self._trace_detail if self._persist_dir is not None else None
+
+    def _record_trace_detail(self) -> None:
+        """Record in the session which trace level its persisted events use (#691),
+        so a study knows what detail it can rely on. Only a store-backed, persisting
+        runtime of an existing session records it; never fails the run."""
+        if self._persist_dir is None or self._store is None or not self._garuda_session_id:
+            return
+        try:
+            if not (Path(self._store.session_dir(self._garuda_session_id)) / "meta.json").is_file():
+                return
+            self._store.update_meta(self._garuda_session_id, {"trace_detail": self._trace_detail})
+        except Exception:
+            logger.warning("ACP trace level not recorded", exc_info=True)
 
     async def resume(self, *, native_session_id: str, session_id: str | None = None) -> RuntimeInfo:
         """Reattach to the live child, or — in a new process — reload the
@@ -680,6 +701,7 @@ class AcpRuntime:
             return self._info()
         self._move(LifecycleState.STARTING)
         self._garuda_session_id = session_id or str(uuid.uuid4())
+        self._record_trace_detail()
         process = self._new_process()
         try:
             with self._timed("startup"):
