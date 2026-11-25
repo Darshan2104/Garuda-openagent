@@ -82,7 +82,12 @@ def current_approval_requester() -> tuple[ApprovalRequester, object] | None:
 
 
 def approval_summary(meta: dict) -> dict | None:
-    """How a session's recorded approval requests ended, or ``None`` with none (#691).
+    """How a session's recorded approval requests ended (#691).
+
+    ``None`` only when approvals were not recorded: a session with no request
+    and no ACP handshake record (a native run, or one from before #691). An ACP
+    run's approval requests are tracked from its handshake on, so one that
+    raised none reads ``{"requested": 0, ...}`` (#755).
 
     ``denied`` counts every request that was not allowed (denied, timed out,
     disconnected or cancelled): a run whose every tool call was blocked can end
@@ -94,12 +99,12 @@ def approval_summary(meta: dict) -> dict | None:
             outcome = record.get("outcome")
             outcome = outcome if isinstance(outcome, str) and outcome else "unknown"
             outcomes[outcome] = outcomes.get(outcome, 0) + 1
-    if not outcomes:
+    if not outcomes and not isinstance((meta or {}).get("acp_session"), dict):
         return None
     requested = sum(outcomes.values())
     allowed = outcomes.get(ApprovalOutcome.ALLOW.value, 0)
     return {"requested": requested, "allowed": allowed, "denied": requested - allowed,
-            "all_denied": allowed == 0, "by_outcome": dict(sorted(outcomes.items()))}
+            "all_denied": requested > 0 and allowed == 0, "by_outcome": dict(sorted(outcomes.items()))}
 
 
 def approval_summary_line(summary: dict | None) -> str | None:

@@ -1099,6 +1099,7 @@ def run_sessions(args) -> int:
             if shown.get("trace_detail") is None:
                 shown["trace_detail"] = "unknown (not recorded)"
             reported = shown.pop("reported_usage", None)
+            steps_reported = shown.pop("step_reported_usage", None)
             if reported:
                 for key in ("usage", "cost"):
                     if shown.get(key) == "unknown":
@@ -1106,6 +1107,10 @@ def run_sessions(args) -> int:
             print("\n".join(f"{k}: {v}" for k, v in shown.items() if k != "spend"))
             if reported:
                 print(f"Reported usage: {reported_usage_line(reported)}")
+            if steps_reported is not None:
+                from garuda.flows.trajectory import steps_reported_usage_line
+
+                print(f"Step sessions' reported usage: {steps_reported_usage_line(steps_reported)}")
             from garuda.core.approval_outcome import approval_summary_line
 
             if (denied := approval_summary_line(row.get("approval_summary"))) is not None:

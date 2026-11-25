@@ -56,10 +56,19 @@ harness adapter itself reported, the latest report per segment. It is labelled
 adapter-reported because Garuda did not meter or price it, so the session's own
 `usage` and `cost` stay `unknown` and no spend cap counts it.
 
+A flow's own session adds **Step sessions' reported usage** (JSON
+`step_reported_usage`): its step sessions' (and review members') reported costs
+added up, with `step_sessions`, `reporting_sessions`, `cost_complete` and
+`models`. It is the same adapter-reported figure as each step's
+`reported_usage`, never added to Garuda's metered usage; `null` on a session
+that is not a flow.
+
 `sessions show` also says what an external run met on the way:
 `approval_summary` counts its tool approval requests (`requested`, `allowed`,
 `denied`, `all_denied`, and each outcome; timed out, disconnected and cancelled
-requests count as denied). A run whose tool calls were refused can still end its
+requests count as denied). An ACP run that raised none reads `requested: 0`;
+`approval_summary` is `null` only when approvals were not recorded (a native
+run, or one from before they were). A run whose tool calls were refused can still end its
 turn `completed`, so `garuda run` then prints a warning such as `1 of 1 tool
 approval requests were not allowed (every one was blocked)`; its exit status is
 unchanged. `acp_session` is what the agent offered at start, and `error` the code

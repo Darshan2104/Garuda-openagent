@@ -1188,13 +1188,17 @@ async def _record_acp_usage(store, session_id: str, runtime, runtime_id: str, re
 
     A confined run is keyed by the adapter version the image's own handshake
     reported (the host catalog never saw that binary) and marked ``confined``.
+    A host run is keyed by the discovered version, or by the handshake's when
+    discovery could not determine one (#755).
     """
     try:
         from garuda.observability.usage import record_turn_acp_usage
 
         events, _ = await runtime.poll_events(0)
-        version = (runtime.reported_adapter_version if confined
-                   else getattr(record, "version", None) or "unknown")
+        reported = getattr(runtime, "reported_adapter_version", None) or "unknown"
+        discovered = getattr(record, "version", None)
+        version = (reported if confined or not discovered or discovered == "unknown"
+                   else discovered)
         native_id = getattr(info, "native_session_id", None)
         record_turn_acp_usage(store, session_id, events, runtime_id=runtime_id,
                               adapter_version=version, segment=native_id or session_id,

@@ -1,5 +1,21 @@
 # Durable decisions
 
+## 2026-11-25 — Trace polish: flow totals, zero approvals, reported adapter version (#755)
+
+`sessions show FLOW` adds `step_reported_usage` (`flows.trajectory.steps_reported_usage`):
+each step and member session counted once, its `reported_usage` read from one
+ledger pass, the costs added. Reported only: never added to metered usage, never
+a spend-cap input; `coverage: ledger_unreadable` rather than a guess.
+`approval_summary` returns `{"requested": 0, ..., "all_denied": false}` when
+there is no request but the session has an `acp_session` record (approvals are
+tracked by the broker from the handshake on, #691), and `None` otherwise ("not
+recorded": native runs, pre-#691 sessions, an ACP run that failed before its
+handshake). A host ACP run's usage-ledger rows are keyed by the discovered
+adapter version, or by the handshake's reported version when discovery has none
+(`unknown`, e.g. opencode with no `version_pattern`). Mode/option proofs and
+`role.adapter.version` still use the discovered version: a reported version is
+not proof for option support.
+
 ## 2026-11-25 — A flow trajectory names what ran and carries its checks (#752)
 
 An attempt's `model`/`adapter_version` come from the receipt's role plan when it

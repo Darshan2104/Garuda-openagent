@@ -63,6 +63,56 @@ def _usage(session_id: str, rows: list[dict] | None) -> dict:
             "reported": reported_usage(session_id, records=rows)}
 
 
+def steps_reported_usage(view: dict, rows: list[dict] | None = None) -> dict:
+    """A flow's step sessions' adapter-reported usage, totalled (#755).
+
+    ``view`` is :func:`garuda.core.read_model.flow`. Each step session (and
+    review-group member) counts once, its latest report per segment as
+    :func:`~garuda.observability.usage.reported_usage` reads it. The harnesses'
+    own figures, labelled as such: never added to Garuda's metered usage.
+    """
+    from garuda.observability.usage import reported_usage
+
+    ids: list[str] = []
+    for step in view.get("steps") or []:
+        for attempt in step.get("attempts") or []:
+            members = attempt.get("members") or []
+            for sid in [attempt.get("session_id"), *(m.get("session_id") for m in members
+                                                     if isinstance(m, dict))]:
+                if isinstance(sid, str) and sid and sid not in ids:
+                    ids.append(sid)
+    rows = _ledger_rows() if rows is None else rows
+    out: dict[str, Any] = {
+        "source": "adapter_reported",
+        "note": "the step sessions' adapter reports, totalled; not metered or priced by Garuda",
+        "step_sessions": len(ids)}
+    if rows is None:
+        return {**out, "coverage": "ledger_unreadable", "reporting_sessions": None,
+                "cost_usd": None, "cost_complete": False, "models": []}
+    reports = [report for sid in ids if (report := reported_usage(sid, records=rows))]
+    costs = [r["cost_usd"] for r in reports if isinstance(r.get("cost_usd"), (int, float))]
+    return {**out, "coverage": "complete", "reporting_sessions": len(reports),
+            "cost_usd": round(sum(costs), 8) if costs else None,
+            "cost_complete": bool(costs) and all(r.get("cost_complete") for r in reports),
+            "models": sorted({m for r in reports for m in r.get("models") or []})}
+
+
+def steps_reported_usage_line(total: dict | None) -> str:
+    """One human line for :func:`steps_reported_usage`."""
+    if not total:
+        return "not reported"
+    if total.get("coverage") != "complete":
+        return "unknown (usage ledger unreadable)"
+    if not total["reporting_sessions"]:
+        return f"not reported by any of {total['step_sessions']} step sessions"
+    cost = total["cost_usd"]
+    parts = [f"USD {cost}" if cost is not None else "cost not reported",
+             f"{total['reporting_sessions']} of {total['step_sessions']} step sessions reporting"]
+    if total["models"]:
+        parts.append("model " + ", ".join(total["models"]))
+    return "; ".join(parts) + " — adapter-reported, not metered by Garuda"
+
+
 def _events(store, session_id: str) -> tuple[list[dict], dict]:
     """The session's persisted ACP event trail, bounded, as it was written."""
     path = Path(store.session_dir(session_id)) / "acp-events.jsonl"
@@ -262,4 +312,5 @@ def export_records(store, flow_session: str, meta: dict | None = None) -> Iterat
     yield {"record": "summary", "flow_session": flow_session, **full["summary"]}
 
 
-__all__ = ["SCHEMA", "VERSION", "export_records", "trajectory", "verification"]
+__all__ = ["SCHEMA", "VERSION", "export_records", "steps_reported_usage",
+           "steps_reported_usage_line", "trajectory", "verification"]
