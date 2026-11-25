@@ -81,7 +81,7 @@ sequenceDiagram
   participant You
   participant Garuda
   participant H as Harness process
-  You->>Garuda: garuda run --runtime opencode
+  You->>Garuda: garuda run --runtime opencode --permission-mode auto
   Garuda->>Garuda: resolve trusted manifest, take workspace lease, record baseline
   Garuda->>H: launch the exact executable found by discovery
   H->>Garuda: approval request
@@ -156,9 +156,14 @@ your global settings that keeps conclusions, never probe output.
 Preview first. Without `--confirm`, nothing changes:
 
 ```bash
-garuda runtime handoff --session latest --to opencode
-garuda runtime handoff --session latest --to opencode --confirm
+garuda runtime handoff --session latest --to codex
+garuda runtime handoff --session latest --to codex --confirm
 ```
+
+The target runs as a run with no role, at most `smart`, so its reported
+permission mode must fit that. OpenCode (whose modes need `auto`) and harnesses
+whose modes Garuda does not classify refuse with `role.mode_unenforced`; hand
+off to Claude Code or Codex, or continue on them with a role run.
 
 Add `--workspace` when an older native session recorded a relative workspace
 and you aren't running from that directory.
@@ -233,8 +238,10 @@ export never launch a harness or query its login/quota state.
 - **Dashboard:** the Runtimes board lists and inspects catalog entries, previews
   and prepares handoffs, shows workspace deltas, and runs recovery. Dashboard
   chat still starts the native loop.
-- **SDK:** `SoftwareAgent(runtime="opencode")` runs one ACP turn and returns an
-  `AgentResult`. `Conversation` can start on ACP and switch ACP-to-ACP through
+- **SDK:** `SoftwareAgent(runtime="codex")` runs one ACP turn and returns an
+  `AgentResult`. SDK ACP runs may do at most what `smart` allows, so OpenCode and
+  harnesses whose modes Garuda does not classify refuse with
+  `role.mode_unenforced`. `Conversation` can start on ACP and switch ACP-to-ACP through
   the transactional handoff path, but refuses an in-process native-to-ACP
   switch; use the CLI handoff for that.
 - **Service:** the JSON-RPC server exposes runtime list, inspect, handoff,
