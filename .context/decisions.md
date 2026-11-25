@@ -1,5 +1,24 @@
 # Durable decisions
 
+## 2026-11-26 — A checked flow's check ceiling binds the flow workspace, not the cwd (#768)
+
+`FlowExecutionService` builds the check `PermissionEngine` with
+`workspace_root=` the flow workspace resolved to an absolute path
+(`service._bound_root`), for CLI runs and resumes and for dashboard-owned
+starts. Before, the engine defaulted to the process cwd, which is part of the
+frozen request's `ceiling` (`snapshot_policy()["workspace_root"]`), so
+`garuda flow resume` from another directory failed with
+`flow.verification_reconciliation_required`. `_execute` also resolves the
+workspace once, so configuration reads and frozen check sources use one
+spelling. Resume still compares the whole saved request digest: changed
+checks, sources, ceiling or workspace refuse. Requests saved before the fix
+(ceiling = the start cwd) resume only when the current request equals the
+saved one under a cwd-bound engine, i.e. from the directory the flow was
+started in (a start from inside the workspace already matches); anywhere else
+they refuse with a message naming that rule. The saved request format is
+unchanged. Background admission records already resolve their roots; no other
+frozen record took the cwd.
+
 ## 2026-11-26 — A read-only flow step's prompt says it is read-only (#762)
 
 A `no-edits` step, a role with `permissions: readonly` and every parallel
