@@ -136,6 +136,33 @@ class InitialSelection:
         return lines
 
 
+def with_role_fallback(selection: InitialSelection, role_plan: object) -> InitialSelection:
+    """Mark a selection that a role's own fallback chain made (#726).
+
+    A role's chain is decided before selection, which then sees an explicit
+    runtime. When the chain took a candidate other than its primary, the record
+    says ``source: fallback`` and names the primary in ``fallback_from``, so a
+    fallback start is not reported as an explicit choice.
+    """
+    from dataclasses import replace
+
+    decision = getattr(role_plan, "fallback", None)
+    taken = decision.get("taken") if isinstance(decision, dict) else None
+    primary = decision.get("primary") if isinstance(decision, dict) else None
+    if (not isinstance(taken, dict) or not isinstance(primary, dict)
+            or not taken.get("index") or taken.get("harness") != selection.selected):
+        return selection
+    skipped = [item for item in decision.get("skipped") or [] if isinstance(item, dict)]
+    why = "; ".join(f"{item.get('harness')} ({item.get('reason')})" for item in skipped)
+    role = getattr(role_plan, "role", "")
+    return replace(
+        selection, source="fallback", fallback_from=str(primary.get("harness")),
+        rationale=(*selection.rationale,
+                   f"role {role} fallback took candidate {taken.get('index')}"
+                   + (f" after skipping {why}" if why else "")),
+    )
+
+
 def record_initial_selection(store: object, session_id: str, selection: InitialSelection) -> None:
     """Persist the selection record onto a session before the runtime starts.
 
