@@ -35,7 +35,9 @@ linux = pytest.mark.skipif(sys.platform != "linux", reason="Linux acceptance sup
 
 
 async def _appears(path):
-    deadline = asyncio.get_running_loop().time() + 8
+    # The gate is reached only after a real acceptance worker interpreter starts,
+    # which took over 8 s on a loaded host (#713).
+    deadline = asyncio.get_running_loop().time() + 30
     while not path.exists():
         assert asyncio.get_running_loop().time() < deadline, "real child did not reach its gate"
         await asyncio.sleep(0.01)

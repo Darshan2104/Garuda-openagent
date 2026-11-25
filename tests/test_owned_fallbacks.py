@@ -107,7 +107,9 @@ async def test_editable_task_sources_and_configuration_have_distinct_lifetimes(t
         response = await _call(ctx, "/api/scenarios/start", method="POST", body=_start(
             preview, operation, "build-review", inputs))
         assert response.status in {201, 202}, _body(response)
-        terminal = await _terminal(ctx, operation)
+        # Two real role workers, a review and a real check: ~24 s idle, ~45 s
+        # under load, so the shared 60 s default is too tight here (#713).
+        terminal = await _terminal(ctx, operation, timeout=180)
         assert target.read_text() == "# edited by coder\n"
         slots = CapacityStore()
         if task_edit:
