@@ -26,6 +26,24 @@ with no readonly mode, as the read-only mount is the write boundary
 (`enforced_by: confinement`). `acp_mode.required` is now the authority, not a
 mode name.
 
+## 2026-11-25 — A checked flow step refused before its prompt stops with its own code (#738)
+
+An owned role worker (every step of a `--check` or dashboard-owned flow) now
+reports a `RoleRefused` from its role pipeline, such as `role.start_failed`
+(logged-out harness) or `role.model_unavailable`, as a typed result
+`{"refusal": {"code", "message"}}` instead of crashing out of the worker. A
+crash left no result, so the step lost its code and, before #723, was treated
+as unproved cleanup (`flow.cleanup_unproved`, flow quarantined, lease and
+harness slot kept forever). The parent accepts a refusal only as a failed
+result with no output and a `role.`, `harness.` or `config.` code, bounded and
+redacted. The attempt keeps the full closure and evidence-boundary proof of any
+other failed step; only then is its receipt `stopped` with the role's code and
+`stop.refused: true`, and a checked flow records its resume checkpoint, so
+`flow resume` retries it under the original checks (#683). A refusal reported
+after the worker asked to retain ownership is still `CleanupUncertain`, so
+genuinely unproved cleanup still quarantines. Unchecked in-process flows are
+unchanged.
+
 ## 2026-11-25 — A run on a logged-out harness refuses with `harness.logged_out` (#739, #668)
 
 Since discovery reads a logged-out Codex as `unauthenticated` (#715),

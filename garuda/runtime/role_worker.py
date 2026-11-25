@@ -11,6 +11,38 @@ from garuda.runtime.role_request import catalog_from_document, native_from_docum
 
 
 async def execute(payload, control):
+    """Run the role once. A role refusal (#738) is a typed failed result, not a crash.
+
+    ``RoleRefused`` is how the role pipeline stops before or while applying the
+    role (``role.start_failed``, ``role.model_unavailable``, ...). Raised out of
+    this process it would only be a result-less exit, so its code would be lost.
+    Any other exception still ends the worker without a result.
+    """
+    from garuda.runtime.roles import RoleRefused
+
+    try:
+        return await _execute(payload, control)
+    except RoleRefused as exc:
+        from garuda.context.redact import redact_text
+        from garuda.core.sessions import SessionStore
+        from garuda.runtime.role_control import MAX_REFUSAL_MESSAGE, refusal_code
+
+        if not refusal_code(exc.code):
+            raise  # not a role-pipeline code: a result-less exit, as before
+        request = payload["request"]
+        if "workspace_plan" in request:
+            try:
+                SessionStore(request["sessions_root"]).update_meta(request["session_id"], {
+                    **request["workspace_plan"], "workspace_owner": request["workspace_owner"]})
+            except (OSError, ValueError):
+                pass  # the session may not have begun; the result still closes the step
+        message = str(exc).removeprefix(f"{exc.code}: ")
+        message = " ".join(redact_text(message)[0].splitlines())[:MAX_REFUSAL_MESSAGE]
+        return {"session_id": request["session_id"], "success": False, "output": "",
+                "refusal": {"code": exc.code, "message": message}}
+
+
+async def _execute(payload, control):
     from garuda.core.sessions import SessionStore
 
     request = payload["request"]

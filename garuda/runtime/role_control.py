@@ -21,6 +21,27 @@ CONTROL_LIMIT = 65_536
 MAX_RESULT_OUTPUT = 32_768
 #: The most characters of a responder's non-answer reason relayed to a role child.
 MAX_UNANSWERED_REASON = 1_024
+#: The most characters of a worker's typed refusal message (#738).
+MAX_REFUSAL_MESSAGE = 2_048
+#: Code namespaces a role worker may report as its typed refusal: the role
+#: pipeline's own (``RoleRefused``), never a flow, workspace or check code.
+REFUSAL_NAMESPACES = ("role", "harness", "config")
+
+
+def refusal_code(code) -> bool:
+    """A typed refusal code a role worker may report, e.g. ``role.start_failed``."""
+    if not isinstance(code, str) or len(code) > 64 or not code.isascii():
+        return False
+    namespace, _, name = code.partition(".")
+    return namespace in REFUSAL_NAMESPACES and bool(name) and all(
+        part and part.replace("_", "").isalnum() and part == part.lower() for part in name.split("."))
+
+
+def valid_refusal(refusal) -> bool:
+    """A worker's typed refusal: ``{"code": "<namespace>.<name>", "message": str}``."""
+    return (isinstance(refusal, dict) and set(refusal) == {"code", "message"}
+            and refusal_code(refusal["code"]) and isinstance(refusal["message"], str)
+            and len(refusal["message"]) <= MAX_REFUSAL_MESSAGE)
 
 
 def bounded_output(text: str) -> str:
@@ -175,10 +196,13 @@ class RoleControl:
             # A timeout or lost person stays a non-answer for the worker's broker to audit.
             return answer if isinstance(answer, Unanswered) else bool(answer)
         if operation == "result" and self.result is None:
-            if (not isinstance(value, dict) or set(value) != {"session_id", "success", "output"}
+            if (not isinstance(value, dict) or set(value) - {"refusal"} != {"session_id", "success", "output"}
                     or not isinstance(value["session_id"], str)
                     or type(value["success"]) is not bool or not isinstance(value["output"], str)
-                    or len(value["output"].encode()) > MAX_RESULT_OUTPUT):
+                    or len(value["output"].encode()) > MAX_RESULT_OUTPUT
+                    # A typed refusal (#738) is only ever a failed step with no output.
+                    or ("refusal" in value and (not valid_refusal(value["refusal"])
+                                                or value["success"] is not False or value["output"]))):
                 raise ValueError("invalid role result")
             from garuda.core.sessions import validate_session_ref
 
