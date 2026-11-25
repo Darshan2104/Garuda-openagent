@@ -12,6 +12,7 @@ exact replay within one session still writes nothing. Delta keys, cursors and
 never counted twice across Garuda sessions. Existing rows keep their old keys:
 nothing is migrated, and `reported_usage` reads rows by `session_id` and segment,
 never by key.
+
 ## 2026-11-25 — Review independence is a preflight before the first step (#753)
 
 `FlowEngine._check_review_independence` runs `rv.check_independent` for every
