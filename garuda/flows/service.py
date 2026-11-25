@@ -8,9 +8,11 @@ admission; the engine remains the sole acceptance owner.
 
 from __future__ import annotations
 
+import os
 import re
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 
 from garuda.config.garuda_yaml import load_effective
 from garuda.core.sessions import SessionStore
@@ -51,6 +53,11 @@ class FlowExecutionResult:
     flow: engine.FlowResult
     review: dict | None
     state: dict | None
+
+
+def _bound_root(workspace) -> str:
+    """The flow workspace as recorded: an absolute, resolved path."""
+    return str(Path(workspace).resolve())
 
 
 class FlowExecutionService:
@@ -170,7 +177,10 @@ class FlowExecutionService:
             from garuda.core.permissions import PermissionEngine
 
             self._validate_checks(checks)
-            permissions = PermissionEngine(mode=permission_mode)
+            # The check ceiling is bound to the flow's workspace, never to the
+            # server process's current directory (#768).
+            permissions = PermissionEngine(mode=permission_mode,
+                                           workspace_root=_bound_root(plan.workspace))
             request = self._freeze_checks(
                 context.resolved, plan.workspace, context.configuration_sources, permissions)
             if request is None:
@@ -212,6 +222,30 @@ class FlowExecutionService:
             raise engine.FlowStopped("flow.check_request_invalid",
                                      "the effective checks or their frozen source authority "
                                      "are invalid or exceed the bounded check request") from exc
+
+    @classmethod
+    def _original_check_authority(cls, resolved, workspace, source_facts, permissions, request, saved):
+        """Return the check authority that equals the one the stopped flow saved.
+
+        Requests saved before #768 bound the check ceiling to the directory the
+        flow was started from. Such a flow resumes only from that same directory,
+        where the same request is reproduced exactly; any other difference is a
+        changed check authority and is refused.
+        """
+        from garuda.core.permissions import PermissionEngine
+
+        if request.identity == saved["request"]:
+            return permissions, request
+        if os.path.abspath(os.getcwd()) != workspace:
+            legacy_permissions = PermissionEngine(mode="smart")
+            legacy = cls._freeze_checks(resolved, workspace, source_facts, legacy_permissions)
+            if legacy is not None and legacy.identity == saved["request"]:
+                return legacy_permissions, legacy
+        raise engine.FlowStopped(
+            "flow.verification_reconciliation_required",
+            "the stopped flow's check request changed (its checks, their configuration sources "
+            "or the check permission ceiling); a checked flow started before checks were bound "
+            "to the flow workspace resumes only from the directory it was started in")
 
     @staticmethod
     def _validate_checks(checks: tuple[str, ...]) -> None:
@@ -288,7 +322,8 @@ class FlowExecutionService:
                 return await self._execute(meta["flow"]["name"], meta["task"], meta["workspace"],
                                            flow_session=flow_session,
                                            checks=tuple(request["checks"]),
-                                           checked_checkpoint=meta["flow_resume_checkpoint"])
+                                           checked_checkpoint=meta["flow_resume_checkpoint"],
+                                           saved_request=request)
             classification = recovery["classification"]
             code = ("flow.verification_uncertain" if classification == "uncertain" else
                     "flow.verification_publication_incomplete" if classification in {
@@ -334,11 +369,15 @@ class FlowExecutionService:
                        flow_session: str | None = None,
                        starter_record: dict | None = None,
                        checks: tuple[str, ...] | None = None,
-                       recovery=None, checked_checkpoint=None) -> FlowExecutionResult:
+                       recovery=None, checked_checkpoint=None,
+                       saved_request=None) -> FlowExecutionResult:
         from garuda.config_sources import SourceCapture
         from garuda.flows.launch import launch_step
         from garuda.flows.quota_recovery import FlowRecovery
 
+        # One spelling of the workspace for the configuration reads, the frozen
+        # check sources and the check ceiling, whichever directory runs us (#768).
+        workspace = _bound_root(workspace)
         request = permissions = None
         with SourceCapture() as capture:
             if checks is None:
@@ -349,8 +388,11 @@ class FlowExecutionService:
         if checks is not None:
             from garuda.core.permissions import PermissionEngine
 
-            permissions = PermissionEngine(mode="smart")
+            permissions = PermissionEngine(mode="smart", workspace_root=workspace)
             request = self._freeze_checks(resolved, workspace, capture.facts(), permissions)
+            if saved_request is not None and request is not None:
+                permissions, request = self._original_check_authority(
+                    resolved, workspace, capture.facts(), permissions, request, saved_request)
         flows = packaged.available(resolved)
         if name not in flows:
             raise engine.FlowStopped("flow.unknown", f"no flow named {name!r} "
