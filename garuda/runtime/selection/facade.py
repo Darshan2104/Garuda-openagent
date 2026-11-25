@@ -33,6 +33,7 @@ from .models import (
     SOURCE_NATIVE,
     SOURCE_PROFILE,
     SOURCE_RULE,
+    HarnessLoggedOut,
     InitialCandidate,
     InitialRequest,
     RepoTraits,
@@ -43,6 +44,13 @@ from .scoring import (
     rule_matches_request,
     sort_selection_rules,
 )
+
+
+def _refuse_named(candidate: InitialCandidate, message: str):
+    """Refuse a named runtime; a logged-out one with its own type (#739)."""
+    if candidate.auth in ("unauthenticated", "expired"):
+        raise HarnessLoggedOut(message, runtime_id=candidate.runtime_id, auth=candidate.auth)
+    raise SelectionError(message)
 
 
 class _SelectionRun:
@@ -128,7 +136,7 @@ class _SelectionRun:
                 )
             ok, reason = validate_candidate(candidate, request)
             if not ok:
-                raise SelectionError(f"explicit runtime {request.explicit_runtime!r}: {reason}")
+                _refuse_named(candidate, f"explicit runtime {request.explicit_runtime!r}: {reason}")
             self.rationale.append(f"explicit: {request.explicit_runtime} selected explicitly")
             return self.finish(candidate, source=SOURCE_EXPLICIT, rule_id=None)
 
@@ -140,7 +148,7 @@ class _SelectionRun:
                 )
             ok, reason = validate_candidate(candidate, request)
             if not ok:
-                raise SelectionError(f"profile pin {request.profile_pin!r}: {reason}")
+                _refuse_named(candidate, f"profile pin {request.profile_pin!r}: {reason}")
             self.rationale.append(f"profile: {request.profile_pin} selected by profile pin")
             return self.finish(candidate, source=SOURCE_PROFILE, rule_id=None)
 

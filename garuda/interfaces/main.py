@@ -2600,6 +2600,7 @@ async def run_task_guarded(args) -> int:
     from garuda.runtime.registry import RegistryError
     from garuda.runtime.resume import ResumeRefused
     from garuda.runtime.roles import RoleRefused
+    from garuda.runtime.selection import SelectionError
     from garuda.runtime.strict_store import CorruptRecord, StorageError
     from garuda.workspace.diff import BaselineError
     from garuda.workspace.factory import WorkspaceStartError
@@ -2631,8 +2632,29 @@ async def run_task_guarded(args) -> int:
         code = "storage.corrupt_record" if isinstance(exc, CorruptRecord) else "storage.unavailable"
         print(f"Error: {code}: session store unavailable: {exc}", file=sys.stderr)
         return 2
+    except RoleRefused as exc:
+        # A role (or a named runtime, e.g. a logged-out harness, #739) that
+        # cannot run: a typed refusal, not a crash. A queued run's session
+        # records the same code and reason (#739).
+        import sys
+
+        from garuda.interfaces.role_execution import _settle_background_refusal
+
+        _settle_background_refusal(args, str(exc), exc.code)
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    except SelectionError as exc:
+        # No runtime satisfies an explicit request (#739): refused, typed.
+        import sys
+
+        from garuda.interfaces.role_execution import _settle_background_refusal
+
+        message = f"runtime.selection_refused: {exc}"
+        _settle_background_refusal(args, message, "runtime.selection_refused")
+        print(f"Error: {message}", file=sys.stderr)
+        return 2
     except (LeaseError, CapacityError, WorktreeError, TagError, BriefBudgetExceeded,
-            ResumeRefused, GarudaConfigError, RoleRefused) as exc:
+            ResumeRefused, GarudaConfigError) as exc:
         # The workspace is held by another run, the runtime is at its
         # capacity, or no worktree could be made: a refusal, not a crash.
         import sys
