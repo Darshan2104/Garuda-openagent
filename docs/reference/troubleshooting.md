@@ -170,6 +170,16 @@ Click a problem to see the fix.
     The proof reads `/proc`, so on macOS recovery still refuses. Don't delete
     lease records by hand.
 
+    If a dashboard or flow step's role worker is killed, the run no longer
+    quarantines. Its supervisor proves that the worker's whole process tree,
+    including detached children, has stopped, so the step fails with
+    `flow.step_failed` ("the role worker exited without a result") and the
+    lease and slot are released straight away, while the dashboard is still
+    running. A lease that still reads `lease.quarantined` after a worker kill
+    either comes from an older Garuda or was quarantined because the worker
+    itself asked to keep it or its cleanup could not be proved (for example
+    its supervisor was killed too). Recovery keeps refusing those.
+
 ??? question "`sessions merge` fails with `integration.check_failed`"
 
     The check runs in Docker with your merged code mounted read-only, **no

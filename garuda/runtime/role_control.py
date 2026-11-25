@@ -58,6 +58,8 @@ class RoleControl:
         self.approval = approval
         self.nonce = secrets.token_hex(32)
         self.result = None
+        #: The worker asked to retain ownership; a result-less exit then stays quarantined.
+        self.quarantine_requested = False
         self._process = None
         self._active = asyncio.Event()
         self._connected = False
@@ -151,6 +153,7 @@ class RoleControl:
 
     async def _dispatch(self, operation, value):
         if operation == "quarantine" and value is None:
+            self.quarantine_requested = True
             await self.guard.stop_heartbeat()
             return None
         self.guard._check()
