@@ -849,6 +849,9 @@ async def run_acp_task(
             ),
         )
         began = True
+        # An ACP harness runs only in the local host workspace (other kinds refuse
+        # before this); a readonly run's container is recorded as `confinement` (#726).
+        store.update_meta(session_id, {"workspace_kind": "local"})
         if session_record:
             store.update_meta(session_id, session_record)
         if deadline_sec is not None:
@@ -1140,9 +1143,18 @@ def _approval_summary(store, session_id: str) -> dict | None:
 
 
 def _record_negotiated(store, session_id: str, runtime) -> None:
-    """The agent's identity, offered options and modes, into the session (#691)."""
+    """The agent's identity, offered options and modes, and what the session request
+    sent, into the session (#691, #726); with the agent segment its events carry."""
     try:
-        store.update_meta(session_id, {"acp_session": runtime.negotiated_session()})
+        updates = {"acp_session": runtime.negotiated_session()}
+        segment = getattr(runtime, "agent_segment", None)
+        if isinstance(segment, dict):
+            updates["agent_segment"] = {key: segment.get(key) for key in (
+                "id", "name", "digest", "runtime", "kind", "reported_agent", "reported_version",
+                "native_session_id") if segment.get(key) is not None}
+            if segment.get("digest"):
+                updates["agent_digest"] = segment["digest"]
+        store.update_meta(session_id, updates)
     except Exception:
         logger.warning("ACP session options not recorded", exc_info=True)
 

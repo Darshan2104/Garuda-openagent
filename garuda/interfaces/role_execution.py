@@ -251,7 +251,9 @@ async def run_task(args) -> int:
             runtime_catalog, exc.runtime_id,
             role_plan.role if role_plan is not None else None)) from exc
     args.runtime = initial_plan.selection.selected
-    args._initial_selection = initial_plan.selection
+    from garuda.runtime.selection.explain import with_role_fallback
+
+    args._initial_selection = with_role_fallback(initial_plan.selection, role_plan)
     args._initial_plan = initial_plan
     fallback_store = getattr(args, "_store", None)
     fallback_events = None
