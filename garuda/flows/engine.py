@@ -43,10 +43,27 @@ JOURNAL = "journal.jsonl"
 RESUMABLE_CHECKED_STOPS = {"workspace.readonly_unenforced", "flow.step_failed", "flow.output_missing"}
 
 
+def _settled_refusal(receipt: dict) -> bool:
+    """A stopped attempt whose owned worker reported a typed role refusal (#738).
+
+    Like ``flow.step_failed`` it is resumable only as a settled attempt: its
+    receipt names its session, and coverage still demands its bound closure and
+    evidence boundary.
+    """
+    from garuda.runtime.role_control import refusal_code
+
+    stop = receipt.get("stop")
+    return (receipt.get("status") == "stopped" and receipt.get("success") is False
+            and isinstance(receipt.get("session_id"), str) and isinstance(stop, dict)
+            and stop.get("refused") is True and refusal_code(stop.get("code")))
+
+
 class FlowStopped(Exception):
     def __init__(self, code: str, message: str, *, step: str | None = None):
         super().__init__(f"{code}: {message}")
         self.code = code
+        #: Raised from a settled receipt of an owned worker's typed refusal (#738).
+        self.settled_refusal = False
         self.step = step
 
 
@@ -84,6 +101,9 @@ class StepResult:
     #: Why the step's agent stopped, when it failed rather than finished.
     error: str = ""
     quota_wait: bool = False
+    #: An owned role worker's typed refusal, ``{"code", "message"}`` (#738). The step
+    #: still has its proved closure; the flow stops with the role's own code.
+    refusal: dict | None = None
 
 
 Launcher = Callable[[StepLaunch], Awaitable[StepResult]]
@@ -440,7 +460,8 @@ class FlowRunner:
             receipt = by_attempt.pop(key, {})
             boundary = receipt.get("evidence_boundary")
             stopped = (receipt.get("status") == "stopped" and self.verification_cli_checks is not None
-                       and (receipt.get("stop") or {}).get("code") in RESUMABLE_CHECKED_STOPS)
+                       and ((receipt.get("stop") or {}).get("code") in RESUMABLE_CHECKED_STOPS
+                            or _settled_refusal(receipt)))
             if (intent.get("event") != "intent" or recorded.get("event") != "receipt"
                     or key != (recorded.get("step"), recorded.get("attempt"))
                     or intent.get("index") != receipt.get("index")
@@ -921,7 +942,8 @@ class FlowRunner:
             checkpoint = None
             refusal = None
             if (self.verification_cli_checks is not None and self._evidence is not None
-                    and not self._verification_quarantined and stop.code in RESUMABLE_CHECKED_STOPS):
+                    and not self._verification_quarantined
+                    and (stop.code in RESUMABLE_CHECKED_STOPS or stop.settled_refusal)):
                 try:
                     checkpoint = await self._stop_checkpoint(lease)
                 except FlowStopped as exc:
@@ -1469,6 +1491,12 @@ class FlowRunner:
                 stop = FlowStopped("flow.no_edits_changed", check.summary(), step=step["id"])
         version_after = await self._version_for_flow()
         receipt["workspace_version_after"] = version_after
+        if stop is None and outcome.refusal is not None and self.require_owned:
+            # The owned worker refused the role (logged-out harness, model not
+            # offered, ...): the attempt closed and is bounded like any failed
+            # step, so it stops with the role's own code (#738).
+            stop = FlowStopped(outcome.refusal["code"], outcome.refusal["message"], step=step["id"])
+            stop.settled_refusal = True
         if stop is None and not outcome.success:
             stop = FlowStopped("flow.quota_wait" if outcome.quota_wait else "flow.step_failed",
                                f"step {step['id']} did not complete"
@@ -1491,7 +1519,8 @@ class FlowRunner:
                 receipt["outputs"].append(ref.to_dict())
         receipt["status"] = "done" if stop is None else "stopped"
         if stop is not None:
-            receipt["stop"] = {"code": stop.code, "message": str(stop)}
+            receipt["stop"] = {"code": stop.code, "message": str(stop),
+                               **({"refused": True} if stop.settled_refusal else {})}
             receipt["outputs"] = [] if receipt.get("no_edits", {}).get("result") == "changed" \
                 else receipt["outputs"]
         await self._record_step_receipt(receipt)

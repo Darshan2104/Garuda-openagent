@@ -191,9 +191,12 @@ garuda flow show FLOW_ID        # steps, attempts, receipts, outputs
 this project). For a stopped flow, `flow show` prints the stop code, the step
 and the message.
 
-After a checked CLI flow stops at a settled step failure, missing output, or
-confinement refusal, `garuda flow resume FLOW_ID` retries the pending step and
-continues with the original checks. If a reviewer returned no required output,
+After a checked CLI flow stops at a settled step failure, a role refusal
+before the prompt (for example `role.start_failed` from a logged-out harness or
+`role.model_unavailable`), missing output, or confinement refusal,
+`garuda flow resume FLOW_ID` retries the pending step and continues with the
+original checks. Such a stop keeps the step's own code and releases the
+workspace lease and the harness slot. If a reviewer returned no required output,
 the pending step is the reviewer. Resume requires the saved check request,
 unchanged workspace identity and candidate, matching configuration sources,
 and complete step and evidence records. Older checked sessions without a saved
