@@ -41,11 +41,15 @@ from garuda.flows import artifacts as art
 from garuda.workspace.confined_acp import Confinement, ConfinementRefused, require_image
 
 JOURNAL = "journal.jsonl"
-#: A checked step stopped by a signal (SIGTERM, Ctrl-C) after its owned worker
-#: tree and confinement were proved closed (#760).
+#: A checked flow stopped with one of these resumes from its pending step. A
+#: ``flow.review_invalid`` reviewer receipt is settled (the step ran; only its
+#: review block did not parse), so its resume runs the reviewer again on the
+#: same frozen candidate (#761); an invalid review never counts as a round.
+#: ``flow.interrupted`` is a checked step stopped by a signal (SIGTERM, Ctrl-C)
+#: after its owned worker tree and confinement were proved closed (#760).
 INTERRUPTED_STOP = "flow.interrupted"
 RESUMABLE_CHECKED_STOPS = {"workspace.readonly_unenforced", "flow.step_failed", "flow.output_missing",
-                           INTERRUPTED_STOP}
+                           "flow.review_invalid", INTERRUPTED_STOP}
 
 
 def _settled_refusal(receipt: dict) -> bool:

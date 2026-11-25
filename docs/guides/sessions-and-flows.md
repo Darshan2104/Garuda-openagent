@@ -307,11 +307,16 @@ recorded (task, error detail) is redacted again on the way out.
 
 After a checked CLI flow stops at a settled step failure, a role refusal
 before the prompt (for example `role.start_failed` from a logged-out harness or
-`role.model_unavailable`), missing output, or confinement refusal,
+`role.model_unavailable`), missing output, an invalid review
+(`flow.review_invalid`), or confinement refusal,
 `garuda flow resume FLOW_ID` retries the pending step and continues with the
 original checks. Such a stop keeps the step's own code and releases the
-workspace lease and the harness slot. If a reviewer returned no required output,
-the pending step is the reviewer. Resume requires the saved check request,
+workspace lease and the harness slot. If a reviewer returned no required output
+or a review that did not parse, the pending step is the reviewer: it reviews the
+same candidate again, and the invalid review never counts as a round. Any other
+checked stop before the checks began (for example
+`flow.review_changes_requested`) refuses with `flow.stop_not_resumable`,
+naming the stop; start a new flow. Resume requires the saved check request,
 unchanged workspace identity and candidate, matching configuration sources,
 and complete step and evidence records. Older checked sessions without a saved
 request need a new flow. Once the check phase has a durable intent, resume only
@@ -373,6 +378,13 @@ findings:
 - [major] the retry loop never ends
 - [nit] typo in the help text
 ```
+
+To approve with nothing to report, the reviewer writes `verdict: approve` and
+`findings:` with nothing after it; Garuda's prompt says so. A common "no
+findings" line under an approval (`- none.`, `No findings`, `findings: none`)
+also reads as no findings. `verdict: changes` still needs at least one real
+finding, and a "none" line beside findings is refused. A review that does not
+parse stops the flow with `flow.review_invalid`.
 
 A `blocker` or `major` finding means changes are requested, and only the
 reviewed step runs again, with the findings, before the reviewer looks

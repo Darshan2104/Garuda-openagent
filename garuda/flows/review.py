@@ -9,7 +9,12 @@ is a bounded block::
     - [major] the retry loop never ends
     - [nit] a typo in the docstring
 
-Invalid output stops the flow. A ``blocker`` or ``major`` finding requests
+With nothing to report the ``findings:`` section stays empty. An approval
+that marks "no findings" in a common way instead (``- none.``, ``No
+findings``, ``findings: none``) parses as no findings (#761); ``verdict:
+changes`` still needs at least one real finding, and a "none" line never sits
+beside findings. Invalid output stops the flow; a checked flow stopped that
+way resumes by running the reviewer again on the same candidate. A ``blocker`` or ``major`` finding requests
 changes even under ``verdict: approve``. On changes, only the reviewed step
 runs again — with the findings as its input — and then the reviewer;
 ``max_rounds: 2`` means at most three coder/reviewer pairs. The flow ends
@@ -43,9 +48,17 @@ FORMAT = (
     "The review block holds only plain lines, no Markdown: first `verdict: approve` "
     "or `verdict: changes`, then `findings:`, then one finding per line as "
     f"`- [{'|'.join(SEVERITIES)}] what is wrong and where`. "
+    "To approve with no findings, write `verdict: approve` and `findings:` with "
+    "nothing after it (no `- none` line). "
     "`verdict: changes` needs at least one finding; a blocker or major finding "
     "requests changes.")
 _FINDING = re.compile(r"^-\s*\[(blocker|major|minor|nit)\]\s*(.+)$")
+#: A line that says "no findings" (#761): ``none``, ``- none.``, ``No findings``,
+#: ``n/a``, optionally followed by punctuation and a remark. ``None of ...`` is
+#: not one.
+_NO_FINDINGS = re.compile(
+    r"^(?:-\s*)?(?:none|no findings?|no issues?(?: found)?|nothing(?: to report)?|n/a)"
+    r"(?:\s*[.:;,!)\u2013\u2014-].*)?$", re.IGNORECASE)
 STRUCTURED_VERSION = 2
 MAX_REVIEW_BYTES = 64 * 1024
 _STRUCTURED_FIELDS = {"severity", "path", "lines", "message", "evidence", "verification",
@@ -88,18 +101,29 @@ def parse(text: str) -> Review:
     if verdict not in ("approve", "changes"):
         raise ReviewInvalid(f"unknown verdict {verdict!r}")
     findings = []
+    marked_none = False
     rest = lines[1:]
-    if rest and rest[0] == "findings:":
+    if rest and rest[0].lower().startswith("findings:"):
+        inline = rest[0].split(":", 1)[1].strip()
+        if inline:
+            if inline != "[]" and not _NO_FINDINGS.match(inline):
+                raise ReviewInvalid(f"not a findings header: {rest[0][:80]!r}")
+            marked_none = True
         rest = rest[1:]
     for line in rest:
         match = _FINDING.match(line)
         if not match:
+            if _NO_FINDINGS.match(line):
+                marked_none = True
+                continue
             raise ReviewInvalid(f"not a finding line: {line[:80]!r}")
         if len(findings) >= MAX_FINDINGS:
             raise ReviewInvalid(f"more than {MAX_FINDINGS} findings")
         findings.append((match.group(1), match.group(2)[:MAX_FINDING_CHARS]))
     if verdict == "changes" and not findings:
         raise ReviewInvalid("`verdict: changes` needs at least one finding")
+    if marked_none and findings:
+        raise ReviewInvalid("a \"no findings\" line cannot stand beside findings")
     return Review(verdict, findings)
 
 

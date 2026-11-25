@@ -17,6 +17,33 @@ from garuda.core.sessions import SessionStore
 from garuda.flows import engine, packaged
 
 
+def _refuse_unresumable_stop(meta: dict, records_dir) -> None:
+    """Name a settled pre-check stop that a resume does not continue (#761).
+
+    A checked flow that stopped at a step before its checks began, with a stop
+    code outside :data:`engine.RESUMABLE_CHECKED_STOPS`, has no resume
+    checkpoint and no check phase. That is not missing or corrupt check
+    records: say the stop is not resumable instead.
+    """
+    from pathlib import Path
+
+    from garuda.flows.verification_records import COMMIT, PHASE
+
+    stop = meta.get("flow_stop")
+    if (meta.get("flow_state") != "stopped" or meta.get("status") != "failed"
+            or not isinstance(stop, dict) or not isinstance(stop.get("code"), str)
+            or meta.get("flow_resume_checkpoint") is not None
+            or any(key in meta for key in ("flow_verification_phase", "flow_verification_commit",
+                                           "acceptance_receipts", "flow_evidence_manifest"))
+            or any(Path(records_dir, name).exists() or Path(records_dir, name).is_symlink()
+                   for name in (PHASE, COMMIT))):
+        return
+    raise engine.FlowStopped(
+        "flow.stop_not_resumable",
+        f"the checked flow stopped with {stop['code']} before its checks ran; that stop is "
+        "not resumable, so start a new flow")
+
+
 @dataclass(frozen=True)
 class FlowExecutionResult:
     """Engine outcome and recorded review/state evidence; no inferred verification."""
@@ -247,6 +274,7 @@ class FlowExecutionService:
                 records = FlowVerificationRecords(self.store.session_dir(flow_session), flow_session)
                 request = records.resume_request(meta)
                 if request is None:
+                    _refuse_unresumable_stop(meta, records.path)
                     recovery = records.reconcile_unfinished()
             except (StorageError, OSError, ValueError) as exc:
                 raise engine.FlowStopped(
