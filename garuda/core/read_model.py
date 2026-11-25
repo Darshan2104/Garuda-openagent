@@ -275,6 +275,7 @@ def session_row(store, meta: dict, *, queue_index: dict | None = None, liveness=
         "self_check": state.get("self_check"),
         "workspace": meta.get("workspace"),
         "isolation": meta.get("isolation") or "shared",
+        "workspace_kind": meta.get("workspace_kind"),
         "branch": meta.get("branch"),
         "queue": queue,
         "worker": {"pid": worker.get("pid")} if worker else None,
@@ -323,6 +324,20 @@ def session(store, session_id: str, *, queue=None) -> dict:
     row["approval_summary"] = approval_summary(meta)
     acp_session = meta.get("acp_session")
     row["acp_session"] = acp_session if isinstance(acp_session, dict) else None
+    role = meta.get("role") if isinstance(meta.get("role"), dict) else {}
+    # What the run ran with, beside what was offered (#726).
+    row["acp_mode"] = meta.get("acp_mode") or role.get("effective_mode")
+    adapter = role.get("adapter") if isinstance(role.get("adapter"), dict) else {}
+    segment = meta.get("agent_segment") if isinstance(meta.get("agent_segment"), dict) else {}
+    reported = (acp_session or {}).get("agent_info") if isinstance(acp_session, dict) else None
+    row["adapter"] = ({"runtime_id": adapter.get("runtime_id") or segment.get("runtime"),
+                       "version": adapter.get("version"),
+                       "reported_agent": segment.get("reported_agent"),
+                       "reported_version": segment.get("reported_version"),
+                       "agent_info": reported}
+                      if adapter or segment.get("kind") == "acp_execution" else None)
+    selection = meta.get("initial_selection")
+    row["initial_selection"] = selection if isinstance(selection, dict) else None
     row["error"] = ({"code": meta.get("error_code"), "detail": meta.get("error_detail")}
                     if meta.get("error_code") else None)
     row["approval_decisions"] = [

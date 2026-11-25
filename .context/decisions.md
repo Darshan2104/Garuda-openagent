@@ -1,5 +1,19 @@
 # Durable decisions
 
+## 2026-11-25 — Sessions record what they ran as (#726)
+
+Every session records its `workspace_kind` (an ACP run `local`, at session
+start; a native run its kind). An ACP run records, right after the agent
+starts and before any option is applied, its `agent_segment` (definition name
+and digest, runtime, the adapter's reported name and version) and
+`agent_digest`, and `acp_session.session_request`: the `session/new` or
+`session/load` method, `cwd`, and MCP server names and count only; a server's
+command, arguments and environment are never recorded. `sessions show` adds
+`workspace_kind`, `adapter`, `acp_mode` and `initial_selection`. A start taken
+from a role's own fallback chain is recorded in `initial_selection` as
+`source: fallback` with `fallback_from` naming the primary harness, instead of
+`explicit`. No trace level or default changes.
+
 ## 2026-11-25 — Unparseable MCP configs, workspace start failures and failed ACP turns fail closed (#673, #671, #674)
 
 An MCP config file that does not parse, or whose server container has the
