@@ -254,7 +254,8 @@ sequenceDiagram
 - If Garuda is killed mid-step, that step is quarantined, never replayed.
   `garuda flow resume FLOW_ID` continues after the last finished step. Before
   checks begin, a checked CLI flow can retry a settled step failure, a missing
-  output, or a confinement refusal. A failed review step can retry against the
+  output, an invalid review, or a confinement refusal; any other stop refuses
+  with `flow.stop_not_resumable`. A failed review step can retry against the
   saved build candidate and must still approve it. Other unresolved reviews
   stop with `flow.review_unresolved`. Once the protected check phase has a
   durable intent, resume only reconciles records and reports incomplete or
