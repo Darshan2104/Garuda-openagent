@@ -478,6 +478,17 @@ Click a problem to see the fix.
     `verdict: changes`, then `findings:` and one `- [blocker|major|minor|nit] …`
     line per finding. Garuda gives the reviewer this format; a reviewer that
     adds Markdown or prose inside the block is refused rather than guessed at.
+    An approval with nothing to report leaves `findings:` empty; a common
+    "no findings" line such as `- none.` is accepted under `verdict: approve`
+    only. A checked flow (`--check`) stopped this way resumes with
+    `garuda flow resume FLOW_ID`, which runs the reviewer again on the same
+    candidate.
+
+??? question "`garuda flow resume` stops with `flow.stop_not_resumable`"
+
+    The checked flow stopped before its checks with a code that a resume does
+    not continue, for example `flow.review_changes_requested`. The message
+    names that code. Nothing is wrong with the check records; start a new flow.
 
 ??? question "A read-only external role refuses with `workspace.readonly_unenforced`"
 

@@ -90,6 +90,30 @@ def test_invalid_reviews(text):
         rv.parse(text)
 
 
+@pytest.mark.parametrize("findings", [
+    "findings:\n- none.", "findings:\n- none", "findings:\nnone.", "findings:\nNo findings",
+    "findings:", "findings: none", "findings: []", "findings:\n- N/A",
+    # #761: what Claude Haiku actually wrote.
+    "findings:\n- none. calc/__init__.py total_range now sums range(1, n + 1), which is 1..n",
+])
+def test_an_approval_may_say_it_has_no_findings(findings):
+    review = rv.parse(f"verdict: approve\n{findings}")
+    assert review.approved and review.findings == []
+
+
+@pytest.mark.parametrize("text, problem", [
+    ("verdict: changes\nfindings:\n- none.", "needs at least one finding"),
+    ("verdict: changes\nfindings: none", "needs at least one finding"),
+    ("verdict: changes\nfindings:", "needs at least one finding"),
+    ("verdict: approve\nfindings:\n- none.\n- [major] data loss", "beside findings"),
+    ("verdict: approve\nfindings:\n- None of the error paths are handled", "not a finding line"),
+    ("verdict: approve\nfindings: the loop is fine", "not a findings header"),
+])
+def test_no_findings_never_weakens_a_real_review(text, problem):
+    with pytest.raises(rv.ReviewInvalid, match=problem):
+        rv.parse(text)
+
+
 async def test_the_reviewer_is_told_the_format_the_parser_accepts(repo):
     script = Script([APPROVE])
     await _run(repo, script, _config(max_rounds=0)).run()
@@ -98,6 +122,7 @@ async def test_the_reviewer_is_told_the_format_the_parser_accepts(repo):
     assert rv.FORMAT in prompt
     assert all(f"verdict: {v}" in rv.FORMAT for v in ("approve", "changes"))
     assert all(severity in rv.FORMAT for severity in rv.SEVERITIES)
+    assert "no findings" in rv.FORMAT  # #761: how to approve with nothing to report
     assert rv.FORMAT not in script.prompts[("build", 1)]
 
 
