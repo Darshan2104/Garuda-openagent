@@ -19,8 +19,10 @@ Install the adapter versions on which Garuda has proven it can set a role's
 model, effort and [harness mode](../guides/configuration.md#a-roles-harness-mode).
 Codex ACP 2.9.0 offers `gpt-6.2-sol`. Version 2.1.1 remains proven for role
 options and is the only Codex adapter with proof for quota-bound recovery and
-consult forwarding. Garuda refuses explicit role options on unproven versions
-before prompting (`role.options_unproven`).
+consult forwarding. Claude Code adapter 0.110.1 is also proven for role
+options and offers Haiku 5.5 with effort levels and `auto`; this walkthrough ran
+on 0.85.0. Garuda refuses explicit role options on unproven versions before
+prompting (`role.options_unproven`).
 
 ```bash
 npm install -g @agentclientprotocol/codex-acp@2.9.0 @agentclientprotocol/claude-agent-acp@0.85.0

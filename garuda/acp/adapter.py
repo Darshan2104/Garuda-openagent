@@ -90,6 +90,8 @@ class AcpRuntime:
         persist_dir: str | None = None,
         metrics=None,
         agent_definition: dict | None = None,
+        handshake_timeout: float | None = None,
+        handshake_hint: str = "",
     ):
         from garuda.observability.runtime_metrics import RuntimeMetrics
 
@@ -111,6 +113,9 @@ class AcpRuntime:
         self._policy = dict(policy or {})
         self._extra_env = dict(extra_env or {})
         self._setup_hint = setup_hint
+        # The startup (handshake) deadline; ``None`` keeps the client default.
+        self._handshake_timeout = handshake_timeout
+        self._handshake_hint = handshake_hint
         self._store = store
         self._recorded_child_pid: int | None = None
         # Handoff targets start store-less; a `PreparedChildRecorder` lets
@@ -118,6 +123,12 @@ class AcpRuntime:
         self._prepared_recorder = None
         self._prepared_child_pid: int | None = None
         self._persist_dir = persist_dir
+        # The user's opt-in study-trace level (#691); only a persisting run reads it.
+        self._trace_detail = "metadata"
+        if persist_dir is not None:
+            from garuda.observability.trace_detail import configured_level
+
+            self._trace_detail = configured_level()
         # Always-on: every adapter run records its own timings and triage,
         # so metrics are observable in real runs without opt-in plumbing.
         # Callers (mostly tests) may inject their own recorder instead.
@@ -189,6 +200,41 @@ class AcpRuntime:
     def reported_adapter_version(self) -> str:
         version = self._agent_info.get("version")
         return version if isinstance(version, str) else "unknown"
+
+    def negotiated_session(self) -> dict[str, Any]:
+        """What the agent reported at ``initialize`` and ``session/new`` (#691): its
+        identity, the options it offers with their current values, and its modes.
+
+        Bounded agent-reported names only; a study of a run that failed while its
+        role was applied can see what was on offer without talking to the agent."""
+
+        def name(value: Any) -> str | None:
+            if not isinstance(value, (str, int, float)) or isinstance(value, bool):
+                return None
+            text = " ".join(str(value).split())
+            return text[:128] or None
+
+        record: dict[str, Any] = {"agent_info": {
+            key: text for key in ("name", "title", "version")
+            if (text := name(self._agent_info.get(key))) is not None}}
+        process = self._process
+        options = []
+        for option in list(getattr(process, "session_config_options", None) or [])[:16]:
+            if not isinstance(option, dict):
+                continue
+            values = [text for value in (option.get("options") or [])[:32]
+                      if isinstance(value, dict) and (text := name(value.get("value"))) is not None]
+            options.append({"id": name(option.get("id")), "category": name(option.get("category")),
+                            "current": name(option.get("currentValue")), "values": values})
+        record["config_options"] = options
+        modes = getattr(process, "session_modes", None)
+        if isinstance(modes, dict):
+            available = modes.get("availableModes")
+            record["modes"] = {
+                "current": name(modes.get("currentModeId")),
+                "available": [text for mode in (available if isinstance(available, list) else [])[:16]
+                              if isinstance(mode, dict) and (text := name(mode.get("id"))) is not None]}
+        return record
 
     @property
     def reported_mode(self) -> str | None:
@@ -323,7 +369,9 @@ class AcpRuntime:
                             "session_id": event.session_id,
                             "turn": event.turn,
                             "seq": event.seq,
-                            **({"payload": selected} if (selected := evidence_payload(event)) else {}),
+                            **({"payload": selected}
+                               if (selected := evidence_payload(event, self._trace_detail))
+                               else {}),
                         },
                         default=str,
                     )
@@ -398,6 +446,11 @@ class AcpRuntime:
             self._retire_prepared_child()
         return cleanup_error
 
+    def _new_process(self) -> AcpProcess:
+        return AcpProcess(self._argv, extra_env=self._extra_env,
+                          handshake_timeout=self._handshake_timeout,
+                          handshake_hint=self._handshake_hint)
+
     async def start(self, *, task: str, session_id: str | None = None) -> RuntimeInfo:
         if self._state is not LifecycleState.DISCOVERED:
             raise RuntimeStartError(f"already started (state={self._state.value})")
@@ -405,10 +458,7 @@ class AcpRuntime:
             raise RuntimeStartError("task must not be empty")
         self._move(LifecycleState.STARTING)
         self._garuda_session_id = session_id or str(uuid.uuid4())
-        process = AcpProcess(
-            self._argv,
-            extra_env=self._extra_env,
-        )
+        process = self._new_process()
         try:
             with self._timed("startup"):
                 await process.launch()
@@ -601,7 +651,7 @@ class AcpRuntime:
             return self._info()
         self._move(LifecycleState.STARTING)
         self._garuda_session_id = session_id or str(uuid.uuid4())
-        process = AcpProcess(self._argv, extra_env=self._extra_env)
+        process = self._new_process()
         try:
             with self._timed("startup"):
                 await process.launch()
@@ -743,9 +793,11 @@ class AcpRuntime:
             self._move(LifecycleState.CLOSED)
             raise
         except AcpError as exc:
+            from garuda.core.failure_evidence import classify_exception
+
             self._note_error(exc)
             self._record_failure(exc, phase="prompt")
-            self._finish_turn("failed", detail=str(exc))
+            self._finish_turn("failed", detail=str(exc), code=classify_exception(exc)[0])
             await self._close_process()
             self._move(LifecycleState.FAILED)
             raise
@@ -785,7 +837,7 @@ class AcpRuntime:
         self._move(LifecycleState.IDLE)
         return self._turn
 
-    def _finish_turn(self, reason: str, *, detail: str = "") -> None:
+    def _finish_turn(self, reason: str, *, detail: str = "", code: str = "") -> None:
         """Close the normalizer turn on a path that must still reap.
 
         A trail that cannot close cleanly (updates for unknown tool calls) is
@@ -793,7 +845,7 @@ class AcpRuntime:
         """
         assert self._normalizer is not None
         try:
-            self._absorb(self._normalizer.finish(reason, detail=detail))
+            self._absorb(self._normalizer.finish(reason, detail=detail, code=code))
         except AcpProtocolError as exc:
             self._emit(RuntimeEventKind.ERROR, {"message": str(exc)})
 

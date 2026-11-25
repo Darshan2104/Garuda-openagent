@@ -621,6 +621,16 @@ def build_parser():
         "asks in a terminal)",
     )
     config_trust.add_argument("--workspace", default=".")
+    config_check = config_sub.add_parser(
+        "check",
+        help="Check each role and fallback before a run: model, effort and the mode its "
+        "permissions select (--probe asks each external harness, without a prompt)",
+    )
+    config_check.add_argument("--workspace", default=".")
+    config_check.add_argument("--probe", action="store_true",
+                              help="Launch each external harness once, without a prompt, and check "
+                              "what it offers for the role model")
+    config_check.add_argument("--json", action="store_true")
 
     agent_parser = subparsers.add_parser("agent", help="Agent definitions")
     agent_sub = agent_parser.add_subparsers(dest="agent_command")
@@ -1072,8 +1082,21 @@ def run_sessions(args) -> int:
         if args.json:
             print(_json.dumps(row, indent=2, default=str))
         else:
+            from garuda.observability.usage import reported_usage_line
+
             shown = {**row, "consults": row.get("consults", {}).get("line") or "none"}
+            reported = shown.pop("reported_usage", None)
+            if reported:
+                for key in ("usage", "cost"):
+                    if shown.get(key) == "unknown":
+                        shown[key] = "unknown (not metered by Garuda; see Reported usage)"
             print("\n".join(f"{k}: {v}" for k, v in shown.items() if k != "spend"))
+            if reported:
+                print(f"Reported usage: {reported_usage_line(reported)}")
+            from garuda.core.approval_outcome import approval_summary_line
+
+            if (denied := approval_summary_line(row.get("approval_summary"))) is not None:
+                print(f"Approvals: {denied}")
             spend = row["spend"]
             if spend is None:
                 print("Spend: not recorded")
@@ -1177,12 +1200,17 @@ def run_config_trust(args) -> int:
 
 
 def run_config(args) -> int:
-    """`garuda config migrate [--write]` (C.1) and `garuda config trust` (C.2)."""
+    """`garuda config migrate [--write]` (C.1), `garuda config trust` (C.2) and
+    `garuda config check` (#714)."""
     import datetime as _dt
     import sys
 
     if args.config_command == "trust":
         return run_config_trust(args)
+    if args.config_command == "check":
+        from garuda.interfaces.config_check import run as run_config_check
+
+        return run_config_check(args)
     if args.config_command == "show":
         from garuda.config.garuda_yaml import GarudaConfigError
         from garuda.interfaces.onboarding import config_show
@@ -2341,6 +2369,10 @@ async def run_acp_command(args, task: str, catalog) -> int:
         "the ACP result is not verified by Garuda)",
         file=summary_output,
     )
+    from garuda.core.approval_outcome import approval_summary_line
+
+    if (denied := approval_summary_line(summary.get("approvals"))) is not None:
+        print(f"[garuda] warning: {denied}", file=summary_output)
     _accept_session(args, summary.get("session_id"))
     return 0 if summary["status"] == "completed" else 1
 

@@ -2,8 +2,13 @@
 
 import asyncio
 import io
+import os
 import queue
+import select
+import subprocess
+import sys
 import threading
+import time
 
 import pytest
 
@@ -182,3 +187,65 @@ async def test_queued_approvals_suspend_sibling_stream_until_each_answer(tty, mo
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         renderer.discard_assistant()
+
+
+_WITHDRAWN_ON_A_TTY = '''
+import asyncio, sys
+from garuda.interfaces.terminal_approval import TerminalApprover
+
+async def main():
+    first = asyncio.create_task(TerminalApprover(sys.stdout)("A"))
+    await asyncio.sleep(0.3)
+    first.cancel()  # answered elsewhere: the broker withdraws this prompt
+    await asyncio.gather(first, return_exceptions=True)
+    if sys.argv[1] == "ask-again":
+        print("RESULT", await TerminalApprover(sys.stdout)("B"), flush=True)
+
+asyncio.run(main())
+print("EXITED", flush=True)
+'''
+
+
+def _read_pty(master, until, deadline):
+    out = b''
+    while until not in out:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not select.select([master], [], [], remaining)[0]:
+            break
+        try:
+            chunk = os.read(master, 4096)
+        except OSError:  # EIO: every slave end closed
+            break
+        if not chunk:
+            break
+        out += chunk
+    return out
+
+
+@pytest.mark.skipif(not hasattr(os, 'openpty'), reason='needs a pty')
+@pytest.mark.parametrize('then', ['exit', 'ask-again'])
+def test_prompt_withdrawn_on_a_terminal_leaves_no_reader_behind(then):
+    """#675: a prompt answered remotely must not keep the process or the next line."""
+    master, slave = os.openpty()
+    child = subprocess.Popen([sys.executable, '-c', _WITHDRAWN_ON_A_TTY, then],
+                             stdin=slave, stdout=slave, stderr=slave, close_fds=True)
+    os.close(slave)
+    try:
+        deadline = time.monotonic() + 20
+        out = b''
+        if then == 'ask-again':
+            out += _read_pty(master, b'Approve B', deadline)
+            assert b'Approve B' in out, out
+            os.write(master, b'y\n')
+        out += _read_pty(master, b'EXITED', deadline)
+        assert child.wait(timeout=max(1, deadline - time.monotonic())) == 0, out
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait()
+        os.close(master)
+    text = out.decode(errors='replace')
+    assert 'approval withdrawn' in text and 'EXITED' in text, text
+    assert 'discarded' not in text, text
+    if then == 'ask-again':
+        assert 'RESULT True' in text, text

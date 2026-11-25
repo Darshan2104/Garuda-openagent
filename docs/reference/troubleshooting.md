@@ -12,7 +12,10 @@ Click a problem to see the fix.
     bad value) or `config.project_untrusted` (review the project file with
     `garuda config trust`). A login check that timed out, failed or answered
     something unexpected is reported as such, never as "logged out". Only
-    the harnesses your roles use are checked; add `--runtime ID` for another.
+    the harnesses your roles use are checked, including each role's
+    `fallback:` harnesses; add `--runtime ID` for another. A fallback-only
+    harness that is missing or logged out is a warning, not an error: the
+    role can still start, but that fallback can never be taken.
 
     Doctor also validates `~/.agent/settings.yaml` (or `GARUDA_GLOBAL_SETTINGS`)
     with the runtime's loaders and section validators: capacity, routing, models,
@@ -79,6 +82,10 @@ Click a problem to see the fix.
     - Bound runs with `--max-turns` and `--deadline-sec`.
     - Leave the collection model off unless you need it (`--no-collection`).
     - Your provider's billing page is the authority on cost.
+    - `harness.limit_reached: You've hit your usage limit ...` means an
+      external harness (for example Codex) refused the turn at its plan
+      limit. Wait for the reset time in the message, or use another harness
+      in the role's `fallback:` chain.
 
 ## Permissions and modes
 
@@ -267,6 +274,14 @@ Click a problem to see the fix.
     installed or isn't on `PATH`, the runtime is disabled in
     `~/.agent/settings.yaml`, or its version check fails. Login and quota often
     show as `unknown`; that alone does not make a runtime unavailable.
+
+??? question "A harness fails to start: `initialize exceeded its 30s deadline`"
+
+    The external harness did not answer its startup calls in time, which
+    can happen on a loaded machine. Raise its deadline in your user
+    `garuda.yaml`, for example
+    `harnesses: {codex: {handshake_timeout_sec: 90}}` (5 to 600 seconds;
+    default 30). See [Roles and flows](../guides/configuration.md#roles-and-flows-garudayaml).
 
 ??? question "A `consult` call is refused (`consult.*`)"
 

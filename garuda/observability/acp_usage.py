@@ -68,6 +68,7 @@ class UsageReport:
     project_id: str | None = None
     harness: str | None = None
     model: str | None = None  # only when the adapter reported it; never the selected role's
+    confined: bool = False  # the adapter ran in the harness's confinement image
 
 
 def _digest(*parts) -> str:
@@ -90,7 +91,7 @@ class AcpUsageNormalizer:
                   "session_id": report.session_id, "project_id": report.project_id,
                   "harness": report.harness, "adapter": report.adapter,
                   "adapter_version": report.adapter_version, "source": None,
-                  "model": report.model}
+                  "model": report.model, "confined": True if report.confined else None}
         return {k: v for k, v in record.items() if v is not None}
 
     def _snapshot(self, report: UsageReport, unavailable: str | None = None) -> dict:

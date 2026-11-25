@@ -408,6 +408,7 @@ class BackgroundRuntimeBinding:
     role: str | None
     config_digest: str | None
     agent_digest: str | None = None
+    acp: bool = False
 
 
 def prepare_background_runtime(args) -> BackgroundRuntimeBinding:
@@ -462,6 +463,7 @@ def prepare_background_runtime(args) -> BackgroundRuntimeBinding:
     return BackgroundRuntimeBinding(
         runtime.runtime_id, reference,
         plan.role if plan is not None else None, digest, agent_digest,
+        runtime.kind is RuntimeKind.ACP,
     )
 
 

@@ -67,13 +67,101 @@ def _evidence_scalar(value: Any, statuses: dict, key: str) -> Any:
     return selected["value"]
 
 
-def evidence_payload(event: RuntimeEvent) -> dict[str, Any]:
+def _tool_detail(update: dict[str, Any]) -> dict[str, Any]:
+    """The study-trace fields of a tool call (#691): its command, the paths it
+    names and, inside a harness subagent, the parent call. Kept in memory; only
+    the ``commands`` trace level persists them, redacted and bounded."""
+    detail: dict[str, Any] = {}
+    raw = update.get("rawInput")
+    command = raw.get("command") if isinstance(raw, dict) else None
+    if isinstance(command, list) and all(isinstance(part, str) for part in command):
+        command = " ".join(command)
+    if isinstance(command, str) and command:
+        detail["command"] = command
+    locations = update.get("locations")
+    if isinstance(locations, list):
+        paths = [item["path"] for item in locations
+                 if isinstance(item, dict) and isinstance(item.get("path"), str) and item["path"]]
+        if paths:
+            detail["locations"] = paths
+    meta = update.get("_meta")
+    claude = meta.get("claudeCode") if isinstance(meta, dict) else None
+    parent = claude.get("parentToolUseId") if isinstance(claude, dict) else None
+    if isinstance(parent, str) and parent:
+        detail["parent_tool_call_id"] = parent
+    return detail
+
+
+#: Persisted trace levels (``observability.trace_detail``). ``metadata`` is the
+#: default and keeps exactly the allowlist below.
+TRACE_LEVELS = ("metadata", "commands")
+#: Bounds for the ``commands`` level, per field.
+_TEXT_BOUND = 300
+_ERROR_BOUND = 500
+_LOCATIONS_BOUND = 5
+
+
+def _bounded(value: Any, limit: int) -> dict[str, Any] | None:
+    """``{"text", "truncated"?, "redacted"?}``: one line, secrets redacted first."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text, findings = redact_text(" ".join(value.split()))
+    out: dict[str, Any] = {"text": text[:limit]}
+    if len(text) > limit:
+        out["truncated"] = True
+    if findings:
+        out["redacted"] = True
+    return out
+
+
+def _study_detail(event: RuntimeEvent, statuses: dict) -> dict[str, Any]:
+    """What the ``commands`` trace level adds to an event's evidence."""
+    payload = event.payload
+    added: dict[str, Any] = {}
+    if event.kind in (RuntimeEventKind.TOOL_CALL, RuntimeEventKind.TOOL_RESULT):
+        for key in ("title", "command"):
+            if (bounded := _bounded(payload.get(key), _TEXT_BOUND)) is not None:
+                added[key] = bounded
+        locations = payload.get("locations")
+        if isinstance(locations, list):
+            kept = [b for item in locations[:_LOCATIONS_BOUND]
+                    if (b := _bounded(item, _TEXT_BOUND)) is not None]
+            if kept:
+                added["locations"] = kept
+                if len(locations) > _LOCATIONS_BOUND:
+                    added["locations_omitted"] = len(locations) - _LOCATIONS_BOUND
+        parent = _evidence_scalar(payload.get("parent_tool_call_id"), statuses,
+                                  "parent_tool_call_id")
+        if parent is not None:
+            added["parent_tool_call_id"] = parent
+        if event.kind is RuntimeEventKind.TOOL_RESULT and payload.get("status") == "failed" \
+                and (bounded := _bounded(payload.get("content"), _ERROR_BOUND)) is not None:
+            added["error"] = bounded
+    elif event.kind is RuntimeEventKind.ERROR:
+        if (bounded := _bounded(payload.get("message"), _ERROR_BOUND)) is not None:
+            added["message"] = bounded
+    return added
+
+
+def evidence_payload(event: RuntimeEvent, detail: str = "metadata") -> dict[str, Any]:
     """Allowlisted ACP event metadata safe for the durable diagnostic trail.
 
     Message/thought text, tool content, arguments, diffs and arbitrary protocol
     metadata are intentionally absent.  This is evidence selection, not a raw
-    transcript export.
+    transcript export. ``detail="commands"`` (opt-in, #691) adds tool titles,
+    commands, named paths, the parent call inside a harness subagent, and the
+    message of a failed tool call or error event — each redacted and bounded.
     """
+    selected = _evidence(event)
+    if detail == "commands":
+        statuses: dict = {}
+        selected.update(_study_detail(event, statuses))
+        if statuses:
+            selected.setdefault("evidence_status", {}).update(statuses)
+    return selected
+
+
+def _evidence(event: RuntimeEvent) -> dict[str, Any]:
     statuses = {}
     allowed: dict[RuntimeEventKind, tuple[str, ...]] = {
         RuntimeEventKind.OUTBOUND_PROMPT: (
@@ -83,7 +171,8 @@ def evidence_payload(event: RuntimeEvent) -> dict[str, Any]:
         RuntimeEventKind.TOOL_RESULT: ("tool_call_id", "status"),
         RuntimeEventKind.APPROVAL_REQUEST: ("approval_id", "tool_call_id"),
         RuntimeEventKind.LIFECYCLE: ("state", "stop_reason", "reason"),
-        RuntimeEventKind.ERROR: (),
+        # A stable failure code (for example `harness.limit_reached`), never the text.
+        RuntimeEventKind.ERROR: ("code",),
     }
     if event.kind is RuntimeEventKind.MESSAGE \
             and event.payload.get("acp_update") == "usage_update":
@@ -200,7 +289,7 @@ class AcpNormalizer:
         }.get(kind, self._on_unknown)
         return handler(update)
 
-    def finish(self, stop_reason: str, *, detail: str = "") -> list[RuntimeEvent]:
+    def finish(self, stop_reason: str, *, detail: str = "", code: str = "") -> list[RuntimeEvent]:
         """Close the turn with a terminal event. No duplicate final message.
 
         `completed` ends the turn (a later `new_turn` reopens feeding);
@@ -226,7 +315,8 @@ class AcpNormalizer:
         self._terminated = True
         if state == "failed":
             return [
-                self._emit(RuntimeEventKind.ERROR, {"message": detail or stop_reason}),
+                self._emit(RuntimeEventKind.ERROR, {"message": detail or stop_reason,
+                                                    **({"code": code} if code else {})}),
                 self._emit(RuntimeEventKind.LIFECYCLE, payload),
             ]
         return [self._emit(RuntimeEventKind.LIFECYCLE, payload)]
@@ -257,6 +347,7 @@ class AcpNormalizer:
                     "title": update.get("title", ""),
                     "kind": update.get("kind", ""),
                     "status": update.get("status", "pending"),
+                    **_tool_detail(update),
                 },
             )
         ]
@@ -282,6 +373,8 @@ class AcpNormalizer:
                     "tool_call_id": call_id,
                     "status": update.get("status", ""),
                     "content": _content_text(content),
+                    **({"title": update["title"]} if isinstance(update.get("title"), str) else {}),
+                    **_tool_detail(update),
                 },
             )
         ]

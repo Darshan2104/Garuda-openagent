@@ -18,6 +18,111 @@ turn whose result is unsuccessful with an `error` update and a JSON-RPC error,
 not `end_turn`; the native loop logs a failed model call as one bounded line
 (stack at debug level).
 
+## 2026-11-25 — Opt-in study traces, offered options, failure codes and denial counts (#691)
+
+`observability.trace_detail` (user settings only; `metadata` default, or
+`commands`) decides what an external run's persisted trail keeps. `metadata`
+is unchanged. `commands` adds each tool call's title, command, up to five
+named paths and harness-subagent parent call, and the message of a failed tool
+call or error event, each redacted and bounded; tool output is never kept and
+an unknown value keeps `metadata`. Every ACP session records the agent's
+offered options and modes (`acp_session`) before applying any, and a failed
+run's `error_code` and redacted `error_detail`. `sessions show` adds
+`approval_summary`; `garuda run` warns when approvals were refused, without
+changing its exit status (a completed turn stays completed).
+
+## 2026-11-25 — External usage is recorded on every outcome and shown as adapter-reported (#690, #691)
+
+An ACP run records its adapter's last usage report after the harness closes,
+whatever the outcome, instead of only after a completed turn: a failed or
+cancelled turn keeps the cost its adapter reported. A confined (readonly) run
+is keyed by the adapter version the image's own handshake reported and marked
+`confined: true` (a new optional ledger field on snapshots and deltas).
+`sessions show` and `/api/runs/<id>` add `reported_usage`: the latest snapshot
+per segment, summed across segments, labelled `adapter_reported`. It is display
+evidence: the session's `usage`/`cost` stay `unknown`, nothing is summed into
+ledger totals, and no spend cap counts it.
+
+## 2026-11-25 — Claude Code adapter 0.110.1 role options; model fallbacks; config check (#695, #714)
+
+The no-prompt capability capture proves model, effort and harness mode
+selection on Claude Code adapter 0.110.1 (Haiku 5.5, efforts and `auto`), so
+role option proofs cover Claude 0.110.1 and 0.85.0. Proofs stay per exact
+version. Consult forwarding keeps its 0.85.0-only proof. A different adapter
+binary is chosen by replacing the shipped manifest in trusted global
+settings (`runtimes:`), not with a `harnesses.<id>.command` key: launch
+commands stay in the one trusted place.
+
+`role.model_unavailable` is now a pre-start fallback reason. For a chain entry
+that names a model and is not the last, Garuda starts the adapter once
+without a prompt and reads the models a new session offers. Only a proven
+adapter's answer counts, and a probe that cannot tell is not a reason. An effort
+or mode that the model does not offer still refuses. `garuda config check`
+checks every role and fallback entry before a run; with `--probe` it sets the
+options on a scratch session, so model-dependent efforts and modes are checked
+against the installed adapter.
+
+## 2026-11-25 — The ACP startup deadline is configurable per harness (#687)
+
+`harnesses.<id>.handshake_timeout_sec` in the user `garuda.yaml` (an integer
+from 5 to 600; default 30) bounds an ACP harness's startup calls: initialize,
+session/new, session/load and role option sets. It is user-only; a project
+file that sets it is refused as `config.project_widening`. Every launch path
+that builds an ACP runtime through the manifest factory reads it. A user file
+that cannot be read keeps the default, because the deadline bounds a wait and
+authorizes nothing. A startup timeout now names its deadline and the setting
+that raises it.
+
+## 2026-11-25 — An ACP usage-limit error is typed `harness.limit_reached` (#684)
+
+A JSON-RPC error from an ACP agent keeps a bounded, one-line copy of its
+`data` message (Codex puts the real cause there behind a generic `-32603
+Internal error`). A usage-limit cause, either Codex's `codexErrorInfo:
+usageLimitExceeded` or the text saying the usage limit is reached, raises
+`AcpUsageLimitError`. Its message leads with `harness.limit_reached` and the
+harness's own words, including any reset time, and drops the generic
+`Internal error` text. Causal evidence codes it `harness.limit_reached`. The
+session's error event records that stable code, never the text. Quota
+recovery's quota pattern accepts the typed code. Eligibility still needs a
+closed Codex step, no permission or cancellation wording, and a proved
+exhausted quota reading, so typing the error alone never dispatches work.
+
+## 2026-11-25 — A logged-out status that exits non-zero is logged out; doctor checks fallbacks (#669, #680)
+
+Runtime discovery (`runtime inspect`/`list`) now reads a login status command
+that exits non-zero for its documented logged-out answer only, so a logged-out
+Codex (`codex login status` prints `Not logged in`, exit 1) shows
+`unauthenticated` instead of `unknown`. A failing command is never trusted for
+a logged-in answer or a version. `garuda doctor` checks harnesses used only in
+a role's `fallback:` chain; a missing or logged-out fallback-only harness is a
+warning, since the role can still start but that fallback can never be taken.
+
+## 2026-11-25 — SDK ACP runs refuse model and agent options; `--bg` refuses ACP limits at admission (#712)
+
+An SDK run or conversation on an ACP runtime raises
+`OptionsUnsupportedOnRuntime` (code `sdk.options_unsupported`) before the
+harness starts when it was given `model`, `reasoning_model`,
+`collection_model`, `model_binding` or a non-default `agent`: the harness runs
+its own configured model and agent, so these were silently ignored. No role
+option mapping is proven for the SDK, so nothing is mapped. `garuda run --bg`
+whose role or `--runtime` resolves to an ACP runtime refuses `--max-turns`, an
+invalid `--deadline-sec` and the run-tree spend caps at admission with the
+foreground run's message and exit status 2; nothing is queued or spawned. A
+background run whose runtime is only chosen later by routing is still refused
+when its worker selects ACP.
+
+## 2026-11-25 — A withdrawn terminal approval stops its stdin reader (#675)
+
+On a POSIX terminal the approval prompt's reader thread waits in `select()`
+for a complete line, or for a wake-up byte, before it calls `input()`. When the
+prompt is withdrawn because the approval was answered from another terminal or
+the dashboard, timed out or was cancelled, the reader stops without consuming
+input, prints `approval withdrawn`, and no thread stays blocked in `input()`;
+the run finishes and the process exits. Previously the orphan `input()` thread
+kept `asyncio.run` and the interpreter exit waiting until the user pressed
+Enter. A reader that has already taken a line, piped stdin and Windows keep the
+previous behaviour: the next line is discarded and the prompt is reprinted.
+
 ## 2026-11-24 — Recipes are validated before any step runs (#682)
 
 `garuda recipe run` validates the whole recipe before it prepares a workspace.

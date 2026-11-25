@@ -310,8 +310,21 @@ def session(store, session_id: str, *, queue=None) -> dict:
             "source_files", "rewind", "filesystem_restored", "processes_restored", "inherited_evidence", "references",
             "receipt_references", "receipt_reference_coverage",
         )}
+    from garuda.observability.usage import reported_usage
+
+    # An external harness's own usage/cost report, labelled as such; ``usage``/``cost``
+    # stay Garuda's accounting (#691).
+    row["reported_usage"] = reported_usage(session_id)
     row["approvals"] = approvals(store, session_id)
     row["approvals_pending"] = len(row["approvals"])
+    from garuda.core.approval_outcome import approval_summary
+
+    # Denied tool calls apart from the outcome: a blocked run can end `completed` (#691).
+    row["approval_summary"] = approval_summary(meta)
+    acp_session = meta.get("acp_session")
+    row["acp_session"] = acp_session if isinstance(acp_session, dict) else None
+    row["error"] = ({"code": meta.get("error_code"), "detail": meta.get("error_detail")}
+                    if meta.get("error_code") else None)
     row["approval_decisions"] = [
         {field: value.get(field) for field in ("approval_id", "tool_kind", "outcome", "reason")}
         for key, value in meta.items()

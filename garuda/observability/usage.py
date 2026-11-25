@@ -201,7 +201,8 @@ def record_fallback_start(store, session_id: str, *, ledger: Ledger | None = Non
 
 
 def record_turn_acp_usage(store, session_id: str, events, *, runtime_id: str,
-                          adapter_version: str, segment: str) -> list[dict]:
+                          adapter_version: str, segment: str,
+                          confined: bool = False) -> list[dict]:
     """Record the last usage report among one ACP turn's normalized events.
 
     The CLI and the SDK both account an external turn this way. Never raises.
@@ -212,11 +213,13 @@ def record_turn_acp_usage(store, session_id: str, events, *, runtime_id: str,
     if not reports:
         return []
     return record_acp_usage(store, session_id, runtime_id=runtime_id,
-                            adapter_version=adapter_version, segment=segment, usage=reports[-1])
+                            adapter_version=adapter_version, segment=segment, usage=reports[-1],
+                            confined=confined)
 
 
 def record_acp_usage(store, session_id: str, *, runtime_id: str, adapter_version: str,
-                     segment: str, usage: dict, ledger: Ledger | None = None) -> list[dict]:
+                     segment: str, usage: dict, ledger: Ledger | None = None,
+                     confined: bool = False) -> list[dict]:
     """Record an external harness's last usage report of a turn as a snapshot (or what its
     proved policy allows). Never raises: accounting must not stop a run."""
     from garuda.observability.acp_usage import AcpUsageNormalizer, UsageReport
@@ -229,8 +232,65 @@ def record_acp_usage(store, session_id: str, *, runtime_id: str, adapter_version
             adapter_version=adapter_version, counters=counters,
             context_used=usage.get("context_used"), context_size=usage.get("context_size"),
             observed_at=time.time(), session_id=session_id, project_id=meta.get("project_id"),
-            harness=runtime_id, model=usage.get("model"))
+            harness=runtime_id, model=usage.get("model"), confined=confined)
         return AcpUsageNormalizer(ledger or Ledger()).ingest(report)
     except Exception:
         logger.warning("acp usage not recorded", exc_info=True)
         return []
+
+
+def reported_usage(session_id: str, *, ledger: Ledger | None = None,
+                   records=None) -> dict | None:
+    """What an external harness *reported* about a session's usage, or ``None``.
+
+    Read from the session's ``acp_usage_snapshot`` rows: per reporting segment the
+    latest report wins (snapshots are running figures, never summed per report), and
+    the segments' latest costs add up. This is the adapter's own figure, labelled as
+    such: Garuda did not meter or price it, so it never feeds ``usage``/``cost``
+    accounting or a spend cap. Never raises: an unreadable ledger reads as ``None``.
+    """
+    try:
+        rows = records if records is not None else (ledger or Ledger()).records()
+        latest: dict[str, dict] = {}
+        for row in rows:
+            if row.get("kind") != ledger_module.SNAPSHOT or row.get("session_id") != session_id:
+                continue
+            segment = str(row.get("segment") or row.get("source") or "")
+            if segment not in latest or (row.get("time") or 0) >= (latest[segment].get("time") or 0):
+                latest[segment] = row
+    except Exception:
+        logger.debug("reported usage unreadable", exc_info=True)
+        return None
+    if not latest:
+        return None
+    reports = sorted(latest.values(), key=lambda r: r.get("time") or 0)
+    last = reports[-1]
+    costs = [r["cost_usd"] for r in reports if isinstance(r.get("cost_usd"), (int, float))]
+    return {
+        "source": "adapter_reported",
+        "note": "reported by the harness adapter; not metered or priced by Garuda",
+        "cost_usd": round(sum(costs), 8) if costs else None,
+        "cost_complete": bool(costs) and len(costs) == len(reports),
+        "models": sorted({r["model"] for r in reports if r.get("model")}),
+        "harness": last.get("harness"),
+        "adapter_version": last.get("adapter_version"),
+        "context_used": last.get("context_used"),
+        "context_size": last.get("context_size"),
+        "confined": any(r.get("confined") for r in reports),
+        "segments": len(reports),
+    }
+
+
+def reported_usage_line(reported: dict | None) -> str:
+    """One human line for :func:`reported_usage`."""
+    if not reported:
+        return "not reported"
+    cost = reported["cost_usd"]
+    parts = [f"USD {cost}" if cost is not None else "cost not reported"]
+    if reported["models"]:
+        parts.append("model " + ", ".join(reported["models"]))
+    if reported["context_used"] is not None:
+        parts.append(f"context {reported['context_used']}/{reported.get('context_size') or '?'}")
+    who = f"{reported.get('harness') or '?'} {reported.get('adapter_version') or 'unknown'}"
+    parts.append(f"adapter {who}" + (" (confined)" if reported["confined"] else ""))
+    return "; ".join(parts) + " — adapter-reported, not metered by Garuda"

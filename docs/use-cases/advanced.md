@@ -40,10 +40,14 @@ never reads, copies, stores, or proxies your vendor login.
     npm install -g @anthropic-ai/claude-code
     claude   # first run: log in with your Claude Pro/Max account, then exit
     claude auth status
-    npm install -g @agentclientprotocol/claude-agent-acp@0.85.0
+    npm install -g @agentclientprotocol/claude-agent-acp@0.110.1
     claude-agent-acp --version
     garuda runtime inspect claude
     ```
+
+    Claude Code adapter 0.110.1 supports role options and offers Haiku 5.5
+    (`haiku`) with effort levels and `auto`. Version 0.85.0 remains proven for
+    role options. Consult forwarding is proven only on 0.85.0.
 
     Don't set `ANTHROPIC_API_KEY` if you want to use your subscription.
 
@@ -119,7 +123,8 @@ never reads, copies, stores, or proxies your vendor login.
 Node 22+ is recommended for both examples. In primary npm package metadata
 checked on 2026-10-23, [Claude Code 2.1.309](https://registry.npmjs.org/%40anthropic-ai%2Fclaude-code/2.1.309)
 and the [Claude adapter 0.85.0](https://registry.npmjs.org/%40agentclientprotocol%2Fclaude-agent-acp/0.85.0)
-both declare Node 22+. In the Codex ACP 2.9.0 installation used for the
+both declare Node 22+, as does the Claude adapter 0.110.1 used for its
+capability capture. In the Codex ACP 2.9.0 installation used for the
 capability capture, the bundled Codex CLI 0.171.0 declares Node 16+ and
 `open` 11.0.4 declares Node 20+. The adapter has no `engines.node` field.
 Newer CLI or dependency releases can raise these requirements.

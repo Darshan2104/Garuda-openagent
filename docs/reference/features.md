@@ -102,9 +102,10 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 |---|---|---|---|
 | Setup and diagnostics | Proposed roles; global settings validation across sections, with fixes and JSON errors | `garuda init`, `garuda doctor` | [Level 5](../use-cases/teams.md#set-up-your-roles) |
 | Effective configuration | Every value and where it came from | `garuda config show` | [Level 5](../use-cases/teams.md#set-up-your-roles) |
+| Role option check | Each role's model, effort and permission mode checked against what its harness offers, before a run | `garuda config check --probe` | [Level 5](../use-cases/teams.md#set-up-your-roles) |
 | Roles | A harness and exact model per job | `garuda run --role coder -t "…"` | [Level 5](../use-cases/teams.md#run-a-task-as-a-role) |
 | ACP role agent selection | Project effort, permission mode and appended instructions from an agent definition, and refuse unsupported fields before launch | `garuda run --role coder --agent careful-coder -t "…"` | [Level 5](../use-cases/teams.md#run-a-task-as-a-role) |
-| Fallbacks | Start on another harness if one is missing, logged out or out of quota | `fallback:` on a role | [Level 5](../use-cases/teams.md#run-a-task-as-a-role) |
+| Fallbacks | Start on another harness if one is missing, logged out, out of quota or no longer offers the model | `fallback:` on a role | [Level 5](../use-cases/teams.md#run-a-task-as-a-role) |
 | Flows | Plan → build → review in one command | `garuda flow run plan-build-review -t "…"` | [Level 5](../use-cases/teams.md#run-a-plan-build-review-flow) |
 | Review packets | Frozen candidate, loader evidence and per-file diffs bounded after escaping; binary and secret-matching excerpts withheld, untracked symlinks and failed reads unknown, explicit omissions, checks kept separate | `garuda flow run plan-build-review -t "…"` | [Level 5](../use-cases/teams.md#run-a-plan-build-review-flow) |
 | Checked flows | Candidate-bound Linux checks before the flow releases its workspace | `garuda flow run plan-build-review -t "…" --check "pytest -q"` | [Level 5](../use-cases/teams.md#run-a-plan-build-review-flow) |
@@ -127,6 +128,7 @@ appears in a use-case page or the [cheat sheet](cheat-sheet.md).
 | Dashboard | Runs, sessions (search and state filters), approvals with a pending count in the nav, setup (grouped diagnostics), chat, keyboard shortcuts; header security checks before body reads, invalid lengths refused, 12 MiB bodies; tail and SSE skip oversized records without stalling later events | `garuda web` | [Level 4](../use-cases/parallel.md#watch-it-all-in-the-dashboard), [HTTP API](../guides/web-dashboard.md#http-api) |
 | Failed-call usage | Known retry and partial-stream usage survives once, with unknown coverage | Inspect `response.attempt_usage` or error attributes | [Level 2](../use-cases/change-code.md#inspect-retry-and-failed-call-usage) |
 | Usage ledger | Calls, tokens and known cost by model and role | `garuda web --read-only` → Usage | [Level 4](../use-cases/parallel.md#see-usage-cost-and-limits) |
+| Study traces | Opt-in redacted, bounded tool titles, commands, paths, subagent parents and error messages in an external run's trail; offered options, failure codes and denied-approval counts for every run | `observability.trace_detail: commands`, then `garuda sessions show latest --json` | [Level 4](../use-cases/parallel.md#study-an-external-harness-run) |
 | Provider limits | Login and quota readings with their source | `garuda web --read-only` → Providers | [Level 4](../use-cases/parallel.md#see-usage-cost-and-limits) |
 | JSON everywhere | Machine-readable sessions, doctor, agents | `garuda sessions show latest --json` | [Level 6](../use-cases/automate.md#use-garuda-in-scripts-and-ci) |
 

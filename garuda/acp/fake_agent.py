@@ -13,6 +13,7 @@ only inputs, so the test server is isolated from credentials by construction.
 Profiles: success, streaming, approval, diff, malformed, slow, exit-early,
 slow-initialize (never answers initialize within a handshake deadline), logged-out
 (session/new refuses: the harness has no login),
+usage-limit (the prompt fails like codex-acp at a plan limit: -32603 with the cause in `data`),
 resume (stable ids via --state-file; declares loadSession, answers session/load
 for its stored id and counts prompts across processes), version-mismatch, odd-stop (a stop
 reason outside v1), cancel-stop (the agent ends the turn `cancelled`), strict-v1 (rejects any request that is not v1-shaped:
@@ -68,6 +69,7 @@ BASE_PROFILES = frozenset(
         "resume",
         "version-mismatch",
         "remote-error",
+        "usage-limit",
         "malformed-result",
         "odd-stop",
         "cancel-stop",
@@ -160,7 +162,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Append the session/new cwd to the default reply (launch-path tests).",
     )
     parser.add_argument("--report-usage", action="store_true",
-                        help="Send a usage_update (cost and model) before the default reply.")
+                        help="Send a usage_update (cost and model) first in every prompt.")
     parser.add_argument("--artifact-padding", type=int, default=0,
                         help="Lengthen each `artifacts` block body by this many characters.")
     parser.add_argument("--approval-kind",
@@ -375,6 +377,10 @@ def _handle_prompt(
 ) -> None:
     session_id = params.get("sessionId", "")
     text = _prompt_text(params.get("prompt"))
+    if report_usage:  # first, so a turn that then fails has reported what it cost
+        _update(session_id, {"sessionUpdate": "usage_update", "used": 1200, "size": 200000,
+                             "cost": {"amount": 0.0025, "currency": "USD"},
+                             "_meta": {"_claude/model": "fake-model-1"}})
     if profile == "approval" or approval_kind is not None:
         title = text if profile == "approval" else "pwd"
         allowed = _request_permission(session_id, title, approval_kind, cwd=cwd)
@@ -393,6 +399,14 @@ def _handle_prompt(
     elif profile == "remote-error":
         _send({"jsonrpc": "2.0", "id": call_id,
                "error": {"code": -32603, "message": "synthetic internal failure"}})
+    elif profile == "usage-limit":
+        # What codex-acp 2.9.0 answers when Codex's plan limit is reached: a
+        # generic internal error whose `data` carries the cause (#684).
+        _send({"jsonrpc": "2.0", "id": call_id, "error": {
+            "code": -32603, "message": "Internal error",
+            "data": {"message": "You've hit your usage limit. Upgrade to Pro "
+                                "(https://chatgpt.com/explore/pro) or try again at 3:05 PM.",
+                     "codexErrorInfo": "usageLimitExceeded"}}})
     elif profile == "slow":
         import time
 
@@ -485,10 +499,6 @@ def _handle_prompt(
         _result(call_id, {"stopReason": "end_turn"})
     else:
         reply = f"done: {text}" if cwd is None else f"done: {text} (cwd={cwd})"
-        if report_usage:
-            _update(session_id, {"sessionUpdate": "usage_update", "used": 1200, "size": 200000,
-                                 "cost": {"amount": 0.0025, "currency": "USD"},
-                                 "_meta": {"_claude/model": "fake-model-1"}})
         _update(
             session_id,
             {"sessionUpdate": "agent_message_chunk", "content": _text(reply)},

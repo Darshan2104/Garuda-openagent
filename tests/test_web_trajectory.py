@@ -422,6 +422,34 @@ def test_an_external_harness_run_opens_with_its_recorded_trail(ctx, store):
                                   "approval_request": 1, "error": 0}]
     assert external["prompts_sent"] == 1
     assert external["approvals"] == [{"action": "Run command", "outcome": "deny"}]
+    assert external["reported_usage"] is None  # no adapter report, no figure
+
+
+def test_an_external_run_shows_its_adapter_reported_cost(ctx, store):
+    """#691: the adapter's own cost reaches the run, labelled adapter-reported; the
+    latest report of each segment wins and segments add up."""
+    from garuda.observability.ledger import Ledger
+
+    sid = "ext-run-2"
+    store.begin(session_id=sid, task="t", model="acp:claude", agent="claude", workspace="/tmp")
+    (store.session_dir(sid) / "acp-events.jsonl").write_text(
+        json.dumps({"kind": "message", "turn": 1, "seq": 1}) + "\n")
+    ledger = Ledger()
+    for key, segment, at, cost in (("a1", "claude:1:s1", 1.0, 0.01), ("a2", "claude:1:s1", 2.0, 0.03),
+                                   ("b1", "claude:1:s2", 3.0, 0.02)):
+        ledger.append({"kind": "acp_usage_snapshot", "key": key, "time": at, "session_id": sid,
+                       "harness": "claude", "adapter": "claude", "adapter_version": "0.110.1",
+                       "segment": segment, "model": "claude-haiku-5-5", "cost_usd": cost,
+                       "context_used": 10, "context_size": 100})
+    ledger.append({"kind": "acp_usage_snapshot", "key": "other", "time": 4.0,
+                   "session_id": "someone-else", "cost_usd": 5.0})
+
+    reported = body(call(ctx, f"/api/runs/{sid}"))["external"]["reported_usage"]
+
+    assert reported["source"] == "adapter_reported"
+    assert (reported["cost_usd"], reported["cost_complete"], reported["models"],
+            reported["adapter_version"], reported["segments"], reported["confined"]) == (
+        0.05, True, ["claude-haiku-5-5"], "0.110.1", 2, False)
 
 
 def test_a_native_run_has_no_external_trail(ctx, store):

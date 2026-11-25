@@ -185,3 +185,65 @@ def test_a_nonlocal_workspace_with_only_acp_candidates_refuses_with_the_cause(ha
     assert caught.value.code == "harness.no_candidate"
     assert "fakea (role.workspace_unsupported)" in str(caught.value)
     assert "fakeb (role.workspace_unsupported)" in str(caught.value)
+
+
+def _model_plan(ws):
+    from garuda.agents.setup import prepare_runtime_catalog
+
+    resolved = gy.resolve(gy.parse({"version": 1, "roles": {"coder": {
+        "harness": "fakea", "model_id": "gone",
+        "fallback": [{"harness": "fakeb", "model_id": "here"}]}}}), None, cli_role="coder")
+    catalog = prepare_runtime_catalog(str(ws))
+    return plan_role(resolved, catalog), resolved, catalog
+
+
+def test_a_model_the_harness_no_longer_offers_moves_to_the_next_entry(harnesses):
+    """#714: `role.model_unavailable` is a reason, like `harness.logged_out`."""
+    plan, resolved, catalog = _model_plan(harnesses)
+    asked = []
+
+    def model_check(manifest, record, model_id):
+        asked.append((manifest.runtime_id, model_id))
+        return model_id == "gone"
+
+    chosen = choose(plan, resolved, catalog, login_run=_logins({}),
+                    limit_check=lambda rid: False, model_check=model_check)
+
+    assert (chosen.runtime_id, chosen.model_id) == ("fakeb", "here")
+    assert chosen.fallback["skipped"] == [
+        {"harness": "fakea", "model_id": "gone", "reason": "role.model_unavailable"}]
+    # The chain's last entry is not probed: its launch checks the same thing.
+    assert asked == [("fakea", "gone")]
+
+
+@pytest.mark.parametrize("answer", [False, None])
+def test_an_offered_or_unknown_model_keeps_the_primary(harnesses, answer):
+    plan, resolved, catalog = _model_plan(harnesses)
+
+    chosen = choose(plan, resolved, catalog, login_run=_logins({}),
+                    limit_check=lambda rid: False, model_check=lambda *args: answer)
+
+    assert (chosen.runtime_id, chosen.fallback["skipped"]) == ("fakea", [])
+
+
+def test_the_owned_probe_reports_a_model_reason(harnesses, monkeypatch):
+    from garuda.agents import fallback_probe
+    from garuda.runtime.role_request import freeze_acp
+
+    _plan_, _resolved, catalog = _model_plan(harnesses)
+    asked = []
+
+    def skip_reason(catalog, runtime_id, *, model_id=None, **kwargs):
+        asked.append((runtime_id, model_id))
+        return "role.model_unavailable" if model_id == "gone" else None
+
+    monkeypatch.setattr("garuda.agents.fallbacks._skip_reason", skip_reason)
+    payload = {"choices": [{"runtime_id": "fakea", "model_id": "gone", "confined": False},
+                           {"runtime_id": "fakeb", "model_id": "here", "confined": False}],
+               "manifests": [freeze_acp(catalog, "fakea"), freeze_acp(catalog, "fakeb")]}
+
+    decision = fallback_probe.decide(payload)
+
+    assert (decision["index"], decision["reasons"]) == (1, "u")
+    assert fallback_probe.REASONS["u"] == "role.model_unavailable"
+    assert asked == [("fakea", "gone"), ("fakeb", None)]

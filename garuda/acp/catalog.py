@@ -161,6 +161,15 @@ def _minimal_env() -> dict[str, str]:
     return {k: v for k, v in env.items() if v}
 
 
+class FailedProbeOutput(str):
+    """What a probe printed when it exited non-zero.
+
+    Only a documented logged-out answer is read from it (``codex login
+    status`` prints ``Not logged in`` and exits 1); a version or a logged-in
+    answer from a failing command is never trusted.
+    """
+
+
 def _run_probe(argv: tuple[str, ...], *, timeout: float) -> str | None:
     try:
         result = subprocess.run(
@@ -176,7 +185,7 @@ def _run_probe(argv: tuple[str, ...], *, timeout: float) -> str | None:
     except (OSError, subprocess.TimeoutExpired):
         return None
     if result.returncode != 0:
-        return None
+        return FailedProbeOutput(result.stdout + result.stderr)
     return result.stdout + result.stderr
 
 
@@ -479,6 +488,8 @@ def _inspect(manifest, run: Callable[..., str | None], timeout: float) -> Discov
     version = manifest.version
     if manifest.version_args:
         output = run(tuple(manifest.version_args), timeout=timeout)
+        if isinstance(output, FailedProbeOutput):
+            output = None
         if output is not None and manifest.version_pattern:
             match = re.search(manifest.version_pattern, output)
             version = match.group(1) if match and match.groups() else (
@@ -491,7 +502,13 @@ def _inspect(manifest, run: Callable[..., str | None], timeout: float) -> Discov
     auth = AuthStatus.UNKNOWN
     if manifest.auth_probe is not None:
         output = run(tuple(manifest.auth_probe.argv), timeout=timeout)
-        if output is not None:
+        if isinstance(output, FailedProbeOutput):
+            # A non-zero exit is read only for the documented logged-out answer.
+            if manifest.auth_probe.unauthenticated_pattern and re.search(
+                manifest.auth_probe.unauthenticated_pattern, output
+            ):
+                auth = AuthStatus.UNAUTHENTICATED
+        elif output is not None:
             if manifest.auth_probe.authenticated_pattern and re.search(
                 manifest.auth_probe.authenticated_pattern, output
             ):
@@ -587,6 +604,7 @@ def adapter_for_manifest(
     argv = list(argv_override) if argv_override is not None else require_acp_argv(
         manifest, executable=executable
     )
+    handshake_timeout, handshake_hint = handshake_settings(manifest.runtime_id)
     return AcpRuntime(
         argv,
         runtime_id=manifest.runtime_id,
@@ -600,7 +618,34 @@ def adapter_for_manifest(
         persist_dir=persist_dir,
         metrics=metrics,
         agent_definition=agent_definition,
+        handshake_timeout=handshake_timeout,
+        handshake_hint=handshake_hint,
     )
+
+
+def handshake_settings(runtime_id: str) -> tuple[float | None, str]:
+    """The ACP startup deadline for ``runtime_id`` and how to raise it (#687).
+
+    ``harnesses.<id>.handshake_timeout_sec`` from the user's ``garuda.yaml``
+    only (a project cannot set it); ``None`` keeps the client default
+    (``HANDSHAKE_TIMEOUT``). The file is validated when it is loaded, so a
+    value here is in bounds. A file that cannot be read keeps the default:
+    the deadline bounds a wait, it authorizes nothing, and every role or
+    configuration path reports the file's own error.
+    """
+    from garuda.config import garuda_yaml
+
+    path = garuda_yaml.user_path()
+    hint = f"raise harnesses.{runtime_id}.handshake_timeout_sec in {path}"
+    try:
+        document = garuda_yaml.load_file(path)
+    except Exception:
+        logger.warning("Could not read %s for the ACP startup deadline; using the default",
+                       path, exc_info=True)
+        return None, hint
+    harness = ((document or {}).get("harnesses") or {}).get(runtime_id) or {}
+    value = harness.get("handshake_timeout_sec")
+    return (float(value) if value is not None else None), hint
 
 
 class AcpUnavailableError(Exception):

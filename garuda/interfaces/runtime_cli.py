@@ -828,6 +828,7 @@ async def run_acp_task(
             discard_new_worktree(worktree)
             raise
     runtime = None
+    info = None
     began = False
     transferred_to_native = False
     deadline_hit = False
@@ -989,6 +990,9 @@ async def run_acp_task(
             raise NativeStartupFallback(
                 store=store, events=events, selection=fallback
             ) from start_error
+        # What the agent offered, before any of it is applied: a run refused while its
+        # role is applied still shows the options and modes on offer (#691).
+        _record_negotiated(store, session_id, runtime)
         if readonly:
             # The image's adapter version comes from its own handshake.
             adapter_version = runtime.reported_adapter_version
@@ -1049,20 +1053,21 @@ async def run_acp_task(
         )
         if reply:
             store.update_meta(session_id, {"final_message": reply[-2000:]})
-        from garuda.observability.usage import record_turn_acp_usage
-
-        record_turn_acp_usage(store, session_id, events, runtime_id=manifest.runtime_id,
-                              adapter_version=getattr(record, "version", "unknown"),
-                              segment=info.native_session_id or session_id)
         outcome = {
             "session_id": session_id,
             "native_session_id": info.native_session_id,
+            # Denied tool calls: a completed turn may still have been blocked (#691).
+            "approvals": _approval_summary(store, session_id),
             "turn": turn,
             "events": len(events),
             # In memory only: flow artifacts and consult answers sit at the end
             # of replies longer than the stored summary.
             "reply": reply,
         }
+    except Exception as exc:
+        if began and not transferred_to_native:
+            _record_run_error(store, session_id, exc)
+        raise
     except asyncio.CancelledError:
         if began:
             try:
@@ -1084,6 +1089,12 @@ async def run_acp_task(
 
                         await lease.stop_heartbeat()
                         raise CleanupUncertain("ACP cleanup failed; quota continuation refused") from exc
+            if began and not transferred_to_native and runtime is not None:
+                # After close, on every path: a failed or cancelled turn still cost what
+                # the adapter reported, and a report sent after the turn's result has
+                # arrived by now (#690). Never raises.
+                await _record_acp_usage(store, session_id, runtime, manifest.runtime_id,
+                                        record, info, confined=confinement is not None)
             if began and not transferred_to_native:
                 status = "failed"
                 if outcome is not None:
@@ -1116,6 +1127,60 @@ async def run_acp_task(
             if not began:
                 discard_new_worktree(worktree)
     return outcome
+
+
+def _approval_summary(store, session_id: str) -> dict | None:
+    try:
+        from garuda.core.approval_outcome import approval_summary
+
+        return approval_summary(store.load_meta(session_id))
+    except Exception:
+        logger.warning("ACP approval summary unreadable", exc_info=True)
+        return None
+
+
+def _record_negotiated(store, session_id: str, runtime) -> None:
+    """The agent's identity, offered options and modes, into the session (#691)."""
+    try:
+        store.update_meta(session_id, {"acp_session": runtime.negotiated_session()})
+    except Exception:
+        logger.warning("ACP session options not recorded", exc_info=True)
+
+
+def _record_run_error(store, session_id: str, exc: BaseException) -> None:
+    """Why an ACP run failed: its stable code and a bounded, redacted message (#691)."""
+    try:
+        from garuda.context.redact import redact_text
+
+        code = getattr(exc, "code", None)
+        if not isinstance(code, str) or not code:
+            code = f"acp.rpc_{code}" if type(code) is int else type(exc).__name__
+        message, _ = redact_text(" ".join(str(exc).split()))
+        store.update_meta(session_id, {"error_code": code[:120],
+                                       "error_detail": message[:500] or None})
+    except Exception:
+        logger.warning("ACP run error not recorded", exc_info=True)
+
+
+async def _record_acp_usage(store, session_id: str, runtime, runtime_id: str, record, info, *,
+                            confined: bool) -> None:
+    """The last usage report the adapter sent this run, into the usage ledger.
+
+    A confined run is keyed by the adapter version the image's own handshake
+    reported (the host catalog never saw that binary) and marked ``confined``.
+    """
+    try:
+        from garuda.observability.usage import record_turn_acp_usage
+
+        events, _ = await runtime.poll_events(0)
+        version = (runtime.reported_adapter_version if confined
+                   else getattr(record, "version", None) or "unknown")
+        native_id = getattr(info, "native_session_id", None)
+        record_turn_acp_usage(store, session_id, events, runtime_id=runtime_id,
+                              adapter_version=version, segment=native_id or session_id,
+                              confined=confined)
+    except Exception:
+        logger.warning("acp usage not recorded", exc_info=True)
 
 
 __all__ = [

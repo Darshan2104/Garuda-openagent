@@ -452,7 +452,7 @@ function detailTilesHtml(payload) {
     return [
       tile("Turns", fmt.num((ext.turns || []).length), "external harness"),
       tile("Tokens", "—", "not reported per call"),
-      tile("Cost", "—", esc((ext.identity || {}).model_id || ext.runtime || "—")),
+      reportedCostTile(ext),
       tile("Tool calls", fmt.num(calls), errored ? errored + " errors" : "no errors reported")
     ].join("");
   }
@@ -472,6 +472,16 @@ function detailTilesHtml(payload) {
     tile("Cost", fmt.cost(traj.cost_usd), esc(traj.model || run.model || "—")),
     tile("Tool calls", fmt.num(toolCount), errors ? errors + " errored" : "none errored")
   ].join("");
+}
+
+/* An external run's cost is only what its adapter reported (#691): labelled so, never a
+ * Garuda-metered figure. */
+function reportedCostTile(ext) {
+  var rep = ext.reported_usage;
+  var who = esc((ext.identity || {}).model_id || ext.runtime || "—");
+  if (!rep || typeof rep.cost_usd !== "number") return tile("Cost", "—", who);
+  return tile("Cost", fmt.cost(rep.cost_usd),
+              "adapter-reported · " + esc((rep.models || []).join(", ") || who));
 }
 
 /* An external harness's run: who ran it and the shape Garuda recorded. Its own messages and
