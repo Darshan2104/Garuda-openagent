@@ -227,7 +227,10 @@ receipts and unproved descendants remain retained. No ownership is stolen or
 released by this service; non-local workers and concurrency remain unsupported.
 
 `paths.py` and `health.py` are path
-safety and liveness for text and binary reads. `lease.py`
+safety and liveness for text and binary reads. `executors.py` records each
+tmux session and docker/remote container before it starts (tmux socket and
+session name; docker endpoint and container name) and forgets it after a clean
+stop, so dead-owner reclaim can demand proof that it is gone (#730). `lease.py`
 issues mutating-workspace leases (one live mutating owner, read-only sharing,
 expired holders retained after parent death without descendant-cleanup receipts,
 read-only registration preserving prior bindings, issuing-owner release removing

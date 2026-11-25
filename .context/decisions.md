@@ -1,5 +1,19 @@
 # Durable decisions
 
+## 2026-11-25 — Dead-owner reclaim needs proof that a tmux session or container is gone (#730)
+
+`garuda runtime recover` could release a killed run's lease while its tmux pane
+or docker/remote container still wrote to the workspace: those processes run
+under the tmux server or the Docker daemon, never carry the owner's lineage
+token, and are not recorded as session children. Now `TmuxEnvironment`,
+`DockerWorkspace` and `RemoteWorkspace` durably record the executor before
+starting it (a write failure refuses the start) and forget it only after a
+clean stop. `LeaseStore.reclaim_dead` refuses while any executor record for the
+workspace is unreadable, of an unknown kind, or not proved gone by its recorded
+tmux socket or docker endpoint, and the refusal gives the stop command. A
+proved-gone record is removed during reclaim. Runs started before this change
+left no record, so their executors stay outside the check.
+
 ## 2026-11-25 — Unparseable MCP configs, workspace start failures and failed ACP turns fail closed (#673, #671, #674)
 
 An MCP config file that does not parse, or whose server container has the
