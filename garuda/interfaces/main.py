@@ -1623,8 +1623,16 @@ def _flow_stop_line(stop) -> str | None:
         return " ".join(str(value).split())[:limit]
 
     step = f" at step {text(stop['step'], 80)}" if stop.get("step") else ""
-    message = f": {text(stop['message'], 500)}" if stop.get("message") else ""
-    return f"  stopped{step}: {text(stop['code'], 120)}{message}"
+    code = text(stop["code"], 120)
+    # The recorded message already starts with the code; print the code once (#749).
+    message = text(stop["message"], 500).removeprefix(f"{code}:").strip() if stop.get("message") else ""
+    line = f"  stopped{step}: {code}" + (f": {message}" if message else "")
+    cause = stop.get("cause")
+    if isinstance(cause, dict) and (cause.get("code") or cause.get("detail")):
+        why = ": ".join(text(cause[key], limit) for key, limit in (("code", 120), ("detail", 500))
+                        if cause.get(key))
+        line += f"\n  cause: {why}"
+    return line
 
 
 def run_flow(args) -> int:

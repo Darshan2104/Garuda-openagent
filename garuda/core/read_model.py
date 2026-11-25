@@ -200,12 +200,21 @@ def flow(store, session_id: str, meta: dict | None = None, *, receipts: list[dic
             "review": meta.get("review"), "quota_recovery": meta.get("quota_recovery")}
 
 
+def _bounded_fields(record: dict, limits) -> dict:
+    return {key: (" ".join(str(record[key]).split())[:limit] if record.get(key) else None)
+            for key, limit in limits}
+
+
 def _flow_stop(stop) -> dict | None:
-    """Why a stopped flow stopped: its recorded code, step and message, bounded."""
+    """Why a stopped flow stopped: its recorded code, step, message and, for a failed
+    step, the step session's own cause (#749), bounded."""
     if not isinstance(stop, dict) or not stop.get("code"):
         return None
-    return {key: (" ".join(str(stop[key]).split())[:limit] if stop.get(key) else None)
-            for key, limit in (("code", 120), ("step", 80), ("message", 500))}
+    cause = stop.get("cause")
+    return {**_bounded_fields(stop, (("code", 120), ("step", 80), ("message", 500))),
+            "cause": (_bounded_fields(cause, (("code", 120), ("detail", 500)))
+                      if isinstance(cause, dict) and any(cause.get(k) for k in ("code", "detail"))
+                      else None)}
 
 
 def _spend(meta: dict) -> dict | None:
