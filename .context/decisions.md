@@ -1,5 +1,20 @@
 # Durable decisions
 
+## 2026-11-25 — An exited process no longer makes the descendant scan inconclusive (#731)
+
+The dead-owner lineage scan (`ownership.surviving_descendants`) skips a
+same-user process that has wholly exited: its `/proc/<pid>/stat` state is `Z`
+or `X` and so is every thread under `/proc/<pid>/task`. Such a process runs no
+code, and reading its `environ` raises `PermissionError`, which used to turn
+the whole scan into "cannot be inspected" whenever any unreaped zombie with
+younger ancestry existed (a just-killed orphan, the child of an unrelated
+daemon), so `garuda runtime recover` refused spuriously. A zombie leader with
+a running thread has not exited and is still checked. A process that vanishes
+during the unreadable-process check is treated as exited. Everything else
+stays fail closed: a live unreadable process with no older ancestry still
+makes the scan inconclusive, and the refusal now names that pid instead of
+blaming a missing `/proc` or owner identity.
+
 ## 2026-11-25 — Unparseable MCP configs, workspace start failures and failed ACP turns fail closed (#673, #671, #674)
 
 An MCP config file that does not parse, or whose server container has the
