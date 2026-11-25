@@ -812,6 +812,12 @@ is no fallback, and trust, configuration or confinement errors refuse rather
 than fall back. The session records which harness was planned, which one ran
 and why; if none can start, the run refuses and lists every reason.
 
+When the role's harness is logged out and no `fallback:` entry can be taken,
+the run refuses before anything starts with
+`harness.logged_out: role <role> runs on <harness>, which is not logged in.`
+followed by the harness's login hint (exit 2); a role with no `fallback:` list
+does the same.
+
 If the selected ACP harness fails during startup, the role run reports
 `role.start_failed` with the startup error. The role's configured
 pre-start chain is its only fallback.

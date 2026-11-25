@@ -91,7 +91,13 @@ sequenceDiagram
   Garuda->>H: retire the process
 ```
 
-Unknown, disabled, or missing runtimes are refused. For runs without a role,
+Unknown, disabled, or missing runtimes are refused. So is a harness whose
+documented login check says you are logged out: `--runtime ID`, `--role`,
+`defaults.role` and `--bg` all stop with
+`harness.logged_out: ... is not logged in. <its login hint>` (exit 2) before
+anything starts, and never run natively instead. `--bg` refuses at admission;
+a queued run whose harness logs out before it starts reads `refused` with that
+code in `garuda sessions show`. For runs without a role,
 if an installed harness fails to start and the workspace is unchanged, Garuda
 moves the session once to `fallback_runtime` (native by default) and records
 the reason. Role runs use their [configured pre-start fallback
