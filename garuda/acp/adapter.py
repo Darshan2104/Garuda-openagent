@@ -92,6 +92,8 @@ class AcpRuntime:
         agent_definition: dict | None = None,
         handshake_timeout: float | None = None,
         handshake_hint: str = "",
+        permission: str = "smart",
+        declared_modes: dict[str, str] | None = None,
     ):
         from garuda.observability.runtime_metrics import RuntimeMetrics
 
@@ -104,6 +106,11 @@ class AcpRuntime:
         self._approval_handler = approval_handler
         self._confined_approval_handler = confined_approval_handler
         self._runtime_id = runtime_id
+        # The most a prompt that no run path secured may do (:meth:`secure_mode`).
+        self._permission = permission
+        # The trusted manifest's classification of this adapter's modes, used only
+        # where Garuda has no table for the runtime (#732).
+        self._declared_modes = dict(declared_modes) if declared_modes else None
         definition = agent_definition or {}
         self._agent_segment = {
             "id": str(uuid.uuid4()), "name": definition.get("name") or runtime_id,
@@ -156,6 +163,8 @@ class AcpRuntime:
         self._effective_mode: dict[str, Any] | None = None
         #: Actions denied this turn, named when the agent then ends the turn cancelled.
         self._denied: list[str] = []
+        #: What the session request sent (#726): method, cwd and MCP server names only.
+        self._session_request: dict[str, Any] | None = None
 
     def attach_consult(self, host) -> None:
         """Offer the ``consult`` tool to this agent when its adapter identity is proved (G.3)."""
@@ -177,6 +186,21 @@ class AcpRuntime:
         except Exception:
             logger.warning("The consult tool was not offered", exc_info=False)
             return []
+
+    def _note_session_request(self, method: str, cwd: str, servers) -> None:
+        """Names only: an MCP server's command, arguments and environment are never kept."""
+        names = []
+        for server in list(servers or [])[:16]:
+            name = server.get("name") if isinstance(server, dict) else None
+            names.append(" ".join(name.split())[:128] if isinstance(name, str) else None)
+        self._session_request = {"method": method, "cwd": cwd,
+                                 "mcp_servers": names, "mcp_server_count": len(servers or [])}
+
+    @property
+    def agent_segment(self) -> dict[str, Any]:
+        """This run's agent segment as its events carry it: the definition's name and
+        digest and the adapter's reported identity (#726)."""
+        return {**self._agent_segment, "native_session_id": self._agent_session_id}
 
     async def _close_consult(self) -> None:
         if self._consult_host is not None:
@@ -227,6 +251,8 @@ class AcpRuntime:
             options.append({"id": name(option.get("id")), "category": name(option.get("category")),
                             "current": name(option.get("currentValue")), "values": values})
         record["config_options"] = options
+        if self._session_request is not None:
+            record["session_request"] = dict(self._session_request)
         modes = getattr(process, "session_modes", None)
         if isinstance(modes, dict):
             available = modes.get("availableModes")
@@ -252,18 +278,21 @@ class AcpRuntime:
         """The mode this session was confirmed to run in, for the session record."""
         return dict(self._effective_mode) if self._effective_mode is not None else None
 
-    def confirm_mode(self, required: str | None, *, permission: str) -> dict[str, Any] | None:
-        """Refuse unless the agent now reports a mode no broader than ``required``."""
+    def confirm_mode(self, required: str, *, permission: str,
+                     confined: bool = False) -> dict[str, Any]:
+        """Refuse unless the agent now reports a mode that needs no more than the
+        ``required`` authority (:func:`~garuda.runtime.roles.check_mode`)."""
         from garuda.runtime.roles import check_mode
 
         self._effective_mode = check_mode(
             self._runtime_id, required, self.reported_mode,
             adapter_version=self.reported_adapter_version, permission=permission,
-            set_by_garuda=self._mode_set)
+            set_by_garuda=self._mode_set, confined=confined,
+            declared=self._declared_modes)
         self._mode_checked = True
         return self.effective_mode
 
-    async def secure_mode(self, permission: str = "smart") -> dict[str, Any] | None:
+    async def secure_mode(self, permission: str = "smart") -> dict[str, Any]:
         """Select and confirm the mode for a run allowed ``permission`` and no role.
 
         Run paths with a role set the role's options and call
@@ -271,14 +300,13 @@ class AcpRuntime:
         prompt nobody secured) gets this before its first prompt, so an agent
         whose own default is broader than the run never acts (#700).
         """
-        from garuda.runtime.roles import RolePlan, acp_options, harness_mode
+        from garuda.runtime.roles import RolePlan, acp_options, harness_mode, required_authority
 
         plan = RolePlan(role="", runtime_id=self._runtime_id, kind="acp", permissions=permission)
-        required = harness_mode(plan)
-        if required is not None:
+        if harness_mode(plan) is not None:
             version = self.reported_adapter_version
             await self.set_config_options(acp_options(plan, version), adapter_version=version)
-        return self.confirm_mode(required, permission=permission)
+        return self.confirm_mode(required_authority(plan), permission=permission)
 
     @property
     def state(self) -> LifecycleState:
@@ -473,6 +501,7 @@ class AcpRuntime:
             quota = handshake.get("quota")
             self._quota = dict(quota) if isinstance(quota, dict) else None
             servers = await self._consult_servers(handshake, process)
+            self._note_session_request("session/new", self._cwd or os.getcwd(), servers)
             self._agent_session_id = await process.session_new(
                 cwd=self._cwd, mcp_servers=servers or None)
             if self._store is None and self._prepared_recorder is None:
@@ -664,6 +693,7 @@ class AcpRuntime:
             with self._timed("negotiation"):
                 self._authority = negotiate(self._policy, AgentCapabilities.from_dict(caps))
             servers = await self._consult_servers(handshake, process)
+            self._note_session_request("session/load", self._cwd or os.getcwd(), servers)
             await process.session_load(native_session_id, self._cwd or os.getcwd(),
                                        servers or None)
             self._agent_session_id = native_session_id
@@ -753,8 +783,9 @@ class AcpRuntime:
             raise RuntimeNotActiveError("prompt text must not be empty")
         if not self._mode_checked:
             # Nothing secured this session's mode: a run with no role, allowed
-            # at most `smart`, so an agent default broader than that refuses.
-            await self.secure_mode()
+            # at most `smart` unless its owner said otherwise, so an agent
+            # default broader than that refuses.
+            await self.secure_mode(self._permission)
         # Open the normalizer turn before RUNNING: if it refuses, the runtime
         # is not left mid-turn with nothing driving it.
         self._normalizer.new_turn()

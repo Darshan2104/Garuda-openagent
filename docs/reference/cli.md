@@ -19,7 +19,7 @@ entry points remain callable by Garuda's subprocesses.
 | | `garuda starter run ID ... [--preview] [--json]` | Compile current inputs and sources; preview or explicitly launch through existing flow/role owners |
 | | `garuda starter result SESSION [--workspace DIR] [--json] [--limit N] [--offset N]` | Read selected session evidence, coverage, and an explicit next action |
 | Sessions | `garuda sessions [--json]` | List recent sessions with state and queue position; `--json` is the same model the dashboard serves |
-| | `garuda sessions show S [--json]` | One session in full: the four facts, queue, pending approvals, flow |
+| | `garuda sessions show S [--json]` | One session in full: the four facts, queue, pending approvals, flow, and what it ran as (`workspace_kind`, `adapter`, `agent_segment`, `acp_session.session_request`, `acp_mode`, `initial_selection`) |
 | | `garuda sessions fork-preview S --at N [--all-projects] [--json]` | Read-only validation of a context fork; effective checkpoint index, provenance and stale evidence, with admission and artifact inheritance not checked |
 | | `garuda sessions cancel S` | Stop a background session, or revoke a pending quota continuation through the shared session Stop path |
 | | `garuda sessions merge S --check CMD [--into BRANCH] [--image IMAGE] [--timeout SEC]` | Check a worktree session merged into a branch (in Docker, no network; default image `python:3.12-slim`, 600 s per check) and publish `refs/garuda/integration/<S>`; never changes your checkout |

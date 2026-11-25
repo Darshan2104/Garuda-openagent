@@ -28,7 +28,7 @@ OWNER = '''
     import json, subprocess, sys, time
     from garuda.runtime.capacity import CapacityStore
     from garuda.workspace.lease import LeaseStore
-    leases_root, capacity_root, workspace, session, mode = sys.argv[1:6]
+    leases_root, capacity_root, workspace, session, mode, THREAD_LEADER = sys.argv[1:7]
     leases = LeaseStore(leases_root)
     leases.acquire(workspace, session, ttl_sec=1)
     capacity = CapacityStore(capacity_root)
@@ -40,10 +40,47 @@ OWNER = '''
     if mode == "orphan":
         orphan = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"],
                                   stdin=subprocess.DEVNULL, start_new_session=True).pid
+    if mode == "thread-leader":
+        orphan = subprocess.Popen([sys.executable, "-c", THREAD_LEADER],
+                                  stdin=subprocess.DEVNULL, start_new_session=True).pid
     print(json.dumps({"orphan": orphan}), flush=True)
     time.sleep(120)
 '''
 
+
+# A process whose main thread has exited while another thread still runs: its
+# leader shows as a zombie, yet the process can still write.
+THREAD_LEADER = (
+    "import ctypes, threading, time\n"
+    "threading.Thread(target=lambda: time.sleep(120)).start()\n"
+    "ctypes.CDLL(None).pthread_exit(None)\n"
+)
+
+# Starts an unrelated daemon (no lineage, orphaned by a double fork) that keeps
+# one unreaped zombie child, then prints the daemon's and the zombie's pids.
+ZOMBIE_KEEPER = """
+import os, sys, time
+if os.fork():
+    os._exit(0)
+os.setsid()
+zombie = os.fork()
+if zombie == 0:
+    os._exit(0)
+print(os.getpid(), zombie, flush=True)
+time.sleep(120)
+"""
+
+
+def _state(pid):
+    text = Path(f"/proc/{pid}/stat").read_text()
+    return text[text.rfind(")") + 2:].split()[0]
+
+
+def _wait_state(pid, state, timeout=10):
+    deadline = time.monotonic() + timeout
+    while _state(pid) != state:
+        assert time.monotonic() < deadline, f"pid {pid} never reached state {state}"
+        time.sleep(0.02)
 
 def _wait_dead(pid, timeout=10):
     deadline = time.monotonic() + timeout
@@ -66,7 +103,7 @@ def owner(tmp_path):
         workspace.mkdir(exist_ok=True)
         proc = subprocess.Popen(
             [sys.executable, "-c", textwrap.dedent(OWNER), str(tmp_path / "leases"),
-             str(tmp_path / "capacity"), str(workspace), session, mode],
+             str(tmp_path / "capacity"), str(workspace), session, mode, THREAD_LEADER],
             env=dict(os.environ, PYTHONPATH=str(ROOT)), stdout=subprocess.PIPE,
             text=True, start_new_session=True)
         started.append(proc)
@@ -141,6 +178,43 @@ def test_a_surviving_descendant_of_a_killed_owner_keeps_both(owner, tmp_path):
     assert leases.reclaim_dead(holder) is True
     assert capacity.reclaim_dead(slot["key"], slot["holder"], slot["owner"]) is True
 
+
+def test_an_unrelated_zombie_does_not_block_reclaim(owner, tmp_path):
+    """A zombie runs no code: its unreadable environ is not an inconclusive scan (#731)."""
+    proc, _info, workspace = owner()
+    leases, capacity = _stores(tmp_path)
+    holder, = leases.holders_of(workspace)
+    slot, = capacity.slots_for_session("crashed")
+    _kill(proc)
+    env = {k: v for k, v in os.environ.items() if k != LINEAGE_ENV}
+    keeper = subprocess.Popen([sys.executable, "-c", ZOMBIE_KEEPER], env=env,
+                              stdout=subprocess.PIPE, text=True)
+    daemon, zombie = map(int, keeper.stdout.readline().split())
+    keeper.wait(timeout=10)
+    try:
+        _wait_state(zombie, "Z")
+        owner_record = {"pid": holder.pid, "identity": holder.identity, "pgid": holder.pgid}
+        assert surviving_descendants(owner_record) == []
+        assert leases.reclaim_dead(holder) is True
+        assert capacity.reclaim_dead(slot["key"], slot["holder"], slot["owner"]) is True
+    finally:
+        os.killpg(daemon, signal.SIGKILL)
+
+
+def test_a_zombie_leader_with_a_running_thread_still_blocks_reclaim(owner, tmp_path):
+    """A process whose main thread exited still runs; it is never skipped as exited."""
+    from garuda.runtime.ownership import _exited
+    from garuda.runtime.recovery import _linux_stat
+
+    proc, info, workspace = owner("thread-leader")
+    leases, _capacity = _stores(tmp_path)
+    holder, = leases.holders_of(workspace)
+    _wait_state(info["orphan"], "Z")
+    _kill(proc)
+    assert _exited(info["orphan"], _linux_stat) is False
+    with pytest.raises(LeaseConflictError, match=f"(cannot be inspected|descendant).*{info['orphan']}"):
+        leases.reclaim_dead(holder)
+    assert leases.holders_of(workspace) == [holder]
 
 def test_a_quarantined_holding_is_never_reclaimed_after_its_owner_dies(owner, tmp_path):
     proc, _info, workspace = owner("quarantine")

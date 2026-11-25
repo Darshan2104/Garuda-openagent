@@ -21,9 +21,12 @@ names are resolved once, in interactive setup, and saved as the exact id).
   role that names none gets the mode its ceiling allows (:data:`DEFAULT_MODES`)
   on a proven adapter. Garuda never selects a mode that bypasses approval by
   itself. Whatever was set, the mode the agent reports after ``session/new``
-  and every set must be no broader than the one the run requires
-  (:func:`check_mode`): an unproven adapter whose own default is broader, or
-  an agent that reports no mode, refuses before the prompt (#700).
+  and every set must need no more than the authority the run requires
+  (:func:`required_authority`, :func:`check_mode`). This holds for every ACP
+  harness, not only those Garuda can set a mode on (#700, #732): a broader
+  mode, a mode Garuda cannot classify, a harness whose modes it does not know,
+  or an agent that reports no mode refuses before the prompt, unless the run
+  requires ``yolo``, the top of the scale, which no mode can exceed.
 
 The chosen ids and the adapter identity are recorded on the session.
 """
@@ -64,6 +67,14 @@ MODE_AUTHORITY: dict[str, dict[str, str]] = {
                "auto": "auto", "bypassPermissions": "yolo"},
     "codex": {"read-only": "readonly", "workspace-write": "smart", "agent": "auto",
               "agent-full-access": "yolo"},
+    # OpenCode's ACP modes are its primary agents (captured from opencode 2.3.2 with
+    # initialize and session/new only, #732). `build` "executes tools based on
+    # configured permissions": the user's OpenCode permission rules decide what asks,
+    # and by default edits, shell and access outside the workspace do not. `plan`
+    # denies edits outside OpenCode's plan directory, but its shell commands follow
+    # the same rules, so it can still write. Neither approves by mode regardless of
+    # those rules, so both are `auto`; neither is readonly or smart.
+    "opencode": {"build": "auto", "plan": "auto"},
 }
 #: The mode a role gets when it names none, by the most its step may do. Never
 #: a mode that bypasses approval.
@@ -199,6 +210,22 @@ def acp_permission(plan: RolePlan | None = None, *, mode: str | None = None,
         return "readonly"
     return min((plan.permissions if plan else None) or "smart", ceiling or "yolo",
                key=PERMISSIONS.index)
+
+
+def required_authority(plan: RolePlan, *, no_edits: bool = False,
+                       ceiling: str | None = None) -> str:
+    """The most the agent's reported mode may need for ``plan`` (#732).
+
+    The authority of the mode the run selects (a named mode, or the default
+    for its ceiling, which never bypasses approval) on a harness whose modes
+    Garuda knows; otherwise the run's own ceiling. Every ACP run has one.
+    """
+    mode = harness_mode(plan, no_edits=no_edits, ceiling=ceiling)
+    known = MODE_AUTHORITY.get(plan.runtime_id, {})
+    if mode is not None and mode in known:
+        return known[mode]
+    return acp_permission(plan, no_edits=no_edits, ceiling=min(
+        plan.permissions or "smart", ceiling or "yolo", key=PERMISSIONS.index))
 
 
 def harness_mode(plan: RolePlan, *, no_edits: bool = False,
@@ -343,35 +370,68 @@ def reported_mode(options: list, modes: dict | None) -> str | None:
     return current if isinstance(current, str) else None
 
 
-def check_mode(runtime_id: str, required: str | None, reported: str | None, *,
-               adapter_version: str, permission: str, set_by_garuda: bool) -> dict | None:
-    """Refuse unless the agent's reported mode is no broader than ``required``.
+def check_mode(runtime_id: str, required: str, reported: str | None, *,
+               adapter_version: str, permission: str, set_by_garuda: bool,
+               confined: bool = False, declared: dict[str, str] | None = None) -> dict:
+    """Refuse unless the agent's reported mode needs no more than ``required``.
 
-    Independent of proofs (#700): an unproven adapter's own default, a mode the
-    agent changed after a set, an unknown mode, or no reported mode at all
-    refuse before the prompt. ``None`` when Garuda knows no modes for the
-    harness (nothing to compare) or the run requires none.
+    ``required`` is the run's authority (:func:`required_authority`). Independent
+    of proofs (#700) and of the harness (#732): a broader mode, a mode Garuda
+    does not know, a harness whose modes it does not know, or no reported mode
+    refuses before the prompt. Two cases accept a mode Garuda cannot classify:
+
+    - the run requires ``yolo``, the top of the scale: no mode can do more than
+      the run explicitly allows;
+    - a readonly run in its Docker confinement (``confined``) on a harness with no
+      mode known to be readonly: the read-only mount, not the mode, is what
+      stops writes, as for every confined run.
+
+    ``declared`` is the classification a trusted global ``runtimes:`` entry gives
+    its adapter's modes (``modes:``); it is used only where Garuda has no table
+    for ``runtime_id``, and the record says so (``classified_by: runtimes``).
+
+    Returns what the session records as ``acp_mode``.
     """
-    authority = MODE_AUTHORITY.get(runtime_id)
-    if required is None or authority is None:
-        return None
-    needed = authority[required]
-    actual = authority.get(reported) if reported is not None else None
-    if actual is not None and PERMISSIONS.index(actual) <= PERMISSIONS.index(needed):
-        return {"mode": reported, "authority": actual, "required": required,
-                "source": "garuda" if set_by_garuda else "agent"}
-    proven = sorted(version for (runtime, version), options in PROVEN_OPTIONS.items()
-                    if runtime == runtime_id and "harness_mode" in options)
+    known = MODE_AUTHORITY.get(runtime_id)
+    by_user = known is None and bool(declared)
+    if by_user:
+        known = dict(declared)
+    actual = known.get(reported) if known is not None and isinstance(reported, str) else None
+    record = {"mode": reported, "authority": actual, "required": required,
+              "source": "garuda" if set_by_garuda else "agent"}
+    if by_user:
+        record["classified_by"] = "runtimes"
+    if actual is not None and PERMISSIONS.index(actual) <= PERMISSIONS.index(required):
+        return record
+    if required == PERMISSIONS[-1]:
+        return record  # nothing is broader than yolo, which the run asked for
+    if (confined and required == "readonly"
+            and "readonly" not in (known or {}).values()):
+        return {**record, "enforced_by": "confinement"}
     if reported is None:
         found = "reports no permission mode"
+    elif known is None:
+        found = (f"runs in mode {reported!r}, and Garuda does not know what "
+                 f"{runtime_id}'s modes allow")
     elif actual is None:
         found = f"runs in mode {reported!r}, which Garuda does not know"
     else:
         found = f"runs in mode {reported!r}, which needs permissions: {actual}"
-    remedy = ("" if set_by_garuda or (runtime_id, adapter_version) in PROVEN_OPTIONS
-              and "harness_mode" in PROVEN_OPTIONS[(runtime_id, adapter_version)]
-              else f"; Garuda cannot set the mode on this adapter version, so use a proven "
-                   f"one ({', '.join(proven) or 'none'})")
+    proven = sorted(version for (runtime, version), options in PROVEN_OPTIONS.items()
+                    if runtime == runtime_id and "harness_mode" in options)
+    if set_by_garuda or "harness_mode" in PROVEN_OPTIONS.get((runtime_id, adapter_version), {}):
+        remedy = ""
+    elif proven:
+        remedy = (f"; Garuda cannot set the mode on this adapter version, so use a proven "
+                  f"one ({', '.join(proven)})")
+    elif actual is not None:
+        remedy = (f"; Garuda cannot set a mode on {runtime_id}, so this harness needs "
+                  f"permissions: {actual} or higher")
+    else:
+        remedy = (f"; Garuda cannot classify this mode, so only permissions: "
+                  f"{PERMISSIONS[-1]} runs {runtime_id} in it, unless its trusted "
+                  "runtimes: entry classifies it (modes:)")
     raise RoleRefused("role.mode_unenforced",
-                      f"{runtime_id} {adapter_version} {found}; this run allows mode "
-                      f"{required!r} (permissions: {permission}) at most{remedy}")
+                      f"{runtime_id} {adapter_version} {found}; this run allows "
+                      f"permissions: {required} at most (run permissions: {permission})"
+                      f"{remedy}")

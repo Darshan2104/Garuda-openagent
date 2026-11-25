@@ -53,13 +53,22 @@ garuda runtime inspect opencode
 ## Run a task directly on ACP
 
 ```bash
-garuda run --workspace . --runtime opencode -t "Inspect the failing tests"
+garuda run --workspace . --runtime opencode --permission-mode auto -t "Inspect the failing tests"
 ```
+
+Before the first prompt Garuda checks the permission mode the harness reports
+against what the run allows, and refuses with `role.mode_unenforced` when the
+mode needs more, is unknown, or is not reported. OpenCode starts in `build`,
+which runs tools by your own OpenCode permission rules, so it needs
+`--permission-mode auto` (or a role with `permissions: auto`); a plain
+`smart` run refuses. Garuda does not classify Cursor, Goose, oh-my-pi or Pi
+modes yet, so those run only with `--permission-mode yolo`. See
+[A role's harness mode](configuration.md#a-roles-harness-mode).
 
 For a standalone ACP task, select an acceptance check explicitly:
 
 ```bash
-garuda run --workspace . --runtime opencode -t "Fix the failing tests" --check "pytest -q"
+garuda run --workspace . --runtime opencode --permission-mode auto -t "Fix the failing tests" --check "pytest -q"
 ```
 
 The check runs after the harness turn and records its authority, workspace
@@ -72,7 +81,7 @@ sequenceDiagram
   participant You
   participant Garuda
   participant H as Harness process
-  You->>Garuda: garuda run --runtime opencode
+  You->>Garuda: garuda run --runtime opencode --permission-mode auto
   Garuda->>Garuda: resolve trusted manifest, take workspace lease, record baseline
   Garuda->>H: launch the exact executable found by discovery
   H->>Garuda: approval request
@@ -82,7 +91,13 @@ sequenceDiagram
   Garuda->>H: retire the process
 ```
 
-Unknown, disabled, or missing runtimes are refused. For runs without a role,
+Unknown, disabled, or missing runtimes are refused. So is a harness whose
+documented login check says you are logged out: `--runtime ID`, `--role`,
+`defaults.role` and `--bg` all stop with
+`harness.logged_out: ... is not logged in. <its login hint>` (exit 2) before
+anything starts, and never run natively instead. `--bg` refuses at admission;
+a queued run whose harness logs out before it starts reads `refused` with that
+code in `garuda sessions show`. For runs without a role,
 if an installed harness fails to start and the workspace is unchanged, Garuda
 moves the session once to `fallback_runtime` (native by default) and records
 the reason. Role runs use their [configured pre-start fallback
@@ -141,9 +156,14 @@ your global settings that keeps conclusions, never probe output.
 Preview first. Without `--confirm`, nothing changes:
 
 ```bash
-garuda runtime handoff --session latest --to opencode
-garuda runtime handoff --session latest --to opencode --confirm
+garuda runtime handoff --session latest --to codex
+garuda runtime handoff --session latest --to codex --confirm
 ```
+
+The target runs as a run with no role, at most `smart`, so its reported
+permission mode must fit that. OpenCode (whose modes need `auto`) and harnesses
+whose modes Garuda does not classify refuse with `role.mode_unenforced`; hand
+off to Claude Code or Codex, or continue on them with a role run.
 
 Add `--workspace` when an older native session recorded a relative workspace
 and you aren't running from that directory.
@@ -218,8 +238,10 @@ export never launch a harness or query its login/quota state.
 - **Dashboard:** the Runtimes board lists and inspects catalog entries, previews
   and prepares handoffs, shows workspace deltas, and runs recovery. Dashboard
   chat still starts the native loop.
-- **SDK:** `SoftwareAgent(runtime="opencode")` runs one ACP turn and returns an
-  `AgentResult`. `Conversation` can start on ACP and switch ACP-to-ACP through
+- **SDK:** `SoftwareAgent(runtime="codex")` runs one ACP turn and returns an
+  `AgentResult`. SDK ACP runs may do at most what `smart` allows, so OpenCode and
+  harnesses whose modes Garuda does not classify refuse with
+  `role.mode_unenforced`. `Conversation` can start on ACP and switch ACP-to-ACP through
   the transactional handoff path, but refuses an in-process native-to-ACP
   switch; use the CLI handoff for that.
 - **Service:** the JSON-RPC server exposes runtime list, inspect, handoff,
@@ -292,6 +314,8 @@ python scripts/capture_consult_transport.py --name claude --out tests/fixtures/c
     - Launch command: `opencode acp` from the `opencode-ai` package.
     - Install and authenticate OpenCode, then verify `opencode --version`.
     - Authentication stays in OpenCode's own configuration.
+    - Modes (OpenCode 2.3.2): `build` (default) and `plan`, both classified
+      `auto`; Garuda cannot select one, so runs need `permissions: auto` or `yolo`.
 
 === "Pi"
 
@@ -452,8 +476,17 @@ runtimes:
     capabilities: [prompt, cancel]
     version_args: [my-agent-acp, --version]
     setup: Install my-agent-acp and authenticate with its own CLI.
+    # What each of its permission modes may do without asking (#732).
+    modes: {ask: readonly, edit: smart, auto: auto, full: yolo}
 disabled_runtimes: [codex]
 ```
+
+Garuda checks the mode a custom server reports before every first prompt. It
+cannot know what a new server's modes allow, so without `modes:` such a server
+runs only with `--permission-mode yolo` (or a `permissions: yolo` role). With
+`modes:`, its reported mode must need no more than the run allows, as for the
+shipped harnesses; `modes:` cannot change the classification Garuda ships for
+Claude Code, Codex or OpenCode.
 
 To run a shipped harness on another adapter binary, for example a newer
 Claude Code adapter installed outside `PATH`, replace its manifest with the

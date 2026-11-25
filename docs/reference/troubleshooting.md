@@ -29,6 +29,17 @@ Click a problem to see the fix.
     unless another check fails. Invalid global settings prevent harness probes;
     configured hooks are never executed by this settings check.
 
+??? question "`harness.logged_out` when I run a role or `--runtime`"
+
+    The harness's own login check (for Codex, `codex login status`) says you
+    are logged out, so Garuda refuses the run before it starts (exit 2) and
+    never runs it natively instead. Log in with the harness's CLI as the
+    message says (for Codex, `codex login`), then run again. A role with a
+    `fallback:` list moves to the next entry instead, and refuses with
+    `harness.no_candidate` only when no entry can start. A `--bg` run is
+    refused when you queue it; if the harness logs out while the run waits,
+    `garuda sessions show` reads `refused` with `harness.logged_out`.
+
 ??? question "`garuda: command not found`"
 
     Activate the virtual environment you installed into
@@ -182,6 +193,14 @@ Click a problem to see the fix.
     either comes from an older Garuda or was quarantined because the worker
     itself asked to keep it or its cleanup could not be proved (for example
     its supervisor was killed too). Recovery keeps refusing those.
+
+    A flow run with `--check` whose step role is refused before its prompt
+    (a logged-out harness gives `role.start_failed`; a model the harness no
+    longer offers gives `role.model_unavailable`) stops with that code, as it
+    does without `--check`. It releases its lease and slot, and
+    `garuda flow resume FLOW_ID` retries the step once the harness is fixed.
+    Older Garuda versions ended such a flow with `flow.cleanup_unproved` and
+    quarantined it; start a new flow for those.
 
 ??? question "`sessions merge` fails with `integration.check_failed`"
 

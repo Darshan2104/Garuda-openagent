@@ -572,6 +572,41 @@ async def test_sdk_acp_refuses_an_unenforceable_broader_mode_before_the_prompt(
     assert not meta.get("final_message") and "acp_mode" not in meta
 
 
+@pytest.mark.parametrize("surface", ["conversation", "software_agent"])
+async def test_sdk_acp_refuses_a_harness_garuda_cannot_classify(tmp_path, monkeypatch, surface):
+    """#732: an SDK run (at most `smart`) on a harness with no mode table never prompts."""
+    from garuda.config import agent_home
+    from garuda.core.sessions import SessionStore
+    from garuda.runtime import roles
+    from garuda.runtime.roles import RoleRefused
+
+    runtimes = [{"runtime_id": "fakemode", "kind": "acp", "version": "1", "setup": "fake",
+                 "command": [*FAKE_ARGV[:-1], "config-options", "--initial-mode", "build",
+                             "--agent-info", '{"version": "1"}']}]
+    monkeypatch.setattr(agent_home, "resolve_agent_home", lambda workspace: _FakeHome(runtimes))
+    monkeypatch.setattr(roles, "MODE_AUTHORITY", dict(roles.MODE_AUTHORITY))
+    store = SessionStore(tmp_path / "sessions")
+
+    async def deny(action: str) -> bool:
+        return False
+
+    if surface == "conversation":
+        runner = Conversation(workspace=tmp_path, runtime="fakemode", store=store,
+                              approval_handler=deny)
+    else:
+        runner = SoftwareAgent(workspace=str(tmp_path), runtime="fakemode", store=store)
+    try:
+        with pytest.raises(RoleRefused) as caught:
+            await runner.run("write outside the workspace")
+    finally:
+        if surface == "conversation":
+            await runner.close()
+    assert caught.value.code == "role.mode_unenforced"
+    assert "Garuda does not know what fakemode's modes allow" in str(caught.value)
+    (meta,) = store.list_sessions()
+    assert not meta.get("final_message") and "acp_mode" not in meta
+
+
 async def test_sdk_conversation_sets_and_records_the_mode_on_a_proven_adapter(tmp_path, monkeypatch):
     from garuda.core.sessions import SessionStore
 
@@ -584,7 +619,7 @@ async def test_sdk_conversation_sets_and_records_the_mode_on_a_proven_adapter(tm
         await conversation.close()
     assert "done: hello" in result.final_message
     meta = store.load_meta(result.metadata["session_id"])
-    assert meta["acp_mode"] == {"mode": "edit", "authority": "smart", "required": "edit",
+    assert meta["acp_mode"] == {"mode": "edit", "authority": "smart", "required": "smart",
                                 "source": "garuda"}
 
 class _SecretTool:

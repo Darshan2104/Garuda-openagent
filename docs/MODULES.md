@@ -227,7 +227,10 @@ receipts and unproved descendants remain retained. No ownership is stolen or
 released by this service; non-local workers and concurrency remain unsupported.
 
 `paths.py` and `health.py` are path
-safety and liveness for text and binary reads. `lease.py`
+safety and liveness for text and binary reads. `executors.py` records each
+tmux session and docker/remote container before it starts (tmux socket and
+session name; docker endpoint and container name) and forgets it after a clean
+stop, so dead-owner reclaim can demand proof that it is gone (#730). `lease.py`
 issues mutating-workspace leases (one live mutating owner, read-only sharing,
 expired holders retained after parent death without descendant-cleanup receipts,
 read-only registration preserving prior bindings, issuing-owner release removing
@@ -673,6 +676,11 @@ refuses the result but releases the closed child's capacity. A worker that
 dies without a result after the subreaper's ECHILD receipt is a failed step
 (`flow.step_failed`) whose lease and slot are released (#723); missing cleanup
 evidence, or a worker that asked to retain ownership, still retains quarantine.
+A worker whose role pipeline raises `RoleRefused` (`role.start_failed`,
+`role.model_unavailable`, ...) reports it as a typed `refusal` result
+(`role`/`harness`/`config` codes only), so the step stops with that code and a
+checked flow can resume it (#738); a refusal after a quarantine request is
+still unproved cleanup.
 Source/ceiling and absent-input mutation tests exercise that refusal. Project configuration
 and trust-grant reads report their exact bytes to an active source capture;
 `freeze_resolved_checks` requires those identities for configured checks, and

@@ -79,42 +79,57 @@ def _stamp_lineage(pid: int, identity: str) -> None:
         os.environ[LINEAGE_ENV] = " ".join([*tokens, token])
 
 
+#: ``/proc/<pid>/stat`` states of a process that has exited and runs no code.
+_EXITED_STATES = frozenset({"Z", "X", "x"})
+
+_NO_SCAN = "needs /proc and a recorded Linux owner identity"
+
+
 def surviving_descendants(owner: dict) -> list[int] | None:
     """Live processes that inherited ``owner``'s lineage token.
 
     Reads each same-user process's start-time environment from ``/proc``.
-    An owner from an earlier boot has none. A same-user process whose
-    environment is unreadable (a non-dumpable one, such as an sshd session) is
-    ruled out only when it, or a live ancestor of it below init, started
-    before the owner; an orphan reparented to init has no such ancestor. (A
-    non-dumpable orphan reparented to an older subreaper, such as
-    ``systemd --user``, is outside the scan.) ``None`` means the scan is impossible or inconclusive (no
-    ``/proc``, no Linux owner identity, or an unexplained unreadable
-    process), so descendant cleanup stays unproved.
+    An owner from an earlier boot has none. A process that has exited (a
+    zombie, state ``Z``, or ``X``) runs no code and is skipped: its
+    ``environ`` is unreadable, and any live child of it is a separate process
+    that is scanned on its own. A live same-user process whose environment is
+    unreadable (a non-dumpable one, such as an sshd session) is ruled out
+    only when it, or a live ancestor of it below init, started before the
+    owner; an orphan reparented to init has no such ancestor. (A non-dumpable
+    orphan reparented to an older subreaper, such as ``systemd --user``, is
+    outside the scan.) ``None`` means the scan is impossible or inconclusive
+    (no ``/proc``, no Linux owner identity, or an unexplained unreadable live
+    process), so descendant cleanup stays unproved; :func:`descendant_scan`
+    also says why.
     """
+    return descendant_scan(owner)[0]
+
+
+def descendant_scan(owner: dict) -> tuple[list[int] | None, str | None]:
+    """:func:`surviving_descendants` plus, when it is ``None``, the reason."""
     from garuda.runtime.recovery import _linux_stat
 
     token = lineage_token(owner.get("pid"), owner.get("identity"))
     identity = owner.get("identity")
     if (token is None or not os.path.isfile("/proc/self/environ")
             or not identity.startswith("linux:") or identity.count(":") != 2):
-        return None
+        return None, _NO_SCAN
     _, boot_id, start = identity.split(":")
     try:
         owner_start = int(start)
         with open("/proc/sys/kernel/random/boot_id") as handle:
             current_boot = handle.read().strip()
     except (OSError, ValueError):
-        return None
+        return None, _NO_SCAN
     if boot_id and current_boot and boot_id != current_boot:
-        return []  # nothing started before this boot is still running
+        return [], None  # nothing started before this boot is still running
     uid = os.getuid()
     needle = f"{LINEAGE_ENV}=".encode()
     found = []
     try:
         entries = os.listdir("/proc")
     except OSError:
-        return None
+        return None, "cannot list /proc"
     for name in entries:
         if not name.isdigit():
             continue
@@ -122,28 +137,65 @@ def surviving_descendants(owner: dict) -> list[int] | None:
         try:
             if os.stat(f"/proc/{pid}").st_uid != uid:
                 continue
+            if _exited(pid, _linux_stat):
+                continue  # a zombie runs no code and cannot write (#731)
             with open(f"/proc/{pid}/environ", "rb") as handle:
                 environ = handle.read()
         except (FileNotFoundError, ProcessLookupError):
             continue  # exited while scanning
-        except PermissionError:
-            # A non-dumpable process: its environment is private even to
-            # its own user. It is ruled out when it, or a live ancestor below
-            # init, started before the owner. Every live ancestor of an
-            # orphaned descendant below its reaper started after the owner.
-            if not _older_lineage(pid, owner_start, _linux_stat):
-                return None
-            continue
         except OSError:
-            if not _older_lineage(pid, owner_start, _linux_stat):
-                return None
-            continue
+            # A non-dumpable process: its environment is private even to
+            # its own user. It is ruled out when it has exited meanwhile, or
+            # when it, or a live ancestor below init, started before the
+            # owner. Every live ancestor of an orphaned descendant below its
+            # reaper started after the owner.
+            if _older_lineage(pid, owner_start, _linux_stat) or _exited(pid, _linux_stat):
+                continue
+            return None, (f"live process {pid} has an unreadable environment and "
+                          "cannot be ruled out as a descendant")
         for entry in environ.split(b"\0"):
             if entry.startswith(needle) and token in entry[len(needle):].decode(
                     "utf-8", "replace").split():
                 found.append(pid)
                 break
-    return sorted(found)
+    return sorted(found), None
+
+
+def _exited(pid: int, stat) -> bool:
+    """Whether ``pid`` is gone or has wholly exited; False when unsure.
+
+    A zombie thread-group leader can still have running threads (its main
+    thread called ``pthread_exit``), so every thread must have exited too.
+    """
+    from garuda.runtime.recovery import RecoveryError
+
+    try:
+        fields = stat(pid)
+    except (RecoveryError, OSError):
+        return False
+    if fields is None:
+        return True
+    if len(fields) < 2 or fields[1] not in _EXITED_STATES:
+        return False
+    try:
+        tids = os.listdir(f"/proc/{pid}/task")
+    except FileNotFoundError:
+        return True  # reaped meanwhile
+    except OSError:
+        return False
+    for tid in tids:
+        try:
+            with open(f"/proc/{pid}/task/{tid}/stat", encoding="utf-8",
+                      errors="replace") as handle:
+                text = handle.read()
+        except FileNotFoundError:
+            continue  # that thread is gone
+        except OSError:
+            return False
+        state = text[text.rfind(")") + 2:].split()[:1]
+        if not state or state[0] not in _EXITED_STATES:
+            return False
+    return True
 
 
 def _older_lineage(pid: int, owner_start: int, stat) -> bool:
@@ -186,10 +238,9 @@ def reclaim_refusal(owner: dict, *, quarantined: bool = False,
         return f"its owner's (pid {owner.get('pid')}) liveness cannot be determined"
     if not scan_descendants:
         return None
-    survivors = surviving_descendants(owner)
+    survivors, why = descendant_scan(owner)
     if survivors is None:
-        return ("its owner is dead but its descendants cannot be inspected "
-                "(needs /proc and a recorded owner identity)")
+        return f"its owner is dead but its descendants cannot be inspected ({why})"
     if survivors:
         return ("its owner is dead but descendant process(es) "
                 f"{', '.join(map(str, survivors))} are still running")

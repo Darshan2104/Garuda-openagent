@@ -67,6 +67,25 @@ and message of a failed run, for example `role.option_missing` with the options
 the agent did offer. See [Study traces](configuration.md#study-traces) for the
 opt-in tool detail.
 
+What a session ran as is recorded when it starts, so a run that failed early
+still shows it:
+
+- `workspace_kind`: the workspace kind of the run (`local`, `docker`, `tmux`, …).
+  An external harness runs only in the local workspace; a readonly run's
+  container is recorded as `confinement`.
+- `adapter`: the harness, its catalog version, and the name and version the
+  adapter reported at `initialize`. `agent_segment` and `agent_digest` name the
+  role's agent definition the harness ran with (the same segment its events
+  carry).
+- `acp_session.session_request`: what `session/new` (or `session/load`) sent:
+  the `cwd` and the names and count of the MCP servers offered. A server's
+  command, arguments and environment are never recorded. `acp_mode` is the
+  permission mode the agent reported after Garuda applied the run's options.
+- `initial_selection`: how the runtime was chosen. A start taken from a role's
+  own `fallback:` chain says `source: fallback`, names the primary harness in
+  `fallback_from`, and adds which candidates were skipped and why to
+  `rationale`.
+
 ### Names and references
 
 - `--name NAME` names a session (unique in the project). Without it, Garuda
@@ -233,9 +252,12 @@ adds nothing to them. A native step's transcript (messages and tool output) is
 never exported; it contributes its record and usage only. Free text a session
 recorded (task, error detail) is redacted again on the way out.
 
-After a checked CLI flow stops at a settled step failure, missing output, or
-confinement refusal, `garuda flow resume FLOW_ID` retries the pending step and
-continues with the original checks. If a reviewer returned no required output,
+After a checked CLI flow stops at a settled step failure, a role refusal
+before the prompt (for example `role.start_failed` from a logged-out harness or
+`role.model_unavailable`), missing output, or confinement refusal,
+`garuda flow resume FLOW_ID` retries the pending step and continues with the
+original checks. Such a stop keeps the step's own code and releases the
+workspace lease and the harness slot. If a reviewer returned no required output,
 the pending step is the reviewer. Resume requires the saved check request,
 unchanged workspace identity and candidate, matching configuration sources,
 and complete step and evidence records. Older checked sessions without a saved

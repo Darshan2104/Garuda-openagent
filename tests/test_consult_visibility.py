@@ -7,6 +7,7 @@ Every fixture is written by the production consult service and ledger.
 import asyncio
 import json
 import os
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -47,11 +48,22 @@ async def make_history(world):
         await service(world, runner).consult(request(world, request_id=request_id,
                                                      question=QUESTION))
 
+    # The deadline covers setup too, and a deadline hit before launch correctly
+    # refunds the admission and leaves no row. So setup gets a generous ten
+    # seconds, and once the child runs the consult clock jumps to half a second
+    # before the deadline: the deadline always expires in the child, however
+    # slow the runner, and the row is a real timeout.
+    entered = [None]
+
+    def clock():
+        return 0.0 if entered[0] is None else time.time() - entered[0] + 9.5
+
     async def slow(child):
+        entered[0] = time.time()
         await asyncio.sleep(30)
 
-    timeout = ConsultService(world.store, make_resolved({**DOC, "consults": {"timeout_sec": 1}}),
-                             runner=slow)
+    timeout = ConsultService(world.store, make_resolved({**DOC, "consults": {"timeout_sec": 10}}),
+                             runner=slow, clock=clock)
     with pytest.raises(ConsultRefused):
         await timeout.consult(request(world, request_id="r-timeout", question=QUESTION))
 

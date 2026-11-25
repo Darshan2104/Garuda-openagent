@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from garuda.acp.fake_agent import MODE_AUTHORITY as FAKE_AGENT_MODES
 from garuda.config import garuda_yaml as gy
 from garuda.interfaces import bg_sessions
 from garuda.runtime.capacity import CapacityStore
@@ -38,7 +39,7 @@ def configure(tmp_path, *, parked=False):
         "fake_agent._handle_prompt=prompt\n"
         f"raise SystemExit(fake_agent.main(['--profile',{'approval' if parked else 'success'!r}]))\n")
     settings = Path(os.environ["GARUDA_GLOBAL_SETTINGS"])
-    settings.write_text(yaml.safe_dump({"runtimes": [{"runtime_id": "background-fixture", "kind": "acp",
+    settings.write_text(yaml.safe_dump({"runtimes": [{"runtime_id": "background-fixture", "kind": "acp", "modes": FAKE_AGENT_MODES,
         "version": "1", "command": [sys.executable, str(fixture)]}], "capacity": {"background-fixture": 1}}))
     gy.user_path().write_text(gy.dump({"version": 1, "roles": {"coder": {"harness": "background-fixture"}}}))
     return counter

@@ -17,6 +17,117 @@ the user's `observability.trace_detail` level and never a native transcript;
 recorded free text is redacted again on the way out. Garuda's metered usage
 and the adapter-reported figure stay separate fields and are never summed.
 
+## 2026-11-25 — Every ACP harness's reported mode is checked; unclassified modes need yolo (#732)
+
+The #700 mode check applied only to `claude` and `codex`; every other harness
+ran in its own mode unchecked. Now every ACP run has a required authority: the
+level of the mode Garuda selects, else the run's own permission. Before the
+first prompt the reported mode must need no more, on every harness, or the run
+refuses with `role.mode_unenforced`; so do a missing mode, an unknown mode and
+a harness with no mode table. OpenCode's modes are classified from a no-prompt
+handshake of opencode 2.3.2 and its source: `build` runs tools by the user's
+permission rules (by default without asking) and `plan` still runs shell by
+those rules, so both need `auto`, and a `smart` OpenCode run refuses. Cursor,
+Goose, oh-my-pi and Pi are not installed here and their modes are not
+documented in the repo, so they stay unclassified. A `runtimes:` entry with its
+own id is not classified by the `agentInfo` name it reports, which is the
+agent's claim and not proven anywhere; replacing the shipped manifest of the
+same id keeps the shipped table, and a trusted global entry may classify its
+own adapter's modes (`modes: {mode: permission}`, recorded as `classified_by:
+runtimes`). Garuda's own tables win over it, and a project cannot set it. Only `permissions: yolo`, the top of the scale,
+accepts an unclassified or missing mode (recorded with `authority: null`):
+nothing exceeds what the run asked for. `auto` does not, because an unknown mode
+may approve everything; Garuda's own default for yolo stays a non-bypass mode
+where it can select one. A confined readonly run accepts any mode on a harness
+with no readonly mode, as the read-only mount is the write boundary
+(`enforced_by: confinement`). `acp_mode.required` is now the authority, not a
+mode name.
+
+## 2026-11-25 — Dead-owner reclaim needs proof that a tmux session or container is gone (#730)
+
+`garuda runtime recover` could release a killed run's lease while its tmux pane
+or docker/remote container still wrote to the workspace: those processes run
+under the tmux server or the Docker daemon, never carry the owner's lineage
+token, and are not recorded as session children. Now `TmuxEnvironment`,
+`DockerWorkspace` and `RemoteWorkspace` durably record the executor before
+starting it (a write failure refuses the start) and forget it only after a
+clean stop. `LeaseStore.reclaim_dead` refuses while any executor record for the
+workspace is unreadable, of an unknown kind, or not proved gone by its recorded
+tmux socket or docker endpoint, and the refusal gives the stop command. A
+proved-gone record is removed during reclaim. Runs started before this change
+left no record, so their executors stay outside the check.
+
+## 2026-11-25 — An exited process no longer makes the descendant scan inconclusive (#731)
+
+The dead-owner lineage scan (`ownership.surviving_descendants`) skips a
+same-user process that has wholly exited: its `/proc/<pid>/stat` state is `Z`
+or `X` and so is every thread under `/proc/<pid>/task`. Such a process runs no
+code, and reading its `environ` raises `PermissionError`, which used to turn
+the whole scan into "cannot be inspected" whenever any unreaped zombie with
+younger ancestry existed (a just-killed orphan, the child of an unrelated
+daemon), so `garuda runtime recover` refused spuriously. A zombie leader with
+a running thread has not exited and is still checked. A process that vanishes
+during the unreadable-process check is treated as exited. Everything else
+stays fail closed: a live unreadable process with no older ancestry still
+makes the scan inconclusive, and the refusal now names that pid instead of
+blaming a missing `/proc` or owner identity.
+
+## 2026-11-25 — A checked flow step refused before its prompt stops with its own code (#738)
+
+An owned role worker (every step of a `--check` or dashboard-owned flow) now
+reports a `RoleRefused` from its role pipeline, such as `role.start_failed`
+(logged-out harness) or `role.model_unavailable`, as a typed result
+`{"refusal": {"code", "message"}}` instead of crashing out of the worker. A
+crash left no result, so the step lost its code and, before #723, was treated
+as unproved cleanup (`flow.cleanup_unproved`, flow quarantined, lease and
+harness slot kept forever). The parent accepts a refusal only as a failed
+result with no output and a `role.`, `harness.` or `config.` code, bounded and
+redacted. The attempt keeps the full closure and evidence-boundary proof of any
+other failed step; only then is its receipt `stopped` with the role's code and
+`stop.refused: true`, and a checked flow records its resume checkpoint, so
+`flow resume` retries it under the original checks (#683). A refusal reported
+after the worker asked to retain ownership is still `CleanupUncertain`, so
+genuinely unproved cleanup still quarantines. Unchecked in-process flows are
+unchanged.
+
+## 2026-11-25 — A run on a logged-out harness refuses with `harness.logged_out` (#739, #668)
+
+Since discovery reads a logged-out Codex as `unauthenticated` (#715),
+initial selection refused an explicitly named runtime (`--runtime`, a role's
+harness, `defaults.role`) with an untyped `SelectionError`, which reached the
+user as a traceback (rc 1), and a `--bg` session ended `failed` with no
+recorded error. Selection now raises `HarnessLoggedOut` (a `SelectionError`
+subclass) for a named candidate whose auth is `unauthenticated` or
+`expired`, and `role_execution.run_task` turns it into
+`RoleRefused("harness.logged_out", ...)`: "role <r> runs on <h>, which is not
+logged in." (or "runtime <h> is not logged in.") plus the manifest's login
+instructions, exit 2, before any session or runtime exists. It never falls
+back to native or `routing.fallback_runtime`; a role's own `fallback:` chain
+is still walked first by `_apply_role`, unchanged. `garuda run --bg` runs the
+same documented login check, fresh, at admission and refuses there; only the
+documented logged-out answer refuses, an unknown or failed check does not. A
+worker whose harness logged out after admission, or that meets any other
+`RoleRefused`, settles its session `refused` with `error_code`,
+`background_refusal` and `refusal_reason` (a session another path already
+settled keeps its outcome). Any other `SelectionError` reaching
+`run_task_guarded` is reported as `runtime.selection_refused` (exit 2)
+instead of a traceback. Flow steps and dashboard starts launch through the
+owned role path, which already refused with `role.start_failed`.
+
+## 2026-11-25 — Sessions record what they ran as (#726)
+
+Every session records its `workspace_kind` (an ACP run `local`, at session
+start; a native run its kind). An ACP run records, right after the agent
+starts and before any option is applied, its `agent_segment` (definition name
+and digest, runtime, the adapter's reported name and version) and
+`agent_digest`, and `acp_session.session_request`: the `session/new` or
+`session/load` method, `cwd`, and MCP server names and count only; a server's
+command, arguments and environment are never recorded. `sessions show` adds
+`workspace_kind`, `adapter`, `acp_mode` and `initial_selection`. A start taken
+from a role's own fallback chain is recorded in `initial_selection` as
+`source: fallback` with `fallback_from` naming the primary harness, instead of
+`explicit`. No trace level or default changes.
+
 ## 2026-11-25 — A killed role worker with a proved cleanup receipt releases its holdings (#723)
 
 When an owned role worker (a flow step, or a dashboard `run-with-role` /
