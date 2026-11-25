@@ -44,6 +44,7 @@ _MANIFEST_FIELDS = frozenset(
         "auth_probe",
         "setup",
         "login",
+        "modes",
     }
 )
 
@@ -115,6 +116,9 @@ class RuntimeManifest:
     auth_probe: AuthProbe | None = None
     setup: str = ""
     login: LoginFlow = field(default_factory=LoginFlow)
+    #: The user's classification of an ACP adapter's permission modes (mode, Garuda
+    #: permission) for a harness Garuda has no table for (#732). Trusted global only.
+    modes: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -248,6 +252,7 @@ def parse_global_manifests(data: object, *, source: str = "global runtimes") -> 
         setup = item.get("setup", "")
         if not isinstance(setup, str):
             raise RegistryError(f"{where}.setup: must be a string")
+        modes = _parse_modes(item.get("modes"), kind=kind, where=f"{where}.modes")
         manifests.append(
             RuntimeManifest(
                 runtime_id=runtime_id,
@@ -264,9 +269,27 @@ def parse_global_manifests(data: object, *, source: str = "global runtimes") -> 
                 auth_probe=_parse_auth_probe(item.get("auth_probe"), where=f"{where}.auth_probe"),
                 setup=setup,
                 login=LoginFlow.parse(item.get("login"), where=f"{where}.login"),
+                modes=modes,
             )
         )
     return manifests
+
+
+def _parse_modes(value: object, *, kind: RuntimeKind, where: str) -> tuple[tuple[str, str], ...]:
+    """``{mode: permission}``: what each of an ACP adapter's modes may do without asking."""
+    from garuda.config.garuda_yaml import PERMISSIONS
+
+    if value is None:
+        return ()
+    if kind is not RuntimeKind.ACP:
+        raise RegistryError(f"{where}: only acp runtimes have harness modes")
+    if not isinstance(value, dict) or not value:
+        raise RegistryError(f"{where}: must be a non-empty mapping of mode to permission")
+    for mode, level in value.items():
+        if not isinstance(mode, str) or not mode or level not in PERMISSIONS:
+            raise RegistryError(f"{where}.{mode}: must map a mode name to one of "
+                                f"{', '.join(PERMISSIONS)}")
+    return tuple(sorted(value.items()))
 
 
 def parse_project_refs(data: object, *, source: str = "project runtimes") -> list[ProjectRuntimeRef]:

@@ -422,8 +422,9 @@ for line in sys.stdin:
     store = SessionStore(tmp_path / "sessions")
     store.begin("reported", task="t", model="m", agent="a", workspace=str(tmp_path))
     store.ensure_unified("reported")
+    # The fixture reports no permission mode; only a yolo run accepts that (#732).
     runtime = AcpRuntime([sys.executable, "-c", script, model, field], store=store,
-                         persist_dir=str(store.session_dir("reported")))
+                         persist_dir=str(store.session_dir("reported")), permission="yolo")
     try:
         await runtime.start(task="t", session_id="reported")
         await runtime.prompt("go")

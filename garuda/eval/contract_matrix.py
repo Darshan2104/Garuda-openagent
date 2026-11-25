@@ -202,11 +202,15 @@ def _acp_entries() -> list[AdapterEntry]:
     if unknown:
         raise ValueError(f"contract profiles not in fake_agent.PROFILES: {sorted(unknown)}")
 
+    from garuda.acp.fake_agent import MODE_AUTHORITY as FAKE_MODES
+
     def make(profile: str):
         def _make(scratch: Path, _p=profile) -> AcpRuntime:
+            # Garuda's own fake agent: its modes are classified by the fake itself (#732).
             return AcpRuntime(
                 [sys.executable, "-m", "garuda.acp.fake_agent", "--profile", _p],
                 runtime_id=f"acp-{_p}",
+                declared_modes=FAKE_MODES,
             )
 
         return _make
@@ -238,7 +242,9 @@ def _vendor_entries() -> list[AdapterEntry]:
     entries = []
     for runtime_id, manifest in sorted(manifests.items()):
         # The stand-in reports the mode a run with no role requires, as the
-        # vendor's adapter would once Garuda set it.
+        # vendor's adapter would once Garuda set it. Where Garuda selects no
+        # mode for the vendor, no stand-in mode is classified for a smart run,
+        # so the stand-in runs as a yolo run would (#732), like the native entry.
         mode = DEFAULT_MODES.get(runtime_id, {}).get("smart")
         def _make(scratch: Path, _m=manifest, _mode=mode) -> Any:
             return adapter_for_manifest(
@@ -247,6 +253,7 @@ def _vendor_entries() -> list[AdapterEntry]:
                     sys.executable, "-m", "garuda.acp.fake_agent", "--profile", "success",
                     *(("--initial-mode", _mode) if _mode else ()),
                 ],
+                permission="smart" if _mode else "yolo",
             )
 
         entries.append(

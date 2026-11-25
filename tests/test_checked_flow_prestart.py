@@ -40,6 +40,8 @@ def harness(tmp_path, monkeypatch):
     # The owned worker runs in its own isolated interpreter, so a test cannot
     # widen PROVEN_OPTIONS there: the fake answers as an adapter whose model
     # option is proven (claude 0.110.1) and offers only its own fake models.
+    # Nor does the conftest mode table reach it (#732): the fakeout entry
+    # classifies the fake agent's own modes, as a trusted runtimes: entry may.
     _shim(bin_dir / "cfg-shim", "config-options", version="0.110.1")
     _shim(bin_dir / "out-shim", "logged-out")
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
@@ -48,7 +50,8 @@ def harness(tmp_path, monkeypatch):
     settings.write_text(
         "runtimes:\n"
         "  - {runtime_id: claude, kind: acp, command: [cfg-shim], version: '0.110.1', setup: shim}\n"
-        "  - {runtime_id: fakeout, kind: acp, command: [out-shim], version: '1', setup: shim}\n")
+        "  - {runtime_id: fakeout, kind: acp, command: [out-shim], version: '1', setup: shim,\n"
+        "     modes: {ask: readonly, edit: smart, judge: auto, everything: yolo}}\n")
     return _repo(tmp_path / "ws"), bin_dir
 
 

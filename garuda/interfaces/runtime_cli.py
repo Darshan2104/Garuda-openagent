@@ -721,7 +721,13 @@ async def run_acp_task(
     from garuda.core.events import EventStore
     from garuda.core.sessions import SessionStore
     from garuda.interfaces.run_guard import WorkspaceLeaseGuard, broker_approval_handler
-    from garuda.runtime.roles import RolePlan, acp_options, acp_permission, check_provable, harness_mode
+    from garuda.runtime.roles import (
+        RolePlan,
+        acp_options,
+        acp_permission,
+        check_provable,
+        required_authority,
+    )
     from garuda.runtime.session import RuntimeSegment
     from garuda.workspace.evidence import begin_session_evidence, finish_session_evidence
 
@@ -785,8 +791,9 @@ async def run_acp_task(
                                permissions=None if readonly else permission)
     options: dict[str, str] = {}
     adapter_version = getattr(record, "version", "unknown")
-    # The mode the run requires; the agent's reported mode is checked against it.
-    required_mode = harness_mode(option_plan, ceiling=permission)
+    # The most the agent's reported mode may need; checked before the prompt on
+    # every harness (#700, #732).
+    required = required_authority(option_plan, ceiling=permission)
     if readonly:
         check_provable(option_plan)
     else:
@@ -1005,9 +1012,10 @@ async def run_acp_task(
         if role_plan is None and applied:
             store.update_meta(session_id, {"acp_options": applied})
         # Whatever was set, the agent must now report a mode the run allows.
-        effective_mode = runtime.confirm_mode(required_mode, permission=permission)
-        if effective_mode is not None:
-            store.update_meta(session_id, {"acp_mode": effective_mode})
+        # A readonly run is always confined: the read-only mount stops writes.
+        effective_mode = runtime.confirm_mode(required, permission=permission,
+                                              confined=readonly)
+        store.update_meta(session_id, {"acp_mode": effective_mode})
         if role_plan is not None:
             store.update_meta(session_id, {"role": role_plan.record(
                 adapter={"runtime_id": manifest.runtime_id,

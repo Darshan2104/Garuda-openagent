@@ -1,4 +1,54 @@
+import json
+from pathlib import Path
+
 import pytest
+
+
+class _FakeModeTables(dict):
+    """Garuda's mode tables, plus the fake agent's modes for any other runtime id.
+
+    Tests launch ``garuda.acp.fake_agent`` in-process under many ad hoc runtime ids,
+    and every ACP run checks the agent's reported mode against a table for its
+    runtime (#732). For an id that is not a shipped harness this answers with the
+    fake's own modes and the Claude Code and Codex mode names tests emulate.
+    Shipped harness ids keep their real tables, or none. Worker processes do not
+    see this; their tests classify the fake with a ``modes:`` runtimes entry.
+    """
+
+    def __init__(self, tables, shipped):
+        super().__init__(tables)
+        self._shipped = frozenset(shipped)
+        self._fallback = None
+
+    def get(self, key, default=None):
+        if key in self or key in self._shipped:
+            return super().get(key, default)
+        if self._fallback is None:
+            from garuda.acp.fake_agent import MODE_AUTHORITY
+
+            emulated = {}
+            for runtime in ("claude", "codex"):
+                emulated.update(super().get(runtime) or {})
+            self._fallback = {**emulated, **MODE_AUTHORITY}
+        return self._fallback
+
+
+#: Shipped harness ids, read without importing the runtime (a docs-only job has
+#: none of its dependencies).
+_SHIPPED = frozenset({"native"} | {
+    json.loads(path.read_text())["runtime_id"]
+    for path in (Path(__file__).resolve().parents[1] / "garuda" / "acp" / "builtin").glob("*.json")})
+
+
+@pytest.fixture(autouse=True)
+def _fake_harness_modes(monkeypatch):
+    """A test of an unclassified harness uses a shipped id, or replaces
+    ``roles.MODE_AUTHORITY`` with a plain dict."""
+    try:
+        from garuda.runtime import roles
+    except ImportError:  # a minimal job without the runtime's dependencies
+        return
+    monkeypatch.setattr(roles, "MODE_AUTHORITY", _FakeModeTables(roles.MODE_AUTHORITY, _SHIPPED))
 
 
 @pytest.fixture(autouse=True)

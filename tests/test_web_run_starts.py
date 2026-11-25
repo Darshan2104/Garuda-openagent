@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from garuda.acp.fake_agent import MODE_AUTHORITY as FAKE_AGENT_MODES
 from garuda.config import garuda_yaml as gy
 from garuda.flows.engine import FlowStopped
 from garuda.interfaces.web import DashboardConfig, build_context
@@ -49,7 +50,7 @@ def _install_acp(workspace: Path) -> None:
     current = yaml.safe_load(settings.read_text()) if settings.exists() else {}
     settings.write_text(yaml.safe_dump({
         **(current or {}),
-        "runtimes": [{"runtime_id": "owned-acp", "kind": "acp",
+        "runtimes": [{"runtime_id": "owned-acp", "kind": "acp", "modes": FAKE_AGENT_MODES,
                       "command": [sys.executable, str(fixture)], "version": "1"}],
         "capacity": {**((current or {}).get("capacity") or {}), "owned-acp": 1}}))
 
@@ -475,7 +476,7 @@ async def test_dashboard_acp_ask_uses_image_runtime_without_host_cli(tmp_path, m
             "image": "garuda-owned-acp-fixture:local",
             "command": ["python", "/opt/garuda/garuda/acp/fake_agent.py", "--profile", "probe-writes"]}}}}))
     Path(os.environ["GARUDA_GLOBAL_SETTINGS"]).write_text(yaml.safe_dump({
-        "runtimes": [{"runtime_id": "image-only", "kind": "acp",
+        "runtimes": [{"runtime_id": "image-only", "kind": "acp", "modes": FAKE_AGENT_MODES,
                       "command": ["/not-installed-on-host"], "version": "1"}],
         "capacity": {"image-only": 1}}))
     ctx = await _context(tmp_path, workspace)

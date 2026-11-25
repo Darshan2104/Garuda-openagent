@@ -1023,13 +1023,15 @@ def test_starter_acp_roles_preserve_existing_owners(
         tmp_path, monkeypatch, capsys, mode, fake_acp_confinement):
     import time
 
+    from garuda.acp.fake_agent import MODE_AUTHORITY
     from tests.test_runtime_cli import _git_workspace, _hard_deadline, _install_shim, _on_path
 
     ws = _git_workspace(tmp_path)
     _install_shim(tmp_path / 'bin', 'write-anyway' if mode == 'withheld' else 'success', report_cwd=True)
     _on_path(monkeypatch, tmp_path / 'bin')
     Path(os.environ['GARUDA_GLOBAL_SETTINGS']).write_text(json.dumps({'runtimes': [
-        {'runtime_id': 'fixture', 'kind': 'acp', 'version': '1', 'command': ['fake-acp-shim']}]}))
+        {'runtime_id': 'fixture', 'kind': 'acp', 'version': '1', 'command': ['fake-acp-shim'],
+         'modes': MODE_AUTHORITY}]}))
     gy.user_path().write_text(gy.dump({'version': 1, 'roles': {
         role: {'harness': 'fixture'} for role in ('coder', 'reviewer')}}))
     if mode in ('question', 'withheld'):

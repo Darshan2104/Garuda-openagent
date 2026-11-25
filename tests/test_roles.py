@@ -543,16 +543,18 @@ def test_reported_mode_prefers_the_mode_option_over_the_session_modes():
 @pytest.mark.parametrize("required, reported, permission, version, refused", [
     # An unproven claude-agent-acp (0.110.1 before #695) starts in `auto`: a smart run
     # must not act in it (#700).
-    ("acceptEdits", "auto", "smart", "0.120.0", "cannot set the mode on this adapter version"),
-    ("acceptEdits", "bypassPermissions", "smart", "0.120.0", "needs permissions: yolo"),
-    ("default", "acceptEdits", "readonly", "0.85.0", "needs permissions: smart"),
-    ("acceptEdits", None, "smart", "0.120.0", "reports no permission mode"),
-    ("acceptEdits", "sideways", "smart", "0.120.0", "which Garuda does not know"),
+    ("smart", "auto", "smart", "0.120.0", "cannot set the mode on this adapter version"),
+    ("smart", "bypassPermissions", "smart", "0.120.0", "needs permissions: yolo"),
+    ("readonly", "acceptEdits", "readonly", "0.85.0", "needs permissions: smart"),
+    ("smart", None, "smart", "0.120.0", "reports no permission mode"),
+    ("smart", "sideways", "smart", "0.120.0", "which Garuda does not know"),
+    # A yolo run with no named mode requires Claude's `auto`: never a bypass default.
     ("auto", "bypassPermissions", "yolo", "0.120.0", "needs permissions: yolo"),
+    ("auto", "sideways", "yolo", "0.120.0", "which Garuda does not know"),
     # An explicit auto role on an unproven adapter runs when the agent reports auto.
     ("auto", "auto", "auto", "0.120.0", None),
-    ("acceptEdits", "default", "smart", "0.120.0", None),
-    ("acceptEdits", "acceptEdits", "smart", "0.120.0", None),
+    ("smart", "default", "smart", "0.120.0", None),
+    ("smart", "acceptEdits", "smart", "0.120.0", None),
 ])
 def test_check_mode(required, reported, permission, version, refused):
     def check():
@@ -569,11 +571,102 @@ def test_check_mode(required, reported, permission, version, refused):
     assert refused in str(caught.value)
 
 
-def test_check_mode_needs_mode_knowledge_and_a_required_mode():
-    assert roles.check_mode("fakecfg", "edit", None, adapter_version="1", permission="smart",
-                            set_by_garuda=False) is None
-    assert roles.check_mode("claude", None, None, adapter_version="1", permission="smart",
-                            set_by_garuda=False) is None
+@pytest.fixture
+def production_tables(monkeypatch):
+    """Garuda's own mode tables only: the fake agent does not stand in for unknown ids."""
+    monkeypatch.setattr(roles, "MODE_AUTHORITY", dict(roles.MODE_AUTHORITY))
+
+
+def _check(runtime, required, reported, **kwargs):
+    return roles.check_mode(runtime, required, reported, adapter_version="9.9.9",
+                            permission=required, set_by_garuda=False, **kwargs)
+
+
+@pytest.mark.parametrize("runtime", ["goose", "cursor", "omp", "pi", "claude-next"])
+@pytest.mark.parametrize("required", ["readonly", "smart", "auto"])
+@pytest.mark.parametrize("reported", ["default", "build", None])
+def test_a_harness_garuda_cannot_classify_refuses_below_yolo(runtime, required, reported, production_tables):
+    """#732: no mode table means no proof the run stays within its permissions."""
+    with pytest.raises(RoleRefused) as caught:
+        _check(runtime, required, reported)
+    assert caught.value.code == "role.mode_unenforced"
+    message = str(caught.value)
+    assert f"this run allows permissions: {required} at most" in message
+    if reported is None:
+        assert "reports no permission mode" in message
+    else:
+        assert f"Garuda does not know what {runtime}'s modes allow" in message
+        assert f"only permissions: yolo runs {runtime} in it" in message
+
+
+@pytest.mark.parametrize("runtime", ["goose", "claude-next", "opencode", "claude"])
+@pytest.mark.parametrize("reported", ["anything", None])
+def test_a_yolo_run_accepts_a_mode_garuda_cannot_classify(runtime, reported, production_tables):
+    """The top of the scale: no mode can do more than the run explicitly allows."""
+    assert _check(runtime, "yolo", reported) == {
+        "mode": reported, "authority": None, "required": "yolo", "source": "agent"}
+
+
+@pytest.mark.parametrize("required, reported, refused", [
+    ("readonly", "build", "runs in mode 'build', which needs permissions: auto"),
+    ("smart", "build", "runs in mode 'build', which needs permissions: auto"),
+    ("smart", "plan", "runs in mode 'plan', which needs permissions: auto"),
+    ("auto", "review", "runs in mode 'review', which Garuda does not know"),
+    ("auto", "build", None),
+    ("auto", "plan", None),
+    ("yolo", "build", None),
+])
+def test_opencode_modes_are_classified(required, reported, refused):
+    """OpenCode 2.3.2 starts in `build`, which runs tools by the user's own rules."""
+    if refused is None:
+        assert _check("opencode", required, reported)["authority"] == "auto"
+        return
+    with pytest.raises(RoleRefused) as caught:
+        _check("opencode", required, reported)
+    assert caught.value.code == "role.mode_unenforced" and refused in str(caught.value)
+    if "needs permissions" in refused:
+        assert "Garuda cannot set a mode on opencode" in str(caught.value)
+
+
+@pytest.mark.parametrize("runtime, reported, enforced", [
+    ("goose", "default", True),      # no table: the read-only mount stops writes
+    ("opencode", "build", True),     # no mode of opencode's is readonly
+    ("claude", "auto", False),       # claude has readonly modes, so it must use one
+    ("claude", "plan", None),        # and does
+])
+def test_a_confined_readonly_run_relies_on_its_mount_only_without_a_readonly_mode(
+        runtime, reported, enforced, production_tables):
+    if enforced is False:
+        with pytest.raises(RoleRefused):
+            _check(runtime, "readonly", reported, confined=True)
+        return
+    record = _check(runtime, "readonly", reported, confined=True)
+    assert record.get("enforced_by") == ("confinement" if enforced else None)
+    with pytest.raises(RoleRefused):  # unconfined, the same mode refuses
+        _check(runtime, "readonly", "build" if runtime != "claude" else "auto")
+
+
+@pytest.mark.parametrize("permissions, harness_mode, no_edits, expected", [
+    ("smart", None, False, "smart"), ("auto", None, False, "auto"),
+    ("yolo", None, False, "yolo"), ("auto", None, True, "readonly"),
+])
+def test_every_acp_run_has_a_required_authority(permissions, harness_mode, no_edits, expected,
+                                                production_tables):
+    for runtime in ("goose", "opencode", "claude-next"):
+        plan = roles.RolePlan(role="r", runtime_id=runtime, kind="acp", permissions=permissions)
+        assert roles.required_authority(plan, no_edits=no_edits) == expected
+
+
+def test_the_required_authority_follows_the_mode_garuda_selects():
+    def plan(runtime, permissions, mode=None):
+        return roles.RolePlan(role="r", runtime_id=runtime, kind="acp",
+                              permissions=permissions, harness_mode=mode)
+
+    # Garuda never selects a bypass mode, so a yolo run with no mode requires auto.
+    assert roles.required_authority(plan("claude", "yolo")) == "auto"
+    assert roles.required_authority(plan("claude", "yolo", "bypassPermissions")) == "yolo"
+    assert roles.required_authority(plan("codex", "smart")) == "smart"
+    assert roles.required_authority(plan("claude", "auto", "acceptEdits")) == "smart"
 
 
 AUTO_MODES = {**FAKE_MODES, "judge": "auto"}
@@ -583,8 +676,7 @@ def _mode_shim(fake_acp, initial: str | None, profile: str = "config-options") -
     """The fake harness starts in `initial` (``None``: reports no mode)."""
     shim = fake_acp.parent / "bin" / "fake-acp-shim"
     text = shim.read_text().replace("--profile config-options", f"--profile {profile}")
-    if initial is not None:
-        text = text.replace('"$@"', f'--initial-mode {initial} "$@"')
+    text = text.replace('"$@"', f'--initial-mode {initial or "none"} "$@"')
     shim.write_text(text)
 
 
@@ -620,7 +712,7 @@ def test_an_unproven_adapter_broader_than_the_run_refuses_before_the_prompt(
 
     assert code == 1, out
     assert f"role.mode_unenforced: fakecfg 1 runs in mode {initial!r}" in out
-    assert "cannot set the mode on this adapter version" in out
+    assert "Garuda cannot set a mode on fakecfg, so this harness needs permissions: " in out
     assert "done:" not in out  # nothing was prompted
     (meta,) = SessionStore().list_sessions()
     assert meta["status"] == "failed" and "acp_mode" not in meta
@@ -638,7 +730,7 @@ def test_a_proven_adapter_sets_the_run_mode_over_a_broader_default(
 
     assert code == 0, out
     (meta,) = SessionStore().list_sessions()
-    mode = {"mode": "edit", "authority": "smart", "required": "edit", "source": "garuda"}
+    mode = {"mode": "edit", "authority": "smart", "required": "smart", "source": "garuda"}
     assert meta["acp_mode"] == mode
     if selection != "runtime":
         assert meta["role"]["effective_mode"] == mode
@@ -680,6 +772,133 @@ def test_an_agent_that_reports_no_mode_refuses_before_the_prompt(fake_acp, monke
 
     assert code == 1 and "role.mode_unenforced: fakecfg 1 reports no permission mode" in out
     assert "done:" not in out
+
+
+def _as_runtime(runtime_id: str, modes: str = "") -> None:
+    """Also register the fake shim as ``runtime_id``: a trusted global ``runtimes:``
+    entry, which replaces a shipped manifest of the same id."""
+    settings = Path(os.environ["GARUDA_GLOBAL_SETTINGS"])
+    settings.write_text(settings.read_text() + f"  - runtime_id: {runtime_id}\n    kind: acp\n"
+                        "    command: [fake-acp-shim]\n    version: '1'\n    setup: shim\n"
+                        + (f"    modes: {modes}\n" if modes else ""))
+
+
+@pytest.mark.parametrize("initial, refused", [("edit", False), ("judge", True), ("odd", True)])
+def test_a_trusted_runtimes_entry_may_classify_its_own_modes(
+        fake_acp, monkeypatch, capsys, production_tables, initial, refused):
+    """A renamed adapter Garuda has no table for: the user who trusted its command
+    classifies its modes in the same entry, and the session records that."""
+    _as_runtime("claude-next", "{ask: readonly, edit: smart, judge: auto}")
+    _mode_shim(fake_acp, initial)
+
+    code, out = _run(monkeypatch, capsys, fake_acp, "--runtime", "claude-next")
+
+    if refused:
+        assert code == 1 and "role.mode_unenforced: claude-next 1" in out and "done:" not in out
+        return
+    assert code == 0, out
+    (meta,) = SessionStore().list_sessions()
+    assert meta["acp_mode"] == {"mode": "edit", "authority": "smart", "required": "smart",
+                                "source": "agent", "classified_by": "runtimes"}
+
+
+def test_a_runtimes_entry_cannot_reclassify_a_harness_garuda_knows(fake_acp, monkeypatch, capsys):
+    _as_runtime("opencode", "{build: readonly}")
+    _mode_shim(fake_acp, "build")
+
+    code, out = _run(monkeypatch, capsys, fake_acp, "--runtime", "opencode")
+
+    assert code == 1 and "opencode 1 runs in mode 'build', which needs permissions: auto" in out
+
+
+@pytest.mark.parametrize("modes", [{"build": "everything"}, {}, ["build"], {"": "smart"}])
+def test_runtimes_modes_must_map_modes_to_permissions(modes):
+    from garuda.runtime.registry import RegistryError, parse_global_manifests
+
+    with pytest.raises(RegistryError, match="modes"):
+        parse_global_manifests([{"runtime_id": "x", "kind": "acp", "command": ["x"],
+                                 "modes": modes}])
+
+
+def test_a_harness_garuda_cannot_classify_refuses_a_smart_run_before_the_prompt(
+        fake_acp, monkeypatch, capsys, production_tables):
+    """#732: a runtime id with no mode table (another harness, a renamed adapter)."""
+    _mode_shim(fake_acp, "ask")
+
+    code, out = _run(monkeypatch, capsys, fake_acp, "--runtime", "fakecfg")
+
+    assert code == 1, out
+    assert ("role.mode_unenforced: fakecfg 1 runs in mode 'ask', and Garuda does not know "
+            "what fakecfg's modes allow") in out
+    assert "done:" not in out  # nothing was prompted
+    (meta,) = SessionStore().list_sessions()
+    assert meta["status"] == "failed" and "acp_mode" not in meta
+
+
+@pytest.mark.parametrize("permissions", ["smart", "auto", "yolo"])
+def test_an_explicit_role_on_a_harness_garuda_cannot_classify(
+        fake_acp, monkeypatch, capsys, production_tables, permissions):
+    """Only `permissions: yolo`, the top of the scale, accepts a mode Garuda cannot
+    classify: an unknown mode may approve everything, which is more than auto."""
+    _mode_shim(fake_acp, "everything")
+    _user_file(f"version: 1\nroles: {{coder: {{harness: fakecfg, permissions: {permissions}}}}}\n")
+
+    code, out = _run(monkeypatch, capsys, fake_acp, "--role", "coder")
+
+    (meta,) = SessionStore().list_sessions()
+    if permissions != "yolo":
+        assert code == 1 and "done:" not in out, out
+        assert "role.mode_unenforced: fakecfg 1 runs in mode 'everything'" in out
+        assert "only permissions: yolo runs fakecfg in it" in out
+        return
+    assert code == 0, out
+    mode = {"mode": "everything", "authority": None, "required": "yolo", "source": "agent"}
+    assert meta["acp_mode"] == mode and meta["role"]["effective_mode"] == mode
+
+
+@pytest.mark.parametrize("permissions", ["smart", "auto"])
+def test_a_mode_garuda_does_not_know_refuses_before_the_prompt(
+        fake_acp, monkeypatch, capsys, permissions):
+    _known_modes(monkeypatch, proven=False)
+    _mode_shim(fake_acp, "sideways")
+    _user_file(f"version: 1\nroles: {{coder: {{harness: fakecfg, permissions: {permissions}}}}}\n")
+
+    code, out = _run(monkeypatch, capsys, fake_acp, "--role", "coder")
+
+    assert code == 1 and "done:" not in out, out
+    assert "fakecfg 1 runs in mode 'sideways', which Garuda does not know" in out
+
+
+@pytest.mark.parametrize("config, extra, refused", [
+    # The live campaign's OpenCode coder.
+    ("roles: {oc-coder: {harness: opencode, permissions: auto}}\n", ("--role", "oc-coder"),
+     False),
+    ("roles: {oc-coder: {harness: opencode, permissions: yolo}}\n", ("--role", "oc-coder"),
+     False),
+    ("roles: {oc-coder: {harness: opencode, permissions: smart}}\n", ("--role", "oc-coder"),
+     True),
+    ("", ("--runtime", "opencode"), True),
+])
+def test_opencode_build_needs_an_auto_run(fake_acp, monkeypatch, capsys, config, extra, refused):
+    """#732: OpenCode starts in `build`, which runs tools by the user's own OpenCode
+    rules (by default without asking), and Garuda cannot select another mode."""
+    _as_runtime("opencode")
+    _mode_shim(fake_acp, "build")
+    _user_file("version: 1\n" + config)
+
+    code, out = _run(monkeypatch, capsys, fake_acp, *extra)
+
+    (meta,) = SessionStore().list_sessions()
+    if refused:
+        assert code == 1 and "done:" not in out, out
+        assert ("role.mode_unenforced: opencode 1 runs in mode 'build', which needs "
+                "permissions: auto") in out
+        assert "Garuda cannot set a mode on opencode" in out
+        return
+    assert code == 0 and "done: hello" in out, out
+    required = "yolo" if "yolo" in config else "auto"
+    assert meta["acp_mode"] == {"mode": "build", "authority": "auto", "required": required,
+                                "source": "agent"}
 
 
 def test_a_mode_the_model_does_not_take_refuses_with_the_model_as_cause(
