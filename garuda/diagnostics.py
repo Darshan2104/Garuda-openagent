@@ -23,7 +23,8 @@ REGISTRY: dict[str, str] = {
     "config.ok": "Nothing to do.",
     "settings.invalid": "Fix {path} in {file} using the reported requirement; rerun `garuda doctor`.",
     "role.options_unproven": "Remove model_id/effort from the role, or use a proven adapter.",
-    "role.model_unavailable": "Pick a model id the agent offers; `garuda doctor` lists them.",
+    "role.model_unavailable": "Pick a model id the agent offers; `garuda config check --probe` "
+                              "lists them, or add a `fallback:` entry.",
     "role.model_not_allowed": "Add the model to harnesses.{harness}.allowed_models, or change it.",
     "role.adapter_mismatch": "Reinstall one adapter version so `--version` and the agent agree.",
     "role.mode_unenforced": "Use a proven adapter version, or a role whose permissions cover "
@@ -78,7 +79,19 @@ REGISTRY: dict[str, str] = {
     # sessions and workspaces
     "lease.unreadable": "Inspect the leases directory; a corrupt lease blocks its workspace.",
     "lease.held": "Wait for session {session} to finish, or stop it.",
-    "lease.stale": "Session {session} may have crashed; `garuda runtime recover --session {session}`.",
+    "lease.stale": "Its owner is dead; `garuda runtime recover --session {session}` checks that "
+                   "no descendant survives and releases it.",
+    "lease.overdue": "Its owner (pid {pid}) is still running; wait for it or stop session {session}.",
+    "lease.unknown": "Garuda cannot tell whether its owner (pid {pid}) is alive; check that pid, "
+                     "and use `--isolation worktree` meanwhile.",
+    "lease.quarantined": "Session {session} kept it on purpose (cleanup or a phase was not reconciled); "
+                         "see `garuda sessions show {session}` and use `--isolation worktree` meanwhile.",
+    "capacity.unreadable": "Inspect the capacity directory; a corrupt record blocks its runtime.",
+    "capacity.stale": "Its owner is dead; `garuda runtime recover --session {session}` checks that "
+                      "no descendant survives and releases it.",
+    "capacity.held": "Its owner (pid {pid}) is still running; the slot frees when it ends.",
+    "capacity.retained": "The slot is not released automatically ({reason}); see "
+                         "`garuda sessions show {session}`.",
     "worktree.unpublished": "Merge it (`garuda sessions merge {session}`) or remove it with --force.",
     "session.project_key_missing": "Run `garuda doctor --recover-project-ids`.",
     "verification.no_trusted_check": "Add a check to garuda.yaml, or pass --check COMMAND.",

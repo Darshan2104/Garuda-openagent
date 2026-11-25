@@ -49,16 +49,22 @@ garuda recipe run fix-and-test.yaml --param issue="Login fails when the email ha
 
 - Steps run in order. Each step's output is appended to the next step's prompt
   under "Prior step output".
+- Garuda checks the whole recipe before it prepares a workspace or runs a
+  step. It refuses unknown keys, an empty `steps` list, an unknown `mode`, a
+  step agent that doesn't resolve, and a `{{name}}` that isn't a declared
+  parameter, each with a typed `recipe.*` error and exit code 2.
 - `{{name}}` placeholders are filled from `--param KEY=VALUE`, then from
-  defaults. A missing required parameter stops the recipe with an error before
-  any step runs.
+  defaults. A missing required parameter (`recipe.param_missing`) or an
+  undeclared `--param` (`recipe.param_unknown`) stops the recipe before any
+  step runs.
 - Recipe steps aren't saved as individual sessions. The recipe holds and
   heartbeats one workspace lease across the whole sequence, including MCP/tool
   setup and cleanup. Compatible readers can coexist; a conflicting writer is
   refused by the existing lease owner.
   Step-owned MCP and language services close before that lease is released,
   including when a step raises or is cancelled.
-- Each step can set `agent` (a profile) and `mode`.
+- Each step needs `agent` (an agent name) and `prompt`, and can set `mode`
+  (`interactive`, `eval`, `rigorous`, `readonly` or `standard`, the default).
 - The recipe stops at the first failed step and tells you how many later
   steps did not run.
 
@@ -283,7 +289,11 @@ check missed during sleep.
 Only eligible sequential CLI flows started after recovery was enabled are
 enrolled. Enabling it does not scan or adopt old half-finished flows. A Codex
 step must be safely closed and have a quota-shaped failure; permission denials
-and generic failures do not become quota retries. If the official quota read is
+and generic failures do not become quota retries. Codex's adapter reports a
+reached plan limit as a generic `-32603 Internal error` with the cause in the
+error's data; Garuda reads that cause and reports the step as
+`harness.limit_reached` with Codex's own message, including its reset time
+when Codex gives one, so the stop counts as quota-shaped. If the official quota read is
 missing or temporarily unavailable, the eligible stop remains waiting with that
 reason—it does not claim exhaustion or dispatch work.
 
@@ -483,6 +493,11 @@ as `garuda run` does, and each turn's usage report goes to the usage ledger.
 A harness uses its own tools, so a run on an ACP runtime with registered tools
 or `load_project_tools=True` raises `garuda.sdk.ToolsUnsupportedOnRuntime` (a
 `ValueError`, code `sdk.tools_unsupported`) before the harness starts.
+The harness also runs its own configured model and agent, so `model=`,
+`reasoning_model=`, `collection_model=`, `model_binding=` or an `agent=` other
+than the default `"build"` (a name, mapping or `AgentSpec`) raises
+`garuda.sdk.OptionsUnsupportedOnRuntime` (a `ValueError`, code
+`sdk.options_unsupported`) before the harness starts, instead of being ignored.
 If the harness fails to start, Garuda closes it and records that session as
 failed; the next `run` starts a new harness session.
 

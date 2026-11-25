@@ -42,10 +42,13 @@ def classify_error(exc: BaseException) -> str:
         AcpExitError,
         AcpProtocolError,
         AcpTimeoutError,
+        AcpUsageLimitError,
     )
 
     name = type(exc).__name__
     module = type(exc).__module__
+    if isinstance(exc, AcpUsageLimitError):
+        return "harness"  # the harness's account limit, not a protocol fault
     if isinstance(exc, AcpProtocolError):
         return "protocol"
     if isinstance(exc, (AcpExitError, AcpTimeoutError, AcpCancelledError)):

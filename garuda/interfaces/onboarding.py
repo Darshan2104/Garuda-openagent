@@ -132,7 +132,15 @@ def _config_diagnostics(workspace) -> tuple[list[Diagnostic], object]:
 
 
 def _harness_diagnostics(catalog, targets: set[str], *, login_run=None,
-                         probe_timeout: float = 10.0) -> list[Diagnostic]:
+                         probe_timeout: float = 10.0,
+                         fallback_only: frozenset[str] = frozenset()) -> list[Diagnostic]:
+    """Check each harness in ``targets``.
+
+    A harness in ``fallback_only`` is used only in a role's ``fallback:``
+    chain: it is checked the same way, but a missing or logged-out one is a
+    warning (that fallback can never be taken), not an error, because the
+    role itself can still start.
+    """
     from garuda.acp.login_probe import LoginState, probe_login
 
     out = []
@@ -140,6 +148,9 @@ def _harness_diagnostics(catalog, targets: set[str], *, login_run=None,
         rid = manifest.runtime_id
         if manifest.kind.value == "native":
             continue
+        fallback = rid in fallback_only
+        blocking = "warning" if fallback else "error"
+        note = " (used only as a role fallback, which can never be taken)" if fallback else ""
         if rid not in targets:
             out.append(diagnostic("harness.not_checked", f"{rid}: not used by your roles",
                                   runtime=rid))
@@ -151,8 +162,8 @@ def _harness_diagnostics(catalog, targets: set[str], *, login_run=None,
         record = next(r for r in catalog.discover(only=frozenset({rid}), cache_ttl=60.0)
                       if r.runtime_id == rid)  # discovery also lists built-in stubs
         if not record.available:
-            out.append(diagnostic("harness.cli_missing", f"{rid}: executable not found",
-                                  level="error", setup=manifest.setup or "see its docs"))
+            out.append(diagnostic("harness.cli_missing", f"{rid}: executable not found{note}",
+                                  level=blocking, setup=manifest.setup or "see its docs"))
             continue
         caps = ", ".join(record.capabilities) or "none declared"
         state = probe_login(manifest, timeout=probe_timeout, run=login_run)
@@ -161,7 +172,7 @@ def _harness_diagnostics(catalog, targets: set[str], *, login_run=None,
         if state is LoginState.AUTHENTICATED:
             out.append(diagnostic("harness.ok", f"{head}; logged in"))
         elif state is LoginState.LOGGED_OUT:
-            out.append(diagnostic("harness.logged_out", f"{head}; logged out", level="error",
+            out.append(diagnostic("harness.logged_out", f"{head}; logged out{note}", level=blocking,
                                   login=manifest.login.instructions or "see its docs"))
         elif state is LoginState.TIMEOUT:
             out.append(diagnostic("harness.login_timeout", f"{head}; login check timed out",
@@ -190,12 +201,23 @@ def _state_diagnostics() -> list[Diagnostic]:
     except Exception as exc:  # a corrupt lease file is itself worth reporting
         holders = []
         out.append(diagnostic("lease.unreadable", str(exc), level="warning"))
+    from garuda.runtime.ownership import owner_liveness
+
     now = time.time()
     for holder in holders:
-        code = "lease.stale" if holder.is_stale(now) else "lease.held"
-        out.append(diagnostic(code, f"{holder.workspace} held by {holder.session_id[:8]} "
-                                    f"({holder.mode})", level="warning" if code == "lease.stale"
-                              else "info", session=holder.session_id[:8]))
+        session = holder.session_id[:8]
+        message = f"{holder.workspace} held by {session} ({holder.mode})"
+        # Only a dead owner's lease can be released, so the advice follows the
+        # owner's state rather than always pointing at recovery (#676).
+        state = owner_liveness({"pid": holder.pid, "identity": holder.identity,
+                                "pgid": holder.pgid})
+        if state is True and not holder.is_stale(now):
+            out.append(diagnostic("lease.held", message, session=session))
+            continue
+        code = ("lease.quarantined" if holder.quarantined else "lease.overdue" if state is True
+                else "lease.stale" if state is False else "lease.unknown")
+        out.append(diagnostic(code, message, level="warning", session=session, pid=holder.pid))
+    out += _capacity_diagnostics(owner_liveness)
     from garuda.workspace.worktrees import worktrees_root
 
     root = worktrees_root()
@@ -205,6 +227,37 @@ def _state_diagnostics() -> list[Diagnostic]:
                                and not p.name.startswith(".")):
                 out.append(diagnostic("worktree.unpublished", f"worktree {tree}",
                                       session=tree.name[:8]))
+    return out
+
+
+def _capacity_diagnostics(liveness) -> list[Diagnostic]:
+    """Reserved runtime capacity slots, so a leaked slot is visible (#703)."""
+    from garuda.runtime.capacity import CapacityStore
+
+    out = []
+    try:
+        slots = CapacityStore().all_slots()
+    except Exception as exc:
+        return [diagnostic("capacity.unreadable", str(exc), level="warning")]
+    for slot in slots:
+        holder = slot["holder"]
+        session = holder.split(":", 1)[0][:8]
+        owner = slot.get("owner") or {}
+        message = f"{slot['key']} capacity slot reserved by {holder}"
+        state = liveness(owner)
+        if slot.get("quarantined"):
+            out.append(diagnostic("capacity.retained", message, level="warning",
+                                  session=session, reason="quarantined by its owner"))
+        elif state is True:
+            out.append(diagnostic("capacity.held", message, pid=owner.get("pid")))
+        elif "queue" in slot or "loan" in slot:
+            out.append(diagnostic("capacity.retained", message, level="warning", session=session,
+                                  reason="queue-bound" if "queue" in slot else "loaned"))
+        elif state is False:
+            out.append(diagnostic("capacity.stale", message, level="warning", session=session))
+        else:
+            out.append(diagnostic("capacity.retained", message, level="warning", session=session,
+                                  reason="its owner's liveness cannot be determined"))
     return out
 
 
@@ -220,11 +273,17 @@ def doctor_report(workspace, *, runtimes=(), login_run=None) -> list[Diagnostic]
     config, resolved = _config_diagnostics(workspace)
     out += config
     targets = set(runtimes)
+    fallbacks: set[str] = set()
     if resolved is not None:
-        targets |= {r["harness"] for r in resolved.config.get("roles", {}).values()}
+        roles = resolved.config.get("roles", {}).values()
+        targets |= {r["harness"] for r in roles}
         targets |= set(resolved.config.get("harnesses", {}))
+        # A role's fallback harnesses are used too (#680).
+        fallbacks = {c["harness"] for r in roles for c in r.get("fallback", [])} - targets
+        targets |= fallbacks
     catalog = prepare_runtime_catalog(str(workspace))
-    out += _harness_diagnostics(catalog, targets, login_run=login_run)
+    out += _harness_diagnostics(catalog, targets, login_run=login_run,
+                                fallback_only=frozenset(fallbacks))
     out += _state_diagnostics()
     return out
 

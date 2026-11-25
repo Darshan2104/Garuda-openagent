@@ -171,7 +171,8 @@ def _evidence(event: RuntimeEvent) -> dict[str, Any]:
         RuntimeEventKind.TOOL_RESULT: ("tool_call_id", "status"),
         RuntimeEventKind.APPROVAL_REQUEST: ("approval_id", "tool_call_id"),
         RuntimeEventKind.LIFECYCLE: ("state", "stop_reason", "reason"),
-        RuntimeEventKind.ERROR: (),
+        # A stable failure code (for example `harness.limit_reached`), never the text.
+        RuntimeEventKind.ERROR: ("code",),
     }
     if event.kind is RuntimeEventKind.MESSAGE \
             and event.payload.get("acp_update") == "usage_update":
@@ -288,7 +289,7 @@ class AcpNormalizer:
         }.get(kind, self._on_unknown)
         return handler(update)
 
-    def finish(self, stop_reason: str, *, detail: str = "") -> list[RuntimeEvent]:
+    def finish(self, stop_reason: str, *, detail: str = "", code: str = "") -> list[RuntimeEvent]:
         """Close the turn with a terminal event. No duplicate final message.
 
         `completed` ends the turn (a later `new_turn` reopens feeding);
@@ -314,7 +315,8 @@ class AcpNormalizer:
         self._terminated = True
         if state == "failed":
             return [
-                self._emit(RuntimeEventKind.ERROR, {"message": detail or stop_reason}),
+                self._emit(RuntimeEventKind.ERROR, {"message": detail or stop_reason,
+                                                    **({"code": code} if code else {})}),
                 self._emit(RuntimeEventKind.LIFECYCLE, payload),
             ]
         return [self._emit(RuntimeEventKind.LIFECYCLE, payload)]

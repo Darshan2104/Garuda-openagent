@@ -35,10 +35,10 @@ from garuda.acp.protocol import (
     AcpCancelledError,
     AcpExitError,
     AcpProtocolError,
-    AcpRemoteError,
     AcpTimeoutError,
     decode_frame,
     encode_frame,
+    remote_error,
 )
 
 logger = logging.getLogger(__name__)
@@ -72,6 +72,11 @@ def child_environment(extra_env: dict[str, str] | None = None) -> dict[str, str]
         "USER": os.environ.get("USER", ""),
         "LANG": "C.UTF-8",
     }
+    # The owner's lineage token lets recovery prove no ACP descendant
+    # outlived a dead owner before reclaiming its lease (#676). Not a secret.
+    from garuda.runtime.ownership import LINEAGE_ENV
+
+    env[LINEAGE_ENV] = os.environ.get(LINEAGE_ENV, "")
     env.update(extra_env or {})
     return {key: value for key, value in env.items() if value}
 
@@ -134,12 +139,19 @@ class AcpProcess:
         extra_env: dict[str, str] | None = None,
         call_timeout: float = CALL_TIMEOUT,
         cwd: str | None = None,
+        handshake_timeout: float | None = None,
+        handshake_hint: str = "",
     ):
         if not argv or any(not isinstance(p, str) or not p for p in argv):
             raise AcpProtocolError("argv must be a non-empty list of strings")
         self._argv = list(argv)
         self._extra_env = dict(extra_env or {})
         self._call_timeout = call_timeout
+        #: The startup deadline for initialize, session/new, session/load and
+        #: option sets; ``None`` reads ``HANDSHAKE_TIMEOUT`` at call time.
+        self._handshake_timeout = handshake_timeout
+        #: How to raise that deadline, appended to its timeout message.
+        self._handshake_hint = handshake_hint
         self._cwd = cwd
         self._process: asyncio.subprocess.Process | None = None
         self._reader_task: asyncio.Task | None = None
@@ -358,9 +370,7 @@ class AcpProcess:
                         or not isinstance(error.get("message"), str)):
                     self._on_transport_error(AcpProtocolError("malformed JSON-RPC error response"))
                     return
-                response_error = AcpRemoteError(
-                    f"agent error {error['code']}: {error['message']}", remote_code=error["code"]
-                )
+                response_error = remote_error(error["code"], error["message"], error.get("data"))
             future = self._pending.pop(message["id"], None)
             if future is not None and not future.done():
                 # Resolve only after the current read callback returns. An
@@ -431,6 +441,24 @@ class AcpProcess:
     def _on_transport_error(self, exc: Exception) -> None:
         self._fail_all_pending(exc)
 
+    def _handshake_deadline(self, timeout: float | None) -> float:
+        if timeout is not None:
+            return timeout
+        if self._handshake_timeout is not None:
+            return self._handshake_timeout
+        return HANDSHAKE_TIMEOUT  # read at call time
+
+    async def _handshake_call(
+        self, method: str, params: dict[str, Any], *, timeout: float | None
+    ) -> Any:
+        """A startup call bounded by the handshake deadline; its timeout names the deadline."""
+        deadline = self._handshake_deadline(timeout)
+        try:
+            return await self._call(method, params, timeout=deadline)
+        except AcpTimeoutError as exc:
+            hint = f"; {self._handshake_hint}" if self._handshake_hint else ""
+            raise AcpTimeoutError(f"{method} exceeded its {deadline:g}s deadline{hint}") from exc
+
     async def _call(
         self, method: str, params: dict[str, Any], *, timeout: Any = _MISSING
     ) -> Any:
@@ -484,8 +512,7 @@ class AcpProcess:
 
     async def initialize(self, *, timeout: float | None = None) -> dict[str, Any]:
         """Handshake. A version mismatch fails here, never mid-session."""
-        timeout = HANDSHAKE_TIMEOUT if timeout is None else timeout  # read at call time
-        result = await self._call(
+        result = await self._handshake_call(
             "initialize",
             {
                 "protocolVersion": ACP_VERSION,
@@ -514,12 +541,11 @@ class AcpProcess:
             cwd = os.getcwd()
         if not os.path.isabs(cwd):
             raise AcpProtocolError("session/new cwd must be absolute")
-        timeout = HANDSHAKE_TIMEOUT if timeout is None else timeout
         if mcp_servers is not None and any(
             not isinstance(server, dict) for server in mcp_servers
         ):
             raise AcpProtocolError("session/new mcpServers must contain objects")
-        result = await self._call(
+        result = await self._handshake_call(
             "session/new",
             {"cwd": cwd, "mcpServers": list(mcp_servers or [])},
             timeout=timeout,
@@ -543,8 +569,7 @@ class AcpProcess:
         self, session_id: str, config_id: str, value: str, *, timeout: float | None = None
     ) -> list[dict[str, Any]]:
         """Set one session option; returns the agent's options after the change."""
-        timeout = HANDSHAKE_TIMEOUT if timeout is None else timeout
-        result = await self._call(
+        result = await self._handshake_call(
             "session/set_config_option",
             {"sessionId": session_id, "configId": config_id, "value": value},
             timeout=timeout,
@@ -565,8 +590,7 @@ class AcpProcess:
         """Reload an agent session this agent persisted (`session/load`)."""
         if not os.path.isabs(cwd):
             raise AcpProtocolError("session/load cwd must be absolute")
-        timeout = HANDSHAKE_TIMEOUT if timeout is None else timeout
-        result = await self._call(
+        result = await self._handshake_call(
             "session/load",
             {"sessionId": session_id, "cwd": cwd, "mcpServers": list(mcp_servers or [])},
             timeout=timeout,
