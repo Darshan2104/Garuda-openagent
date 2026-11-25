@@ -1,5 +1,21 @@
 # Durable decisions
 
+## 2026-11-25 — Remote ACP error text is redacted, failed tool output is not traced, disk quota is not a usage limit (#729, #727, #728)
+
+The `data` cause copied from an agent's JSON-RPC error (#721) and the error's
+`message` are passed through `redact_text` in `remote_error`, before they reach
+the exception text, `detail` or any sink; a flow step additionally redacts the
+`AcpError` text (remote cause or stderr tail) it stores as `StepResult.error`,
+so step receipts and stop messages never carry the raw text. With
+`observability.trace_detail: commands`, a failed tool result keeps only its
+`status: failed`: its `content` is the tool's output, so no `error` excerpt is
+persisted and "tool output is never kept" holds for failed calls too (this
+narrows the #691 entry below). Free text such as `quota exceeded` types an
+error `harness.limit_reached` only when it does not name an operating-system
+quota (`disk quota`, `os error N`, `EDQUOT`, `errno`); Codex's structured
+`codexErrorInfo: usageLimitExceeded` still always does. The SDK records an ACP
+turn's adapter usage on a failed turn too, as the CLI does (#690).
+
 ## 2026-11-25 — Unparseable MCP configs, workspace start failures and failed ACP turns fail closed (#673, #671, #674)
 
 An MCP config file that does not parse, or whose server container has the
