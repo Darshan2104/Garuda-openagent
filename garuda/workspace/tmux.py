@@ -118,6 +118,7 @@ class TmuxEnvironment:
         self._confine_to_workspace = confine_to_workspace
         self._seq = 0
         self._started = False
+        self._executor_record = None
 
     @property
     def workspace_root(self) -> str:
@@ -144,6 +145,12 @@ class TmuxEnvironment:
                 f"or newer; found {reported!r}. Upgrade tmux or use another workspace kind."
             )
         self._workspace_root.mkdir(parents=True, exist_ok=True)
+        # The pane runs under the tmux server, outside this process's tree and
+        # lineage, so it is recorded before it starts (#730).
+        from garuda.workspace.executors import default_tmux_socket, record_executor, update_executor
+
+        self._executor_record = record_executor(
+            self._workspace_root, "tmux", self._session_name, socket=default_tmux_socket())
         await self._run_tmux(
             [
                 "new-session",
@@ -156,6 +163,11 @@ class TmuxEnvironment:
                 "--", bash, "--noprofile", "--norc", "-i", "+H",
             ]
         )
+        socket = (await self._run_tmux(
+            ["display-message", "-p", "-t", f"={self._session_name}", "#{socket_path}"],
+            capture=True)).strip()
+        if socket:
+            update_executor(self._executor_record, socket=socket)
         await self._run_tmux(["set-option", "-t", self._session_name, "history-limit", str(self._history_limit)])
         self._started = True
 
@@ -163,6 +175,10 @@ class TmuxEnvironment:
         if not self._started:
             return
         await self._run_tmux(["kill-session", "-t", self._session_name])
+        from garuda.workspace.executors import forget_executor
+
+        forget_executor(self._executor_record)
+        self._executor_record = None
         self._started = False
 
     async def execute(

@@ -442,8 +442,10 @@ class LeaseStore:
         Re-reads the record under the lock: the exact holder (same session,
         owner identity and epoch) must still be there, not quarantined, its
         owner confirmed dead and no live process may carry the owner's lineage
-        token (``ownership.reclaim_refusal``). Returns False when the holder is
-        already gone; raises ``LeaseConflictError`` when reclaim is not proved.
+        token (``ownership.reclaim_refusal``); and no recorded tmux session or
+        container on the workspace may still exist (``executors``, #730).
+        Returns False when the holder is already gone; raises
+        ``LeaseConflictError`` when reclaim is not proved.
         """
         from garuda.runtime.ownership import reclaim_refusal
 
@@ -459,6 +461,11 @@ class LeaseStore:
             refusal = reclaim_refusal(
                 {"pid": current.pid, "identity": current.identity, "pgid": current.pgid},
                 quarantined=current.quarantined, liveness=self._liveness)
+            if refusal is None:
+                # A tmux pane or container is outside the lineage scan (#730).
+                from garuda.workspace.executors import executor_refusal
+
+                refusal = executor_refusal(key, leases_root=self.root)
             if refusal is not None:
                 raise LeaseConflictError(
                     f"workspace {key}: lease of session {current.session_id} cannot be "

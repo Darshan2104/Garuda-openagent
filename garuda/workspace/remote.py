@@ -35,6 +35,7 @@ class RemoteWorkspace:
         self._limits = limits or DockerLimits()
         self._container_id: str | None = None
         self._environment: RemoteEnvironment | None = None
+        self._executor_record = None
 
     def _docker_base(self) -> list[str]:
         cmd = ["docker"]
@@ -54,6 +55,13 @@ class RemoteWorkspace:
         if self._container_id:
             return
         self._workspace_host.mkdir(parents=True, exist_ok=True)
+        # The container belongs to a Docker daemon, outside this process's
+        # tree and lineage, so it is recorded before it starts (#730).
+        from garuda.workspace.executors import docker_locator, record_executor
+
+        self._executor_record = record_executor(
+            self._workspace_host, "remote", self._container_name,
+            **docker_locator(self._docker_host))
         process = await asyncio.create_subprocess_exec(
             *self._docker_base(),
             "run",
@@ -94,6 +102,11 @@ class RemoteWorkspace:
             stderr=asyncio.subprocess.PIPE,
         )
         await process.communicate()
+        if process.returncode == 0:
+            from garuda.workspace.executors import forget_executor
+
+            forget_executor(self._executor_record)
+            self._executor_record = None
         self._container_id = None
         self._environment = None
 

@@ -1392,7 +1392,15 @@ verification independently.
   live ancestor below init, started before the owner; otherwise the refusal
   names its pid. A child
   that scrubbed its environment, or a non-dumpable orphan adopted by an older
-  subreaper, is outside the scan. Plain `recover()` (resume
+  subreaper, is outside the scan. A tmux pane and a docker or remote container
+  run under the tmux server or the Docker daemon, outside the owner's tree and
+  lineage, so each is recorded beside the leases before it starts
+  (`workspace/executors.py`) and removed only after a clean stop. Lease reclaim
+  also refuses while any record for the workspace remains whose executor is not
+  proved gone: tmux must answer "can't find session" on the recorded socket (a
+  silent socket counts only when no tmux server of the user runs at all), and
+  docker must answer "no such object" from the recorded endpoint. The refusal
+  says how to stop it (#730). Plain `recover()` (resume
   paths) still refuses on any retained lease, and acquisition never reclaims.
 - **Queue ids bind admitted work.** Enqueue retries match the exact scope,
   user, harness, session and configuration digest of a waiting entry or claim.
