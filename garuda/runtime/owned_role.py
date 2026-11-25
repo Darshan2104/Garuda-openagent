@@ -114,8 +114,10 @@ async def execute_owned_role(request: OwnedRoleRequest, capability, *, approval=
     """Return a step only after the actual worker and all descendants are reaped.
 
     The issued borrowed guard remains parent-owned. Cancellation closes the
-    subtree before returning; lost closure or an incomplete normal result
-    quarantines the same parent and child reservation.
+    subtree before returning; lost closure, an incomplete normal result, or
+    a worker-requested quarantine retains the same parent and child
+    reservation. A worker that dies without a result after the subreaper's
+    ECHILD receipt is a failed step whose holdings are released (#723).
     """
     from garuda.flows.engine import StepResult
 
@@ -180,8 +182,17 @@ async def execute_owned_role(request: OwnedRoleRequest, capability, *, approval=
         control.activated()
         terminal = await control.guard.race(process.wait())
         result = control.result
-        if terminal.outcome != "exited" or result is None or result["session_id"] != request.session_id:
+        if terminal.outcome != "exited" or (result is not None and result["session_id"] != request.session_id):
             raise CleanupUncertain("owned role closed without a complete bound result")
+        if result is None and control.quarantine_requested:
+            # The worker itself asked to retain ownership (its own cleanup was
+            # unproved) before it died; that request stands.
+            raise CleanupUncertain("owned role requested quarantine and closed without a result")
+        # A worker that died without reporting (killed, crashed, lost its
+        # channel) is a failed step, not unproved cleanup: process.wait()
+        # returned only on the subreaper's ECHILD receipt, so nothing in its
+        # tree can still write. Daemon-held confinement is closed below as on
+        # any other exit (#723).
         # A settled policy refusal does not undo proved process closure. Reject
         # changed configuration, but release this closed child's capacity after
         # any separately owned daemon resources have also been removed below.
@@ -203,6 +214,9 @@ async def execute_owned_role(request: OwnedRoleRequest, capability, *, approval=
                    "process": asdict(terminal)}
         if confinement is not None:
             closure["confinement"] = await confinement.close()
+        if result is None:
+            return StepResult(request.session_id, False, "", closure=closure,
+                              error=f"the role worker exited without a result (exit code {terminal.exit_code})")
         return StepResult(result["session_id"], bool(result["success"] and terminal.exit_code == 0),
                           result["output"], closure=closure)
     except asyncio.CancelledError:

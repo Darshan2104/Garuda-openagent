@@ -1,5 +1,25 @@
 # Durable decisions
 
+## 2026-11-25 — A killed role worker with a proved cleanup receipt releases its holdings (#723)
+
+When an owned role worker (a flow step, or a dashboard `run-with-role` /
+`ask-role` run) dies without reporting its result, but its Linux subreaper
+supervisor still publishes a valid terminal receipt (outcome `exited`,
+`linux-subreaper` cleanup with ECHILD), the step is a failed step
+(`flow.step_failed`, "the role worker exited without a result"), not
+unproved cleanup. The receipt proves the worker's whole process tree,
+detached `setsid` children included, has been reaped, and the role's only
+out-of-tree resource (owned Docker confinement) is closed by the parent as on
+any exit, so nothing that could write remains. The parent therefore releases
+the workspace lease and the step's capacity slot itself, while the dashboard
+is still running, and nothing is left `quarantined: true` once it stops.
+Quarantine is kept, as before, when the supervisor's receipt is missing or
+invalid, when the outcome is not `exited`, when a result names another
+session, when docker confinement close fails, and when the worker itself
+asked to retain ownership (`quarantine` on its control channel, now recorded
+as `RoleControl.quarantine_requested`) before dying. `garuda runtime recover`
+is unchanged and still never releases a quarantined holding.
+
 ## 2026-11-25 — SDK refuses mode and mcp_config on ACP; routed --bg limits refused at admission (#724)
 
 `SoftwareAgent` and `Conversation` on an ACP runtime raise
