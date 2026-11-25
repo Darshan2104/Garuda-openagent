@@ -436,8 +436,22 @@ class FlowRunner:
         return cause if any(cause.values()) else None
 
     async def _publish(self, session_id: str, updates: dict, *, terminal: bool = False):
+        # Every publication is a state change, so it advances `updated_at` (#763);
+        # the store merge only defaults it, and `begin` already set it once.
+        updates = {"updated_at": _dt.datetime.now(_dt.timezone.utc).isoformat(), **updates}
         return await _settled_sync(self.store.update_meta, session_id, updates,
                                    complete_on_cancel=terminal)
+
+    async def _touch(self) -> None:
+        """Advance the flow session's `updated_at` after a step receipt (#763).
+
+        Best effort: a receipt is already durable, and the next state
+        publication surfaces a storage failure on its own.
+        """
+        try:
+            await self._publish(self.flow_session, {})
+        except Exception:
+            pass
 
     # -- helpers -----------------------------------------------------------------------
 
@@ -1288,6 +1302,7 @@ class FlowRunner:
         _write_once(self.dir / "receipts" / _receipt_name(step["id"], attempt), receipt)
         _append(self.dir / JOURNAL, {"event": "receipt", "step": step["id"],
                                      "attempt": attempt, "at": _now()})
+        await self._touch()
         if stop is not None:
             raise stop
         return receipt
@@ -1547,6 +1562,7 @@ class FlowRunner:
         await _settled_sync(_write_once, self.dir / "receipts" / _receipt_name(step, attempt), receipt)
         await _settled_sync(_append, self.dir / JOURNAL,
                             {"event": "receipt", "step": step, "attempt": attempt, "at": _now()})
+        await self._touch()
 
     async def _run_step(self, step: dict, done: list[dict], lease, *, attempt: int = 1,
                         prompt_extra: str = "", review_admission=None) -> dict:
