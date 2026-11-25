@@ -464,6 +464,34 @@ class FlowRunner:
                 plan = self._role_plan(role, acp_only=True)
                 self._check_confinement_image(step, plan, no_edits=no_edits)
 
+    def _review_plans(self, step: dict, terminal: dict):
+        """Resolve the reviewed and reviewer plans, refusing a configured collision.
+
+        The same resolution the review loop launches with; a required review
+        whose configured reviewer shares an identity with the reviewed role
+        can never finish, so it stops before anything runs.
+        """
+        from garuda.flows import review as rv
+
+        reviewed_plan = self._role_plan(step["role"], no_edits=self._no_edits(step, step["role"]))
+        reviewer_plan = self._role_plan(terminal["role"], no_edits=self._no_edits(terminal, terminal["role"]))
+        if step["review"].get("independent", True):
+            why = rv.check_independent(self.resolved.config, step["role"], reviewed_plan,
+                                       terminal["role"], reviewer_plan)
+            if why:
+                raise FlowStopped("flow.review_not_independent", why, step=terminal["id"])
+        return reviewed_plan, reviewer_plan
+
+    def _check_review_independence(self, settled: set | frozenset = frozenset()) -> None:
+        """Preflight every required review still to run before the first step (#753).
+
+        ``settled`` names reviewed steps a resume will never run again.
+        """
+        for step in self.steps:
+            if (step.get("review") and step["review"].get("independent", True)
+                    and step["id"] not in settled):
+                self._review_plans(step, self.steps[-1])
+
     def _closed_step(self, outcome: StepResult, step: dict, attempt: int, role_record=None) -> dict:
         """Keep only bound lifetime facts, never raw process output tails."""
         from garuda.core.acceptance_request import is_digest
@@ -848,6 +876,9 @@ class FlowRunner:
                     if self.verification_cli_checks is None or exc.code != "workspace.readonly_unenforced":
                         raise
                     confinement_stop = exc
+                # No step, slot, recovery admission or evidence baseline for a
+                # flow whose review could never be independent (#753).
+                await _settled_sync(self._check_review_independence)
             if checked_resume:
                 prior, baseline_digest, candidate, coverage, existing = await _settled_sync(
                     self._resume_inputs, checked_checkpoint)
@@ -936,6 +967,14 @@ class FlowRunner:
                                .get("review_approvals") if resume else None)
             self._review_approvals = prior_approvals if isinstance(prior_approvals, dict) else {}
             continuation = (prior or {}).get("flow_continuation")
+            if resume:
+                # A resume refuses before its next step too; reviewed steps it
+                # will never run again (completed, not continued) are skipped.
+                resumed = {(continuation or {}).get("build"),
+                           ((self.quota_recovery.continuation or {}).get("build")
+                            if self.quota_recovery is not None else None)}
+                await _settled_sync(self._check_review_independence,
+                                    completed_steps - resumed)
             for step in steps:
                 if step.get("review") and continuation and continuation.get("build") == step["id"]:
                     await self._review_loop(step, steps[-1], done, lease, tried, checkpoint=continuation)
@@ -1248,13 +1287,7 @@ class FlowRunner:
 
         spec = step["review"]
         rounds = spec.get("max_rounds", 1)
-        reviewed_plan = self._role_plan(step["role"], no_edits=self._no_edits(step, step["role"]))
-        reviewer_plan = self._role_plan(terminal["role"], no_edits=self._no_edits(terminal, terminal["role"]))
-        if spec.get("independent", True):
-            why = rv.check_independent(self.resolved.config, step["role"], reviewed_plan,
-                                       terminal["role"], reviewer_plan)
-            if why:
-                raise FlowStopped("flow.review_not_independent", why, step=terminal["id"])
+        reviewed_plan, reviewer_plan = self._review_plans(step, terminal)
         extra = ""
         history = []
         if self.quota_recovery is not None:

@@ -436,7 +436,9 @@ Click a problem to see the fix.
     The reviewer would run as the same harness and model as the role it
     reviews, one of that role's fallbacks, or a role it may consult. Give the
     reviewer a different model, or remove the reviewer from the reviewed role's
-    `consult:` list.
+    `consult:` list. When the configured roles already collide, the flow stops
+    before its first step (nothing ran); otherwise it stops when the reviewer is
+    selected, after a fallback or consult made them share an identity.
 
 ??? question "A flow stops with `flow.review_candidate_unknown`"
 

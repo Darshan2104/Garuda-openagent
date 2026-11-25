@@ -1,5 +1,19 @@
 # Durable decisions
 
+## 2026-11-25 — Review independence is a preflight before the first step (#753)
+
+`FlowEngine._check_review_independence` runs `rv.check_independent` for every
+required (`independent` not `false`) review a run will still execute, through
+`_review_plans`, the same `_role_plan` resolution `_review_loop` launches with
+(the loop keeps calling it, and the run-time check after fallback/consults is
+unchanged). A fresh run calls it right after the confinement-image preflight,
+before quota-recovery admission, the evidence baseline and any step; a resume
+calls it before its step loop, skipping reviewed steps already completed unless
+a continuation resumes them. What counts as independent is unchanged, and a
+waived review is never preflighted. The message names roles explicitly:
+`role "reviewer" would run as opencode, the same identity role "coder" runs,
+falls back to or consults`.
+
 ## 2026-11-25 — A flow trajectory names what ran and carries its checks (#752)
 
 An attempt's `model`/`adapter_version` come from the receipt's role plan when it
