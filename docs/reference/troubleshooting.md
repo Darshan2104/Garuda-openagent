@@ -194,6 +194,14 @@ Click a problem to see the fix.
     itself asked to keep it or its cleanup could not be proved (for example
     its supervisor was killed too). Recovery keeps refusing those.
 
+    A flow run with `--check` whose step role is refused before its prompt
+    (a logged-out harness gives `role.start_failed`; a model the harness no
+    longer offers gives `role.model_unavailable`) stops with that code, as it
+    does without `--check`. It releases its lease and slot, and
+    `garuda flow resume FLOW_ID` retries the step once the harness is fixed.
+    Older Garuda versions ended such a flow with `flow.cleanup_unproved` and
+    quarantined it; start a new flow for those.
+
 ??? question "`sessions merge` fails with `integration.check_failed`"
 
     The check runs in Docker with your merged code mounted read-only, **no
