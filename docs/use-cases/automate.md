@@ -143,7 +143,15 @@ flow artifacts, independent review or a new session/resume engine.
     garuda sessions show "$id" --json | jq '{label, verification, artifacts}'
     ```
 
-    `--bg` prints only the session ID on stdout. `sessions show SESSION --json`
+    `--bg` prints only the session ID on stdout. A limit an ACP runtime cannot
+    enforce (`--max-turns`, an invalid `--deadline-sec`, the spend caps) is
+    refused at admission with the foreground error and exit status 2, also when
+    no runtime is named and trusted routing (a rule or `default_runtime`)
+    selects an ACP runtime. Only when an enabled runtime classifier would choose
+    is the runtime unknown at admission; then the worker refuses, and the
+    session reads `status: refused` with `background_refusal:
+    run.acp_limit_unenforceable` and the message in `refusal_reason`.
+    `sessions show SESSION --json`
     returns the same record the dashboard uses: `label`, the four-part
     `state`, `verification`, `self_check`, `queue`, `branch`, `approvals`,
     `flow`, `consults` and the bounded `artifacts` projection. `garuda sessions
@@ -498,6 +506,12 @@ The harness also runs its own configured model and agent, so `model=`,
 than the default `"build"` (a name, mapping or `AgentSpec`) raises
 `garuda.sdk.OptionsUnsupportedOnRuntime` (a `ValueError`, code
 `sdk.options_unsupported`) before the harness starts, instead of being ignored.
+The same error refuses `mcp_config=` (Garuda does not forward MCP servers to a
+harness) and any `mode=` other than the default `standard` or `interactive`.
+The SDK runs the harness in the mode its default permission allows, so a
+`readonly` request is refused rather than run wider; `eval` and `rigorous`
+gates exist only in the native loop. For a confined readonly harness run, use
+`garuda run --runtime <id> --mode readonly`.
 If the harness fails to start, Garuda closes it and records that session as
 failed; the next `run` starts a new harness session.
 

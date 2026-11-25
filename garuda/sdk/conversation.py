@@ -143,7 +143,8 @@ class Conversation:
             refuse_unservable_options(
                 self._runtime_name, model=self._model_name, agent=self._agent_name,
                 reasoning_model=self._reasoning_model, collection_model=self._collection_model,
-                model_binding=self._model_binding)
+                model_binding=self._model_binding, mode=self._mode,
+                mcp_config=self._mcp_config)
             return await self._run_acp(task)
         if self._native_close is not None and not self._native_close.done():
             raise RuntimeError("The native conversation is closing")
@@ -287,6 +288,19 @@ class Conversation:
             if self._acp_turn is turn:
                 self._acp_turn = None
 
+    async def _acp_turn_events(self) -> list:
+        """The turn's new events, with the adapter's usage report recorded."""
+        events, _ = await self._acp.poll_events(len(self._acp_trail))
+        self._acp_trail.extend(events)
+        assert self._store is not None and self._sdk_session_id is not None
+        from garuda.observability.usage import record_turn_acp_usage
+
+        record_turn_acp_usage(self._store, self._sdk_session_id, events,
+                              runtime_id=self._acp.runtime_id,
+                              adapter_version=getattr(self._acp, "reported_adapter_version", "unknown"),
+                              segment=self._acp.native_session_id or self._sdk_session_id)
+        return events
+
     async def _prompt_acp(self, task: str) -> AgentResult:
         """One turn on the held ACP runtime; the harness keeps the session.
 
@@ -364,15 +378,15 @@ class Conversation:
         except AcpCancelledError:
             self._acp_cancelled = True
             raise
-        events, _ = await self._acp.poll_events(len(self._acp_trail))
-        self._acp_trail.extend(events)
-        assert self._store is not None and self._sdk_session_id is not None
-        from garuda.observability.usage import record_turn_acp_usage
-
-        record_turn_acp_usage(self._store, self._sdk_session_id, events,
-                              runtime_id=self._acp.runtime_id,
-                              adapter_version=getattr(self._acp, "reported_adapter_version", "unknown"),
-                              segment=self._acp.native_session_id or self._sdk_session_id)
+        except Exception:
+            # Like the CLI (#690): a failed turn keeps the cost its adapter
+            # reported; recording it never masks the turn's error.
+            try:
+                await self._acp_turn_events()
+            except Exception:
+                logging.getLogger(__name__).warning("acp usage not recorded", exc_info=True)
+            raise
+        events = await self._acp_turn_events()
         texts = [
             e.payload.get("chunk", "") or e.payload.get("text", "")
             for e in events

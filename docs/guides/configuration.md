@@ -452,10 +452,11 @@ observability:
 
 With `commands`, each persisted tool call and tool result also keeps its title,
 command and up to five paths it names, the parent tool call when it ran inside a
-harness subagent (Claude Code's `Task`), and the message of a failed tool call or
-error event. Each field is redacted for secret patterns and bounded (300
-characters, 500 for an error message); a cut field says `truncated`, a scrubbed
-one `redacted`. Tool output is never kept. An unknown value keeps `metadata`.
+harness subagent (Claude Code's `Task`), and the message of an error event. Each
+field is redacted for secret patterns and bounded (300 characters, 500 for an
+error message); a cut field says `truncated`, a scrubbed one `redacted`. Tool
+output is never kept, not even a failed call's: a failed tool result keeps only
+its `status: failed`. An unknown value keeps `metadata`.
 
 Independently of the level, an ACP session records what the agent offered
 (`acp_session`: its `initialize` identity, each session option with its current

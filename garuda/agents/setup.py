@@ -467,6 +467,45 @@ def prepare_background_runtime(args) -> BackgroundRuntimeBinding:
     )
 
 
+def predict_routed_runtime(args, task: str, catalog=None) -> str | None:
+    """The runtime a run with no named runtime or role will select, or ``None``
+    when admission cannot know it (#724).
+
+    Repeats the foreground's deterministic selection — trusted routing
+    (:func:`select_runtime`), then explicit, profile, rule and default sources
+    (:func:`select_initial_runtime`) — on the same trusted configuration, so
+    ``garuda run --bg`` can refuse what the worker would refuse. When no
+    deterministic source chooses and an enabled runtime classifier would be
+    consulted, the answer depends on a model call made only when the worker
+    runs, so this returns ``None``.
+    """
+    from garuda.acp.catalog import load_trusted_runtime_settings
+    from garuda.config.agent_home import resolve_agent_home
+    from garuda.runtime.selection import parse_global_selection, parse_project_selection
+
+    catalog = catalog or prepare_runtime_catalog(args.workspace)
+    routed = select_runtime(args.workspace, "native")
+    explicit = routed if routed != "native" else None
+    ceiling = ("readonly" if getattr(args, "no_edits", False)
+               else getattr(args, "permission_mode", None) or "smart")
+    selection = select_initial_runtime(
+        workspace=args.workspace, task=task, catalog=catalog,
+        agent=getattr(args, "agent", None) or "build",
+        mode=getattr(args, "mode", None) or "",
+        explicit_runtime=explicit,
+        workspace_kind=getattr(args, "workspace_kind", "local"),
+        permission_ceiling=ceiling,
+        available_runtime_ids=frozenset({explicit}) if explicit else None,
+    ).selection
+    if explicit is None and selection.source in ("default", "native"):
+        policy = parse_global_selection(load_trusted_runtime_settings()).classifier
+        project = parse_project_selection(
+            getattr(resolve_agent_home(args.workspace), "settings", None) or {})
+        if policy is not None and policy.enabled and not project.classifier_disabled:
+            return None
+    return catalog.registry.get(selection.selected).runtime_id
+
+
 #: How long initial selection may reuse a runtime's probe result (seconds).
 SELECTION_PROBE_CACHE_SECONDS = 60.0
 

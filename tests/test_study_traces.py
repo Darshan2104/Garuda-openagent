@@ -31,7 +31,7 @@ def test_metadata_level_persists_exactly_what_it_always_did():
     assert evidence_payload(error) == {}
 
 
-def test_commands_level_adds_redacted_bounded_tool_detail():
+def test_commands_level_adds_redacted_bounded_tool_detail():  # failed output: #727
     call = _event(RuntimeEventKind.TOOL_CALL, tool_call_id="c1", kind="execute", status="pending",
                   title=f"curl -H 'Authorization: Bearer {SECRET}' x",
                   command="echo " + "y" * 1000, locations=[f"f{i}.py" for i in range(8)],
@@ -47,8 +47,7 @@ def test_commands_level_adds_redacted_bounded_tool_detail():
 
     failed = _event(RuntimeEventKind.TOOL_RESULT, tool_call_id="c1", status="failed",
                     content=f"permission denied\n token={SECRET}")
-    assert evidence_payload(failed, "commands")["error"]["text"].startswith("permission denied")
-    assert SECRET not in json.dumps(evidence_payload(failed, "commands"))
+    assert evidence_payload(failed, "commands") == {"tool_call_id": "c1", "status": "failed"}
     done = _event(RuntimeEventKind.TOOL_RESULT, tool_call_id="c1", status="completed",
                   content="private output")
     assert "error" not in evidence_payload(done, "commands")  # output is never kept
@@ -114,7 +113,9 @@ def test_a_blocked_run_is_flagged_and_its_tool_calls_keep_their_detail(
     (call,) = [row["payload"] for row in rows if row["kind"] == "tool_call"]
     assert call["title"] == {"text": "write notes.md"}
     (failed,) = [row["payload"] for row in rows if row["kind"] == "tool_result"]
-    assert failed["error"] == {"text": "denied"}
+    # The failed call keeps its status, never its content (#727); the denial
+    # itself is the approval record and `approval_summary` below.
+    assert failed["status"] == "failed" and "error" not in failed
     assert meta["acp_session"]["agent_info"] == {}
 
     code, out = _main(monkeypatch, capsys, "sessions", "show", meta["session_id"],
@@ -151,3 +152,26 @@ def test_a_run_refused_at_role_application_keeps_the_offer_and_the_code(
     shown = json.loads(out)
     assert shown["error"]["code"] == "role.option_missing"
     assert shown["acp_session"]["config_options"] == offered["config_options"]
+
+
+def test_a_failed_tool_calls_output_is_never_kept():
+    """#727: a failed tool result's ``content`` is the tool's output, not an
+    error message, so even ``commands`` keeps only its status."""
+    from garuda.acp.normalize import AcpNormalizer
+
+    normalizer = AcpNormalizer("s")
+    normalizer.new_turn()
+    normalizer.feed({"sessionUpdate": "tool_call", "toolCallId": "c1",
+                     "title": "cat config/db.yml; exit 1", "kind": "execute",
+                     "status": "pending", "rawInput": {"command": "cat config/db.yml; exit 1"}})
+    (result,) = normalizer.feed({
+        "sessionUpdate": "tool_call_update", "toolCallId": "c1", "status": "failed",
+        "content": [{"type": "content", "content": {
+            "type": "text", "text": "production:\n  pw hunter2-prod-db\n"
+                                    "  customer_email: alice@example.com\nExit code 1"}}]})
+    for level in ("metadata", "commands"):
+        kept = json.dumps(evidence_payload(result, level))
+        assert "hunter2" not in kept and "alice@example.com" not in kept
+        assert "Exit code" not in kept
+    detail = evidence_payload(result, "commands")
+    assert detail["status"] == "failed" and "error" not in detail

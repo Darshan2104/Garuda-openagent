@@ -46,16 +46,24 @@ async def _acp(launch: StepLaunch) -> StepResult:
             before_prompt=launch.quota_guard,
         )
     except RecoveryWaiting as exc:
-        return StepResult(session_id, False, "", error=str(exc), quota_wait=True,
+        return StepResult(session_id, False, "", error=_redacted(exc), quota_wait=True,
                           closure={"status": "closed"})
     except AcpError as exc:
         # The agent stopped (ended its turn, exited, timed out): a failed step
-        # with its reason, not an interrupted flow.
-        return StepResult(session_id, False, "", error=str(exc),
+        # with its reason, not an interrupted flow. The reason (remote error
+        # data, stderr tail) is agent-supplied and lands in the step receipt,
+        # so it is redacted here too (#729).
+        return StepResult(session_id, False, "", error=_redacted(exc),
                           closure={"status": "closed"} if launch.quota_recovery else None)
     return StepResult(summary["session_id"], summary.get("status") == "completed",
                       str(summary.get("reply") or ""),
                       closure={"status": "closed"} if launch.quota_recovery else None)
+
+
+def _redacted(exc: BaseException) -> str:
+    from garuda.context.redact import redact_text
+
+    return redact_text(str(exc))[0]
 
 
 async def _native(launch: StepLaunch) -> StepResult:
