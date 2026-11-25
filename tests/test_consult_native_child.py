@@ -315,7 +315,9 @@ async def test_failed_or_cancelled_consult_settles_reported_usage(consult_world,
         task = asyncio.create_task(ConsultService(consult_world.store, make_resolved()).consult(
             request(consult_world, request_id="failed")))
         if cancel:
-            await asyncio.wait_for(started.wait(), 5)
+            # Setup (admission, snapshot, isolation, guard) precedes the model
+            # call; it overran 5 s on a loaded CI runner (#713).
+            await asyncio.wait_for(started.wait(), 30)
             estimate = gate.reserved_tokens
             task.cancel()
             with pytest.raises(asyncio.CancelledError):

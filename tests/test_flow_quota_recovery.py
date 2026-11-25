@@ -436,6 +436,10 @@ async def test_a_losing_tick_cannot_overwrite_another_ticks_reserved_dispatch(ha
         await asyncio.gather(winner, loser, return_exceptions=True)
 
 
+# A real `garuda recovery tick` process imports the CLI (litellm alone is ~4.6 s
+# of CPU on dev1): ~6 s idle, 15-17 s under load, so 20 s was too tight (#713).
+TICK_CLI_TIMEOUT = 90
+
 async def test_tick_cli_reports_a_lost_dispatch_on_stderr_and_nonzero_exit(harness):
     h = harness
     first = await h.service.run("pbr", "ship it", str(h.repo))
@@ -445,7 +449,7 @@ async def test_tick_cli_reports_a_lost_dispatch_on_stderr_and_nonzero_exit(harne
                      token=claim["token"])
     result = subprocess.run([sys.executable, "-m", "garuda.interfaces.main", "recovery", "tick",
                              "--root", str(h.records.root)],
-                            capture_output=True, text=True, timeout=20)
+                            capture_output=True, text=True, timeout=TICK_CLI_TIMEOUT)
     assert result.returncode == 3
     assert "requires attention" in result.stderr
     assert json.loads(result.stdout)["flows"][0]["state"] == "uncertain"
@@ -457,7 +461,7 @@ def test_an_empty_scheduled_tick_publishes_health_without_probing(tmp_path, monk
     ss.write_document(root / "settings.json", {
         "version": 1, "enabled": True, "codex_executable": "/nonexistent/codex"})
     result = subprocess.run([sys.executable, "-m", "garuda.interfaces.main", "recovery", "tick",
-                             "--root", str(root)], capture_output=True, text=True, timeout=20)
+                             "--root", str(root)], capture_output=True, text=True, timeout=TICK_CLI_TIMEOUT)
     assert result.returncode == 0, result.stderr
     health = RecoveryStore(root).health()
     assert health["last_result"]["outcome"] == "zero-pending"

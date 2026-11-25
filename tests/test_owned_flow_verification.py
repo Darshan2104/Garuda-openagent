@@ -54,7 +54,10 @@ def _model_endpoint():
 
 
 async def _appears(path, task):
-    deadline = time.monotonic() + 30
+    # Reaching the check spawns a role worker and several acceptance workers,
+    # each a fresh interpreter: about 18 s of CPU-bound start-up on an idle
+    # 3-core host and over 30 s under load (#713). A real stall still fails here.
+    deadline = time.monotonic() + 120
     while not path.exists():
         if task.done():
             await task
