@@ -240,7 +240,7 @@ the reported cost).
 {"record": "journal", "event": "intent", "step": "plan", "attempt": 1, "at": "…"}
 {"record": "attempt", "step": "plan", "attempt": 1, "role": "planner", "runtime": "codex",
  "model": "gpt-5.6-luna", "started_at": "…", "finished_at": "…", "duration_ms": 48210,
- "outputs": [{"type": "plan", "digest": "…"}], "session": {"status": "completed",
+ "outputs": [{"type": "plan", "digest": "…"}], "session": {"status": "completed", "trace_detail": "metadata",
  "usage": {"metered": null, "reported": {"cost_usd": 0.042, …}}, "events": {"count": 37, …}}}
 {"record": "event", "step": "plan", "attempt": 1, "session_id": "…", "event": {"kind": "tool_call", …}}
 {"record": "summary", "attempts": 2, "duration_ms": 95112, "review_rounds": null, …}
@@ -248,7 +248,10 @@ the reported cost).
 
 The events are exactly what the step session persisted at your
 [`observability.trace_detail`](configuration.md) level; the export
-adds nothing to them. A native step's transcript (messages and tool output) is
+adds nothing to them. Each attempt's `session.trace_detail` says which level
+that was (`metadata` or `commands`; `null` for a session recorded before Garuda
+kept it, or a native step), so check it before relying on tool titles or
+commands in the events. A native step's transcript (messages and tool output) is
 never exported; it contributes its record and usage only. Free text a session
 recorded (task, error detail) is redacted again on the way out.
 

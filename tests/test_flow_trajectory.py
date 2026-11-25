@@ -117,6 +117,8 @@ def test_flow_show_json_and_export_cover_every_step_session(repo, tmp_path, monk
         assert session["status"] == "completed"
         assert session["events"]["source"] == "acp-events.jsonl" and session["events"]["count"] > 0
         assert "usage" in session and "events_records" not in attempt
+        # The default study-trace level each step's trail was persisted at (#691).
+        assert session["trace_detail"] == "metadata"
     assert shown["attempts"][0]["outputs"][0]["type"] == "plan"
 
     out_file = tmp_path / "trace.jsonl"
@@ -128,6 +130,8 @@ def test_flow_show_json_and_export_cover_every_step_session(repo, tmp_path, monk
     kinds = [r["record"] for r in records]
     assert kinds[0] == "flow" and kinds[-1] == "summary"
     assert kinds.count("journal") == 4 and kinds.count("attempt") == 2
+    assert [r["session"]["trace_detail"] for r in records if r["record"] == "attempt"] == [
+        "metadata", "metadata"]
     assert records[0]["flow_session"] == flow_id and records[0]["name"] == "pb"
     for step, session_id in steps.items():
         exported = [r["event"] for r in records
@@ -142,6 +146,11 @@ def test_flow_show_json_and_export_cover_every_step_session(repo, tmp_path, monk
     order = [(r["record"], r.get("step")) for r in records if r["record"] in ("attempt", "event")]
     assert order.index(("attempt", "build")) > max(
         i for i, item in enumerate(order) if item == ("event", "plan"))
+
+    code, out = _main(monkeypatch, capsys, "sessions", "show", steps["plan"], "--json",
+                      "--workspace", str(repo))
+    assert code == 0, out
+    assert json.loads(out)["trace_detail"] == "metadata"
 
     code, out = _main(monkeypatch, capsys, "sessions", "show", flow_id, "--json",
                       "--workspace", str(repo))

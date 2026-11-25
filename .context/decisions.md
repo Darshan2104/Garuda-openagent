@@ -1,5 +1,19 @@
 # Durable decisions
 
+## 2026-11-25 — Each ACP session records its study-trace level (#691)
+
+A persisting ACP runtime writes the `observability.trace_detail` level its
+events use (`metadata` or `commands`) into the session's meta as `trace_detail`
+when its session starts or resumes, and a handoff target when it is bound to
+the session; so every path that persists ACP events (CLI, background, flow
+steps, SDK, handoffs) records it in one place, the adapter. The read model, `sessions
+show` (text and `--json`) and the flow trajectory/export session records report
+it; a missing or unknown value reads as `null` (text: `unknown (not
+recorded)`), never a guessed level, so sessions from before this read as
+unknown. A resumed session records the level of its latest run. The default,
+the setting's source (user settings only) and what each event persists are
+unchanged.
+
 ## 2026-11-25 — Flow trajectories: step timings, attempt identity and export (#726)
 
 Every flow step receipt now records `started_at` (when its intent was
