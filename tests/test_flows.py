@@ -576,7 +576,7 @@ def test_resume_plan_only_after_confinement_refusal(repo, monkeypatch, capsys, c
 @pytest.mark.skipif(sys.platform != "linux", reason="owned flow checks require Linux")
 @pytest.mark.parametrize("stop_step, stop_code", [
     ("build", "flow.step_failed"), ("review", "flow.output_missing"),
-    ("build", "workspace.readonly_unenforced"),
+    ("build", "workspace.readonly_unenforced"), ("review", "flow.review_invalid"),
 ])
 def test_checked_flow_resumes_settled_attempt_and_runs_original_check(
         repo, monkeypatch, capsys, stop_step, stop_code):
@@ -613,6 +613,10 @@ def test_checked_flow_resumes_settled_attempt_and_runs_original_check(
             if stop_step == "build":
                 (repo / "a.txt").write_text("partial edit\n")
                 return StepResult(session, False, "", closure, error="acp.timeout during initialize")
+            if stop_code == "flow.review_invalid":
+                # #761: a request for changes without any finding never parses.
+                return StepResult(session, True, _block("review", "verdict: changes\nfindings:\n- none."),
+                                  closure)
             return StepResult(session, True, "missing review artifact", closure)
         if launch.step_id == "build" and launch.attempt == 2:
             (repo / "a.txt").write_text("a\n")
@@ -652,6 +656,53 @@ def test_checked_flow_resumes_settled_attempt_and_runs_original_check(
     assert code == 0, out
     assert launches == expected
     assert store.load_meta(flow_id) == meta
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="owned flow checks require Linux")
+def test_checked_flow_stop_that_is_not_resumable_says_so(repo, monkeypatch, capsys):
+    """#761: never blame missing or corrupt check records for an unresumable stop."""
+    from tests.test_runtime_cli import _main
+
+    gy.user_path().write_text(
+        "version: 1\nroles:\n  planner: {harness: native}\n  coder: {harness: native}\n"
+        "  reviewer: {harness: native}\nflows:\n  checked:\n    steps:\n"
+        "    - {id: plan, role: planner, outputs: [plan]}\n"
+        "    - {id: build, role: coder, inputs: [plan], outputs: [patch],\n"
+        "       review: {by: reviewer, independent: false, max_rounds: 0}}\n"
+        "    - {id: review, role: reviewer, inputs: [patch], outputs: [review]}\n")
+    outputs = {"plan": _block("plan", "edit a.txt"), "build": _block("patch", "a.txt"),
+               "review": _block("review", "verdict: changes\nfindings:\n- [major] wrong")}
+    launches = []
+
+    async def launcher(launch):
+        launches.append((launch.step_id, launch.attempt))
+        session = str(uuid.uuid4())
+        lease = launch.capability._parent.snapshot_ownership()["lease"]
+        info = repo.stat()
+        closure = {"version": 1, "request_digest": "a" * 64, "session_id": session,
+                   "parent_id": launch.flow_session, "step_id": launch.step_id,
+                   "attempt": launch.attempt, "workspace_identity": [info.st_dev, info.st_ino],
+                   "parent_owner": {key: lease[key] for key in ("pid", "identity", "pgid", "epoch")},
+                   "process": {"cleanup": {"backend": "linux-subreaper", "echild": True},
+                               "outcome": "exited", "supervisor": {}, "command": {}, "exit_code": 0}}
+        return StepResult(session, True, outputs[launch.step_id], closure)
+
+    monkeypatch.setattr("garuda.flows.launch.launch_step", launcher)
+    code, out = _main(monkeypatch, capsys, "flow", "run", "checked", "-t", "ship it",
+                      "--workspace", str(repo), "--check", "true")
+    assert code == 3, out
+    stopped = json.loads(next(line for line in out.splitlines() if line.startswith("{")))
+    assert stopped["code"] == "flow.review_changes_requested"
+    store = SessionStore()
+    meta = store.load_meta(stopped["flow_session"])
+    ran = list(launches)
+
+    code, out = _main(monkeypatch, capsys, "flow", "resume", stopped["flow_session"])
+    assert code == 2, out
+    assert out.startswith("Error: flow.stop_not_resumable: ")
+    assert "flow.review_changes_requested" in out and "start a new flow" in out
+    assert "corrupt" not in out
+    assert launches == ran and store.load_meta(stopped["flow_session"]) == meta
 
 
 @pytest.mark.parametrize("parallel", [False, True])

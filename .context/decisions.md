@@ -16,6 +16,24 @@ keeps `flow.step_failed`; its message adds "(the agent attempted to change
 files in a read-only step)". The fake ACP agent's `edits-unless-read-only`
 profile keys on the phrase `This step is read-only.`
 
+## 2026-11-26 — "No findings" is a valid approval; an invalid review resumes (#761)
+
+`review.FORMAT` now tells a reviewer to approve with nothing to report by leaving
+`findings:` empty. Under `verdict: approve` only, the line parser also reads a
+common "no findings" marker (`none`, `- none.`, `No findings`, `n/a`,
+`findings: none`, `findings: []`, optionally followed by punctuation and a
+remark) as no findings. It never weakens a real review: `verdict: changes`
+still needs a real `- [severity]` finding, a "none" line beside findings is
+refused, and prose such as `- None of the paths ...` is still not a finding.
+`flow.review_invalid` joins `RESUMABLE_CHECKED_STOPS`: the reviewer's receipt
+is settled (it ran; only its block did not parse) and the published
+`flow_continuation` already names the reviewer as pending, so a resume runs the
+reviewer again on the same frozen candidate, and the invalid review never
+counts as a round. A checked flow stopped before its checks with any other code
+has no resume checkpoint; `flow resume` now refuses it with
+`flow.stop_not_resumable` naming that code, instead of reporting missing or
+corrupt check records.
+
 ## 2026-11-25 — An ACP usage snapshot belongs to its Garuda session (#758)
 
 A snapshot row's key digest now includes the Garuda `session_id` besides the
