@@ -43,7 +43,9 @@ def _ledger_rows() -> list[dict] | None:
     try:
         from garuda.observability.ledger import Ledger
 
-        return Ledger().records()
+        # A list: ``records()`` is a generator, and every attempt reads these rows
+        # twice (metered and reported); a generator would serve only the first (#748).
+        return list(Ledger().records())
     except Exception:
         return None
 

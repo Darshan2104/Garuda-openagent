@@ -157,3 +157,54 @@ def test_flow_show_json_and_export_cover_every_step_session(repo, tmp_path, monk
     assert code == 0, out
     attempts = [a for s in json.loads(out)["flow"]["steps"] for a in s["attempts"]]
     assert {a["runtime"] for a in attempts} == {"fakeacp"}
+
+
+def test_flow_trajectory_carries_each_step_sessions_usage(repo, tmp_path, monkeypatch, capsys,  # noqa: F811
+                                                         fake_acp_confinement):
+    """#748: every attempt shows its step session's metered and adapter-reported usage
+    exactly as `sessions show` does, and the summary sums the reported costs."""
+    from tests.test_runtime_cli import _install_shim, _main, _on_path, _trusted_settings
+
+    _on_path(monkeypatch, tmp_path / "bin")
+    _install_shim(tmp_path / "bin", profile="success", extra=("--report-usage",))
+    _trusted_settings(tmp_path, monkeypatch)
+    gy.user_path().parent.mkdir(parents=True, exist_ok=True)
+    gy.user_path().write_text(
+        "version: 1\nroles:\n  planner: {harness: fakeacp, write_policy: no-edits}\n"
+        "  coder: {harness: fakeacp}\n"
+        "flows:\n  pb:\n    steps:\n      - {id: plan, role: planner, outputs: [plan]}\n"
+        "      - {id: build, role: coder, inputs: [plan]}\n")
+    fake_acp_confinement("fakeacp")
+    code, out = _main(monkeypatch, capsys, "flow", "run", "pb", "-t", "add a feature",
+                      "--workspace", str(repo))
+    assert code == 0, out
+    flow_id = json.loads(out.strip().splitlines()[-1])["flow_session"]
+
+    code, out = _main(monkeypatch, capsys, "flow", "show", flow_id, "--json")
+    assert code == 0, out
+    shown = json.loads(out)
+    assert [a["step"] for a in shown["attempts"]] == ["plan", "build"]
+    costs = []
+    for attempt in shown["attempts"]:
+        usage = attempt["session"]["usage"]
+        code, out = _main(monkeypatch, capsys, "sessions", "show", attempt["session_id"],
+                          "--json", "--workspace", str(repo))
+        assert code == 0, out
+        reported = json.loads(out)["reported_usage"]
+        assert reported and reported["cost_usd"] == 0.0025
+        assert usage["reported"] == reported
+        # Metered for every attempt, not only the first; a snapshot is never summed.
+        assert usage["metered"] is not None
+        assert usage["metered"]["snapshots_excluded"] == 1
+        assert usage["metered"]["cost_usd"] == 0.0
+        costs.append(reported["cost_usd"])
+    assert shown["summary"]["reported_cost_usd"] == round(sum(costs), 8) == 0.005
+
+    out_file = tmp_path / "trace.jsonl"
+    code, out = _main(monkeypatch, capsys, "flow", "export", flow_id, "--out", str(out_file),
+                      "--workspace", str(repo))
+    assert code == 0, out
+    records = [json.loads(line) for line in out_file.read_text().splitlines()]
+    assert [r["session"]["usage"]["reported"]["cost_usd"] for r in records
+            if r["record"] == "attempt"] == [0.0025, 0.0025]
+    assert records[-1]["reported_cost_usd"] == 0.005
