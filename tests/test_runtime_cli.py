@@ -1026,3 +1026,97 @@ def test_bg_run_runtime_acp_refuses_limits_at_admission(tmp_path, monkeypatch, c
     assert background[1].strip() == foreground[1].strip()
     assert not spawned and not marker.exists()
     assert SessionStore().list_sessions() == []
+
+
+_ROUTES = {
+    "default": "routing:\n  default_runtime: fakeacp\n",
+    "rule": ("routing:\n  rules:\n    - id: build-on-fake\n      runtime: fakeacp\n"
+             "      when: {agents: [build]}\n"),
+}
+
+
+def _routed_settings(tmp_path, monkeypatch, route: str) -> None:
+    settings = _trusted_settings(tmp_path, monkeypatch)
+    settings.write_text(settings.read_text(encoding="utf-8") + route, encoding="utf-8")
+
+
+@pytest.mark.parametrize("route", sorted(_ROUTES))
+@pytest.mark.parametrize("flags", [["--max-turns", "1"], ["--deadline-sec", "nan"],
+                                   ["--max-run-cost-usd", "1"]])
+def test_bg_run_routed_to_acp_refuses_limits_at_admission(tmp_path, monkeypatch, capsys, route,
+                                                          flags):
+    """#724: a `--bg` run that names no runtime but is routed to an ACP runtime
+    by trusted selection (default or rule) refuses an unenforceable limit at
+    admission, like the foreground run, instead of queueing a worker that fails."""
+    from garuda.interfaces import bg_sessions
+
+    ws = _git_workspace(tmp_path)
+    _on_path(monkeypatch, tmp_path / "bin")
+    _install_shim(tmp_path / "bin")
+    _routed_settings(tmp_path, monkeypatch, _ROUTES[route])
+    spawned = []
+
+    def no_worker(session_id, **_kwargs):
+        spawned.append(session_id)
+        return type("NoWorker", (), {"pid": os.getpid(), "args": ["worker", session_id]})()
+
+    monkeypatch.setattr(bg_sessions, "_spawn_worker", no_worker)
+    argv = ("run", "-t", "must not run", "--workspace", str(ws), *flags)
+    foreground = _main(monkeypatch, capsys, *argv)
+    background = _main(monkeypatch, capsys, *argv, "--bg")
+    assert foreground[0] == background[0] == 2, background
+    assert "'fakeacp'" in background[1] and flags[0] in background[1]
+    assert background[1].strip() == foreground[1].strip()
+    assert not spawned
+    assert SessionStore().list_sessions() == []
+
+
+def test_bg_run_limits_still_admitted_when_routing_stays_native(tmp_path, monkeypatch, capsys):
+    """#724: the admission prediction refuses only an ACP route; a run routing
+    leaves native keeps its enforceable limits and is queued."""
+    from garuda.interfaces import bg_sessions
+
+    ws = _git_workspace(tmp_path)
+    _routed_settings(tmp_path, monkeypatch, "routing:\n  default_runtime: native\n")
+    spawned = []
+    monkeypatch.setattr(bg_sessions, "_spawn_worker", lambda session_id, **_kw: spawned.append(
+        session_id) or type("NoWorker", (), {"pid": os.getpid(), "args": ["w", session_id]})())
+    code, out = _main(monkeypatch, capsys, "run", "-t", "x", "--workspace", str(ws),
+                      "--max-turns", "1", "--bg")
+    assert code == 0, out
+    assert len(spawned) == 1
+
+
+async def test_bg_worker_refusal_settles_a_classifier_routed_session(tmp_path, monkeypatch):
+    """#724: when an enabled classifier makes the route unknowable at admission,
+    the run is queued; the worker's ACP limit refusal then settles the session
+    as `refused`, with the foreground message, not a bare `failed`."""
+    import argparse
+
+    from garuda.interfaces import bg_sessions
+    from garuda.runtime.queue import QueueStore
+
+    ws = _git_workspace(tmp_path)
+    _on_path(monkeypatch, tmp_path / "bin")
+    _install_shim(tmp_path / "bin")
+    # No model binding: the worker's classifier is skipped and the default
+    # (fakeacp) selected — a decision admission cannot make for it.
+    _routed_settings(tmp_path, monkeypatch,
+                     "routing:\n  default_runtime: fakeacp\n  classifier: true\n")
+    args = build_parser().parse_args(
+        ["run", "-t", "must not run", "--workspace", str(ws), "--max-turns", "1", "--bg"])
+    store = SessionStore(tmp_path / "sessions")
+    queue = QueueStore(tmp_path / "queue")
+    spawned = []
+    session_id = bg_sessions.launch(
+        argparse.Namespace(**vars(args)), store=store, queue=queue,
+        spawn=lambda sid: spawned.append(sid) or type(
+            "NoWorker", (), {"pid": os.getpid(), "args": ["w", sid]})())
+    assert spawned == [session_id]
+    code = await bg_sessions.run_worker_async(session_id, store=store, queue=queue)
+    assert code == 2
+    meta = store.load_meta(session_id)
+    assert meta["status"] == "refused"
+    assert (meta["state"]["work"], meta["state"]["outcome"]) == ("stopped", "refused")
+    assert meta["background_refusal"] == "run.acp_limit_unenforceable"
+    assert "--max-turns" in meta["refusal_reason"] and "'fakeacp'" in meta["refusal_reason"]

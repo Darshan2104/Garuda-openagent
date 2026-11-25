@@ -143,7 +143,8 @@ class Conversation:
             refuse_unservable_options(
                 self._runtime_name, model=self._model_name, agent=self._agent_name,
                 reasoning_model=self._reasoning_model, collection_model=self._collection_model,
-                model_binding=self._model_binding)
+                model_binding=self._model_binding, mode=self._mode,
+                mcp_config=self._mcp_config)
             return await self._run_acp(task)
         if self._native_close is not None and not self._native_close.done():
             raise RuntimeError("The native conversation is closing")
