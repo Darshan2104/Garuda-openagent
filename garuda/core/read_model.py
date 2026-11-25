@@ -436,6 +436,12 @@ def session(store, session_id: str, *, queue=None) -> dict:
         queue_entries=entries,
     )
     row["flow"] = flow(store, session_id, meta)
+    # A flow's own session totals its step sessions' adapter-reported usage (#755).
+    row["step_reported_usage"] = None
+    if row["flow"] is not None:
+        from garuda.flows.trajectory import steps_reported_usage
+
+        row["step_reported_usage"] = steps_reported_usage(row["flow"])
     from garuda.consult import view
     from garuda.core import conversation
 
