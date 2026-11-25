@@ -1,5 +1,18 @@
 # Durable decisions
 
+## 2026-11-25 — An ACP usage snapshot belongs to its Garuda session (#758)
+
+A snapshot row's key digest now includes the Garuda `session_id` besides the
+source (`<runtime>:<version>:<native session>`), figures and context. A session
+that continues the agent's own session through `session/load` (once an adapter
+is in `PROVEN_LOAD`) and reports the same figures as the session it resumed was
+refused by the ledger as a duplicate, so its `Reported usage` was missing. An
+exact replay within one session still writes nothing. Delta keys, cursors and
+`report_id`-keyed snapshots stay per native source, so a cumulative counter is
+never counted twice across Garuda sessions. Existing rows keep their old keys:
+nothing is migrated, and `reported_usage` reads rows by `session_id` and segment,
+never by key.
+
 ## 2026-11-25 — Trace polish: flow totals, zero approvals, reported adapter version (#755)
 
 `sessions show FLOW` adds `step_reported_usage` (`flows.trajectory.steps_reported_usage`):

@@ -28,14 +28,14 @@ def _repo(path: Path) -> Path:
     return path
 
 
-def _shim(bin_dir: Path, profile: str, state_file: Path) -> None:
+def _shim(bin_dir: Path, profile: str, state_file: Path, extra: str = "") -> None:
     bin_dir.mkdir(parents=True, exist_ok=True)
     path = bin_dir / "fake-acp-shim"
     path.write_text(
         "#!/bin/sh\n"
         f"PYTHONPATH={shlex.quote(str(REPO))} exec {shlex.quote(sys.executable)} "
         f"-m garuda.acp.fake_agent --profile {profile} --state-file {shlex.quote(str(state_file))}"
-        ' "$@"\n'
+        f'{extra} "$@"\n'
     )
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
@@ -53,8 +53,8 @@ def acp(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
     state = tmp_path / "agent-state.json"
 
-    def install(profile):
-        _shim(tmp_path / "bin", profile, state)
+    def install(profile, extra=""):
+        _shim(tmp_path / "bin", profile, state, extra)
 
     install("resume")
     return ws, install
@@ -92,6 +92,38 @@ def test_a_proven_adapter_reloads_its_own_session_in_a_new_process(acp, monkeypa
     meta = _newest_other(source)
     assert (meta["resumed_from"], meta["resume_mode"]) == (source, "acp")
     assert meta["runtime_segments"][-1]["native_session_id"] == "resume-s1"
+
+
+def test_a_reloaded_session_records_its_own_usage_report(acp, monkeypatch, capsys):
+    """A session that continues the agent's own session through ``session/load``
+    reports usage under the same native id. Its report is that session's, even when
+    the figures equal the previous session's last report (#758)."""
+    from garuda.observability.ledger import Ledger
+    from garuda.observability.usage import record_acp_usage, reported_usage
+
+    ws, install = acp
+    install("resume", " --report-usage")
+    monkeypatch.setitem(resume_mod.PROVEN_LOAD, "fakeresume", frozenset({"1"}))
+    source = _first(monkeypatch, capsys, ws)
+    code, out = _run(monkeypatch, capsys, "-t", "second task", "--workspace", str(ws),
+                     "--resume", "first")
+    assert code == 0, out
+    resumed = _newest_other(source)["session_id"]
+
+    rows = [r for r in Ledger().records() if r["kind"] == "acp_usage_snapshot"]
+    assert sorted(r["session_id"] for r in rows) == sorted([source, resumed])
+    assert {r["segment"] for r in rows} == {"fakeresume:1:resume-s1"}
+    for session_id in (source, resumed):
+        reported = reported_usage(session_id)
+        assert (reported["cost_usd"], reported["context_used"]) == (0.0025, 1200)
+
+    # The same report presented again in the same session is still a duplicate.
+    again = record_acp_usage(SessionStore(), resumed, runtime_id="fakeresume",
+                             adapter_version="1", segment="resume-s1",
+                             usage={"context_used": 1200, "context_size": 200000,
+                                    "cost_usd": 0.0025, "model": "fake-model-1"})
+    assert again and again[0]["key"] in {r["key"] for r in rows}
+    assert len([r for r in Ledger().records() if r["kind"] == "acp_usage_snapshot"]) == 2
 
 
 def test_acp_role_applies_selected_agent_instructions_when_reloading(acp, monkeypatch, capsys):

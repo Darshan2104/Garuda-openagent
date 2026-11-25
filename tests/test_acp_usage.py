@@ -214,3 +214,29 @@ def test_an_external_turns_usage_report_is_recorded_as_a_snapshot(ledger, tmp_pa
         "claude-sonnet-5-5", 21224, 0.04)
     summary = totals(list(ledger.records()))
     assert (summary["snapshots_excluded"], summary["cost_usd"]) == (1, 0.0)  # never summed
+
+
+def test_a_snapshot_key_names_its_garuda_session_and_old_keys_still_read(ledger):
+    """Same native source and figures in two Garuda sessions are two snapshots; a replay
+    in one session is one. Rows written under the old key (no session in the digest)
+    read exactly as before: nothing is migrated (#758)."""
+    from garuda.observability.usage import reported_usage
+
+    def snap(session_id, at):
+        return UsageReport(source=SRC, adapter="claude", adapter_version="0.85.0",
+                           counters={"cost_usd": 0.5}, context_used=10, context_size=100,
+                           observed_at=at, session_id=session_id)
+
+    normalizer = AcpUsageNormalizer(ledger)
+    (first,) = normalizer.ingest(snap("sess1", 1_790_000_000.0))
+    (second,) = normalizer.ingest(snap("sess2", 1_790_000_100.0))
+    normalizer.ingest(snap("sess2", 1_790_000_200.0))  # the same report again: a duplicate
+    assert first["key"] != second["key"]
+    assert [r["session_id"] for r in ledger.records()] == ["sess1", "sess2"]
+
+    old = {**first, "key": f"snap:{SRC}:0123456789abcdef01234567", "session_id": "legacy",
+           "time": 1_790_000_300.0}
+    assert ledger.append(old)
+    legacy = reported_usage("legacy", ledger=ledger)
+    assert (legacy["cost_usd"], legacy["context_used"], legacy["segments"]) == (0.5, 10, 1)
+    assert reported_usage("sess2", ledger=ledger)["cost_usd"] == 0.5

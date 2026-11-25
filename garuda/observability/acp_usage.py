@@ -95,8 +95,13 @@ class AcpUsageNormalizer:
         return {k: v for k, v in record.items() if v is not None}
 
     def _snapshot(self, report: UsageReport, unavailable: str | None = None) -> dict:
+        # The Garuda session is part of a snapshot's identity: a session that continues
+        # the same native session (``session/load``) and reports the same figures is a
+        # new observation for *that* session, not a duplicate (#758). Deltas and
+        # cursors stay per native source, so a cumulative counter is never counted twice.
         ident = report.report_id or _digest(report.source, report.seq, report.counters,
-                                            report.context_used, report.context_size)
+                                            report.context_used, report.context_size,
+                                            report.session_id)
         record = self._base(report, SNAPSHOT, f"snap:{report.source}:{ident}")
         record.update(
             segment=report.source[:128], cumulative=report.kind == "cumulative",
