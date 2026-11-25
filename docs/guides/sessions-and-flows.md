@@ -328,6 +328,15 @@ the workspace really is unchanged. If it is not, the flow stops, that step's
 output is withheld and the changes are left for you to inspect. This is a
 guardrail, not confinement.
 
+The prompt of a `no-edits` step, of a role with `permissions: readonly`, and
+of each parallel reviewer says so: it gives your task as the overall task,
+then tells the agent that this step is read-only, what its job is (notes, a
+plan or a review), not to edit, create, delete or move files, and to produce
+only its output. A writable step's prompt is your task unchanged. If an agent
+still tries to edit and ends its turn when Garuda denies it, the step fails
+with `flow.step_failed` and the message says it attempted to change files in a
+read-only step.
+
 A flow that needs a role you have not defined refuses and lists the roles it
 needs. To change a packaged flow, print it, copy it into your `garuda.yaml`
 and edit it there; a flow of the same name in your file replaces the

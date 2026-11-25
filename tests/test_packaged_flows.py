@@ -283,3 +283,47 @@ async def test_flow_service_uses_supplied_store_for_real_child_sessions(repo, ha
                                       'step': receipt['step'], 'attempt': receipt['attempt']}
         assert child['project_id'] == store.load_meta(outcome.flow.flow_session)['project_id']
     assert SessionStore().list_sessions() == []
+
+
+def _edits_unless_read_only(tmp_path, fake_acp_confinement):
+    """Both the plain and the confined shim reach for an edit unless told read-only (#762)."""
+    from tests.test_runtime_cli import _install_shim
+
+    shim = tmp_path / "bin" / "fake-acp-shim"
+    shim.write_text(shim.read_text().replace("--profile artifacts",
+                                             "--profile edits-unless-read-only"))
+    confined = _install_shim(tmp_path / "confined-bin", profile="edits-unless-read-only",
+                             approval_kind="execute")
+    fake_acp_confinement("fakea", "fakeb", command=str(confined))
+
+
+def test_plan_only_completes_with_an_agent_that_edits_unless_told_read_only(
+        repo, harnesses, tmp_path, monkeypatch, capsys, fake_acp_confinement):
+    from tests.test_runtime_cli import _hard_deadline
+
+    _edits_unless_read_only(tmp_path, fake_acp_confinement)
+    with _hard_deadline(60):
+        code, out = _main(monkeypatch, capsys, "flow", "run", "plan-only", "-t",
+                          "Fix the failing test in a.txt", "--workspace", str(repo))
+
+    assert code == 0, out
+    assert "[garuda] scout: done" in out and "[garuda] plan: done" in out
+    assert (repo / "a.txt").read_text() == "a\n"
+
+
+def test_a_denied_edit_that_ends_a_read_only_step_says_the_agent_tried_to_edit(
+        repo, harnesses, tmp_path, monkeypatch, capsys, fake_acp_confinement):
+    """Without the instruction the agent edits; the stop code is unchanged, the cause clearer."""
+    from tests.test_runtime_cli import _hard_deadline
+
+    _edits_unless_read_only(tmp_path, fake_acp_confinement)
+    monkeypatch.setattr(engine, "read_only_instruction", lambda outputs: "")
+    with _hard_deadline(60):
+        code, out = _main(monkeypatch, capsys, "flow", "run", "plan-only", "-t",
+                          "Fix the failing test in a.txt", "--workspace", str(repo))
+
+    assert code == 3, out
+    assert "flow.step_failed: step scout did not complete: agent ended the turn cancelled " \
+           "after Garuda denied: Edit files" in out
+    assert "(the agent attempted to change files in a read-only step)" in out
+    assert (repo / "a.txt").read_text() == "a\n"

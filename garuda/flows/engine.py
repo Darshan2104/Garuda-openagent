@@ -83,10 +83,43 @@ def _stop_record(stop: FlowStopped, **extra) -> dict:
             **({"cause": stop.cause} if stop.cause else {})}
 
 
-def _failed(what: str, outcome: StepResult, cause: dict | None) -> str:
-    """``<what> did not complete`` and, when known, why (the launcher's own reason first)."""
+def _failed(what: str, outcome: StepResult, cause: dict | None, *,
+            no_edits: bool = False) -> str:
+    """``<what> did not complete`` and, when known, why (the launcher's own reason first).
+
+    A read-only step whose turn ended after Garuda denied a file change says
+    so: the agent tried to edit in a step that may not (#762).
+    """
     reason = outcome.error or (cause or {}).get("detail")
-    return f"{what} did not complete" + (f": {reason}" if reason else "")
+    text = f"{what} did not complete" + (f": {reason}" if reason else "")
+    if no_edits and reason and "after Garuda denied" in reason and any(
+            f"kind={kind};" in reason for kind in ("edit", "delete", "move")):
+        text += " (the agent attempted to change files in a read-only step)"
+    return text
+
+
+#: What a read-only step does, by the output it declares (#762).
+READ_ONLY_JOBS = {
+    "notes": "inspect the workspace and write notes on what the task involves",
+    "plan": "inspect the workspace and write a plan for how the task should be done",
+    "review": "review the work described in the flow inputs",
+}
+
+
+def read_only_instruction(outputs: list[str]) -> str:
+    """The preamble a ``no-edits`` or ``readonly`` step's prompt carries (#762).
+
+    Guidance only: the step's confinement and no-edits check still enforce it.
+    """
+    jobs = [READ_ONLY_JOBS[kind] for kind in outputs if kind in READ_ONLY_JOBS]
+    job = "; ".join(jobs) or "inspect, plan or review as your role requires"
+    produce = (", ".join(outputs) + " artifact" + ("s" if len(outputs) > 1 else "")
+               if outputs else "answer")
+    return (f"[garuda] This step is read-only. Your job in this step is to {job}, "
+            "without editing files. You may read files and run read-only commands; "
+            "do not edit, create, delete or move files, and do not apply patches or "
+            "run commands that change the workspace. Another step makes the changes. "
+            f"Produce only your {produce}.")
 
 
 @dataclass
@@ -665,14 +698,28 @@ class FlowRunner:
                 raise FlowStopped(exc.code, str(exc), step=step["id"]) from exc
         return resolved
 
-    def _prompt(self, step: dict, role: str, inputs) -> str:
+    def _read_only(self, step: dict, role: str) -> bool:
+        """A ``no-edits`` step or a ``readonly`` role: one that must not change files."""
+        spec = self.resolved.config.get("roles", {}).get(role, {})
+        return self._no_edits(step, role) or spec.get("permissions") == "readonly"
+
+    def _prompt(self, step: dict, role: str, inputs, *, read_only: bool | None = None) -> str:
         from html import escape
 
         if self.launch_kind == "run":
             # The CLI run receives exactly this task; so does its owned child.
             return self.task
-        parts = [self.task, "",
-                 f"[garuda] You are the {role} step `{step['id']}` of flow `{self.name}`."]
+        if read_only is None:
+            read_only = self._read_only(step, role)
+        if read_only:
+            # The raw task ("Fix ...") would invite an edit the step may not
+            # make; a denied edit can end the agent's turn and fail the flow (#762).
+            parts = ["[garuda] The overall task is:", self.task, "",
+                     f"[garuda] You are the {role} step `{step['id']}` of flow `{self.name}`.",
+                     read_only_instruction(step.get("outputs", []))]
+        else:
+            parts = [self.task, "",
+                     f"[garuda] You are the {role} step `{step['id']}` of flow `{self.name}`."]
         for ref, content in inputs:
             parts += ["", f'<flow-input type="{ref.type}" from="{escape(ref.producer_step)}">',
                       "\n".join("| " + line for line in escape(content).splitlines()),
@@ -1153,7 +1200,7 @@ class FlowRunner:
                                      "step": step["id"], "attempt": attempt, "at": _now()})
         started = (_stamp(), time.monotonic())
         source_guard, snapshot_guard = NoEditsGuard(self.workspace), NoEditsGuard(target)
-        prompt = self._prompt(step, "reviewer", inputs)
+        prompt = self._prompt(step, "reviewer", inputs, read_only=True)
 
         async def one(role):
             return role, await self.launcher(StepLaunch(
@@ -1191,7 +1238,8 @@ class FlowRunner:
                       "role_plan": plans[role].record() if plans[role] is not None else None}
             if stop is None and not outcome.success:
                 cause = await _settled_sync(self._step_cause, outcome)
-                stop = FlowStopped("flow.step_failed", _failed(f"reviewer {role}", outcome, cause),
+                stop = FlowStopped("flow.step_failed",
+                                   _failed(f"reviewer {role}", outcome, cause, no_edits=True),
                                    step=step["id"], cause=cause)
             produced = art.extract(outcome.output) if stop is None else {}
             for kind in step.get("outputs", []):
@@ -1625,7 +1673,8 @@ class FlowRunner:
             # unchecked launches alike; the stop code is unchanged (#749).
             cause = await _settled_sync(self._step_cause, outcome)
             stop = FlowStopped("flow.quota_wait" if outcome.quota_wait else "flow.step_failed",
-                               _failed(f"step {step['id']}", outcome, cause),
+                               _failed(f"step {step['id']}", outcome, cause,
+                                       no_edits=self._read_only(step, role)),
                                step=step["id"], cause=cause)
         if stop is None:
             produced = art.extract(outcome.output)
