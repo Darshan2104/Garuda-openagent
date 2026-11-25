@@ -556,6 +556,16 @@ async def test_owned_role_uncertainty_quarantines_the_original_owner_and_capacit
                 os.close(supervisor)
         else:
             (workspace / "release").touch()
+        if fault == "result-channel-loss":
+            # Only the result was lost; the subreaper's ECHILD receipt still
+            # proves the tree closed, so this is a failed step that releases
+            # its slot, not a quarantine (#723).
+            result = await asyncio.wait_for(task, 15)
+            assert not result.success and "without a result" in result.error
+            assert result.closure["process"]["cleanup"] == {"backend": "linux-subreaper", "echild": True}
+            assert not parent._quarantined
+            CapacityStore().release(CapacityStore().reserve("native", "real-competitor", 1))
+            return
         with pytest.raises(CleanupUncertain):
             await asyncio.wait_for(task, 15)
         assert parent._quarantined
