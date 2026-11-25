@@ -85,7 +85,10 @@ Click a problem to see the fix.
     - `harness.limit_reached: You've hit your usage limit ...` means an
       external harness (for example Codex) refused the turn at its plan
       limit. Wait for the reset time in the message, or use another harness
-      in the role's `fallback:` chain.
+      in the role's `fallback:` chain. A host error such as `Disk quota
+      exceeded (os error 122)` is not typed as a limit: it stays a plain
+      `agent error`, so free disk space instead. Error text an agent sends
+      back is redacted for secret patterns before Garuda stores or shows it.
 
 ## Permissions and modes
 
