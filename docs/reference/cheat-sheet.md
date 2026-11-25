@@ -122,6 +122,8 @@ garuda run --role coder -t "Add input validation to the signup form"
 garuda flow run plan-only -t "Plan how to add pagination"
 garuda flow run plan-build-review -t "Add a --version flag"
 garuda flow show FLOW_ID
+garuda flow show FLOW_ID --json
+garuda flow export FLOW_ID --out trace.jsonl
 garuda flow resume FLOW_ID
 ```
 

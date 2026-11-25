@@ -203,12 +203,54 @@ Three flows ship with Garuda:
 ```bash
 garuda flow run plan-build-review -t "Add a --version flag"
 garuda flow show FLOW_ID        # steps, attempts, receipts, outputs
+garuda flow show FLOW_ID --json # the whole trajectory as one JSON object
+garuda flow export FLOW_ID --out trace.jsonl
 ```
 
-`flow show` and `flow resume` take the flow ID printed at the end of
-`flow run`, a unique prefix of it, its name or `latest` (the newest flow in
-this project). For a stopped flow, `flow show` prints the stop code, the step
+`flow show`, `flow export` and `flow resume` take the flow ID printed at the
+end of `flow run`, a unique prefix of it, its name or `latest` (the newest flow
+in this project). For a stopped flow, `flow show` prints the stop code, the step
 and the message.
+
+#### Study a flow run
+
+Every step attempt's receipt records `started_at` (when its intent was
+journaled), `finished_at` (when its receipt was built) and `duration_ms`, next
+to what ran: the role's harness, exact model, effort, permissions, agent digest
+and any start-time fallback decision. `flow show` prints the harness, model and
+duration on each attempt's line, and `sessions show FLOW_ID --json` reports them
+on each attempt as `runtime`, `model`, `effort`, `fallback`, `started_at`,
+`finished_at` and `duration_ms`. Receipts written before this change report
+`null` for the timings.
+
+`flow show FLOW_ID --json` prints the trajectory: the flow's state, stop,
+review rounds and edges, its journal, and every attempt in the order it
+launched (a review loop alternates steps), each with its role identity, timings,
+input and output artifact digests, and its step session's outcome, error code,
+approval counts, offered ACP options and usage. Usage keeps Garuda's metered
+ledger total (`metered`) and the harness's own report (`reported`) apart; they
+are never added. `flow export FLOW_ID --out FILE` writes the same as JSONL
+(owner-only, `-` for standard output): one `flow` record, the `journal` records,
+then each `attempt` followed by its step session's persisted ACP `event`
+records, and a closing `summary` (attempt count, total duration, review rounds,
+the reported cost).
+
+```json
+{"record": "flow", "flow_session": "…", "name": "pb", "state": "completed", "review": null, …}
+{"record": "journal", "event": "intent", "step": "plan", "attempt": 1, "at": "…"}
+{"record": "attempt", "step": "plan", "attempt": 1, "role": "planner", "runtime": "codex",
+ "model": "gpt-5.6-luna", "started_at": "…", "finished_at": "…", "duration_ms": 48210,
+ "outputs": [{"type": "plan", "digest": "…"}], "session": {"status": "completed",
+ "usage": {"metered": null, "reported": {"cost_usd": 0.042, …}}, "events": {"count": 37, …}}}
+{"record": "event", "step": "plan", "attempt": 1, "session_id": "…", "event": {"kind": "tool_call", …}}
+{"record": "summary", "attempts": 2, "duration_ms": 95112, "review_rounds": null, …}
+```
+
+The events are exactly what the step session persisted at your
+[`observability.trace_detail`](configuration.md) level; the export
+adds nothing to them. A native step's transcript (messages and tool output) is
+never exported; it contributes its record and usage only. Free text a session
+recorded (task, error detail) is redacted again on the way out.
 
 After a checked CLI flow stops at a settled step failure, a role refusal
 before the prompt (for example `role.start_failed` from a logged-out harness or
