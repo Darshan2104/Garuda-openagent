@@ -29,6 +29,17 @@ Click a problem to see the fix.
     unless another check fails. Invalid global settings prevent harness probes;
     configured hooks are never executed by this settings check.
 
+??? question "`harness.logged_out` when I run a role or `--runtime`"
+
+    The harness's own login check (for Codex, `codex login status`) says you
+    are logged out, so Garuda refuses the run before it starts (exit 2) and
+    never runs it natively instead. Log in with the harness's CLI as the
+    message says (for Codex, `codex login`), then run again. A role with a
+    `fallback:` list moves to the next entry instead, and refuses with
+    `harness.no_candidate` only when no entry can start. A `--bg` run is
+    refused when you queue it; if the harness logs out while the run waits,
+    `garuda sessions show` reads `refused` with `harness.logged_out`.
+
 ??? question "`garuda: command not found`"
 
     Activate the virtual environment you installed into

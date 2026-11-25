@@ -18,6 +18,44 @@ after the worker asked to retain ownership is still `CleanupUncertain`, so
 genuinely unproved cleanup still quarantines. Unchecked in-process flows are
 unchanged.
 
+## 2026-11-25 — A run on a logged-out harness refuses with `harness.logged_out` (#739, #668)
+
+Since discovery reads a logged-out Codex as `unauthenticated` (#715),
+initial selection refused an explicitly named runtime (`--runtime`, a role's
+harness, `defaults.role`) with an untyped `SelectionError`, which reached the
+user as a traceback (rc 1), and a `--bg` session ended `failed` with no
+recorded error. Selection now raises `HarnessLoggedOut` (a `SelectionError`
+subclass) for a named candidate whose auth is `unauthenticated` or
+`expired`, and `role_execution.run_task` turns it into
+`RoleRefused("harness.logged_out", ...)`: "role <r> runs on <h>, which is not
+logged in." (or "runtime <h> is not logged in.") plus the manifest's login
+instructions, exit 2, before any session or runtime exists. It never falls
+back to native or `routing.fallback_runtime`; a role's own `fallback:` chain
+is still walked first by `_apply_role`, unchanged. `garuda run --bg` runs the
+same documented login check, fresh, at admission and refuses there; only the
+documented logged-out answer refuses, an unknown or failed check does not. A
+worker whose harness logged out after admission, or that meets any other
+`RoleRefused`, settles its session `refused` with `error_code`,
+`background_refusal` and `refusal_reason` (a session another path already
+settled keeps its outcome). Any other `SelectionError` reaching
+`run_task_guarded` is reported as `runtime.selection_refused` (exit 2)
+instead of a traceback. Flow steps and dashboard starts launch through the
+owned role path, which already refused with `role.start_failed`.
+
+## 2026-11-25 — Sessions record what they ran as (#726)
+
+Every session records its `workspace_kind` (an ACP run `local`, at session
+start; a native run its kind). An ACP run records, right after the agent
+starts and before any option is applied, its `agent_segment` (definition name
+and digest, runtime, the adapter's reported name and version) and
+`agent_digest`, and `acp_session.session_request`: the `session/new` or
+`session/load` method, `cwd`, and MCP server names and count only; a server's
+command, arguments and environment are never recorded. `sessions show` adds
+`workspace_kind`, `adapter`, `acp_mode` and `initial_selection`. A start taken
+from a role's own fallback chain is recorded in `initial_selection` as
+`source: fallback` with `fallback_from` naming the primary harness, instead of
+`explicit`. No trace level or default changes.
+
 ## 2026-11-25 — A killed role worker with a proved cleanup receipt releases its holdings (#723)
 
 When an owned role worker (a flow step, or a dashboard `run-with-role` /
