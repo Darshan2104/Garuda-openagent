@@ -134,9 +134,9 @@ def _study_detail(event: RuntimeEvent, statuses: dict) -> dict[str, Any]:
                                   "parent_tool_call_id")
         if parent is not None:
             added["parent_tool_call_id"] = parent
-        if event.kind is RuntimeEventKind.TOOL_RESULT and payload.get("status") == "failed" \
-                and (bounded := _bounded(payload.get("content"), _ERROR_BOUND)) is not None:
-            added["error"] = bounded
+        # A failed tool result's ``content`` is the tool's output (stdout/stderr,
+        # file text), not a separate error message: never kept (#727). Its
+        # ``status: failed`` already says it failed.
     elif event.kind is RuntimeEventKind.ERROR:
         if (bounded := _bounded(payload.get("message"), _ERROR_BOUND)) is not None:
             added["message"] = bounded
@@ -150,7 +150,8 @@ def evidence_payload(event: RuntimeEvent, detail: str = "metadata") -> dict[str,
     metadata are intentionally absent.  This is evidence selection, not a raw
     transcript export. ``detail="commands"`` (opt-in, #691) adds tool titles,
     commands, named paths, the parent call inside a harness subagent, and the
-    message of a failed tool call or error event — each redacted and bounded.
+    message of an error event — each redacted and bounded. Tool output, even a
+    failed call's, is never kept.
     """
     selected = _evidence(event)
     if detail == "commands":
