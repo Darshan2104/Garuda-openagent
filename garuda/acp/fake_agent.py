@@ -20,7 +20,9 @@ reason outside v1), cancel-stop (the agent ends the turn `cancelled`), strict-v1
 numeric version 1, absolute `cwd` plus `mcpServers`, content-block prompts),
 probe-writes (tries the workspace, .git, a SENTINEL= path and scratch;
 reports), artifacts (answers each requested artifact block; reviews approve),
-write-anyway (asks to edit, is refused, writes anyway), config-options (session/new offers model and effort options that
+write-anyway (asks to edit, is refused, writes anyway), edits-unless-read-only (like
+`artifacts`, but unless the prompt says the step is read-only it first asks to edit
+and, refused, ends the turn `cancelled` like Codex), config-options (session/new offers model and effort options that
 session/set_config_option changes; replies name them; it starts in `--initial-mode`, and
 its `fake-mini` model offers no effort and takes `everything` as `edit`, like a model
 without a harness's broadest mode), capabilities-<name>.
@@ -77,6 +79,7 @@ BASE_PROFILES = frozenset(
         "config-options",
         "write-anyway",
         "artifacts",
+        "edits-unless-read-only",
         "probe-writes",
     }
 )
@@ -327,6 +330,8 @@ def _options(config: dict) -> list[dict]:
 
 #: The `config-options` modes, narrowest first (tests map them to Garuda permissions).
 MODES = ("ask", "edit", "judge", "everything")
+#: The phrase `edits-unless-read-only` takes as "do not edit" (Garuda's read-only step prompt).
+READ_ONLY_PHRASE = "This step is read-only."
 #: What each fake mode stands for, for tests that run the fake under a runtime id
 #: Garuda's own tables do not classify (``tests/conftest.py``).
 MODE_AUTHORITY = {"ask": "readonly", "edit": "smart", "judge": "auto", "everything": "yolo"}
@@ -372,6 +377,26 @@ def _request_permission(
         "status": "completed" if allowed else "failed",
         "content": [{"type": "content", "content": _text(result)}],
     })
+    return allowed
+
+
+def _edit_allowed(session_id: str) -> bool:
+    """Ask to edit a file (an ACP `edit` tool call); whether Garuda allowed it."""
+    tool_call = {"toolCallId": "c-edit", "title": "Edit files", "kind": "edit"}
+    _update(session_id, {"sessionUpdate": "tool_call", **tool_call, "status": "pending"})
+    _send({"jsonrpc": "2.0", "id": "perm-e", "method": "session/request_permission",
+           "params": {"sessionId": session_id, "toolCall": tool_call,
+                      "options": [{"optionId": "allow", "name": "Allow", "kind": "allow_once"},
+                                  {"optionId": "reject", "name": "Reject",
+                                   "kind": "reject_once"}]}})
+    while True:
+        reply = _read_frame()
+        if reply.get("id") == "perm-e" and "method" not in reply:
+            break
+    outcome = (reply.get("result") or {}).get("outcome") or {}
+    allowed = outcome.get("outcome") == "selected" and outcome.get("optionId") == "allow"
+    _update(session_id, {"sessionUpdate": "tool_call_update", "toolCallId": "c-edit",
+                         "status": "completed" if allowed else "failed"})
     return allowed
 
 
@@ -444,7 +469,12 @@ def _handle_prompt(
                              "content": _text(f"done: wrote={','.join(wrote)} "
                                               f"refused={','.join(refused)}")})
         _result(call_id, {"stopReason": "end_turn"})
-    elif profile == "artifacts":
+    elif profile == "edits-unless-read-only" and READ_ONLY_PHRASE not in text and not _edit_allowed(
+            session_id):
+        # Told nothing about read-only, it reaches for a patch; refused, it
+        # ends the turn like Codex does (#762).
+        _result(call_id, {"stopReason": "cancelled"})
+    elif profile in ("artifacts", "edits-unless-read-only"):
         # Answers every artifact block the prompt asks for; a review approves.
         blocks = []
         kinds = []
