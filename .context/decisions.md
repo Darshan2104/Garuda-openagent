@@ -1,5 +1,16 @@
 # Durable decisions
 
+## 2026-11-26 — A flow session's `updated_at` follows its state (#763)
+
+Every flow engine meta publication (`FlowRunner._publish`: running, verification,
+stop, interruption, completion, and step-session `flow_step` marks) stamps
+`updated_at`, and each step receipt advances the flow session's `updated_at`
+(best effort: the receipt is already durable). `begin` set it once and the store
+merge only defaults it, so a completed flow reported `updated_at == created_at`.
+`created_at` never moves. `sessions list` and `latest` order by `updated_at`, so
+a flow now ranks by its last activity, as a run session already did via
+`finish()`.
+
 ## 2026-11-25 — An ACP usage snapshot belongs to its Garuda session (#758)
 
 A snapshot row's key digest now includes the Garuda `session_id` besides the
