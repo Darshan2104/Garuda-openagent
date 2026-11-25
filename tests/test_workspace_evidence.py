@@ -344,6 +344,7 @@ async def test_host_backed_kinds_get_full_attribution_through_run_agent_task(
     result, events = await _run(repo, store, f"host-{kind}", workspace_kind=kind)
     assert result.success
     meta = store.load_meta(f"host-{kind}")
+    assert meta["workspace_kind"] == kind  # recorded, not left null (#726)
     assert meta["baseline_state"] == "captured"
     assert "agent-made.txt" in meta["delta_changed"]
     assert "agent-made.txt" in _verdicts(events)[-1]["workspace_delta"]["changed"]
