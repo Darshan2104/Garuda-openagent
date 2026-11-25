@@ -364,7 +364,11 @@ harness and model as the role it reviews, as one of that role's fallbacks, or
 as a role it may consult. The decision is recorded with the identities that
 *actually* ran (after any fallback, and the roles really consulted) beside the
 configured ones. A reviewer that shares one stops the flow with
-`flow.review_not_independent`.
+`flow.review_not_independent`. When the *configured* reviewer already
+collides, the flow (or its resume) refuses before its first step, so no step
+runs or spends quota on a flow that could never pass review; a collision that
+only appears after a fallback or a consult still stops the review when it
+happens.
 
 ### Interruptions
 
