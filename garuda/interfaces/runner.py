@@ -419,6 +419,7 @@ async def run_agent_task(
         from garuda.observability import usage as usage_ledger
 
         usage_ledger.attach(events, store)
+        update_session_meta(store, events.session_id, {"workspace_kind": workspace_kind})
         agent_digest = getattr(config, "agent_digest", None)
         if agent_digest:
             update_session_meta(store, events.session_id, {"agent_digest": agent_digest})
