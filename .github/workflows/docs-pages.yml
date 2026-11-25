@@ -21,11 +21,8 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  deploy:
-    name: build and deploy
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+  build:
+    name: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -55,6 +52,17 @@ jobs:
         with:
           path: site
 
+  # Deploy runs as a separate job: deploy-pages lists the run's artifacts via
+  # the API, and querying it in the same job a fraction of a second after the
+  # upload finalizes intermittently returns 0 artifacts (eventual consistency).
+  deploy:
+    name: deploy
+    needs: build
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v5
