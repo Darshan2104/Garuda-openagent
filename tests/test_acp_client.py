@@ -452,3 +452,52 @@ def test_other_codex_error_infos_stay_generic():
     error = remote_error(-32603, "Internal error",
                          {"message": "Rate limited", "codexErrorInfo": "rateLimitExceeded"})
     assert not isinstance(error, AcpUsageLimitError)
+
+
+# --- remote error data is redacted (#729); a disk quota is not a usage limit (#728) ---
+
+
+_DATA_TOKEN = "sk-live-" + "abcdef1234567890"
+
+
+@pytest.mark.parametrize("data", [
+    {"message": f"upstream 401: Authorization: Bearer {_DATA_TOKEN} rejected"},
+    {"details": f"request echo api_key={_DATA_TOKEN}"},
+    f"upstream said Bearer {_DATA_TOKEN}",
+    {"message": f"usage limit reached for key {_DATA_TOKEN}"},
+])
+def test_a_remote_error_never_carries_a_secret_from_its_data(data):
+    from garuda.acp.protocol import remote_error
+    from garuda.core.failure_evidence import classify_exception
+
+    error = remote_error(-32603, f"Internal error ({_DATA_TOKEN})", data)
+    assert _DATA_TOKEN not in str(error) and _DATA_TOKEN not in error.detail
+    assert "[REDACTED:" in str(error)
+    assert _DATA_TOKEN not in repr(classify_exception(error))
+
+
+@pytest.mark.parametrize("data", [
+    {"message": "failed to write session file: Disk quota exceeded (os error 122)"},
+    "Disk quota exceeded",
+    {"details": "write rollout: quota exceeded (os error 122)"},
+    {"message": "EDQUOT: quota exceeded"},
+])
+def test_an_os_disk_quota_error_is_not_a_usage_limit(data):
+    from garuda.acp.protocol import AcpUsageLimitError, remote_error
+    from garuda.core.failure_evidence import classify_exception
+
+    error = remote_error(-32603, "Internal error", data)
+    assert not isinstance(error, AcpUsageLimitError)
+    assert "harness.limit_reached" not in str(error)
+    assert classify_exception(error)[0] != "harness.limit_reached"
+
+
+def test_the_structured_usage_limit_signal_still_wins_over_disk_text():
+    from garuda.acp.protocol import AcpUsageLimitError, remote_error
+
+    error = remote_error(-32603, "Internal error", {
+        "message": "Disk quota exceeded", "codexErrorInfo": "usageLimitExceeded"})
+    assert isinstance(error, AcpUsageLimitError)
+    assert isinstance(remote_error(-32603, "Internal error",
+                                   {"message": "API quota exceeded for this plan"}),
+                      AcpUsageLimitError)

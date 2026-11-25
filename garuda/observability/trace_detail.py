@@ -4,9 +4,10 @@
 
 ``metadata``  (default) ids, kinds, statuses and lifecycle only, as always.
 ``commands``  also each tool call's title, command and named paths, the parent
-              call inside a harness subagent, and the message of a failed tool
-              call or error event: redacted and bounded per field
-              (:func:`garuda.acp.normalize.evidence_payload`).
+              call inside a harness subagent, and the message of an error
+              event: redacted and bounded per field
+              (:func:`garuda.acp.normalize.evidence_payload`). Never tool
+              output, not even a failed call's.
 
 Only the user's own settings decide it, never a project file. An unreadable or
 unknown value keeps ``metadata``: persisting less is the safe side.

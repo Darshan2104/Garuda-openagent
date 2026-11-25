@@ -31,20 +31,29 @@ def refuse_unservable_tools(runtime: str, extra_tools, load_project_tools) -> No
 
 
 class OptionsUnsupportedOnRuntime(ValueError):
-    """A model or agent choice cannot reach the selected runtime (#712).
+    """An SDK option cannot reach the selected runtime (#712, #724).
 
-    An ACP harness runs with its own configured model and agent, so a
-    ``model=``, ``reasoning_model=``, ``collection_model=``, ``model_binding=``
-    or non-default ``agent=`` would be ignored while the run still reported
-    success. The run is refused before the harness starts.
+    An ACP harness runs with its own configured model, agent and MCP servers,
+    and Garuda's run modes are native loop postures, so a ``model=``,
+    ``reasoning_model=``, ``collection_model=``, ``model_binding=``,
+    non-default ``agent=``, ``mcp_config=`` or non-default ``mode=`` would be
+    ignored while the run still reported success. The run is refused before
+    the harness starts.
     """
 
     code = "sdk.options_unsupported"
 
 
+#: Run modes that ask for nothing beyond the default posture. Every other mode
+#: (``eval``, ``rigorous``: native completion gates; ``readonly``: a narrower
+#: permission than the SDK harness path enforces) is refused on ACP (#724).
+DEFAULT_RUN_MODES = (None, "standard", "interactive")
+
+
 def refuse_unservable_options(runtime: str, *, model, agent, reasoning_model=None,
-                              collection_model=None, model_binding=None) -> None:
-    """Refuse native model or agent options on a runtime that ignores them."""
+                              collection_model=None, model_binding=None, mode=None,
+                              mcp_config=None) -> None:
+    """Refuse native-only options on a runtime that would ignore them."""
     if runtime == "native":
         return
     from garuda.model.protocol import DEFAULT_MODEL
@@ -64,3 +73,18 @@ def refuse_unservable_options(runtime: str, *, model, agent, reasoning_model=Non
             f"{', '.join(ignored)} cannot be applied on the ACP runtime {runtime!r}: the harness "
             "runs its own configured model and agent. Configure the harness instead, use "
             "runtime='native', or leave them unset")
+    if mcp_config is not None:
+        raise OptionsUnsupportedOnRuntime(
+            f"mcp_config cannot be applied on the ACP runtime {runtime!r}: Garuda does not "
+            "forward MCP servers to an external harness. Configure them in the harness, use "
+            "runtime='native', or leave it unset")
+    if mode not in DEFAULT_RUN_MODES:
+        # The SDK harness path always secures the default permission's mode
+        # (#700/#709); a readonly request would silently run wider, and
+        # eval/rigorous gates exist only in the native loop. Refuse rather
+        # than widen or drop it.
+        raise OptionsUnsupportedOnRuntime(
+            f"mode={mode!r} cannot be applied on the ACP runtime {runtime!r}: the SDK runs the "
+            "harness in the mode its default permission allows, and run-mode gates exist only "
+            "in the native loop. Use runtime='native', the CLI (`garuda run --runtime "
+            f"{runtime} --mode readonly` runs a confined readonly harness), or leave it unset")

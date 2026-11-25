@@ -99,7 +99,11 @@ possible leftover process:
 
 Stopping a run with ++ctrl+c++, `garuda sessions cancel` or the dashboard's
 Stop lets Garuda clean up and release both. A hard kill, or closing the
-terminal under a running `garuda chat`, may not. How ownership, borrowing and
+terminal under a running `garuda chat`, may not. A hard kill of only a flow
+step's or dashboard run's role worker is different: its supervisor still
+proves that the worker's whole process tree has stopped, so the step fails and
+the run releases both itself. If the worker had asked to keep them, or that
+proof is missing, they stay quarantined. How ownership, borrowing and
 quarantine work is described for contributors in
 [Architecture → conventions](../ARCHITECTURE.md#conventions).
 
