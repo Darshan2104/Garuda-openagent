@@ -702,6 +702,17 @@ def build_parser():
     flow_show.add_argument("flow_session", help="Flow session id, unique prefix, name or 'latest'")
     flow_show.add_argument("--workspace", default=".",
                            help="Project whose sessions a prefix, name or 'latest' is looked up in")
+    flow_show.add_argument(
+        "--json", action="store_true",
+        help="Print the whole trajectory: each attempt's role, runtime, model, timings, "
+             "outputs, session outcome and usage")
+    flow_export = flow_sub.add_parser(
+        "export", help="Write a flow's trajectory, with each step session's events, as JSONL")
+    flow_export.add_argument("flow_session", help="Flow session id, unique prefix, name or 'latest'")
+    flow_export.add_argument("--out", required=True, metavar="FILE",
+                             help="JSONL file to write (mode 0600), or '-' for standard output")
+    flow_export.add_argument("--workspace", default=".",
+                             help="Project whose sessions a prefix, name or 'latest' is looked up in")
     flow_resume = flow_sub.add_parser(
         "resume", help="Continue a flow after its last receipted step (never replays one)"
     )
@@ -1573,6 +1584,34 @@ def _resolve_flow_session(store, ref: str, workspace: str, *,
     return session_id, meta
 
 
+def _export_flow(store, flow_session: str, meta: dict, out: str) -> int:
+    """`garuda flow export`: the trajectory as JSONL, written owner-only (#726)."""
+    import json
+    import sys
+
+    from garuda.flows.trajectory import export_records
+
+    try:
+        lines = [json.dumps(record, sort_keys=True, default=str)
+                 for record in export_records(store, flow_session, meta)]
+    except (OSError, ValueError) as exc:
+        print(f"Error: flow.export_unavailable: {exc}", file=sys.stderr)
+        return 2
+    text = "".join(line + "\n" for line in lines)
+    if out == "-":
+        sys.stdout.write(text)
+        return 0
+    try:
+        fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+    except OSError as exc:
+        print(f"Error: flow.export_failed: {exc}", file=sys.stderr)
+        return 2
+    print(f"[garuda] wrote {len(lines)} records for flow {flow_session} to {out}")
+    return 0
+
+
 def _flow_stop_line(stop) -> str | None:
     """The recorded stop reason of a stopped flow (`meta.json` `flow_stop`), on one line."""
     if not isinstance(stop, dict) or not stop.get("code"):
@@ -1602,13 +1641,20 @@ def run_flow(args) -> int:
     from garuda.workspace.lease import LeaseError
 
     store = SessionStore()
-    if args.flow_command in ("show", "resume"):
+    if args.flow_command in ("show", "resume", "export"):
         flow_session, meta = _resolve_flow_session(
             store, args.flow_session, getattr(args, "workspace", "."),
             protected_meta=args.flow_command == "resume")
         if flow_session is None:
             return 2
         args.flow_session = flow_session
+    if args.flow_command == "export":
+        return _export_flow(store, args.flow_session, meta, args.out)
+    if args.flow_command == "show" and getattr(args, "json", False):
+        from garuda.flows.trajectory import trajectory
+
+        print(json.dumps(trajectory(store, args.flow_session, meta), indent=2, default=str))
+        return 0
     if args.flow_command == "show":
         flow_meta = meta.get("flow")
         name = flow_meta.get("name") if isinstance(flow_meta, dict) else None
@@ -1623,8 +1669,12 @@ def run_flow(args) -> int:
                 print(f"  next quota check (epoch): {recovery['next_check']}")
         for receipt in engine.receipts(store, args.flow_session):
             outs = ", ".join(o["type"] for o in receipt.get("outputs", [])) or "-"
+            plan = receipt.get("role_plan") if isinstance(receipt.get("role_plan"), dict) else {}
+            ran = "/".join(str(v) for v in (plan.get("runtime_id"), plan.get("model_id")) if v)
+            took = receipt.get("duration_ms")
+            extra = (f"; {ran}" if ran else "") + (f"; {took / 1000:.1f}s" if type(took) is int else "")
             print(f"  {receipt['step']} (attempt {receipt['attempt']}): {receipt['status']}; "
-                  f"outputs: {outs}")
+                  f"outputs: {outs}{extra}")
         return 0
     try:
         service = FlowExecutionService(store)

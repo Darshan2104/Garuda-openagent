@@ -30,6 +30,7 @@ import asyncio
 import datetime as _dt
 import json
 import os
+import time
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
@@ -102,6 +103,23 @@ class FlowResult:
 
 def _now() -> str:
     return _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
+
+
+def _stamp() -> str:
+    return _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="milliseconds")
+
+
+def _timing(started: tuple[str, float] | None) -> dict:
+    """When a step attempt launched and settled (#726).
+
+    ``started_at`` is when its intent was journaled, ``finished_at`` when its
+    receipt was built, and ``duration_ms`` the monotonic time between them.
+    An attempt refused before launch has no start and no duration.
+    """
+    if started is None:
+        return {"started_at": None, "finished_at": _stamp(), "duration_ms": None}
+    return {"started_at": started[0], "finished_at": _stamp(),
+            "duration_ms": max(0, round((time.monotonic() - started[1]) * 1000))}
 
 
 def _fsync_dir(path: Path) -> None:
@@ -1009,6 +1027,7 @@ class FlowRunner:
                     raise FlowStopped(exc.code, f"{role}: {exc.message}", step=step["id"]) from exc
         _append(self.dir / JOURNAL, {"event": "intent", "index": step["index"],
                                      "step": step["id"], "attempt": attempt, "at": _now()})
+        started = (_stamp(), time.monotonic())
         source_guard, snapshot_guard = NoEditsGuard(self.workspace), NoEditsGuard(target)
         prompt = self._prompt(step, "reviewer", inputs)
 
@@ -1044,7 +1063,8 @@ class FlowRunner:
                                step=step["id"])
         for role, outcome in outcomes:
             member = {"role": role, "session_id": outcome.session_id,
-                      "success": outcome.success, "outputs": []}
+                      "success": outcome.success, "outputs": [],
+                      "role_plan": plans[role].record() if plans[role] is not None else None}
             if stop is None and not outcome.success:
                 stop = FlowStopped("flow.step_failed", f"reviewer {role} did not complete",
                                    step=step["id"])
@@ -1067,6 +1087,7 @@ class FlowRunner:
         receipt["status"] = "done" if stop is None else "stopped"
         if stop is not None:
             receipt["stop"] = {"code": stop.code, "message": str(stop)}
+        receipt.update(_timing(started))
         _write_once(self.dir / "receipts" / _receipt_name(step["id"], attempt), receipt)
         _append(self.dir / JOURNAL, {"event": "receipt", "step": step["id"],
                                      "attempt": attempt, "at": _now()})
@@ -1360,6 +1381,7 @@ class FlowRunner:
                        "not restoration of hidden model state.")
         guard = await _settled_sync(NoEditsGuard, self.workspace) if no_edits else None
         capability = lease.delegate(f"{self.flow_session}:{step['id']}:{attempt}")
+        started: tuple[str, float] | None = None
         try:
             if role in self.prepared_fallbacks:
                 from garuda.agents.fallback_probe import select_owned
@@ -1386,6 +1408,7 @@ class FlowRunner:
             await _settled_sync(_append, self.dir / JOURNAL,
                                 {"event": "intent", "index": step["index"],
                                  "step": step["id"], "attempt": attempt, "at": _now()})
+            started = (_stamp(), time.monotonic())
             outcome = await self.launcher(StepLaunch(
                 flow_session=self.flow_session, step_id=step["id"], role=role, role_plan=plan,
                 prompt=prompt, workspace=self.workspace, capability=capability,
@@ -1415,6 +1438,7 @@ class FlowRunner:
                 "workspace_version_before": version_before, "recorded_at": _now(),
                 "role_plan": plan.record() if plan is not None else None,
                 "stop": {"code": stop.code, "message": str(stop)},
+                **_timing(started),
             })
             raise stop from exc
         except RoleRefused as exc:
@@ -1494,6 +1518,7 @@ class FlowRunner:
             receipt["stop"] = {"code": stop.code, "message": str(stop)}
             receipt["outputs"] = [] if receipt.get("no_edits", {}).get("result") == "changed" \
                 else receipt["outputs"]
+        receipt.update(_timing(started))
         await self._record_step_receipt(receipt)
         if stop is not None:
             raise stop

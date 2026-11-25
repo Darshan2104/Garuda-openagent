@@ -330,6 +330,11 @@ and authorized `build-review` checks under its retained lease. A protected
 completed flow is read back only if its commit, terminal receipts, and parent
 publication agree. Unfinished phases are classified read-only; resume refuses
 uncertain or incomplete publication without replay.
+`flows/trajectory.py` is the read-only study view of a flow run behind
+`flow show --json` and `flow export`: the journal, every attempt in launch
+order with its receipt identity and timings, and each step session's record,
+usage (metered and adapter-reported, never summed) and persisted ACP events.
+It never exports a native transcript.
 `evidence.py` is the shared session boundary over it. `host_backed()` is the one
 workspace-kind classification: `local`, `sandbox`, `tmux`, and `docker` (host
 workspace bind-mounted) are attributable; `remote` is recorded

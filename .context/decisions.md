@@ -1,5 +1,22 @@
 # Durable decisions
 
+## 2026-11-25 — Flow trajectories: step timings, attempt identity and export (#726)
+
+Every flow step receipt now records `started_at` (when its intent was
+journaled), `finished_at` (when the receipt was built) and `duration_ms`
+(monotonic); an attempt refused before launch has `started_at` and
+`duration_ms` `null`. Parallel members keep their own role plan. The read
+model's attempts report what ran from the receipt's role plan (`runtime`,
+`runtime_kind`, `model`, `effort`, `permissions`, agent digest, adapter version,
+fallback decision) instead of omitting it. `garuda flow show FLOW --json`
+prints one trajectory object, and `garuda flow export FLOW --out FILE` writes
+it as owner-only JSONL (`flow`, `journal`, each `attempt` then its session's
+`event` records, `summary`), ordered by the journal's intents. Both are
+read-only. The export copies only what the step session already persisted at
+the user's `observability.trace_detail` level and never a native transcript;
+recorded free text is redacted again on the way out. Garuda's metered usage
+and the adapter-reported figure stay separate fields and are never summed.
+
 ## 2026-11-25 — Unparseable MCP configs, workspace start failures and failed ACP turns fail closed (#673, #671, #674)
 
 An MCP config file that does not parse, or whose server container has the

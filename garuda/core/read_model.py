@@ -78,6 +78,35 @@ def _ref(ref: dict) -> dict:
                                     "attempt", "size")}
 
 
+def _ran(role_plan) -> dict:
+    """The runtime identity a step attempt's receipt recorded for what ran (#726).
+
+    ``runtime`` is the harness that ran it, ``fallback`` the start-time decision
+    when the role has a chain. Receipts written before the plan was recorded, and
+    attempts refused before a role resolved, report ``None``.
+    """
+    plan = role_plan if isinstance(role_plan, dict) else {}
+    agent = plan.get("agent") if isinstance(plan.get("agent"), dict) else {}
+    adapter = plan.get("adapter") if isinstance(plan.get("adapter"), dict) else {}
+    fallback = plan.get("fallback") if isinstance(plan.get("fallback"), dict) else None
+    return {
+        "runtime": plan.get("runtime_id"), "runtime_kind": plan.get("kind"),
+        "model": plan.get("model_id"), "effort": plan.get("effort"),
+        "permissions": plan.get("permissions"), "harness_mode": plan.get("harness_mode"),
+        "role_digest": plan.get("digest"),
+        "agent": {"name": agent.get("name"), "digest": agent.get("digest")} if agent else None,
+        "adapter_version": adapter.get("version"),
+        "fallback": {k: fallback.get(k) for k in ("primary", "taken", "skipped")}
+        if fallback else None,
+    }
+
+
+def _timings(receipt: dict) -> dict:
+    duration = receipt.get("duration_ms")
+    return {"started_at": receipt.get("started_at"), "finished_at": receipt.get("finished_at"),
+            "duration_ms": duration if type(duration) is int else None}
+
+
 def _attempt(receipt: dict) -> dict:
     """One step attempt as a receipt recorded it. ``delta`` is whether the workspace
     version moved during the step; ``None`` when a version was not recorded."""
@@ -85,13 +114,16 @@ def _attempt(receipt: dict) -> dict:
     no_edits = receipt.get("no_edits") or {}
     return {
         "attempt": receipt.get("attempt"), "role": receipt.get("role"),
+        **_ran(receipt.get("role_plan")),
         "session_id": receipt.get("session_id") or receipt.get("session"),
         "status": receipt.get("status") or receipt.get("state"),
         "success": receipt.get("success"),
         "recorded_at": receipt.get("recorded_at"),
+        **_timings(receipt),
         "inputs": [_ref(r) for r in receipt.get("inputs") or []],
         "outputs": [_ref(r) for r in receipt.get("outputs") or []],
-        "members": [{k: m.get(k) for k in ("role", "session_id", "success")}
+        "members": [{**{k: m.get(k) for k in ("role", "session_id", "success")},
+                     **_ran(m.get("role_plan"))}
                     for m in receipt.get("members") or []],
         "delta": None if before is None or after is None else before != after,
         "no_edits": no_edits.get("result"),
