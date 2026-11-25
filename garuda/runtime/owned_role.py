@@ -184,10 +184,10 @@ async def execute_owned_role(request: OwnedRoleRequest, capability, *, approval=
         result = control.result
         if terminal.outcome != "exited" or (result is not None and result["session_id"] != request.session_id):
             raise CleanupUncertain("owned role closed without a complete bound result")
-        if result is None and control.quarantine_requested:
+        if control.quarantine_requested and (result is None or "refusal" in result):
             # The worker itself asked to retain ownership (its own cleanup was
-            # unproved) before it died; that request stands.
-            raise CleanupUncertain("owned role requested quarantine and closed without a result")
+            # unproved) before it died or refused; that request stands.
+            raise CleanupUncertain("owned role requested quarantine and closed without a complete result")
         # A worker that died without reporting (killed, crashed, lost its
         # channel) is a failed step, not unproved cleanup: process.wait()
         # returned only on the subreaper's ECHILD receipt, so nothing in its
@@ -217,6 +217,12 @@ async def execute_owned_role(request: OwnedRoleRequest, capability, *, approval=
         if result is None:
             return StepResult(request.session_id, False, "", closure=closure,
                               error=f"the role worker exited without a result (exit code {terminal.exit_code})")
+        if "refusal" in result:
+            # A typed role refusal (#738): a failed step with proved closure, whose
+            # stop keeps the role's own code instead of a result-less exit.
+            refusal = result["refusal"]
+            return StepResult(result["session_id"], False, "", closure=closure,
+                              error=f"{refusal['code']}: {refusal['message']}", refusal=dict(refusal))
         return StepResult(result["session_id"], bool(result["success"] and terminal.exit_code == 0),
                           result["output"], closure=closure)
     except asyncio.CancelledError:

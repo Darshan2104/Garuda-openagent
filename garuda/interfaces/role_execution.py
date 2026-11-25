@@ -39,13 +39,43 @@ def acp_limit_refusal(args, runtime_id: str) -> str | None:
     return None
 
 
-def _settle_background_refusal(args, refusal: str) -> None:
+def logged_out_message(catalog, runtime_id: str, role: str | None) -> str:
+    """Why a run on a logged-out harness refuses, with its own login hint (#739)."""
+    manifest = next((m for m in catalog.registry.manifests if m.runtime_id == runtime_id), None)
+    hint = (manifest.login.instructions if manifest is not None else "") or \
+        "log in with the harness's own CLI"
+    subject = (f"role {role} runs on {runtime_id}, which is" if role
+               else f"runtime {runtime_id} is")
+    return f"{subject} not logged in. {hint}"
+
+
+def login_refusal(catalog, runtime_id: str, role: str | None) -> str | None:
+    """``harness.logged_out: ...`` when a fresh login check says so, else None.
+
+    Background admission runs it so a queued run on a logged-out harness is
+    refused at once, with the foreground's message (#739). Only the documented
+    logged-out answer refuses; an unknown, failed or timed-out check does not.
+    """
+    from garuda.acp.login_probe import LoginState, probe_login
+
+    manifest = next((m for m in catalog.registry.manifests if m.runtime_id == runtime_id), None)
+    if manifest is None or manifest.auth_probe is None:
+        return None
+    if probe_login(manifest, cache_ttl=0) is not LoginState.LOGGED_OUT:
+        return None
+    return f"harness.logged_out: {logged_out_message(catalog, runtime_id, role)}"
+
+
+def _settle_background_refusal(args, refusal: str,
+                               code: str = "run.acp_limit_unenforceable") -> None:
     """Settle a background worker's session as refused, with the reason (#724).
 
     Admission refuses what it can resolve; a runtime chosen only when the
-    worker runs (an enabled classifier) is refused here, and the queued
-    session reads ``refused`` with the foreground's message instead of a
-    bare ``failed``.
+    worker runs (an enabled classifier), or a harness logged out after
+    admission (#739), is refused here, and the queued session reads
+    ``refused`` with the foreground's message instead of a bare ``failed``.
+    A session another path already settled keeps its outcome; only a missing
+    ``error_code`` is added.
     """
     session_id = getattr(args, "_session_id", None)
     store = getattr(args, "_store", None)
@@ -53,11 +83,18 @@ def _settle_background_refusal(args, refusal: str) -> None:
         return
     from garuda.runtime import session_state
 
-    state = session_state.validate(
-        {**session_state.interrupted(), "work": "stopped", "outcome": "refused"})
-    store.update_meta(session_id, {"status": "refused", "state": state,
-                                   "background_refusal": "run.acp_limit_unenforceable",
-                                   "refusal_reason": refusal})
+    meta = store.load_meta(session_id) or {}
+    update = {}
+    if not meta.get("error_code"):
+        update.update({"error_code": code, "error_detail": refusal[:500]})
+    work = (meta.get("state") or {}).get("work") if isinstance(meta.get("state"), dict) else None
+    if work in session_state.ACTIVE_WORK:
+        state = session_state.validate(
+            {**session_state.interrupted(), "work": "stopped", "outcome": "refused"})
+        update.update({"status": "refused", "state": state,
+                       "background_refusal": code, "refusal_reason": refusal})
+    if update:
+        store.update_meta(session_id, update)
 
 
 async def run_task(args) -> int:
@@ -180,26 +217,39 @@ async def run_task(args) -> int:
     # executor it chooses. When no explicit, profile, or rule source selects,
     # an enabled trusted classifier may recommend one revalidated candidate
     # (#80); it runs before any executor exists and cannot start a runtime.
-    initial_plan = await select_initial_runtime_async(
-        workspace=args.workspace,
-        task=task,
-        catalog=runtime_catalog,
-        agent=args.agent,
-        mode=getattr(args, "mode", None) or "",
-        explicit_runtime=(
-            routed_runtime if routed_runtime != "native" or explicit_native else None
-        ),
-        workspace_kind=getattr(args, "workspace_kind", "local"),
-        permission_ceiling=getattr(args, "permission_mode", None) or "smart",
-        available_runtime_ids=(
-            # An explicit, registry-authorized runtime must select its ACP
-            # executor even when discovery has already reported a missing
-            # binary. The ACP launch path then emits its established loud
-            # installation error; it must never silently become native.
-            frozenset({routed_runtime}) if routed_runtime != "native" else None
-        ),
-        cost_estimator=estimate_cost,
-    )
+    from garuda.runtime.selection import HarnessLoggedOut
+
+    try:
+        initial_plan = await select_initial_runtime_async(
+            workspace=args.workspace,
+            task=task,
+            catalog=runtime_catalog,
+            agent=args.agent,
+            mode=getattr(args, "mode", None) or "",
+            explicit_runtime=(
+                routed_runtime if routed_runtime != "native" or explicit_native else None
+            ),
+            workspace_kind=getattr(args, "workspace_kind", "local"),
+            permission_ceiling=getattr(args, "permission_mode", None) or "smart",
+            available_runtime_ids=(
+                # An explicit, registry-authorized runtime must select its ACP
+                # executor even when discovery has already reported a missing
+                # binary. The ACP launch path then emits its established loud
+                # installation error; it must never silently become native.
+                frozenset({routed_runtime}) if routed_runtime != "native" else None
+            ),
+            cost_estimator=estimate_cost,
+        )
+    except HarnessLoggedOut as exc:
+        # A run bound to a logged-out harness refuses, typed, before any
+        # session or runtime exists; it never falls back to native (#668,
+        # #739). A role's own `fallback:` chain was already walked by
+        # `_apply_role`, so reaching here means no candidate could be taken.
+        from garuda.runtime.roles import RoleRefused
+
+        raise RoleRefused("harness.logged_out", logged_out_message(
+            runtime_catalog, exc.runtime_id,
+            role_plan.role if role_plan is not None else None)) from exc
     args.runtime = initial_plan.selection.selected
     from garuda.runtime.selection.explain import with_role_fallback
 
