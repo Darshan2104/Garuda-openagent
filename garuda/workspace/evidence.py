@@ -428,9 +428,15 @@ def finish_session_evidence(
 def record_startup_refusal(store, session_id: str) -> None:
     """Best-effort: mark a session that refused to start as failed.
 
-    The original refusal stays authoritative when the store is not writable.
+    The four-field state is settled too (process exited, work done, outcome
+    failed): the legacy ``status`` alone left it ``live``/``working``, which
+    reads as *crashed* once the process is gone (#671). The original refusal
+    stays authoritative when the store is not writable.
     """
+    from garuda.runtime.session_state import interrupted
+
     try:
-        store.update_meta(session_id, {"status": "failed", "startup_refused": True})
+        store.update_meta(session_id, {"status": "failed", "startup_refused": True,
+                                       "state": interrupted()})
     except Exception:
         logger.warning("Failed to record startup refusal for %s", session_id, exc_info=True)

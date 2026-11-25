@@ -84,6 +84,13 @@ def normalize_transport(raw: str | None, has_url: bool = False) -> str:
     return _TRANSPORT_ALIASES.get(key, key)
 
 
+def _malformed(detail: str):
+    """Refuse a config whose structure hides which servers (and which required
+    ones) it declares. Callers report it as ``mcp.config_invalid``."""
+    record_source_error()
+    raise ConfigError(f"MCP config is malformed: {detail}; fix the file (no servers were loaded)")
+
+
 def _parse_mcp_servers(data: Any) -> list[dict]:
     """Normalize every supported top-level shape into a list of raw server dicts.
 
@@ -93,24 +100,25 @@ def _parse_mcp_servers(data: Any) -> list[dict]:
       - ``mcp_servers``: dict keyed by name (snake_case alias)
       - any of the above nested under a top-level ``mcp`` key (some editors)
 
-    For the dict forms the mapping key becomes the entry's ``name``. Malformed
-    entries (non-mappings) are logged and skipped rather than raising. Returns
-    ``[]`` for empty / ``None`` / non-mapping roots.
+    For the dict forms the mapping key becomes the entry's ``name``. A single
+    entry that is not a mapping cannot carry ``required`` and is logged and
+    skipped. A malformed *container* (a non-mapping root, a ``servers`` that is
+    not a list, an ``mcpServers`` that is not a mapping) can hide any number of
+    servers, required ones included, so it raises :class:`ConfigError` instead
+    of loading nothing (#673). Returns ``[]`` for an empty / ``None`` root.
     """
     if not data:
         return []
     if not isinstance(data, dict):
-        logger.warning(
-            "MCP config root is not a mapping (got %s); no servers loaded",
-            type(data).__name__,
-        )
-        return []
+        _malformed(f"the top level is a {type(data).__name__}, not a mapping")
 
     # Some editors nest the whole block under a top-level "mcp" key. Flatten it,
     # letting any sibling top-level keys win on conflict.
     if isinstance(data.get("mcp"), dict):
         inner = data["mcp"]
         data = {**inner, **{k: v for k, v in data.items() if k != "mcp"}}
+    elif data.get("mcp") is not None:
+        _malformed(f"'mcp' is a {type(data['mcp']).__name__}, not a mapping")
 
     entries: list[dict] = []
 
@@ -122,15 +130,14 @@ def _parse_mcp_servers(data: Any) -> list[dict]:
             else:
                 logger.warning("Skipping malformed MCP server entry (not a mapping): %r", entry)
     elif servers is not None:
-        logger.warning("MCP config 'servers' is not a list; ignoring it")
+        _malformed(f"'servers' is a {type(servers).__name__}, not a list")
 
     for key in ("mcpServers", "mcp_servers"):
         block = data.get(key)
         if block is None:
             continue
         if not isinstance(block, dict):
-            logger.warning("MCP config '%s' is not a mapping; ignoring it", key)
-            continue
+            _malformed(f"{key!r} is a {type(block).__name__}, not a mapping")
         for name, entry in block.items():
             if not isinstance(entry, dict):
                 logger.warning("Skipping malformed MCP server %r (not a mapping)", name)
@@ -310,7 +317,9 @@ def load_mcp_config(path: str | Path) -> list[McpServerConfig]:
     Branches on the file extension: ``.json`` is parsed as JSON, ``.yaml`` /
     ``.yml`` (and anything else) as YAML. Empty files, or files that parse to
     ``None``, are treated as "no servers" rather than crashing. A file that
-    fails to parse is logged and yields no servers.
+    fails to parse raises :class:`ConfigError`: Garuda cannot tell whether it
+    declares a required server, so the run refuses instead of going on without
+    one (#673).
     """
     p = Path(path)
     text = read_source_text(p)
@@ -321,16 +330,15 @@ def load_mcp_config(path: str | Path) -> list[McpServerConfig]:
             data = yaml.safe_load(text)
     except Exception as exc:
         record_source_error()
-        logger.warning(
-            "Failed to parse MCP config %s (%s: %s); no servers loaded",
-            p,
-            type(exc).__name__,
-            exc,
-        )
-        return []
-    return _dict_to_server_configs(
-        _parse_mcp_servers(data), trusted_source=_is_global_mcp_config(p)
-    )
+        raise ConfigError(
+            f"Failed to parse MCP config {p} ({type(exc).__name__}: {str(exc)[:200]}); "
+            "fix the file (no servers were loaded)"
+        ) from exc
+    try:
+        servers = _parse_mcp_servers(data)
+    except ConfigError as exc:
+        raise ConfigError(f"{p}: {exc}") from exc
+    return _dict_to_server_configs(servers, trusted_source=_is_global_mcp_config(p))
 
 
 def _global_mcp_dir() -> Path:

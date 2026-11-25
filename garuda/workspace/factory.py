@@ -14,6 +14,34 @@ from garuda.workspace.tmux import TmuxEnvironment
 WORKSPACE_KINDS = ("local", "sandbox", "tmux", "docker", "remote")
 
 
+class WorkspaceStartError(RuntimeError):
+    """A container or tmux workspace could not be started (#671).
+
+    A ``RuntimeError`` like the start failures it wraps, so existing handlers
+    still catch it; its message is one bounded line led by the stable code
+    ``workspace.start_failed``, so entry points can print it as a refusal
+    instead of a traceback.
+    """
+
+    code = "workspace.start_failed"
+
+    def __init__(self, kind: str, target: str, detail: str):
+        lines = [line.strip() for line in detail.splitlines() if line.strip()]
+        # Docker appends a usage hint that says nothing about the failure.
+        lines = [line for line in lines if not line.startswith("Run 'docker")]
+        reason = " ".join(lines)[:400] or "no detail reported"
+        super().__init__(f"{self.code}: {kind} workspace could not start {target}: {reason}")
+        self.kind = kind
+
+
+async def _start(workspace, kind: str, target: str):
+    try:
+        await workspace.start()
+    except Exception as exc:
+        raise WorkspaceStartError(kind, target, str(exc) or type(exc).__name__) from exc
+    return workspace
+
+
 def create_environment(
     kind: str,
     workspace_root: str | Path,
@@ -49,17 +77,14 @@ async def create_workspace(
     if kind == "sandbox":
         return SandboxEnvironment(workspace_root=root, policy=sandbox_policy)
     if kind == "tmux":
-        env = TmuxEnvironment(workspace_root=root)
-        await env.start()
-        return env
+        return await _start(TmuxEnvironment(workspace_root=root), kind, "a tmux session")
     if kind == "docker":
         workspace = DockerWorkspace(workspace_root=root, image=docker_image, limits=docker_limits)
-        await workspace.start()
-        return workspace
+        return await _start(workspace, kind, f"image {docker_image!r}")
     if kind == "remote":
         workspace = RemoteWorkspace(
             workspace_root=root, image=docker_image, docker_host=docker_host, limits=docker_limits
         )
-        await workspace.start()
-        return workspace
+        host = docker_host or "the DOCKER_HOST daemon"
+        return await _start(workspace, kind, f"image {docker_image!r} on {host}")
     raise ValueError(f"Unknown workspace kind: {kind}")

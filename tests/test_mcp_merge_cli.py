@@ -130,3 +130,25 @@ async def test_mcp_list_reports_a_malformed_required_entry_as_a_typed_error(
         assert err.startswith("Error: mcp.config_invalid: Required MCP server 'r' "
                               "has malformed configuration")
         assert "env must be a mapping" in err
+
+
+async def test_mcp_list_and_trust_refuse_an_unparseable_config(tmp_path: Path, monkeypatch, capsys):
+    """#673: `mcp list` no longer reports "No servers defined" (rc 0) for a broken file."""
+    from garuda.interfaces.main import run_mcp_trust
+
+    monkeypatch.delenv("GARUDA_MCP_MERGE", raising=False)
+    gdir = tmp_path / "global"
+    gdir.mkdir()
+    (gdir / "mcp.json").write_text(
+        '{"mcpServers": {"broken": {"command": "/nonexistent", "required": true},}}')
+    monkeypatch.setenv("GARUDA_GLOBAL_SETTINGS", str(gdir / "settings.yaml"))
+    for no_connect in (True, False):
+        args = SimpleNamespace(workspace=str(tmp_path / "empty"), mcp_config=None,
+                               no_connect=no_connect)
+        assert await run_mcp_list(args) == 2
+        captured = capsys.readouterr()
+        assert captured.err.startswith("Error: mcp.config_invalid: Failed to parse MCP config")
+        assert "No servers defined" not in captured.out
+    args = SimpleNamespace(workspace=str(tmp_path / "empty"), mcp_config=None, names=[])
+    assert run_mcp_trust(args, ask=lambda _prompt: "n") == 2
+    assert capsys.readouterr().err.startswith("Error: mcp.config_invalid:")

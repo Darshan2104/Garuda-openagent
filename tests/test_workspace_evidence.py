@@ -229,6 +229,47 @@ async def test_startup_refusal_never_calls_the_model_and_closes_the_runtime(
     assert store.load_meta("refused-write")["status"] == "failed"
 
 
+async def test_container_start_failure_is_typed_and_settles_the_session_failed(
+    repo, tmp_path, monkeypatch
+):
+    """#671: a docker workspace that cannot start refuses with a typed error,
+    the session is settled failed (not left live/working, read as crashed),
+    and the workspace lease is released for the next run."""
+    from garuda.runtime.session_state import effective_state, is_crashed, summary_label
+    from garuda.workspace.docker import DockerWorkspace
+    from garuda.workspace.factory import WorkspaceStartError
+
+    async def no_image(self):
+        raise RuntimeError(
+            "Unable to find image 'garuda-no-such-image:zzz' locally\n"
+            "docker: Error response from daemon: pull access denied\n\n"
+            "Run 'docker run --help' for more information"
+        )
+
+    monkeypatch.setattr(DockerWorkspace, "start", no_image)
+    store = SessionStore(tmp_path / "sessions")
+    model = CountingModel(_touch_then_complete())
+    with pytest.raises(WorkspaceStartError) as caught:
+        await _run(repo, store, "docker-refused", model=model, workspace_kind="docker")
+    message = str(caught.value)
+    assert message.startswith("workspace.start_failed: docker workspace could not start image")
+    assert "pull access denied" in message and "\n" not in message
+    assert "docker run --help" not in message
+    assert isinstance(caught.value, RuntimeError)
+    assert model.calls == 0
+    meta = store.load_meta("docker-refused")
+    assert meta["status"] == "failed"
+    assert meta["startup_refused"] is True
+    state = effective_state(meta, liveness=lambda _owner: False)
+    assert not is_crashed(state)
+    assert summary_label(state) == "failed"
+
+    monkeypatch.undo()
+    monkeypatch.setenv("GARUDA_LEASES_DIR", str(tmp_path / "leases"))
+    result, _ = await _run(repo, store, "after-refusal")
+    assert result.success
+
+
 async def test_verifier_attaches_the_recorded_delta_as_evidence(repo, tmp_path):
     (repo / "b.txt").write_text("preexisting dirt\n")
     store = SessionStore(tmp_path / "sessions")

@@ -1105,6 +1105,11 @@ class AcpRuntime:
             ) from audit_error
 
     async def close(self) -> None:
+        if self._state is LifecycleState.DISCOVERED:
+            # Never started (a refusal before `start`): there is no session to
+            # record a lifecycle event against, only a child to make sure of.
+            await self._close_process()
+            return
         if self._state in (LifecycleState.CLOSED, LifecycleState.FAILED):
             await self._close_process()
             self._persist_metrics()

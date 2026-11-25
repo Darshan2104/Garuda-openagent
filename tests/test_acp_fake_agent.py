@@ -436,3 +436,12 @@ async def test_crashed_owner_leaves_an_orphan_that_recovery_reaps(tmp_path):
                 os.killpg(pid, 9)
             except OSError:
                 pass
+
+
+async def test_closing_a_never_started_adapter_is_quiet():
+    """#671: a run refused before `start` (a missing workspace) closes its ACP
+    runtime without the `RuntimeEvent requires a session_id` traceback."""
+    runtime = _adapter("success")
+    await runtime.close()
+    await runtime.close()
+    assert await runtime.poll_events(0) == ([], 0)

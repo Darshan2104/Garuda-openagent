@@ -7,7 +7,10 @@ reuses the echo-server fixture pattern from ``tests/test_mcp_v2.py``.
 
 import json
 
+import pytest
+
 from garuda.mcp.config import load_mcp_config, resolve_mcp_config
+from garuda.model.config import ConfigError
 
 
 def _fields(configs):
@@ -194,11 +197,34 @@ def test_malformed_entry_missing_name_skipped(tmp_path, caplog):
     assert any("no name" in record.message for record in caplog.records)
 
 
-def test_invalid_json_no_crash(tmp_path, caplog):
+@pytest.mark.parametrize("name,text", [
+    # #673: one trailing comma used to drop the file, required server and all.
+    ("mcp.json", '{"mcpServers": {"broken": {"command": "/nonexistent", "required": true},}}'),
+    ("mcp.json", "{not valid json"),
+    ("mcp.yaml", "servers:\n  - name: broken\n    required: true\n   command: [x\n"),
+])
+def test_unparseable_config_refuses_instead_of_loading_nothing(tmp_path, name, text):
+    config = tmp_path / name
+    config.write_text(text, encoding="utf-8")
+    with pytest.raises(ConfigError, match="Failed to parse MCP config") as refused:
+        load_mcp_config(config)
+    assert str(config) in str(refused.value)
+    assert len(str(refused.value)) < 600
+
+
+@pytest.mark.parametrize("data,detail", [
+    ({"mcpServers": [{"name": "x", "command": "y", "required": True}]}, "'mcpServers' is a list"),
+    ({"mcp_servers": "x"}, "'mcp_servers' is a str"),
+    ({"servers": {"x": {"command": "y", "required": True}}}, "'servers' is a dict"),
+    ({"mcp": [{"name": "x"}]}, "'mcp' is a list"),
+    ([{"name": "x", "command": "y", "required": True}], "top level is a list"),
+])
+def test_malformed_container_refuses_instead_of_loading_nothing(tmp_path, data, detail):
+    """A container of the wrong shape can hide required servers: refuse (#673)."""
     config = tmp_path / "mcp.json"
-    config.write_text("{not valid json", encoding="utf-8")
-    with caplog.at_level("WARNING", logger="garuda.mcp.config"):
-        assert load_mcp_config(config) == []
+    config.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(ConfigError, match=detail):
+        load_mcp_config(config)
 
 
 def test_non_dict_server_entry_skipped(tmp_path):

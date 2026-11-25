@@ -271,6 +271,14 @@ class AcpServer:
             if not prompt_task.done():
                 await runtime.cancel(reason="prompt delivery stopped")
                 await asyncio.gather(prompt_task, return_exceptions=True)
+        failure = _turn_failure(runtime)
+        if failure is not None:
+            # A turn that ended unsuccessfully (a failed model call, an
+            # exhausted budget) is not a successful `end_turn` (#674): the
+            # client sees an error update and the prompt call fails.
+            await self._notify(params["sessionId"], {"sessionUpdate": "error", "message": failure})
+            await self._fail(call_id, f"turn failed: {failure}")
+            return
         await self._reply(call_id, {"stopReason": "end_turn"})
 
     async def _deliver_event(self, runtime: Any, event: Any) -> None:
@@ -339,6 +347,22 @@ class AcpServer:
 
     def session_count(self) -> int:
         return len(self._sessions)
+
+
+_FAILURE_MESSAGE_LIMIT = 500
+
+
+def _turn_failure(runtime: Any) -> str | None:
+    """The bounded reason the runtime's last turn failed, or None if it did not.
+
+    Only a result that explicitly says ``success`` is false counts; a runtime
+    without a result (the echo driver, an external ACP agent) keeps `end_turn`.
+    """
+    result = getattr(runtime, "last_result", None)
+    if result is None or getattr(result, "success", True) is not False:
+        return None
+    message = " ".join(str(getattr(result, "final_message", "") or "").split())
+    return message[:_FAILURE_MESSAGE_LIMIT] or "the turn did not complete successfully"
 
 
 def _to_update(event: Any) -> dict[str, Any] | None:
