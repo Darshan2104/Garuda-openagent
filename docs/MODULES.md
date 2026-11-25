@@ -669,8 +669,10 @@ the parent's initial admission validation, but their digests are excluded from
 role closure and acceptance authority so requested edits can reach review and
 verification. Configuration also listed as a task source remains immutable.
 Changed configuration with a complete bound result and proved descendant closure
-refuses the result but releases the closed child's capacity. Missing result or
-cleanup evidence still retains quarantine.
+refuses the result but releases the closed child's capacity. A worker that
+dies without a result after the subreaper's ECHILD receipt is a failed step
+(`flow.step_failed`) whose lease and slot are released (#723); missing cleanup
+evidence, or a worker that asked to retain ownership, still retains quarantine.
 Source/ceiling and absent-input mutation tests exercise that refusal. Project configuration
 and trust-grant reads report their exact bytes to an active source capture;
 `freeze_resolved_checks` requires those identities for configured checks, and
