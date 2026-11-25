@@ -210,7 +210,11 @@ garuda flow export FLOW_ID --out trace.jsonl
 `flow show`, `flow export` and `flow resume` take the flow ID printed at the
 end of `flow run`, a unique prefix of it, its name or `latest` (the newest flow
 in this project). For a stopped flow, `flow show` prints the stop code, the step
-and the message.
+and the message. When a step failed (`flow.step_failed`), it also prints the
+step session's own cause (`cause: CODE: DETAIL`, e.g. the harness's
+`harness.limit_reached` error), redacted and bounded, for checked and unchecked
+flows alike; `flow show --json` and `flow export` report it as `stop.cause`
+(`code`, `detail`), and the step's receipt keeps it in its `stop`.
 
 #### Study a flow run
 

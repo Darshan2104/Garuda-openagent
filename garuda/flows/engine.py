@@ -60,12 +60,28 @@ def _settled_refusal(receipt: dict) -> bool:
 
 
 class FlowStopped(Exception):
-    def __init__(self, code: str, message: str, *, step: str | None = None):
+    def __init__(self, code: str, message: str, *, step: str | None = None,
+                 cause: dict | None = None):
         super().__init__(f"{code}: {message}")
         self.code = code
         #: Raised from a settled receipt of an owned worker's typed refusal (#738).
         self.settled_refusal = False
         self.step = step
+        #: Why a failed step's session stopped (#749): ``{"code", "detail"}``, redacted
+        #: and bounded, so the flow's stop says why without opening the step session.
+        self.cause = cause
+
+
+def _stop_record(stop: FlowStopped, **extra) -> dict:
+    """A receipt's ``stop``: its code, message and, for a failed step, its cause."""
+    return {"code": stop.code, "message": str(stop), **extra,
+            **({"cause": stop.cause} if stop.cause else {})}
+
+
+def _failed(what: str, outcome: StepResult, cause: dict | None) -> str:
+    """``<what> did not complete`` and, when known, why (the launcher's own reason first)."""
+    reason = outcome.error or (cause or {}).get("detail")
+    return f"{what} did not complete" + (f": {reason}" if reason else "")
 
 
 @dataclass
@@ -321,6 +337,33 @@ class FlowRunner:
         self._interrupted_acceptance_receipts = None
         self.quota_recovery = None
         self.quota_recovery_status = None
+
+    def _step_cause(self, outcome: StepResult) -> dict | None:
+        """Why a failed step stopped (#749): its session's recorded error code and detail.
+
+        Read from the step session (in-process and owned-worker launches both record
+        it there), else the launcher's own reason. Agent-supplied, so redacted and
+        bounded again here: the cause lands in the flow's stop and its receipt.
+        """
+        from garuda.context.redact import redact_text
+
+        meta: Any = {}
+        if outcome.session_id and self.store is not None:
+            try:
+                meta = self.store.load_meta(outcome.session_id)
+            except Exception:
+                meta = {}
+        if not isinstance(meta, dict):
+            meta = {}
+
+        def bounded(value, limit):
+            if not isinstance(value, str) or not value.strip():
+                return None
+            return redact_text(" ".join(value.split()))[0][:limit] or None
+
+        cause = {"code": bounded(meta.get("error_code"), 120),
+                 "detail": bounded(meta.get("error_detail") or outcome.error, 500)}
+        return cause if any(cause.values()) else None
 
     async def _publish(self, session_id: str, updates: dict, *, terminal: bool = False):
         return await _settled_sync(self.store.update_meta, session_id, updates,
@@ -974,7 +1017,8 @@ class FlowRunner:
                 } else "stopped",
                 "status": "failed", "state": finished(success=False),
                 **({"flow_resume_checkpoint": checkpoint} if checkpoint is not None else {}),
-                "flow_stop": {"code": failure.code, "step": failure.step, "message": str(failure)}})
+                "flow_stop": {"code": failure.code, "step": failure.step, "message": str(failure),
+                              **({"cause": failure.cause} if failure.cause else {})}})
             if refusal is not None:
                 raise refusal from refusal.__cause__
             if self.quota_recovery is not None:
@@ -1088,8 +1132,9 @@ class FlowRunner:
                       "success": outcome.success, "outputs": [],
                       "role_plan": plans[role].record() if plans[role] is not None else None}
             if stop is None and not outcome.success:
-                stop = FlowStopped("flow.step_failed", f"reviewer {role} did not complete",
-                                   step=step["id"])
+                cause = await _settled_sync(self._step_cause, outcome)
+                stop = FlowStopped("flow.step_failed", _failed(f"reviewer {role}", outcome, cause),
+                                   step=step["id"], cause=cause)
             produced = art.extract(outcome.output) if stop is None else {}
             for kind in step.get("outputs", []):
                 if stop is not None:
@@ -1108,7 +1153,7 @@ class FlowRunner:
         receipt["workspace_version_after"] = await self._version_for_flow()
         receipt["status"] = "done" if stop is None else "stopped"
         if stop is not None:
-            receipt["stop"] = {"code": stop.code, "message": str(stop)}
+            receipt["stop"] = _stop_record(stop)
         receipt.update(_timing(started))
         _write_once(self.dir / "receipts" / _receipt_name(step["id"], attempt), receipt)
         _append(self.dir / JOURNAL, {"event": "receipt", "step": step["id"],
@@ -1522,10 +1567,12 @@ class FlowRunner:
             stop = FlowStopped(outcome.refusal["code"], outcome.refusal["message"], step=step["id"])
             stop.settled_refusal = True
         if stop is None and not outcome.success:
+            # The step session's own cause is kept for checked (owned worker) and
+            # unchecked launches alike; the stop code is unchanged (#749).
+            cause = await _settled_sync(self._step_cause, outcome)
             stop = FlowStopped("flow.quota_wait" if outcome.quota_wait else "flow.step_failed",
-                               f"step {step['id']} did not complete"
-                               + (f": {outcome.error}" if outcome.error else ""),
-                               step=step["id"])
+                               _failed(f"step {step['id']}", outcome, cause),
+                               step=step["id"], cause=cause)
         if stop is None:
             produced = art.extract(outcome.output)
             for kind in step.get("outputs", []):
@@ -1543,8 +1590,7 @@ class FlowRunner:
                 receipt["outputs"].append(ref.to_dict())
         receipt["status"] = "done" if stop is None else "stopped"
         if stop is not None:
-            receipt["stop"] = {"code": stop.code, "message": str(stop),
-                               **({"refused": True} if stop.settled_refusal else {})}
+            receipt["stop"] = _stop_record(stop, **({"refused": True} if stop.settled_refusal else {}))
             receipt["outputs"] = [] if receipt.get("no_edits", {}).get("result") == "changed" \
                 else receipt["outputs"]
         receipt.update(_timing(started))

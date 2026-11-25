@@ -1,5 +1,19 @@
 # Durable decisions
 
+## 2026-11-25 — A failed step's cause stays on the flow's stop (#749)
+
+When a step fails (`flow.step_failed`, or `flow.quota_wait`), the engine reads
+the step session's recorded `error_code`/`error_detail` (falling back to the
+launcher's own reason) and keeps it, redacted again and bounded (code 120,
+detail 500 characters), as `cause: {code, detail}` on the `FlowStopped`, the
+step receipt's `stop`, and the flow's `flow_stop`. The message appends the
+reason for owned-worker (checked) launches too, which previously reported only
+`step X did not complete` because the worker's result carries no error.
+`flow show` prints the cause on its own line and the code once; `flow show
+--json` and `flow export` report `stop.cause` (`null` when unknown). Stop codes,
+resumability and the worker result protocol are unchanged; parallel reviewer
+members get the same cause.
+
 ## 2026-11-25 — Each ACP session records its study-trace level (#691)
 
 A persisting ACP runtime writes the `observability.trace_detail` level its
