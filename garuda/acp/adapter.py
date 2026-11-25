@@ -163,6 +163,8 @@ class AcpRuntime:
         self._effective_mode: dict[str, Any] | None = None
         #: Actions denied this turn, named when the agent then ends the turn cancelled.
         self._denied: list[str] = []
+        #: What the session request sent (#726): method, cwd and MCP server names only.
+        self._session_request: dict[str, Any] | None = None
 
     def attach_consult(self, host) -> None:
         """Offer the ``consult`` tool to this agent when its adapter identity is proved (G.3)."""
@@ -184,6 +186,21 @@ class AcpRuntime:
         except Exception:
             logger.warning("The consult tool was not offered", exc_info=False)
             return []
+
+    def _note_session_request(self, method: str, cwd: str, servers) -> None:
+        """Names only: an MCP server's command, arguments and environment are never kept."""
+        names = []
+        for server in list(servers or [])[:16]:
+            name = server.get("name") if isinstance(server, dict) else None
+            names.append(" ".join(name.split())[:128] if isinstance(name, str) else None)
+        self._session_request = {"method": method, "cwd": cwd,
+                                 "mcp_servers": names, "mcp_server_count": len(servers or [])}
+
+    @property
+    def agent_segment(self) -> dict[str, Any]:
+        """This run's agent segment as its events carry it: the definition's name and
+        digest and the adapter's reported identity (#726)."""
+        return {**self._agent_segment, "native_session_id": self._agent_session_id}
 
     async def _close_consult(self) -> None:
         if self._consult_host is not None:
@@ -234,6 +251,8 @@ class AcpRuntime:
             options.append({"id": name(option.get("id")), "category": name(option.get("category")),
                             "current": name(option.get("currentValue")), "values": values})
         record["config_options"] = options
+        if self._session_request is not None:
+            record["session_request"] = dict(self._session_request)
         modes = getattr(process, "session_modes", None)
         if isinstance(modes, dict):
             available = modes.get("availableModes")
@@ -482,6 +501,7 @@ class AcpRuntime:
             quota = handshake.get("quota")
             self._quota = dict(quota) if isinstance(quota, dict) else None
             servers = await self._consult_servers(handshake, process)
+            self._note_session_request("session/new", self._cwd or os.getcwd(), servers)
             self._agent_session_id = await process.session_new(
                 cwd=self._cwd, mcp_servers=servers or None)
             if self._store is None and self._prepared_recorder is None:
@@ -673,6 +693,7 @@ class AcpRuntime:
             with self._timed("negotiation"):
                 self._authority = negotiate(self._policy, AgentCapabilities.from_dict(caps))
             servers = await self._consult_servers(handshake, process)
+            self._note_session_request("session/load", self._cwd or os.getcwd(), servers)
             await process.session_load(native_session_id, self._cwd or os.getcwd(),
                                        servers or None)
             self._agent_session_id = native_session_id
