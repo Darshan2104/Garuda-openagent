@@ -58,6 +58,21 @@ class SelectionError(ValueError):
     """No runtime satisfies the request, or configuration is unusable."""
 
 
+class HarnessLoggedOut(SelectionError):
+    """A runtime named explicitly (or by a profile pin) reports it is logged out (#739).
+
+    A subclass, so existing ``SelectionError`` handlers keep working; entry
+    points turn it into the typed ``harness.logged_out`` refusal.
+    """
+
+    code = "harness.logged_out"
+
+    def __init__(self, message: str, *, runtime_id: str, auth: str):
+        super().__init__(message)
+        self.runtime_id = runtime_id
+        self.auth = auth
+
+
 def _norm(value: object) -> str:
     enum_value = getattr(value, "value", value)
     return str(enum_value or "")

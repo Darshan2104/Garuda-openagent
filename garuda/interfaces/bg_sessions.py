@@ -186,6 +186,25 @@ def _refuse_acp_limits(args, task: str, binding) -> None:
         raise BackgroundRefused(acp_limit_refusal(args, runtime_id))
 
 
+def _refuse_logged_out(args, binding) -> None:
+    """Refuse at admission a run on a harness whose login check says logged out.
+
+    The worker would refuse it with ``harness.logged_out`` (#739); refusing
+    here gives the foreground's message and exit status before any session,
+    queue entry or worker exists. Only the documented logged-out answer
+    refuses; the worker still settles a harness logged out after admission.
+    """
+    if not binding.acp:
+        return
+    from garuda.agents.setup import prepare_runtime_catalog
+    from garuda.interfaces.role_execution import login_refusal
+
+    refusal = login_refusal(prepare_runtime_catalog(args.workspace), binding.runtime_id,
+                            binding.role)
+    if refusal is not None:
+        raise BackgroundRefused(refusal)
+
+
 def launch(args: argparse.Namespace | None = None, *, store=None, queue=None, spawn=None,
            reserved_session=None, operation_binding=None, owned_request=None) -> str:
     """Create the session and its queue entry, start the worker, return the session id."""
@@ -224,6 +243,7 @@ def launch(args: argparse.Namespace | None = None, *, store=None, queue=None, sp
             raise BackgroundRefused(str(exc)) from exc
     binding = _runtime_binding(args)
     _refuse_acp_limits(args, task, binding)
+    _refuse_logged_out(args, binding)
     harness = binding.runtime_id
     store = store or SessionStore()
     queue = queue or QueueStore()
