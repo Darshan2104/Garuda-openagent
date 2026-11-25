@@ -1,5 +1,31 @@
 # Durable decisions
 
+## 2026-11-25 — Every ACP harness's reported mode is checked; unclassified modes need yolo (#732)
+
+The #700 mode check applied only to `claude` and `codex`; every other harness
+ran in its own mode unchecked. Now every ACP run has a required authority: the
+level of the mode Garuda selects, else the run's own permission. Before the
+first prompt the reported mode must need no more, on every harness, or the run
+refuses with `role.mode_unenforced`; so do a missing mode, an unknown mode and
+a harness with no mode table. OpenCode's modes are classified from a no-prompt
+handshake of opencode 2.3.2 and its source: `build` runs tools by the user's
+permission rules (by default without asking) and `plan` still runs shell by
+those rules, so both need `auto`, and a `smart` OpenCode run refuses. Cursor,
+Goose, oh-my-pi and Pi are not installed here and their modes are not
+documented in the repo, so they stay unclassified. A `runtimes:` entry with its
+own id is not classified by the `agentInfo` name it reports, which is the
+agent's claim and not proven anywhere; replacing the shipped manifest of the
+same id keeps the shipped table, and a trusted global entry may classify its
+own adapter's modes (`modes: {mode: permission}`, recorded as `classified_by:
+runtimes`). Garuda's own tables win over it, and a project cannot set it. Only `permissions: yolo`, the top of the scale,
+accepts an unclassified or missing mode (recorded with `authority: null`):
+nothing exceeds what the run asked for. `auto` does not, because an unknown mode
+may approve everything; Garuda's own default for yolo stays a non-bypass mode
+where it can select one. A confined readonly run accepts any mode on a harness
+with no readonly mode, as the read-only mount is the write boundary
+(`enforced_by: confinement`). `acp_mode.required` is now the authority, not a
+mode name.
+
 ## 2026-11-25 — Unparseable MCP configs, workspace start failures and failed ACP turns fail closed (#673, #671, #674)
 
 An MCP config file that does not parse, or whose server container has the

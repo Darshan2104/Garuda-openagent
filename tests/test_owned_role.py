@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from garuda.acp.fake_agent import MODE_AUTHORITY as FAKE_AGENT_MODES
 from garuda.agents import role_agent
 from garuda.core.sessions import SessionStore
 from garuda.flows.engine import StepLaunch
@@ -137,7 +138,7 @@ def install_acp(workspace, settings):
         "    return original(*args,**kwargs)\n"
         "fake_agent._handle_prompt=prompt\n"
         "raise SystemExit(fake_agent.main(['--profile','success']))\n")
-    settings.write_text(yaml.safe_dump({"runtimes": [{"runtime_id": "owned-acp", "kind": "acp",
+    settings.write_text(yaml.safe_dump({"runtimes": [{"runtime_id": "owned-acp", "kind": "acp", "modes": FAKE_AGENT_MODES,
                          "command": [sys.executable, str(fixture)], "version": "1"}],
                          "capacity": {"owned-acp": 1}}))
 
@@ -303,7 +304,7 @@ async def test_owned_acp_readonly_refuses_before_host_cli_can_write(case, permis
         f"import sys; sys.path.insert(0, {str(Path(__file__).resolve().parents[1])!r})\n"
         "from garuda.acp.fake_agent import main\n"
         "raise SystemExit(main(['--profile', 'write-anyway']))\n")
-    settings.write_text(yaml.safe_dump({"runtimes": [{"runtime_id": "owned-acp", "kind": "acp",
+    settings.write_text(yaml.safe_dump({"runtimes": [{"runtime_id": "owned-acp", "kind": "acp", "modes": FAKE_AGENT_MODES,
         "command": [sys.executable, str(shim)],
         "version": "1"}]}))
     role = RolePlan("reviewer", "owned-acp", "acp", permissions=permissions)
@@ -333,7 +334,7 @@ async def test_owned_readonly_acp_proves_daemon_container_closure(case, ending, 
                "probe-writes" if ending in {"normal", "cleanup-unavailable", "record-changed", "identity-changed"}
                else "slow"]
     settings.write_text(yaml.safe_dump({"runtimes": [{
-        "runtime_id": "owned-acp", "kind": "acp", "command": command, "version": "1"}],
+        "runtime_id": "owned-acp", "kind": "acp", "modes": FAKE_AGENT_MODES, "command": command, "version": "1"}],
         "capacity": {"owned-acp": 1}}))
     role = RolePlan("reviewer", "owned-acp", "acp", permissions="readonly", harness={
         "confinement": {"image": ("garuda-owned-acp-fixture-missing:local" if ending == "missing-image"

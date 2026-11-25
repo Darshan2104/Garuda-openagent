@@ -238,7 +238,9 @@ def _vendor_entries() -> list[AdapterEntry]:
     entries = []
     for runtime_id, manifest in sorted(manifests.items()):
         # The stand-in reports the mode a run with no role requires, as the
-        # vendor's adapter would once Garuda set it.
+        # vendor's adapter would once Garuda set it. Where Garuda selects no
+        # mode for the vendor, no stand-in mode is classified for a smart run,
+        # so the stand-in runs as a yolo run would (#732), like the native entry.
         mode = DEFAULT_MODES.get(runtime_id, {}).get("smart")
         def _make(scratch: Path, _m=manifest, _mode=mode) -> Any:
             return adapter_for_manifest(
@@ -247,6 +249,7 @@ def _vendor_entries() -> list[AdapterEntry]:
                     sys.executable, "-m", "garuda.acp.fake_agent", "--profile", "success",
                     *(("--initial-mode", _mode) if _mode else ()),
                 ],
+                permission="smart" if _mode else "yolo",
             )
 
         entries.append(

@@ -53,13 +53,22 @@ garuda runtime inspect opencode
 ## Run a task directly on ACP
 
 ```bash
-garuda run --workspace . --runtime opencode -t "Inspect the failing tests"
+garuda run --workspace . --runtime opencode --permission-mode auto -t "Inspect the failing tests"
 ```
+
+Before the first prompt Garuda checks the permission mode the harness reports
+against what the run allows, and refuses with `role.mode_unenforced` when the
+mode needs more, is unknown, or is not reported. OpenCode starts in `build`,
+which runs tools by your own OpenCode permission rules, so it needs
+`--permission-mode auto` (or a role with `permissions: auto`); a plain
+`smart` run refuses. Garuda does not classify Cursor, Goose, oh-my-pi or Pi
+modes yet, so those run only with `--permission-mode yolo`. See
+[A role's harness mode](configuration.md#a-roles-harness-mode).
 
 For a standalone ACP task, select an acceptance check explicitly:
 
 ```bash
-garuda run --workspace . --runtime opencode -t "Fix the failing tests" --check "pytest -q"
+garuda run --workspace . --runtime opencode --permission-mode auto -t "Fix the failing tests" --check "pytest -q"
 ```
 
 The check runs after the harness turn and records its authority, workspace
@@ -292,6 +301,8 @@ python scripts/capture_consult_transport.py --name claude --out tests/fixtures/c
     - Launch command: `opencode acp` from the `opencode-ai` package.
     - Install and authenticate OpenCode, then verify `opencode --version`.
     - Authentication stays in OpenCode's own configuration.
+    - Modes (OpenCode 2.3.2): `build` (default) and `plan`, both classified
+      `auto`; Garuda cannot select one, so runs need `permissions: auto` or `yolo`.
 
 === "Pi"
 
@@ -452,8 +463,17 @@ runtimes:
     capabilities: [prompt, cancel]
     version_args: [my-agent-acp, --version]
     setup: Install my-agent-acp and authenticate with its own CLI.
+    # What each of its permission modes may do without asking (#732).
+    modes: {ask: readonly, edit: smart, auto: auto, full: yolo}
 disabled_runtimes: [codex]
 ```
+
+Garuda checks the mode a custom server reports before every first prompt. It
+cannot know what a new server's modes allow, so without `modes:` such a server
+runs only with `--permission-mode yolo` (or a `permissions: yolo` role). With
+`modes:`, its reported mode must need no more than the run allows, as for the
+shipped harnesses; `modes:` cannot change the classification Garuda ships for
+Claude Code, Codex or OpenCode.
 
 To run a shipped harness on another adapter binary, for example a newer
 Claude Code adapter installed outside `PATH`, replace its manifest with the

@@ -652,22 +652,63 @@ direct `--runtime <id>` runs. Garuda refuses missing or unproven confinement
 with `workspace.readonly_unenforced`.
 [Read-only external harnesses run in Docker](safety-and-workspaces.md#read-only-external-harnesses-run-in-docker).
 
-Only an explicit mode under `permissions: yolo` can approve everything.
+On Claude Code and Codex, only an explicit mode under `permissions: yolo` can
+approve everything; on a harness whose modes Garuda cannot select or classify,
+`permissions: yolo` accepts the agent's own mode.
 Named modes and mapped readonly modes require a proven adapter version
 (Claude Code adapters 0.110.1 and 0.85.0, and Codex adapters 2.9.0 and 2.1.1). Other default
 modes apply on those proven versions. A run with no role, including an SDK
 run, may do at most what `permissions: smart` allows.
 
-Before the first prompt, the mode the agent reports must be no broader than the
-one the run requires, whether Garuda set it or not. Otherwise the run refuses
-with `role.mode_unenforced`. That covers an agent that reports no mode, a mode
-Garuda does not know, and an unproven adapter whose own default is broader.
+Every ACP run, on every harness, has a required authority: the level of the
+mode Garuda selects for it (above), or the run's own `permissions` where Garuda
+selects none. Before the first prompt, the mode the agent reports must need no
+more than that, whether Garuda set it or not. Otherwise the run refuses with
+`role.mode_unenforced`. That covers an agent that reports no mode, a mode
+Garuda does not know, a harness whose modes Garuda does not classify, and an
+unproven adapter whose own default is broader.
 Claude Code adapter 0.110.1, for example, starts in `auto`. It is proven, so
 Garuda sets `acceptEdits` for a `smart` run there; on an unproven version with
 that default, a `smart` run refuses. A `permissions: auto` role still runs on an
-unproven adapter that reports `auto`. The session records the mode in `acp_mode` (and in the role's
-`effective_mode`), with `source: garuda` when Garuda set it and `source: agent`
-when it is the agent's own.
+unproven adapter that reports `auto`.
+
+Garuda classifies these modes on harnesses where it cannot select one:
+
+| Harness | Mode | Needs |
+|---|---|---|
+| OpenCode (`opencode`, from 2.3.2's handshake) | `build` (the default: runs tools by your OpenCode permission rules, which by default ask for nothing in or outside the workspace except `.env` reads) | `auto` |
+| OpenCode | `plan` (no edits outside OpenCode's plan folder, but shell commands follow the same rules, so it can still write) | `auto` |
+
+So an OpenCode run needs `permissions: auto` or `yolo`; a `smart` run, including
+a plain `garuda run --runtime opencode`, refuses. Cursor, Goose, oh-my-pi (`omp`),
+Pi, and any `runtimes:` entry with its own `runtime_id` (for example a renamed
+Claude Code adapter) are not classified: Garuda does not know what their modes
+allow, and the name an agent reports at `initialize` is its own claim, not
+proof of what it is. Those run only under `permissions: yolo`, the top of the
+scale: no mode can do more than the run explicitly allows, so there the agent's
+own mode is accepted and recorded with `authority: null`. `auto` is not enough,
+because an unclassified mode may approve everything. To keep a different
+Claude Code or Codex adapter binary under the shipped tables, replace the
+shipped manifest of the same id in trusted global settings rather than adding
+a new id. For any other adapter, the trusted `runtimes:` entry that authorizes
+its command may classify its modes itself; Garuda's own tables always win for
+the harnesses above, and the session records `classified_by: runtimes`:
+
+```yaml
+runtimes:
+  - runtime_id: my-agent
+    kind: acp
+    command: [my-agent-acp]
+    modes: {ask: readonly, edit: smart, auto: auto, full: yolo}
+```
+ A readonly run, always in its Docker confinement, accepts any mode on
+a harness that has no readonly mode (OpenCode, or an unclassified one): the
+read-only mount is what stops writes, and the session records
+`enforced_by: confinement`.
+
+The session records the mode in `acp_mode` (and in the role's
+`effective_mode`): the mode, its authority, the `required` authority, and
+`source: garuda` when Garuda set it or `source: agent` when it is the agent's own.
 
 Options depend on the role's model, so Garuda sets the model first and checks
 effort and mode against what the agent then offers. A model the agent does not

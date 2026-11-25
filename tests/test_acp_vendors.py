@@ -212,6 +212,12 @@ def _reported_mode(runtime_id: str) -> tuple[str, ...]:
     return ("--initial-mode", mode) if mode else ()
 
 
+def _stand_in_permission(runtime_id: str) -> str:
+    """Where Garuda selects no mode for the vendor, no stand-in mode is classified
+    for a smart run, so the stand-in runs as a yolo run would (#732)."""
+    return "smart" if _reported_mode(runtime_id) else "yolo"
+
+
 async def test_vendor_adapters_pass_the_common_suite_with_strict_v1_fixture():
     """This fixture rejects the former private framing/version/session/prompt
     shapes, so the common suite is protocol-compatibility evidence rather than
@@ -221,6 +227,7 @@ async def test_vendor_adapters_pass_the_common_suite_with_strict_v1_fixture():
             manifest,
             argv_override=[sys.executable, "-m", "garuda.acp.fake_agent", "--profile", "strict-v1",
                            *_reported_mode(manifest.runtime_id)],
+            permission=_stand_in_permission(manifest.runtime_id),
         )
         assert adapter.runtime_id == manifest.runtime_id
         await run_conformance_suite(lambda adapter=adapter: adapter)

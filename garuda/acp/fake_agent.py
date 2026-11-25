@@ -168,8 +168,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--approval-kind",
                         help="Request this ACP tool kind before producing the reply.")
     parser.add_argument("--initial-mode", default=None,
-                        help="Report this session mode at session/new (the `config-options` "
-                             "profile's mode before any set, `ask` by default).")
+                        help="Report this session mode at session/new and session/load "
+                             "(the `config-options` profile's mode before any set); `ask` by "
+                             "default, and `none` reports no mode.")
     args = parser.parse_args(argv)
     profile = args.profile
     if profile not in PROFILES:
@@ -179,7 +180,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     sessions = 0
     session_cwd = ""
-    config = {"model": "fake-small", "effort": "medium", "mode": args.initial_mode or "ask"}
+    initial_mode = None if args.initial_mode == "none" else (args.initial_mode or "ask")
+    config = {"model": "fake-small", "effort": "medium", "mode": initial_mode or "ask"}
     try:
         while True:
             request = _read_frame()
@@ -248,10 +250,10 @@ def main(argv: list[str] | None = None) -> int:
                                       "modes": {"currentModeId": config["mode"],
                                                 "availableModes": [{"id": m, "name": m}
                                                                    for m in MODES]}})
-                elif args.initial_mode:
+                elif initial_mode:
                     _result(call_id, {"sessionId": session_id, "modes": {
-                        "currentModeId": args.initial_mode,
-                        "availableModes": [{"id": args.initial_mode, "name": args.initial_mode}]}})
+                        "currentModeId": initial_mode,
+                        "availableModes": [{"id": initial_mode, "name": initial_mode}]}})
                 else:
                     _result(call_id, {"sessionId": session_id})
             elif method == "session/set_config_option" and profile == "config-options":
@@ -274,8 +276,8 @@ def main(argv: list[str] | None = None) -> int:
                     _invalid(call_id, "unknown session")
                     continue
                 session_cwd = str(params.get("cwd", ""))
-                _result(call_id, {"modes": {"currentModeId": args.initial_mode}}
-                        if args.initial_mode else None)
+                _result(call_id, {"modes": {"currentModeId": initial_mode}}
+                        if initial_mode else None)
             elif method == "session/prompt":
                 if profile == "strict-v1":
                     prompt = params.get("prompt")
@@ -325,6 +327,9 @@ def _options(config: dict) -> list[dict]:
 
 #: The `config-options` modes, narrowest first (tests map them to Garuda permissions).
 MODES = ("ask", "edit", "judge", "everything")
+#: What each fake mode stands for, for tests that run the fake under a runtime id
+#: Garuda's own tables do not classify (``tests/conftest.py``).
+MODE_AUTHORITY = {"ask": "readonly", "edit": "smart", "judge": "auto", "everything": "yolo"}
 
 
 def _request_permission(

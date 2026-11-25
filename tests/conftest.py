@@ -1,6 +1,46 @@
 import pytest
 
 
+class _FakeModeTables(dict):
+    """Garuda's mode tables, plus the fake agent's modes for any other runtime id.
+
+    Tests launch ``garuda.acp.fake_agent`` in-process under many ad hoc runtime ids,
+    and every ACP run checks the agent's reported mode against a table for its
+    runtime (#732). For an id that is not a shipped harness this answers with the
+    fake's own modes and the Claude Code and Codex mode names tests emulate.
+    Shipped harness ids keep their real tables, or none. Worker processes do not
+    see this; their tests classify the fake with a ``modes:`` runtimes entry.
+    """
+
+    def __init__(self, tables, shipped):
+        super().__init__(tables)
+        self._shipped = frozenset(shipped)
+        self._fallback = None
+
+    def get(self, key, default=None):
+        if key in self or key in self._shipped:
+            return super().get(key, default)
+        if self._fallback is None:
+            from garuda.acp.fake_agent import MODE_AUTHORITY
+
+            emulated = {}
+            for runtime in ("claude", "codex"):
+                emulated.update(super().get(runtime) or {})
+            self._fallback = {**emulated, **MODE_AUTHORITY}
+        return self._fallback
+
+
+@pytest.fixture(autouse=True)
+def _fake_harness_modes(monkeypatch):
+    """A test of an unclassified harness uses a shipped id, or replaces
+    ``roles.MODE_AUTHORITY`` with a plain dict."""
+    from garuda.acp.catalog import builtin_manifest_dicts
+    from garuda.runtime import roles
+
+    shipped = {item["runtime_id"] for item in builtin_manifest_dicts()} | {"native"}
+    monkeypatch.setattr(roles, "MODE_AUTHORITY", _FakeModeTables(roles.MODE_AUTHORITY, shipped))
+
+
 @pytest.fixture(autouse=True)
 def _isolate_garuda_home(tmp_path_factory, monkeypatch):
     """Give settings, sessions, leases and derived recovery a fresh test owner.

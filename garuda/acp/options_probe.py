@@ -32,9 +32,9 @@ from garuda.runtime.roles import (
     acp_permission,
     check_mode,
     check_offered,
-    harness_mode,
     not_applied,
     reported_mode,
+    required_authority,
 )
 
 
@@ -47,13 +47,14 @@ class Offered:
 
 
 async def probe(argv: list[str], options_for: Callable[[str], dict[str, str]], *,
-                runtime_id: str, select: bool = True, required_mode: str | None = None,
+                runtime_id: str, select: bool = True, required: str | None = None,
+                declared: dict[str, str] | None = None,
                 permission: str = "smart") -> Offered | None:
     """Check ``options_for(version)`` against the agent at ``argv``.
 
     With ``select`` false only what ``session/new`` offers is checked and
-    nothing is set (enough for a model). With ``required_mode``, the mode the
-    agent then reports must be no broader than it, as before a prompt
+    nothing is set (enough for a model). With ``required`` (an authority), the
+    mode the agent then reports must need no more than it, as before a prompt
     (:func:`~garuda.runtime.roles.check_mode`). Handshake deadlines are the
     launch's own: ``harnesses.<id>.handshake_timeout_sec``, else
     ``garuda.acp.client.HANDSHAKE_TIMEOUT``.
@@ -74,7 +75,7 @@ async def probe(argv: list[str], options_for: Callable[[str], dict[str, str]], *
             options = options_for(version)
         except RoleRefused as exc:
             return Offered(version, exc)
-        if not options and required_mode is None:
+        if not options and required is None:
             return Offered(version)
         session_id = await process.session_new(workspace, [])
         model = options.get("model")
@@ -96,11 +97,13 @@ async def probe(argv: list[str], options_for: Callable[[str], dict[str, str]], *
         if select and mode is not None and now != mode:  # a later set moved the mode again
             return Offered(version, not_applied(runtime_id, PROVEN_MODE_OPTION, mode, now,
                                                 model=model))
-        try:
-            check_mode(runtime_id, required_mode, now, adapter_version=version,
-                       permission=permission, set_by_garuda=select and mode is not None)
-        except RoleRefused as exc:
-            return Offered(version, exc)
+        if required is not None:
+            try:
+                check_mode(runtime_id, required, now, adapter_version=version,
+                           permission=permission, set_by_garuda=select and mode is not None,
+                           declared=declared)
+            except RoleRefused as exc:
+                return Offered(version, exc)
         return Offered(version)
     except Exception:
         return None  # could not tell
@@ -162,5 +165,6 @@ def check_plan(manifest, record, plan: RolePlan) -> Offered | None:
     """Select ``plan``'s model, effort and mode on a scratch session, as a launch
     would, then check the mode the agent reports against the one the role allows."""
     return run(_argv(manifest, record), lambda version: acp_options(plan, version),
-               runtime_id=manifest.runtime_id, required_mode=harness_mode(plan),
+               runtime_id=manifest.runtime_id, required=required_authority(plan),
+               declared=dict(getattr(manifest, "modes", ()) or ()) or None,
                permission=acp_permission(plan))

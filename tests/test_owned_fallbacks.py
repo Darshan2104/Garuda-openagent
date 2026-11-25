@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from garuda.acp.fake_agent import MODE_AUTHORITY as FAKE_AGENT_MODES
 from garuda.config import garuda_yaml as gy
 from tests.test_owned_role import DETACHED
 from tests.test_web_flow_starts import LINUX, _body, _call
@@ -33,9 +34,9 @@ def configure_review_flow(tmp_path, workspace, *, fallback=False, independent=Tr
         "raise SystemExit(fake_agent.main(['--profile','artifacts']))\n")
     Path(os.environ["GARUDA_GLOBAL_SETTINGS"]).write_text(yaml.safe_dump({
         "runtimes": [
-            {"runtime_id": "builder", "kind": "acp", "version": "1",
+            {"runtime_id": "builder", "kind": "acp", "modes": FAKE_AGENT_MODES, "version": "1",
              "command": [sys.executable, str(fixture), "coder"]},
-            {"runtime_id": "primary", "kind": "acp", "version": "1",
+            {"runtime_id": "primary", "kind": "acp", "modes": FAKE_AGENT_MODES, "version": "1",
              "command": ["/not-installed"] if fallback else [sys.executable, str(fixture), "reviewer"]}],
         "capacity": {"builder": 1, "primary": 1}}))
     gy.user_path().write_text(gy.dump({"version": 1,
@@ -161,12 +162,12 @@ def configure(tmp_path, workspace, reason):
                      "print('logged-out'+'x'*70000)\n" if reason == "oversized" else "print('unknown')\n")
     settings = Path(os.environ["GARUDA_GLOBAL_SETTINGS"])
     settings.write_text(yaml.safe_dump({"runtimes": [
-        {"runtime_id": "primary", "kind": "acp", "version": "1",
+        {"runtime_id": "primary", "kind": "acp", "modes": FAKE_AGENT_MODES, "version": "1",
          "command": ["/not-installed"] if reason == "missing" else [sys.executable, str(fixture), "primary"],
          "version_args": [sys.executable, str(version)],
          "auth_probe": {"argv": [sys.executable, str(login)],
                         "authenticated_pattern": "logged-in", "unauthenticated_pattern": "logged-out"}},
-        {"runtime_id": "backup", "kind": "acp", "version": "1",
+        {"runtime_id": "backup", "kind": "acp", "modes": FAKE_AGENT_MODES, "version": "1",
          "command": [sys.executable, str(fixture), "backup"]}],
         "capacity": {"primary": 1, "backup": 1}}))
     gy.user_path().write_text(gy.dump({"version": 1, "roles": {"coder": {

@@ -585,6 +585,7 @@ def adapter_for_manifest(
     metrics=None,
     agent_definition: dict | None = None,
     extra_env: dict[str, str] | None = None,
+    permission: str = "smart",
 ) -> AcpRuntime:
     """Build the generic adapter using the exact executable discovery accepted.
 
@@ -595,6 +596,7 @@ def adapter_for_manifest(
     re-resolving. ``argv_override`` is used by trusted confinement owners and
     deterministic protocol fixtures; ``extra_env`` carries the Docker CLI's
     configured context without forwarding it into the agent container.
+    ``permission`` bounds a prompt no run path secured (``smart`` by default).
     `cwd` is the absolute session root sent in `session/new`;
     launch paths pass the workspace so the harness never defaults to Garuda's
     own directory. `store` binds the child and active segment to the session
@@ -620,6 +622,8 @@ def adapter_for_manifest(
         agent_definition=agent_definition,
         handshake_timeout=handshake_timeout,
         handshake_hint=handshake_hint,
+        permission=permission,
+        declared_modes=dict(getattr(manifest, "modes", ()) or ()) or None,
     )
 
 
