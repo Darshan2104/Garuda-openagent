@@ -28,6 +28,7 @@ class DockerWorkspace:
         self._limits = limits or DockerLimits()
         self._container_id: str | None = None
         self._environment: DockerEnvironment | None = None
+        self._executor_record = None
 
     @property
     def container_name(self) -> str:
@@ -37,6 +38,12 @@ class DockerWorkspace:
         if self._container_id:
             return
         self._workspace_host.mkdir(parents=True, exist_ok=True)
+        # The container belongs to the Docker daemon, outside this process's
+        # tree and lineage, so it is recorded before it starts (#730).
+        from garuda.workspace.executors import docker_locator, record_executor
+
+        self._executor_record = record_executor(
+            self._workspace_host, "docker", self._container_name, **docker_locator(None))
         process = await asyncio.create_subprocess_exec(
             "docker",
             "run",
@@ -76,6 +83,11 @@ class DockerWorkspace:
             stderr=asyncio.subprocess.PIPE,
         )
         await process.communicate()
+        if process.returncode == 0:
+            from garuda.workspace.executors import forget_executor
+
+            forget_executor(self._executor_record)
+            self._executor_record = None
         self._container_id = None
         self._environment = None
 

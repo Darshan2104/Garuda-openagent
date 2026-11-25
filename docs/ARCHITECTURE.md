@@ -1385,11 +1385,22 @@ verification independently.
   unchanged, the owner is confirmed dead by identity (and the group it led is
   empty), the holder is not quarantined, and no same-user process in `/proc`
   carries the token. Queue and loan slots stay with their coordinators.
-  Without `/proc` the scan cannot run, so recovery refuses. A same-user
-  process whose environment is unreadable (non-dumpable) is ruled out only
-  when it, or a live ancestor below init, started before the owner. A child
+  Without `/proc` the scan cannot run, so recovery refuses. A process that
+  has wholly exited (a zombie or dead process whose every thread has exited)
+  runs no code and is skipped (#731). A live same-user process whose
+  environment is unreadable (non-dumpable) is ruled out only when it, or a
+  live ancestor below init, started before the owner; otherwise the refusal
+  names its pid. A child
   that scrubbed its environment, or a non-dumpable orphan adopted by an older
-  subreaper, is outside the scan. Plain `recover()` (resume
+  subreaper, is outside the scan. A tmux pane and a docker or remote container
+  run under the tmux server or the Docker daemon, outside the owner's tree and
+  lineage, so each is recorded beside the leases before it starts
+  (`workspace/executors.py`) and removed only after a clean stop. Lease reclaim
+  also refuses while any record for the workspace remains whose executor is not
+  proved gone: tmux must answer "can't find session" on the recorded socket (a
+  silent socket counts only when no tmux server of the user runs at all), and
+  docker must answer "no such object" from the recorded endpoint. The refusal
+  says how to stop it (#730). Plain `recover()` (resume
   paths) still refuses on any retained lease, and acquisition never reclaims.
 - **Queue ids bind admitted work.** Enqueue retries match the exact scope,
   user, harness, session and configuration digest of a waiting entry or claim.
