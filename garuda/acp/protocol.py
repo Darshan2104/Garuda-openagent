@@ -69,7 +69,17 @@ MAX_ERROR_DETAIL_CHARS = 500
 #: Codex's typed cause for an exhausted plan (``codexErrorInfo``).
 _USAGE_LIMIT_INFO = frozenset({"usageLimitExceeded", "usage_limit_exceeded"})
 _USAGE_LIMIT_TEXT = re.compile(r"usage limit|quota (?:exceeded|exhausted)|insufficient_quota", re.I)
+#: An operating-system quota (EDQUOT, ``Disk quota exceeded (os error 122)``)
+#: is a host failure, never an account limit (#728): free text naming one never
+#: types the error. Codex's structured ``codexErrorInfo`` still does.
+_OS_QUOTA_TEXT = re.compile(r"disk quota|\bos error \d+|\bEDQUOT\b|\berrno\b", re.I)
 _RESET_HINT = re.compile(r"try again (?:at|in|after) ([^.;\n]{1,64})", re.I)
+
+
+def _redact(text: str) -> str:
+    from garuda.context.redact import redact_text
+
+    return redact_text(text)[0]
 
 
 def _error_detail(data: Any) -> str:
@@ -79,7 +89,9 @@ def _error_detail(data: Any) -> str:
         data = data.get("message") or data.get("details")
     if not isinstance(data, str):
         return ""
-    text = " ".join(data.split())
+    # Adapters put upstream error bodies here (request echoes, credentials):
+    # redact before the text reaches the exception and every sink (#729).
+    text = " ".join(_redact(data).split())
     if len(text) > MAX_ERROR_DETAIL_CHARS:
         text = text[: MAX_ERROR_DETAIL_CHARS - 1] + "…"
     return text
@@ -94,9 +106,11 @@ def remote_error(code: int, message: str, data: Any = None) -> AcpRemoteError:
     ``Internal error`` code text.
     """
     detail = _error_detail(data)
+    message = _redact(message if isinstance(message, str) else str(message))
     info = data.get("codexErrorInfo") if isinstance(data, dict) else None
-    if (isinstance(info, str) and info in _USAGE_LIMIT_INFO) or _USAGE_LIMIT_TEXT.search(
-            f"{message} {detail}"):
+    text = f"{message} {detail}"
+    if (isinstance(info, str) and info in _USAGE_LIMIT_INFO) or (
+            _USAGE_LIMIT_TEXT.search(text) and not _OS_QUOTA_TEXT.search(text)):
         # Never the generic code text: `Internal error` reads as a non-quota stop.
         cause = detail or (message if _USAGE_LIMIT_TEXT.search(message) else "usage limit reached")
         reset = _RESET_HINT.search(cause)

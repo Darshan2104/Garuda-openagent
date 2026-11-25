@@ -768,3 +768,31 @@ async def test_sdk_default_modes_still_run_on_an_acp_runtime(tmp_path, monkeypat
     result = await SoftwareAgent(workspace=tmp_path, runtime="faketest", store=store,
                                  mode=mode).run("hello")
     assert result.success
+
+
+@pytest.mark.parametrize("via", ["run", "conversation"])
+async def test_a_failed_sdk_acp_turn_still_records_its_usage(tmp_path, monkeypatch, via):
+    """Like the CLI (#690): a failed SDK ACP turn keeps the cost its adapter
+    reported before failing, in the usage ledger."""
+    from garuda.acp.protocol import AcpError
+    from garuda.config import agent_home
+    from garuda.core.sessions import SessionStore
+    from garuda.observability.ledger import Ledger
+
+    runtimes = _fake_extra()
+    runtimes[0]["command"] = [*FAKE_ARGV[:-1], "remote-error", "--report-usage"]
+    monkeypatch.setattr(agent_home, "resolve_agent_home", lambda workspace: _FakeHome(runtimes))
+    store = SessionStore(tmp_path / "sessions")
+    agent = SoftwareAgent(workspace=tmp_path, runtime="faketest", store=store)
+    with pytest.raises(AcpError):
+        if via == "run":
+            await agent.run("x")
+        else:
+            conversation = agent.conversation()
+            try:
+                await conversation.run("x")
+            finally:
+                await conversation.close()
+    (record,) = store.list_sessions()
+    rows = [r for r in Ledger().records() if r.get("session_id") == record["session_id"]]
+    assert {(r["kind"], r["cost_usd"]) for r in rows} == {("acp_usage_snapshot", 0.0025)}

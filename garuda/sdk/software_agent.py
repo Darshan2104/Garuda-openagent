@@ -243,17 +243,14 @@ class SoftwareAgent:
                 if mode is not None:
                     store.update_meta(events.session_id, {"acp_mode": mode})
                 turn = await adapter.prompt(task)
-                trail, _ = await adapter.poll_events(0)
             finally:
                 await adapter.close()
+                # Like the CLI (#690): the adapter's last usage report is
+                # recorded whatever the outcome, not only after a completed turn.
+                trail = await _acp_trail_with_usage(store, events.session_id, adapter)
         except BaseException as exc:
             _settle_unfinished(store, events.session_id, exc)
             raise
-        from garuda.observability.usage import record_turn_acp_usage
-
-        record_turn_acp_usage(store, events.session_id, trail, runtime_id=adapter.runtime_id,
-                              adapter_version=adapter.reported_adapter_version,
-                              segment=adapter.native_session_id or events.session_id)
         texts = [
             e.payload.get("chunk", "") or e.payload.get("text", "")
             for e in trail
@@ -293,6 +290,26 @@ class SoftwareAgent:
             extra_tools=self._extra_tools,
             load_project_tools=self._load_project_tools,
         )
+
+
+async def _acp_trail_with_usage(store, session_id: str, adapter) -> list:
+    """The turn's events, with its usage recorded; never masks the turn's outcome."""
+    import logging
+
+    try:
+        trail, _ = await adapter.poll_events(0)
+    except Exception:
+        logging.getLogger(__name__).warning("acp events not read", exc_info=True)
+        return []
+    try:
+        from garuda.observability.usage import record_turn_acp_usage
+
+        record_turn_acp_usage(store, session_id, trail, runtime_id=adapter.runtime_id,
+                              adapter_version=adapter.reported_adapter_version,
+                              segment=adapter.native_session_id or session_id)
+    except Exception:
+        logging.getLogger(__name__).warning("acp usage not recorded", exc_info=True)
+    return trail
 
 
 def _settle_unfinished(store, session_id: str, exc: BaseException) -> None:
