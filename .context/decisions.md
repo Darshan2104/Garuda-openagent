@@ -1,5 +1,17 @@
 # Durable decisions
 
+## 2026-11-25 — External usage is recorded on every outcome and shown as adapter-reported (#690, #691)
+
+An ACP run records its adapter's last usage report after the harness closes,
+whatever the outcome, instead of only after a completed turn: a failed or
+cancelled turn keeps the cost its adapter reported. A confined (readonly) run
+is keyed by the adapter version the image's own handshake reported and marked
+`confined: true` (a new optional ledger field on snapshots and deltas).
+`sessions show` and `/api/runs/<id>` add `reported_usage`: the latest snapshot
+per segment, summed across segments, labelled `adapter_reported`. It is display
+evidence: the session's `usage`/`cost` stay `unknown`, nothing is summed into
+ledger totals, and no spend cap counts it.
+
 ## 2026-11-25 — Claude Code adapter 0.110.1 role options; model fallbacks; config check (#695, #714)
 
 The no-prompt capability capture proves model, effort and harness mode

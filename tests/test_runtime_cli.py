@@ -61,6 +61,7 @@ def _install_shim(
     report_cwd: bool = False,
     state_file: Path | None = None,
     approval_kind: str | None = None,
+    extra: tuple[str, ...] = (),
 ) -> Path:
     """Install `fake-acp-shim` in `bin_dir`: a real executable on PATH.
 
@@ -78,6 +79,7 @@ def _install_shim(
         + (" --report-cwd" if report_cwd else "")
         + (" --state-file " + shlex.quote(str(state_file)) if state_file else "")
         + (" --approval-kind " + shlex.quote(approval_kind) if approval_kind is not None else "")
+        + "".join(" " + shlex.quote(arg) for arg in extra)
         + ' "$@"'
     )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")

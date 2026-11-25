@@ -50,6 +50,12 @@ garuda sessions show NAME       # everything about one session
 garuda sessions --json          # the same model the dashboard serves
 ```
 
+For an external harness run, `sessions show` adds **Reported usage** (JSON
+`reported_usage`): the cost, model, context occupancy and adapter version the
+harness adapter itself reported, the latest report per segment. It is labelled
+adapter-reported because Garuda did not meter or price it, so the session's own
+`usage` and `cost` stay `unknown` and no spend cap counts it.
+
 ### Names and references
 
 - `--name NAME` names a session (unique in the project). Without it, Garuda

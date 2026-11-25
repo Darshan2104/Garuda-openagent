@@ -310,6 +310,11 @@ def session(store, session_id: str, *, queue=None) -> dict:
             "source_files", "rewind", "filesystem_restored", "processes_restored", "inherited_evidence", "references",
             "receipt_references", "receipt_reference_coverage",
         )}
+    from garuda.observability.usage import reported_usage
+
+    # An external harness's own usage/cost report, labelled as such; ``usage``/``cost``
+    # stay Garuda's accounting (#691).
+    row["reported_usage"] = reported_usage(session_id)
     row["approvals"] = approvals(store, session_id)
     row["approvals_pending"] = len(row["approvals"])
     row["approval_decisions"] = [
