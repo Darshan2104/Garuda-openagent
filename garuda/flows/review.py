@@ -149,11 +149,11 @@ def check_independent(config: dict, reviewed: str, reviewed_plan, reviewer: str,
     except IdentityUnresolved as exc:
         return str(exc)
     if mine in theirs:
-        return (f"reviewer {reviewer} would run as {mine[0]}"
+        return (f'role "{reviewer}" would run as {mine[0]}'
                 + (f" · {mine[1]}" if mine[1] else "")
-                + f", an identity {reviewed} runs, falls back to or consulted")
+                + f', the same identity role "{reviewed}" runs, falls back to or consults')
     if reviewer in config.get("roles", {}).get(reviewed, {}).get("consult", []):
-        return f"{reviewed} consulted {reviewer}"
+        return f'role "{reviewed}" consults role "{reviewer}"'
     return None
 
 

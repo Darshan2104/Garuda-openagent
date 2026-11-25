@@ -356,16 +356,21 @@ def test_compiled_fields_reach_the_actual_existing_runtime(
     _install_shim(tmp_path / "bin", "resume", state_file=capture)
     _on_path(monkeypatch, tmp_path / "bin")
     settings = Path(os.environ["GARUDA_GLOBAL_SETTINGS"])
-    settings.write_text(yaml.safe_dump({"runtimes": [{"runtime_id": "capture", "kind": "acp", "version": "1", "command": ["fake-acp-shim"]}]}))
+    settings.write_text(yaml.safe_dump({"runtimes": [
+        {"runtime_id": runtime, "kind": "acp", "version": "1", "command": ["fake-acp-shim"]}
+        for runtime in ("capture", "capture-review")]}))
+    # The reviewer runs elsewhere: a configured collision now refuses before
+    # the planner step (#753), and this test needs the first prompt.
     gy.user_path().write_text(yaml.safe_dump({"version": 1, "roles": {
-        role: {"harness": "capture"} for role in ("scout", "planner", "coder", "reviewer")}}))
-    fake_acp_confinement("capture")
+        role: {"harness": "capture-review" if role == "reviewer" else "capture"}
+        for role in ("scout", "planner", "coder", "reviewer")}}))
+    fake_acp_confinement("capture", "capture-review")
     plan = compile_scenario(starter, inputs, ws)
     code, output = _main(monkeypatch, capsys, *shlex.split(plan.equivalent_command)[1:])
     assert code == (3 if starter == "build-review" else 0), output
-    # This fake echoes prompts and can echo artifact instructions. The build
-    # flow stops at identical coder/reviewer identities. Neither proves vendor
-    # capability or review: this test proves the delivered task fields only.
+    # This fake echoes prompts and can echo artifact instructions, so the
+    # build flow does not complete. Neither proves vendor capability or
+    # review: this test proves the delivered task fields only.
     received = json.loads(capture.read_text())["prompts"][0]
     for name, value in inputs.items():
         assert f'name="{name}"' in received
