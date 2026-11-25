@@ -227,6 +227,17 @@ on each attempt as `runtime`, `model`, `effort`, `fallback`, `started_at`,
 `finished_at` and `duration_ms`. Receipts written before this change report
 `null` for the timings.
 
+Each attempt's `model` is the model that ran and `model_source` says where it
+came from: `role` (the role's configured `model_id`), `agent` (a role that
+leaves the model to the harness, as opencode roles must: the model the ACP
+agent reported in its session) or `session` (a native step's model); both are
+`null` when nothing recorded it. `adapter_version` is the adapter version the
+step session recorded (`role.adapter.version`, else the agent's reported
+version). `sessions show STEP --json` keeps `model` as before (`acp:opencode`
+for an ACP session) and adds `reported_model`, the model the agent reported:
+the one it confirmed selecting when the role set one, else its own current
+model at session start.
+
 `flow show FLOW_ID --json` prints the trajectory: the flow's state, stop,
 review rounds and edges, its journal, and every attempt in the order it
 launched (a review loop alternates steps), each with its role identity, timings,
@@ -236,18 +247,44 @@ ledger total (`metered`) and the harness's own report (`reported`) apart; they
 are never added. `flow export FLOW_ID --out FILE` writes the same as JSONL
 (owner-only, `-` for standard output): one `flow` record, the `journal` records,
 then each `attempt` followed by its step session's persisted ACP `event`
-records, and a closing `summary` (attempt count, total duration, review rounds,
-the reported cost).
+records, one `check` record per flow check, and a closing `summary` (attempt
+count, total duration, review rounds, the reported cost, the verification
+status and check count).
+
+A checked flow (`flow run NAME --check CMD`) answers "did the result pass its
+checks" from the trajectory alone: `verification` has the verdict (`status`,
+`authority`, `code`), the `phase_id` and `candidate` the checks ran against,
+and per check its `index`, `check_id`, `authority`, `mode` (`host`/`docker`),
+`status`, `command` (redacted), `exit_code`, `duration_s`, `started_at`,
+`candidate` and `receipt` (`committed`, `uncommitted`, `absent` or `differs`).
+`coverage` says how far the records were proved: `committed` (the published
+commitment and each terminal receipt match by digest), `uncommitted` (a check
+phase without a published commitment, such as an interrupted one),
+`not_started` (checks requested, none prepared; only the commands are known),
+`none` (an unchecked flow) or `unreadable` (`reason` says why; no check is
+reported). The records are read without their store lock and nothing is
+reconciled or repaired; plain `flow show` prints the verdict and one line per
+check:
+
+```text
+flow plan-only: completed
+  verification: failed (user-request)
+    check 1: failed, host, exit 1, 0.6s: python -m pytest -q tests
+```
 
 ```json
 {"record": "flow", "flow_session": "…", "name": "pb", "state": "completed", "review": null, …}
 {"record": "journal", "event": "intent", "step": "plan", "attempt": 1, "at": "…"}
 {"record": "attempt", "step": "plan", "attempt": 1, "role": "planner", "runtime": "codex",
- "model": "gpt-5.6-luna", "started_at": "…", "finished_at": "…", "duration_ms": 48210,
+ "model": "gpt-5.6-luna", "model_source": "role", "adapter_version": "2.9.0",
+ "started_at": "…", "finished_at": "…", "duration_ms": 48210,
  "outputs": [{"type": "plan", "digest": "…"}], "session": {"status": "completed", "trace_detail": "metadata",
  "usage": {"metered": null, "reported": {"cost_usd": 0.042, …}}, "events": {"count": 37, …}}}
 {"record": "event", "step": "plan", "attempt": 1, "session_id": "…", "event": {"kind": "tool_call", …}}
-{"record": "summary", "attempts": 2, "duration_ms": 95112, "review_rounds": null, …}
+{"record": "check", "index": 0, "status": "failed", "command": "python -m pytest -q tests",
+ "mode": "host", "exit_code": 1, "duration_s": 0.558, "candidate": "6537a159a65448c0", …}
+{"record": "summary", "attempts": 2, "duration_ms": 95112, "review_rounds": null,
+ "verification": "failed", "checks": 1, …}
 ```
 
 The events are exactly what the step session persisted at your

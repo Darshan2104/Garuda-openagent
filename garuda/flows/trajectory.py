@@ -3,7 +3,8 @@
 ``garuda flow show FLOW --json`` prints :func:`trajectory`; ``garuda flow export
 FLOW --out FILE`` writes :func:`export_records` as JSONL. Both read only: the
 flow's journal and receipts, each step session's record, its persisted ACP
-event trail and its usage-ledger rows. Nothing here starts, locks or repairs.
+event trail, its usage-ledger rows and the flow's check records (read without
+their store lock). Nothing here starts, locks or repairs.
 
 What is exported is what Garuda already persisted, at the level the user chose
 (``observability.trace_detail``). Native step transcripts (messages and tool
@@ -27,7 +28,7 @@ MAX_EVENTS = 5000
 #: Bytes of one session's ACP event trail read at most.
 MAX_EVENT_BYTES = 16 * 1024 * 1024
 
-_SESSION_FIELDS = ("runtime", "model", "agent", "agent_digest", "agent_segment", "status",
+_SESSION_FIELDS = ("runtime", "model", "reported_model", "agent", "agent_digest", "agent_segment", "status",
                    "state", "label", "verification", "isolation", "created_at", "updated_at")
 
 
@@ -128,6 +129,36 @@ def _session(store, session_id: str | None, rows: list[dict] | None) -> tuple[di
     return out, events
 
 
+def _what_ran(attempt: dict, session: dict | None) -> None:
+    """Fill what an attempt's receipt does not record from its step session (#752).
+
+    A receipt's role plan records a configured ``model_id`` but not the model a
+    harness chose itself, nor the adapter version. ``model_source`` labels where
+    ``model`` came from: ``role`` (configured), ``agent`` (the ACP agent's reported
+    current model) or ``session`` (a native session's model); ``None`` when unknown.
+    """
+    session = session if isinstance(session, dict) and session.get("readable") else {}
+    if not attempt.get("model"):
+        model, source = session.get("reported_model"), "agent"
+        if not model and session.get("runtime") == "native":
+            model, source = session.get("model"), "session"
+        attempt["model"], attempt["model_source"] = (model, source) if model else (None, None)
+    if attempt.get("adapter_version") is None:
+        role = session.get("role") if isinstance(session.get("role"), dict) else {}
+        adapter = role.get("adapter") if isinstance(role.get("adapter"), dict) else {}
+        segment = session.get("agent_segment") if isinstance(session.get("agent_segment"), dict) else {}
+        attempt["adapter_version"] = adapter.get("version") or segment.get("reported_version")
+
+
+def verification(store, flow_session: str, meta: dict) -> dict:
+    """The flow's verification verdict and each check's record, read only (#752)."""
+    from garuda.flows.verification_records import study
+    from garuda.runtime.session_state import effective_state
+
+    return study(store.session_dir(flow_session), flow_session, meta,
+                 effective_state(meta).get("verification"))
+
+
 def trajectory(store, flow_session: str, meta: dict | None = None, *,
                with_events: bool = False) -> dict:
     """Every step attempt of a flow, in order, with what ran, when and at what cost.
@@ -156,15 +187,18 @@ def trajectory(store, flow_session: str, meta: dict | None = None, *,
         for attempt in step["attempts"]:
             record = {"step": step["id"], **attempt}
             record["session"], events = _session(store, attempt["session_id"], rows)
+            _what_ran(record, record["session"])
             if with_events:
                 record["events_records"] = events
             for member in record["members"]:
                 member["session"], member_events = _session(store, member.get("session_id"), rows)
+                _what_ran(member, member["session"])
                 if with_events:
                     member["events_records"] = member_events
             attempts.append(record)
     attempts.sort(key=lambda a: launched.get((a["step"], a["attempt"]), len(journal)))
     durations = [a["duration_ms"] for a in attempts if type(a.get("duration_ms")) is int]
+    checked = verification(store, flow_session, meta)
     costs = [cost for a in attempts
              for usage in [((a.get("session") or {}).get("usage") or {})]
              for cost in [(usage.get("reported") or {}).get("cost_usd")]
@@ -177,6 +211,8 @@ def trajectory(store, flow_session: str, meta: dict | None = None, *,
         "created_at": meta.get("created_at"), "updated_at": meta.get("updated_at"),
         "declared_steps": [step["id"] for step in view["steps"]],
         "stop": view["stop"], "review": view["review"],
+        # Own field beside the review: whether the flow's result passed its checks.
+        "verification": checked,
         "quota_recovery": view["quota_recovery"], "coverage": view["coverage"],
         "edges": view["edges"],
         "journal": journal,
@@ -190,17 +226,23 @@ def trajectory(store, flow_session: str, meta: dict | None = None, *,
             "duration_ms": sum(durations) if durations else None,
             # The harnesses' own figures, labelled as such; never Garuda's accounting.
             "reported_cost_usd": round(sum(costs), 8) if costs else None,
+            "verification": checked["status"],
+            "checks": len(checked["checks"]),
         },
     }
 
 
 def export_records(store, flow_session: str, meta: dict | None = None) -> Iterator[dict]:
     """The trajectory as ordered JSONL records: ``flow``, ``journal``, then each
-    ``attempt`` followed by its session's ``event`` records, then ``summary``."""
+    ``attempt`` followed by its session's ``event`` records, then one ``check``
+    record per flow check, then ``summary``."""
     full = trajectory(store, flow_session, meta, with_events=True)
     exported_at = _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
     head = {key: value for key, value in full.items()
             if key not in ("journal", "attempts", "summary")}
+    # The verdict stays on the flow record; its checks get their own records.
+    head["verification"] = {key: value for key, value in full["verification"].items()
+                            if key != "checks"}
     yield {"record": "flow", **head, "exported_at": exported_at}
     for entry in full["journal"]:
         yield {"record": "journal", **entry}
@@ -215,7 +257,9 @@ def export_records(store, flow_session: str, meta: dict | None = None) -> Iterat
             for event in rows:
                 yield {"record": "event", **where, "member": member.get("role"),
                        "session_id": member.get("session_id"), "event": event}
+    for check in full["verification"]["checks"]:
+        yield {"record": "check", "flow_session": flow_session, **check}
     yield {"record": "summary", "flow_session": flow_session, **full["summary"]}
 
 
-__all__ = ["SCHEMA", "VERSION", "export_records", "trajectory"]
+__all__ = ["SCHEMA", "VERSION", "export_records", "trajectory", "verification"]

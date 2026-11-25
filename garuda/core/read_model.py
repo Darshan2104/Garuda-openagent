@@ -83,7 +83,10 @@ def _ran(role_plan) -> dict:
 
     ``runtime`` is the harness that ran it, ``fallback`` the start-time decision
     when the role has a chain. Receipts written before the plan was recorded, and
-    attempts refused before a role resolved, report ``None``.
+    attempts refused before a role resolved, report ``None``. ``model_source`` is
+    ``role`` for a configured ``model_id``; a role that leaves the model to the
+    harness reports ``None`` here, and the trajectory fills it from the step
+    session (#752).
     """
     plan = role_plan if isinstance(role_plan, dict) else {}
     agent = plan.get("agent") if isinstance(plan.get("agent"), dict) else {}
@@ -91,7 +94,8 @@ def _ran(role_plan) -> dict:
     fallback = plan.get("fallback") if isinstance(plan.get("fallback"), dict) else None
     return {
         "runtime": plan.get("runtime_id"), "runtime_kind": plan.get("kind"),
-        "model": plan.get("model_id"), "effort": plan.get("effort"),
+        "model": plan.get("model_id"), "model_source": "role" if plan.get("model_id") else None,
+        "effort": plan.get("effort"),
         "permissions": plan.get("permissions"), "harness_mode": plan.get("harness_mode"),
         "role_digest": plan.get("digest"),
         "agent": {"name": agent.get("name"), "digest": agent.get("digest")} if agent else None,
@@ -99,6 +103,28 @@ def _ran(role_plan) -> dict:
         "fallback": {k: fallback.get(k) for k in ("primary", "taken", "skipped")}
         if fallback else None,
     }
+
+
+def reported_model(meta: dict) -> str | None:
+    """The model an ACP agent reported running a session with (#752), or ``None``.
+
+    A model Garuda set is the one the agent confirmed selecting (the applied
+    ``acp_options``); otherwise the ``model`` option's current value the agent
+    offered at ``session/new`` (``acp_session``), i.e. its own choice.
+    """
+    if not isinstance(meta, dict):
+        return None
+    role = meta.get("role") if isinstance(meta.get("role"), dict) else {}
+    for applied in (role.get("acp_options"), meta.get("acp_options")):
+        if isinstance(applied, dict) and isinstance(applied.get("model"), str) and applied["model"]:
+            return applied["model"][:200]
+    acp = meta.get("acp_session")
+    options = acp.get("config_options") if isinstance(acp, dict) else None
+    for option in options if isinstance(options, list) else []:
+        if isinstance(option, dict) and option.get("id") == "model":
+            current = option.get("current")
+            return current[:200] if isinstance(current, str) and current else None
+    return None
 
 
 def _timings(receipt: dict) -> dict:
@@ -306,6 +332,9 @@ def session_row(store, meta: dict, *, queue_index: dict | None = None, liveness=
         "agent_digest": meta.get("agent_digest"),
         "agent_segment": meta.get("agent_segment"),
         "model": meta.get("model"),
+        # What the agent reported running, beside ``model`` (``acp:<harness>`` for an
+        # ACP session); ``None`` for a native session or an agent that did not say (#752).
+        "reported_model": reported_model(meta),
         "runtime": runtime or ("flow" if meta.get("kind") == "flow" else "native"),
         "role": meta.get("role"),
         "status": meta.get("status"),
