@@ -17,6 +17,24 @@ the user's `observability.trace_detail` level and never a native transcript;
 recorded free text is redacted again on the way out. Garuda's metered usage
 and the adapter-reported figure stay separate fields and are never summed.
 
+## 2026-11-25 — SDK refuses mode and mcp_config on ACP; routed --bg limits refused at admission (#724)
+
+`SoftwareAgent` and `Conversation` on an ACP runtime raise
+`OptionsUnsupportedOnRuntime` (`sdk.options_unsupported`) before the harness
+starts for `mcp_config=` (MCP servers are not forwarded to external harnesses)
+and for any `mode=` other than `None`, `standard` or `interactive`. The SDK
+harness path secures only the default permission's harness mode (#700/#709);
+the CLI's readonly ACP path needs confinement the SDK does not set up, so a
+`readonly` request is refused rather than silently widened, and `eval`/
+`rigorous` gates exist only in the native loop. `garuda run --bg` with no named
+runtime or role, when it carries a limit ACP cannot enforce, now repeats the
+foreground's deterministic selection (trusted routing, rules, default) at
+admission (`setup.predict_routed_runtime`) and refuses with the foreground's
+message and exit 2 if it selects ACP. Only when an enabled classifier would be
+consulted is the route unknown at admission; the worker then refuses and settles
+the session `refused` (`background_refusal: run.acp_limit_unenforceable`,
+`refusal_reason`), not `failed`.
+
 ## 2026-11-25 — Remote ACP error text is redacted, failed tool output is not traced, disk quota is not a usage limit (#729, #727, #728)
 
 The `data` cause copied from an agent's JSON-RPC error (#721) and the error's

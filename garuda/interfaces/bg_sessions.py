@@ -155,6 +155,37 @@ def scope_of(args) -> str:
     return scope_for(harness_of(args))
 
 
+def _refuse_acp_limits(args, task: str, binding) -> None:
+    """Refuse at admission an ACP-unenforceable limit the worker would refuse.
+
+    The foreground run's message and exit status, before any session or worker
+    exists (#712). A run that names no runtime or role is resolved through the
+    same trusted routing and selection the worker uses (#724); only when an
+    enabled classifier would choose is the runtime unknowable here, and then
+    the worker's refusal settles the session as ``refused`` instead.
+    """
+    from garuda.interfaces.role_execution import acp_limit_refusal
+
+    if acp_limit_refusal(args, binding.runtime_id) is None:
+        return  # no limit an ACP runtime would refuse; nothing to predict
+    runtime_id = binding.runtime_id if binding.acp else None
+    if not binding.acp and binding.runtime_reference is None:
+        from garuda.agents.setup import predict_routed_runtime, prepare_runtime_catalog
+        from garuda.runtime.protocol import RuntimeKind
+        from garuda.runtime.registry import RegistryError
+        from garuda.runtime.selection import SelectionError
+
+        try:
+            catalog = prepare_runtime_catalog(args.workspace)
+            predicted = predict_routed_runtime(args, task, catalog)
+        except (RegistryError, SelectionError, ValueError) as exc:
+            raise BackgroundRefused(f"background runtime refused: {exc}") from exc
+        if predicted is not None and catalog.registry.get(predicted).kind is RuntimeKind.ACP:
+            runtime_id = predicted
+    if runtime_id is not None:
+        raise BackgroundRefused(acp_limit_refusal(args, runtime_id))
+
+
 def launch(args: argparse.Namespace | None = None, *, store=None, queue=None, spawn=None,
            reserved_session=None, operation_binding=None, owned_request=None) -> str:
     """Create the session and its queue entry, start the worker, return the session id."""
@@ -192,14 +223,7 @@ def launch(args: argparse.Namespace | None = None, *, store=None, queue=None, sp
         except ValueError as exc:
             raise BackgroundRefused(str(exc)) from exc
     binding = _runtime_binding(args)
-    if binding.acp:
-        # The worker would refuse these when it starts; refuse at admission
-        # with the foreground run's message instead of queueing a failure (#712).
-        from garuda.interfaces.role_execution import acp_limit_refusal
-
-        refusal = acp_limit_refusal(args, binding.runtime_id)
-        if refusal is not None:
-            raise BackgroundRefused(refusal)
+    _refuse_acp_limits(args, task, binding)
     harness = binding.runtime_id
     store = store or SessionStore()
     queue = queue or QueueStore()
