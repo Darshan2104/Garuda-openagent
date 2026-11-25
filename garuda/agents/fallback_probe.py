@@ -19,7 +19,8 @@ from garuda.runtime.registry import RuntimeRegistry
 from garuda.runtime.role_request import catalog_from_document, encode_document, freeze_acp
 from garuda.runtime.roles import acp_permission
 
-REASONS = {"m": "harness.cli_missing", "a": "harness.logged_out", "q": "harness.limit_reached"}
+REASONS = {"m": "harness.cli_missing", "a": "harness.logged_out", "q": "harness.limit_reached",
+           "u": "role.model_unavailable"}
 
 
 def bounded_probe(argv, timeout):
@@ -95,7 +96,9 @@ def decide(payload):
         # Image availability/auth remain unknown until its owned confinement
         # preflight/start. Unknown never permits skipping to another harness.
         reason = None if candidate["confined"] else _skip_reason(
-            catalog, candidate["runtime_id"], login_run=bounded_probe,
+            catalog, candidate["runtime_id"],
+            model_id=candidate["model_id"] if index < len(payload["choices"]) - 1 else None,
+            login_run=bounded_probe,
             limit_check=lambda rid: default_limit_check(catalog, rid, refresh=refresh))
         if reason is None:
             record = getattr(catalog, "observed", {}).get(candidate["runtime_id"])

@@ -621,6 +621,16 @@ def build_parser():
         "asks in a terminal)",
     )
     config_trust.add_argument("--workspace", default=".")
+    config_check = config_sub.add_parser(
+        "check",
+        help="Check each role and fallback before a run: model, effort and the mode its "
+        "permissions select (--probe asks each external harness, without a prompt)",
+    )
+    config_check.add_argument("--workspace", default=".")
+    config_check.add_argument("--probe", action="store_true",
+                              help="Launch each external harness once, without a prompt, and check "
+                              "what it offers for the role model")
+    config_check.add_argument("--json", action="store_true")
 
     agent_parser = subparsers.add_parser("agent", help="Agent definitions")
     agent_sub = agent_parser.add_subparsers(dest="agent_command")
@@ -1177,12 +1187,17 @@ def run_config_trust(args) -> int:
 
 
 def run_config(args) -> int:
-    """`garuda config migrate [--write]` (C.1) and `garuda config trust` (C.2)."""
+    """`garuda config migrate [--write]` (C.1), `garuda config trust` (C.2) and
+    `garuda config check` (#714)."""
     import datetime as _dt
     import sys
 
     if args.config_command == "trust":
         return run_config_trust(args)
+    if args.config_command == "check":
+        from garuda.interfaces.config_check import run as run_config_check
+
+        return run_config_check(args)
     if args.config_command == "show":
         from garuda.config.garuda_yaml import GarudaConfigError
         from garuda.interfaces.onboarding import config_show

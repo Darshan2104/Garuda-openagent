@@ -46,6 +46,7 @@ if TYPE_CHECKING:
 #: was exercised and accepted.
 PROVEN_OPTIONS: dict[tuple[str, str], dict[str, str]] = {
     ("claude", "0.85.0"): {"model_id": "model", "effort": "effort", "harness_mode": "mode"},
+    ("claude", "0.110.1"): {"model_id": "model", "effort": "effort", "harness_mode": "mode"},
     ("codex", "2.1.1"): {"model_id": "model", "effort": "reasoning_effort",
                          "harness_mode": "mode"},
     ("codex", "2.9.0"): {"model_id": "model", "effort": "reasoning_effort",
