@@ -721,6 +721,55 @@ async def test_sdk_refuses_model_or_agent_an_acp_runtime_would_ignore(tmp_path, 
     assert store.list_sessions() == []
 
 
+@pytest.mark.parametrize("option", [{"mode": "readonly"}, {"mode": "eval"}, {"mode": "rigorous"},
+                                    {"mcp_config": "mcp.json"}],
+                         ids=["mode_readonly", "mode_eval", "mode_rigorous", "mcp_config"])
+@pytest.mark.parametrize("via", ["run", "conversation"])
+async def test_sdk_refuses_mode_or_mcp_config_an_acp_runtime_would_ignore(tmp_path, monkeypatch,
+                                                                         via, option):
+    """#724: a run mode or MCP config the harness path cannot apply is refused
+    before launch; a readonly request is never silently widened to the
+    harness's default permission mode."""
+    from garuda.config import agent_home
+    from garuda.core.sessions import SessionStore
+    from garuda.interfaces import runtime_cli
+    from garuda.sdk import OptionsUnsupportedOnRuntime
+
+    store = SessionStore(tmp_path / "sessions")
+    agent = SoftwareAgent(workspace=tmp_path, runtime="faketest", store=store, **option)
+    monkeypatch.setattr(agent_home, "resolve_agent_home", lambda workspace: _FakeHome(_fake_extra()))
+
+    def no_launch(*args, **kwargs):
+        pytest.fail("a refused run must not construct the harness")
+
+    monkeypatch.setattr(runtime_cli, "acp_adapter_for_workspace", no_launch)
+    with pytest.raises(OptionsUnsupportedOnRuntime) as refused:
+        if via == "conversation":
+            conversation = agent.conversation()
+            try:
+                await conversation.run("hello")
+            finally:
+                await conversation.close()
+        else:
+            await agent.run("hello")
+    assert refused.value.code == "sdk.options_unsupported"
+    assert next(iter(option)) in str(refused.value)
+    assert store.list_sessions() == []
+
+
+@pytest.mark.parametrize("mode", [None, "standard", "interactive"])
+async def test_sdk_default_modes_still_run_on_an_acp_runtime(tmp_path, monkeypatch, mode):
+    """#724: the default posture asks for nothing the harness path ignores."""
+    from garuda.config import agent_home
+    from garuda.core.sessions import SessionStore
+
+    monkeypatch.setattr(agent_home, "resolve_agent_home", lambda workspace: _FakeHome(_fake_extra()))
+    store = SessionStore(tmp_path / "sessions")
+    result = await SoftwareAgent(workspace=tmp_path, runtime="faketest", store=store,
+                                 mode=mode).run("hello")
+    assert result.success
+
+
 @pytest.mark.parametrize("via", ["run", "conversation"])
 async def test_a_failed_sdk_acp_turn_still_records_its_usage(tmp_path, monkeypatch, via):
     """Like the CLI (#690): a failed SDK ACP turn keeps the cost its adapter

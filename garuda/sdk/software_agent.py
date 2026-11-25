@@ -101,8 +101,9 @@ class SoftwareAgent:
         execute one ACP turn per run through the selected harness; registered
         tools cannot reach a harness, so such a run refuses them with
         ``ToolsUnsupportedOnRuntime`` before it starts, and a ``model``,
-        ``reasoning_model``, ``collection_model``, ``model_binding`` or
-        non-default ``agent`` with ``OptionsUnsupportedOnRuntime``. An ACP result's
+        ``reasoning_model``, ``collection_model``, ``model_binding``,
+        ``mcp_config``, non-default ``agent`` or a ``mode`` other than
+        ``standard``/``interactive`` with ``OptionsUnsupportedOnRuntime``. An ACP result's
         ``success`` means the harness ended its turn, not that Garuda verified it.
         ``fork`` with ``fork_at`` starts a native context-only fork through an
         inclusive zero-based saved message index; files/processes are not restored.
@@ -134,7 +135,8 @@ class SoftwareAgent:
             refuse_unservable_options(
                 self.runtime_name, model=self.model_name, agent=self._agent,
                 reasoning_model=self.reasoning_model, collection_model=self.collection_model,
-                model_binding=self.model_binding)
+                model_binding=self.model_binding, mode=self.mode,
+                mcp_config=self.mcp_config)
             return await self._run_acp(task)
         from garuda.config.agent_home import resolve_agents_dirs
 
