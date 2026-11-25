@@ -72,6 +72,9 @@ class RestartState(str, Enum):
     #: an ACP run). Its children are recovered like any other, but the native
     #: loop never resumes it: ownership only moves by an explicit handoff.
     EXTERNAL = "external"
+    #: A flow parent (``kind: flow``), recovered only by ``garuda runtime
+    #: recover``; it continues with ``garuda flow resume``, never a native resume.
+    FLOW = "flow"
 
 
 @dataclass(frozen=True)
@@ -895,6 +898,176 @@ def _release_dead_owner_holdings(store, session_id: str, holders: list, leases, 
     return reaped, notes
 
 
+def _flow_parent_meta(source, session_id: str) -> dict | None:
+    """The meta of a flow parent session (``kind: flow``), else None."""
+    try:
+        meta = source.load_meta(session_id)
+    except Exception as exc:
+        raise RecoveryError(f"session {session_id} is unreadable: {exc}") from exc
+    if isinstance(meta, dict) and meta.get("kind") == "flow" and isinstance(meta.get("flow"), dict):
+        return meta
+    return None
+
+
+def _refuse_flow_step(source, session_id: str, cause: RecoveryError | None = None) -> None:
+    """Point a flow step session's recovery at its flow, which owns the holdings."""
+    try:
+        meta = source.load_meta(session_id)
+    except Exception:
+        return
+    step = meta.get("flow_step") if isinstance(meta, dict) else None
+    if not isinstance(step, dict) or not isinstance(step.get("flow_session"), str):
+        return
+    flow = step["flow_session"]
+    raise RecoveryError(
+        f"session {session_id} is step {step.get('step')} (attempt {step.get('attempt')}) of "
+        f"flow {flow}, which holds the workspace lease and the step's capacity slot; run "
+        f"`garuda runtime recover --session {flow}`" + (f" ({cause})" if cause else "")) from cause
+
+
+def docker_container_exists(name: str) -> bool | None:
+    """Whether a Docker container named exactly ``name`` exists; None = cannot tell."""
+    import shutil
+
+    from garuda.workspace.confined_acp import _docker_env
+
+    docker = shutil.which("docker")
+    if docker is None:
+        return None
+    try:
+        done = subprocess.run(
+            [docker, "container", "ls", "--all", "--quiet", "--no-trunc",
+             "--filter", f"name=^/{name}$"],
+            capture_output=True, text=True, timeout=30, env=_docker_env(), check=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if done.returncode != 0:
+        return None
+    rows = done.stdout.split()
+    if any(len(row) != 64 or any(c not in "0123456789abcdef" for c in row) for row in rows):
+        return None
+    return bool(rows)
+
+
+def _owned_docker_intents(store, flow_session: str) -> list[dict]:
+    """Owned Docker records of the flow's confined steps that never published closure."""
+    root = getattr(store, "root", None)
+    if root is None:
+        return []
+    directory = Path(root) / "owned-docker"
+    if not directory.is_dir():
+        return []
+    found = []
+    try:
+        entries = sorted(directory.iterdir())
+    except OSError as exc:
+        raise RecoveryError(f"cannot read owned Docker records: {exc}; refusing") from exc
+    for entry in entries:
+        try:
+            intent = json.loads((entry / "intent.json").read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            continue  # a record directory whose intent never landed created nothing
+        except (OSError, ValueError) as exc:
+            raise RecoveryError(
+                f"owned Docker record {entry.name} is unreadable: {exc}; refusing") from exc
+        if not isinstance(intent, dict):
+            raise RecoveryError(f"owned Docker record {entry.name} is malformed; refusing")
+        if intent.get("parent_id") != flow_session or (entry / "closure.json").exists():
+            continue
+        names = intent.get("names")
+        if (not isinstance(names, dict) or not names
+                or any(not isinstance(n, str) or not n for n in names.values())):
+            raise RecoveryError(f"owned Docker record {entry.name} is malformed; refusing")
+        found.append(intent)
+    return found
+
+
+def _prove_flow_executors_gone(store, flow_session: str, *, docker=None) -> None:
+    """Refuse unless every step worker and owned container of the flow is gone (#760).
+
+    Step workers run under their own supervisor in their own session; the
+    lineage scan at reclaim covers their descendants, and here each recorded
+    step owner must itself be proved dead. Confined steps' containers belong
+    to the Docker daemon, outside any lineage, so each recorded one without a
+    published closure must be absent by name.
+    """
+    from garuda.runtime.ownership import owner_liveness
+
+    for step_session in _flow_step_sessions(store, flow_session):
+        try:
+            meta = store.load_meta(step_session)
+        except Exception as exc:
+            raise RecoveryError(
+                f"flow step session {step_session} is unreadable: {exc}; refusing") from exc
+        state = meta.get("state") if isinstance(meta, dict) else None
+        owner = state.get("owner") if isinstance(state, dict) else None
+        if not isinstance(owner, dict) or state.get("process") != "live":
+            continue  # never started, or settled with its process exited
+        alive = owner_liveness(owner)
+        if alive is not False:
+            raise RecoveryError(
+                f"flow step session {step_session} worker (pid {owner.get('pid')}) "
+                + ("is still running" if alive else "cannot be proved gone")
+                + "; refusing")
+    exists = docker or docker_container_exists
+    for intent in _owned_docker_intents(store, flow_session):
+        for name in sorted(intent["names"].values()):
+            present = exists(name)
+            if present is False:
+                continue
+            raise RecoveryError(
+                f"confined step session {intent.get('session_id')} recorded Docker container "
+                f"{name} and its removal was never proved; "
+                + (f"it still exists: `docker rm -f {name}`" if present else
+                   "Docker cannot confirm it is gone (is the daemon reachable?)")
+                + "; refusing")
+
+
+def _settle_dead_flow(store, flow_session: str, meta: dict, leases, capacity) -> list[str]:
+    """Record a flow whose owner died ``running`` as interrupted, once nothing is held."""
+    from garuda.runtime.capacity import CapacityError, CapacityStore
+    from garuda.runtime.ownership import owner_liveness
+    from garuda.runtime.session_state import interrupted
+    from garuda.workspace.lease import LeaseError, LeaseStore
+
+    if meta.get("flow_state") != "running":
+        return []
+    state = meta.get("state")
+    owner = state.get("owner") if isinstance(state, dict) else None
+    if not isinstance(owner, dict) or owner_liveness(owner) is not False:
+        return [f"flow {flow_session} is still recorded running: its owner is not proved dead"]
+    try:
+        if (leases if leases is not None else LeaseStore()).live_holders_for_session(flow_session):
+            return [f"flow {flow_session} is still recorded running: a workspace lease remains"]
+        if (capacity if capacity is not None else CapacityStore()).slots_for_session(flow_session):
+            return [f"flow {flow_session} is still recorded running: a capacity slot remains"]
+    except (LeaseError, CapacityError, OSError) as exc:
+        return [f"flow {flow_session} is still recorded running: holdings unreadable ({exc})"]
+    from garuda.flows.engine import unsettled_attempts
+
+    pending = unsettled_attempts(store, flow_session)
+    step = pending[0][0] if pending else None
+    detail = (f" while step {pending[0][0]} (attempt {pending[0][1]}) was running" if pending else "")
+
+    def _settle(current: dict) -> dict:
+        if current.get("flow_state") != "running" or current.get("state") != state:
+            raise RecoveryError(f"flow {flow_session} changed while recovering; refusing")
+        return {"flow_state": "interrupted", "status": "failed", "state": interrupted(),
+                "flow_stop": {"code": "flow.owner_lost", "step": step,
+                              "message": f"the flow's process died{detail}; its holdings were "
+                                         "released by `garuda runtime recover`"}}
+
+    store.mutate_meta(flow_session, _settle)
+    for step_session in _flow_step_sessions(store, flow_session):
+        try:
+            store.mutate_meta(step_session, lambda m: (
+                {"status": "failed", "state": interrupted(), "error_code": "flow.owner_lost"}
+                if m.get("status") == "running" else {}))
+        except Exception:
+            pass  # best effort: the flow record is the authority
+    return [f"flow {flow_session} recorded interrupted{detail}"]
+
+
 def _refuse_live_owner(child: dict, identify: Callable[[int], str | None]) -> None:
     """Refuse while the Garuda process that launched `child` is still alive."""
     owner = child["owner"]
@@ -981,6 +1154,7 @@ def recover(
     source_reader: RecoverySource | None = None,
     release_dead_owner: bool = False,
     capacity=None,
+    docker: Callable[[str], bool | None] | None = None,
 ) -> RecoveryReport:
     """Audit, classify, reap identity-matched orphans, and mark rolled-back
     switches. Returns the session to resume; never invents success.
@@ -992,6 +1166,13 @@ def recover(
     ordinary capacity slots of the session and its steps are reclaimed, each
     re-proving owner death and that no live process carries the owner's
     lineage token. A live owner is never evicted.
+
+    A flow parent (#760) is not classified as a native session. Before its
+    holdings are released, every step session's worker must be proved dead
+    and every owned Docker container its confined steps recorded must be
+    proved absent (``docker`` answers whether a container name still exists;
+    ``None`` = cannot tell). A flow whose owner died ``running`` is then
+    recorded ``interrupted``. A flow step session is redirected to its flow.
 
     Order: refuse while a retained workspace lease or a live owning Garuda
     process names the session; audit the persisted trail and classify (both
@@ -1031,7 +1212,19 @@ def recover(
                 f"session {session_id} has a malformed or ambiguous terminal "
                 "trail; refusing without operator action"
             )
-    report = classify(source, session_id)
+    flow_meta = _flow_parent_meta(source, session_id) if release_dead_owner else None
+    if flow_meta is not None:
+        report = RecoveryReport(
+            session_id=session_id, state=RestartState.FLOW, resume_session_id=session_id,
+            notes=(f"a flow parent; continue it with `garuda flow resume {session_id}`",))
+    else:
+        if release_dead_owner:
+            _refuse_flow_step(source, session_id)  # its flow holds the lease and slot
+        try:
+            report = classify(source, session_id)
+        except RecoveryError as exc:
+            _refuse_flow_step(source, session_id, exc)
+            raise
 
     reaped, notes = _settle_children(store, source, session_id, children, is_alive=is_alive,
                                      reap=reap, identify=identify, reap_timeout=reap_timeout)
@@ -1050,10 +1243,15 @@ def recover(
             return _settle_children(store, store, step_session, step_children, is_alive=is_alive,
                                     reap=reap, identify=identify, reap_timeout=reap_timeout)
 
+        if flow_meta is not None:
+            # Every executor of the flow must be gone before its holdings go (#760).
+            _prove_flow_executors_gone(store, session_id, docker=docker)
         step_reaped, release_notes = _release_dead_owner_holdings(
             store, session_id, dead_leases, leases, capacity, _settle_step)
         reaped += step_reaped
         notes += release_notes
+        if flow_meta is not None:
+            notes += _settle_dead_flow(store, session_id, flow_meta, leases, capacity)
     if report.state is RestartState.ROLLED_BACK:
         # Keep the target id so a prepared child left by a crash in a later
         # recovery attempt still binds to this handoff attempt.
@@ -1077,6 +1275,10 @@ def require_native_resumable(report: RecoveryReport) -> RecoveryReport:
     acknowledged handoff moved the single mutating ownership away, so a
     native continuation would silently take it back.
     """
+    if report.state is RestartState.FLOW:
+        raise RecoveryError(
+            f"session {report.session_id} is a flow; continue it with "
+            f"`garuda flow resume {report.session_id}`")
     if report.state is RestartState.EXTERNAL:
         raise RecoveryError(
             f"session {report.session_id} is owned by an external runtime; "

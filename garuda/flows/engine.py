@@ -41,7 +41,11 @@ from garuda.flows import artifacts as art
 from garuda.workspace.confined_acp import Confinement, ConfinementRefused, require_image
 
 JOURNAL = "journal.jsonl"
-RESUMABLE_CHECKED_STOPS = {"workspace.readonly_unenforced", "flow.step_failed", "flow.output_missing"}
+#: A checked step stopped by a signal (SIGTERM, Ctrl-C) after its owned worker
+#: tree and confinement were proved closed (#760).
+INTERRUPTED_STOP = "flow.interrupted"
+RESUMABLE_CHECKED_STOPS = {"workspace.readonly_unenforced", "flow.step_failed", "flow.output_missing",
+                           INTERRUPTED_STOP}
 
 
 def _settled_refusal(receipt: dict) -> bool:
@@ -208,6 +212,26 @@ async def _settled_sync(call, *args, complete_on_cancel: bool = False, **kwargs)
     return value
 
 
+def _settle_interrupted_step(store, session_id: str) -> None:
+    """Mark a step session its killed worker left ``running`` as cancelled (#760).
+
+    Called only after the worker's whole tree was proved closed; a session
+    that already settled keeps its own outcome.
+    """
+    from garuda.runtime.session_state import interrupted
+
+    def _settle(meta: dict) -> dict:
+        if meta.get("status") != "running":
+            return {}
+        return {"status": "cancelled", "error_code": INTERRUPTED_STOP,
+                "state": interrupted(cancelled=True)}
+
+    try:
+        store.mutate_meta(session_id, _settle)
+    except Exception:
+        pass  # best effort: the flow receipt is the authority for the attempt
+
+
 def flow_dir(store, flow_session: str) -> Path:
     return Path(store.session_dir(flow_session)) / "flow"
 
@@ -235,6 +259,15 @@ def receipts(store, flow_session: str) -> list[dict]:
 
 def _receipt_name(step: str, attempt: int) -> str:
     return f"{step}-{attempt}.json"
+
+
+def unsettled_attempts(store, flow_session: str) -> list[tuple[str, int]]:
+    """Launched step attempts (journal intents) with no receipt, read only (#760)."""
+    directory = flow_dir(store, flow_session) / "receipts"
+    return [(entry["step"], entry["attempt"]) for entry in journal(store, flow_session)
+            if entry.get("event") == "intent" and isinstance(entry.get("step"), str)
+            and type(entry.get("attempt")) is int
+            and not (directory / _receipt_name(entry["step"], entry["attempt"])).exists()]
 
 
 def recover(store, flow_session: str) -> list[str]:
@@ -492,8 +525,13 @@ class FlowRunner:
                     and step["id"] not in settled):
                 self._review_plans(step, self.steps[-1])
 
-    def _closed_step(self, outcome: StepResult, step: dict, attempt: int, role_record=None) -> dict:
-        """Keep only bound lifetime facts, never raw process output tails."""
+    def _closed_step(self, outcome: StepResult, step: dict, attempt: int, role_record=None,
+                     *, interrupted: bool = False) -> dict:
+        """Keep only bound lifetime facts, never raw process output tails.
+
+        Only an ``interrupted`` attempt (#760) may have closed as ``cancelled``:
+        its supervisor still published the ECHILD receipt for the whole tree.
+        """
         from garuda.core.acceptance_request import is_digest
 
         closure = outcome.closure
@@ -516,7 +554,7 @@ class FlowRunner:
                 or len(closure["workspace_identity"]) != 2
                 or any(type(value) is not int or value < 0 for value in closure["workspace_identity"])
                 or process.get("cleanup") != {"backend": "linux-subreaper", "echild": True}
-                or process.get("outcome") != "exited"
+                or process.get("outcome") not in ({"exited", "cancelled"} if interrupted else {"exited"})
                 or not isinstance(process.get("supervisor"), dict)
                 or not isinstance(process.get("command"), dict)):
             raise FlowStopped("flow.cleanup_unproved",
@@ -572,7 +610,8 @@ class FlowRunner:
                     raise FlowStopped("flow.evidence_incomplete", "a settled step receipt changed")
             else:
                 self._closed_step(StepResult(receipt["session_id"], True, "",
-                                             receipt.get("closure")), by_id[key[0]], key[1], receipt.get("role_plan"))
+                                             receipt.get("closure")), by_id[key[0]], key[1], receipt.get("role_plan"),
+                                  interrupted=stopped and receipt["stop"]["code"] == INTERRUPTED_STOP)
             coverage.append({"step": key[0], "attempt": key[1],
                              "boundary_digest": boundary["boundary_digest"]})
         return coverage
@@ -1459,6 +1498,7 @@ class FlowRunner:
 
     async def _run_step(self, step: dict, done: list[dict], lease, *, attempt: int = 1,
                         prompt_extra: str = "", review_admission=None) -> dict:
+        from garuda.runtime.owned_role import StepInterrupted
         from garuda.runtime.roles import RoleRefused
         from garuda.workspace.no_edits import NoEditsGuard
 
@@ -1482,6 +1522,7 @@ class FlowRunner:
         guard = await _settled_sync(NoEditsGuard, self.workspace) if no_edits else None
         capability = lease.delegate(f"{self.flow_session}:{step['id']}:{attempt}")
         started: tuple[str, float] | None = None
+        interrupted: StepInterrupted | None = None
         try:
             if role in self.prepared_fallbacks:
                 from garuda.agents.fallback_probe import select_owned
@@ -1543,6 +1584,18 @@ class FlowRunner:
             raise stop from exc
         except RoleRefused as exc:
             raise FlowStopped(exc.code, str(exc), step=step["id"]) from exc
+        except StepInterrupted as exc:
+            # The owned worker tree and its confinement closed under a signal
+            # (#760). Only a checked CLI flow settles that attempt as a
+            # resumable stop; any other caller keeps the cancellation.
+            if not (self.require_owned and self.verification_cli_checks is not None
+                    and self._evidence is not None):
+                raise
+            interrupted = exc
+            outcome = exc.result
+            task = asyncio.current_task()
+            if task is not None:
+                task.uncancel()  # settled here; nothing else is cancelled
         finally:
             lease.revoke(capability)
         closure = None
@@ -1553,7 +1606,8 @@ class FlowRunner:
             from garuda.runtime.process_supervision import CleanupUncertain
 
             try:
-                closure = self._closed_step(outcome, step, attempt, plan.record() if plan else None)
+                closure = self._closed_step(outcome, step, attempt, plan.record() if plan else None,
+                                            interrupted=interrupted is not None)
             except FlowStopped:
                 await lease.stop_heartbeat()
                 raise
@@ -1576,6 +1630,8 @@ class FlowRunner:
                 "flow_session": self.flow_session, "step": step["id"], "attempt": attempt}})
         except Exception:
             pass  # a launcher without a session record (tests) has nothing to mark
+        if interrupted is not None:
+            await _settled_sync(_settle_interrupted_step, self.store, outcome.session_id)
         receipt: dict[str, Any] = {
             "index": step["index"], "step": step["id"], "role": role, "attempt": attempt,
             "session_id": outcome.session_id, "success": outcome.success,
@@ -1586,6 +1642,11 @@ class FlowRunner:
             **({"evidence_boundary": boundary} if boundary is not None else {}),
         }
         stop: FlowStopped | None = None
+        if interrupted is not None:
+            stop = FlowStopped(INTERRUPTED_STOP,
+                               f"step {step['id']} was interrupted (SIGTERM or Ctrl-C) after its "
+                               "worker and every descendant were proved closed; `garuda flow resume` "
+                               "runs it again under the original checks", step=step["id"])
         if guard is not None:
             check = await _settled_sync(guard.check)
             receipt["no_edits"] = check.record()

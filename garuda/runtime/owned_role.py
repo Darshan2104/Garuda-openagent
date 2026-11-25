@@ -37,6 +37,19 @@ class OwnedRoleRequest:
         return hashlib.sha256(encode_document({"payload": self.payload, "sources": [asdict(source) for source in self.sources], "capacity": asdict(self.capacity_policy) if self.capacity_policy else None}).encode()).hexdigest()
 
 
+class StepInterrupted(asyncio.CancelledError):
+    """A cancelled owned step whose worker tree and confinement are proved closed (#760).
+
+    Still a cancellation everywhere; ``result`` carries the bound closure of
+    the interrupted attempt (outcome ``cancelled``) so a checked flow can
+    record it as a settled, resumable stop.
+    """
+
+    def __init__(self, result):
+        super().__init__("owned role step interrupted")
+        self.result = result
+
+
 def prepare_owned_step(launch, *, timeout=3600) -> OwnedRoleRequest:
     with SourceCapture() as capture:
         if launch.role_plan is not None and launch.role_plan.agent_spec is not None:
@@ -161,50 +174,105 @@ async def execute_owned_role(request: OwnedRoleRequest, capability, *, approval=
     activation_attempted = False
     normal_result = False
     try:
-        endpoint = await control.start(process)
-        started = True
-        if confinement is not None:
-            from garuda.core.sessions import SessionStore
-
-            await control.guard.race(confinement.persist(
-                SessionStore(payload["sessions_root"]), flow["flow_session"], control.parent_snapshot))
-            payload["owned_container"] = await control.guard.race(confinement.prepare())
-            payload["owned_docker"] = confinement.docker
-            await control.guard.race(validate_sources())
-        bootstrap = ("import runpy,sys;sys.path.insert(0,sys.argv[1]);"
-                     "runpy.run_module('garuda.runtime.role_worker',run_name='__main__')")
-        command = (sys.executable, "-I", "-c", bootstrap, str(Path(__file__).resolve().parents[2]))
-        execution = ProcessRequest(command, request.workspace, timeout=request.timeout,
-                                   input_data=encode_document({"request": payload, "control": endpoint}),
-                                   purpose="role")
-        activation_attempted = True
-        await control.guard.race(process.activate(execution))
-        control.activated()
-        terminal = await control.guard.race(process.wait())
-        result = control.result
-        if terminal.outcome != "exited" or (result is not None and result["session_id"] != request.session_id):
-            raise CleanupUncertain("owned role closed without a complete bound result")
-        if control.quarantine_requested and (result is None or "refusal" in result):
-            # The worker itself asked to retain ownership (its own cleanup was
-            # unproved) before it died or refused; that request stands.
-            raise CleanupUncertain("owned role requested quarantine and closed without a complete result")
-        # A worker that died without reporting (killed, crashed, lost its
-        # channel) is a failed step, not unproved cleanup: process.wait()
-        # returned only on the subreaper's ECHILD receipt, so nothing in its
-        # tree can still write. Daemon-held confinement is closed below as on
-        # any other exit (#723).
-        # A settled policy refusal does not undo proved process closure. Reject
-        # changed configuration, but release this closed child's capacity after
-        # any separately owned daemon resources have also been removed below.
         try:
-            await control.guard.race(validate_sources())
-        except AcceptanceWorkError as exc:
-            # This domain refusal arrives only after the source helper itself
-            # has proved closure. CleanupUncertain must retain quarantine.
+            endpoint = await control.start(process)
+            started = True
+            if confinement is not None:
+                from garuda.core.sessions import SessionStore
+
+                await control.guard.race(confinement.persist(
+                    SessionStore(payload["sessions_root"]), flow["flow_session"], control.parent_snapshot))
+                payload["owned_container"] = await control.guard.race(confinement.prepare())
+                payload["owned_docker"] = confinement.docker
+                await control.guard.race(validate_sources())
+            bootstrap = ("import runpy,sys;sys.path.insert(0,sys.argv[1]);"
+                         "runpy.run_module('garuda.runtime.role_worker',run_name='__main__')")
+            command = (sys.executable, "-I", "-c", bootstrap, str(Path(__file__).resolve().parents[2]))
+            execution = ProcessRequest(command, request.workspace, timeout=request.timeout,
+                                       input_data=encode_document({"request": payload, "control": endpoint}),
+                                       purpose="role")
+            activation_attempted = True
+            await control.guard.race(process.activate(execution))
+            control.activated()
+            terminal = await control.guard.race(process.wait())
+            result = control.result
+            if terminal.outcome != "exited" or (result is not None and result["session_id"] != request.session_id):
+                raise CleanupUncertain("owned role closed without a complete bound result")
+            if control.quarantine_requested and (result is None or "refusal" in result):
+                # The worker itself asked to retain ownership (its own cleanup was
+                # unproved) before it died or refused; that request stands.
+                raise CleanupUncertain("owned role requested quarantine and closed without a complete result")
+            # A worker that died without reporting (killed, crashed, lost its
+            # channel) is a failed step, not unproved cleanup: process.wait()
+            # returned only on the subreaper's ECHILD receipt, so nothing in its
+            # tree can still write. Daemon-held confinement is closed below as on
+            # any other exit (#723).
+            # A settled policy refusal does not undo proved process closure. Reject
+            # changed configuration, but release this closed child's capacity after
+            # any separately owned daemon resources have also been removed below.
+            try:
+                await control.guard.race(validate_sources())
+            except AcceptanceWorkError as exc:
+                # This domain refusal arrives only after the source helper itself
+                # has proved closure. CleanupUncertain must retain quarantine.
+                normal_result = True
+                raise RoleRefused("flow.authority_changed",
+                                  "owned role configuration changed during execution") from exc
             normal_result = True
-            raise RoleRefused("flow.authority_changed",
-                              "owned role configuration changed during execution") from exc
-        normal_result = True
+            closure = {"version": 1, "request_digest": request.digest,
+                       "session_id": request.session_id, "parent_id": flow["flow_session"],
+                       "step_id": flow["step"], "attempt": flow["attempt"],
+                       "workspace_identity": payload["workspace_identity"],
+                       "parent_owner": {key: control.parent_snapshot["lease"][key]
+                                        for key in ("pid", "identity", "pgid", "epoch")},
+                       "process": asdict(terminal)}
+            if confinement is not None:
+                closure["confinement"] = await confinement.close()
+            if result is None:
+                return StepResult(request.session_id, False, "", closure=closure,
+                                  error=f"the role worker exited without a result (exit code {terminal.exit_code})")
+            if "refusal" in result:
+                # A typed role refusal (#738): a failed step with proved closure, whose
+                # stop keeps the role's own code instead of a result-less exit.
+                refusal = result["refusal"]
+                return StepResult(result["session_id"], False, "", closure=closure,
+                                  error=f"{refusal['code']}: {refusal['message']}", refusal=dict(refusal))
+            return StepResult(result["session_id"], bool(result["success"] and terminal.exit_code == 0),
+                              result["output"], closure=closure)
+        except asyncio.CancelledError:
+            await process.close()
+            # Local closure and the separate Docker cleanup below must both settle;
+            # no successful result is claimed for cancellation.
+            normal_result = process.result is not None
+            raise
+        finally:
+            control.activated()
+            try:
+                await process.close()
+            finally:
+                try:
+                    if confinement is not None:
+                        try:
+                            await confinement.close()
+                        except BaseException:
+                            normal_result = False
+                            if started:
+                                await control.guard.stop_heartbeat()
+                            raise
+                finally:
+                    if started:
+                        no_child = (not activation_attempted and process.result is not None
+                                    and process.result.command is None)
+                        await control.close(closed=(normal_result or no_child) and process.result is not None)
+    except asyncio.CancelledError as exc:
+        # Cancelled (SIGTERM/Ctrl-C of a checked flow, #760) after the whole
+        # subtree and any confinement closed above: report the proved closure
+        # so the parent can settle the attempt instead of losing it.
+        if (not started or not activation_attempted or control.quarantine_requested
+                or process.result is None or process.result.command is None
+                or process.result.outcome not in {"cancelled", "exited"}):
+            raise
+        terminal = process.result
         closure = {"version": 1, "request_digest": request.digest,
                    "session_id": request.session_id, "parent_id": flow["flow_session"],
                    "step_id": flow["step"], "attempt": flow["attempt"],
@@ -213,43 +281,10 @@ async def execute_owned_role(request: OwnedRoleRequest, capability, *, approval=
                                     for key in ("pid", "identity", "pgid", "epoch")},
                    "process": asdict(terminal)}
         if confinement is not None:
-            closure["confinement"] = await confinement.close()
-        if result is None:
-            return StepResult(request.session_id, False, "", closure=closure,
-                              error=f"the role worker exited without a result (exit code {terminal.exit_code})")
-        if "refusal" in result:
-            # A typed role refusal (#738): a failed step with proved closure, whose
-            # stop keeps the role's own code instead of a result-less exit.
-            refusal = result["refusal"]
-            return StepResult(result["session_id"], False, "", closure=closure,
-                              error=f"{refusal['code']}: {refusal['message']}", refusal=dict(refusal))
-        return StepResult(result["session_id"], bool(result["success"] and terminal.exit_code == 0),
-                          result["output"], closure=closure)
-    except asyncio.CancelledError:
-        await process.close()
-        # Local closure and the separate Docker cleanup below must both settle;
-        # no successful result is claimed for cancellation.
-        normal_result = process.result is not None
-        raise
-    finally:
-        control.activated()
-        try:
-            await process.close()
-        finally:
-            try:
-                if confinement is not None:
-                    try:
-                        await confinement.close()
-                    except BaseException:
-                        normal_result = False
-                        if started:
-                            await control.guard.stop_heartbeat()
-                        raise
-            finally:
-                if started:
-                    no_child = (not activation_attempted and process.result is not None
-                                and process.result.command is None)
-                    await control.close(closed=(normal_result or no_child) and process.result is not None)
+            closure["confinement"] = await confinement.close()  # the settled evidence
+        raise StepInterrupted(StepResult(
+            request.session_id, False, "", closure=closure,
+            error="the step was interrupted before it finished")) from exc
 
 
 async def launch_owned_step(launch):

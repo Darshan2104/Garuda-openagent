@@ -202,6 +202,23 @@ Click a problem to see the fix.
     Older Garuda versions ended such a flow with `flow.cleanup_unproved` and
     quarantined it; start a new flow for those.
 
+    A flow stopped by **SIGTERM** (`timeout`, `systemctl stop`, a CI cancel)
+    now settles like Ctrl-C: the running step is cancelled and its worker tree
+    reaped. For a `--check` flow whose step closed provably, the attempt is
+    recorded as a settled `flow.interrupted` stop, the lease and slot are
+    released, the command exits 143, and `garuda flow resume FLOW_ID` reruns
+    the step under the original checks. If the flow was killed outright
+    (`kill -9`) it stays `running` with a `lease.stale` and `capacity.stale`
+    entry. `garuda runtime recover --session FLOW_ID` then releases them only
+    when the flow's owner, every step worker, every process carrying its
+    lineage, and every Docker container a confined step recorded are proved
+    gone. Otherwise the refusal names the survivor, or gives the
+    `docker rm -f NAME` to run. Recovery records the flow `interrupted`
+    (`flow.owner_lost`). A checked flow killed mid-step can't be resumed,
+    because that attempt never settled and its check evidence can't be proved.
+    `flow resume` says so with `flow.interrupted_unsettled`, so start a new
+    flow. Running `runtime recover` on a step session points you at its flow.
+
 ??? question "`sessions merge` fails with `integration.check_failed`"
 
     The check runs in Docker with your merged code mounted read-only, **no

@@ -1667,6 +1667,33 @@ def _flow_verification_lines(store, flow_session: str, meta: dict) -> list[str]:
     return lines
 
 
+async def _terminable(start, terminated: list[bool]):
+    """Run a flow coroutine so SIGTERM cancels it like Ctrl-C does (#760).
+
+    Without this, SIGTERM (``timeout``, ``systemctl stop``, a CI cancel) killed
+    the process outright: no step was cancelled, nothing settled, and the
+    workspace lease and capacity slot stayed held by a dead owner.
+    """
+    import asyncio
+    import signal
+
+    task = asyncio.ensure_future(start())
+    loop = asyncio.get_running_loop()
+
+    def _terminate() -> None:
+        terminated.append(True)
+        task.cancel()
+
+    try:
+        loop.add_signal_handler(signal.SIGTERM, _terminate)
+    except (NotImplementedError, RuntimeError, ValueError):  # pragma: no cover - not main thread / Windows
+        return await task
+    try:
+        return await task
+    finally:
+        loop.remove_signal_handler(signal.SIGTERM)
+
+
 def run_flow(args) -> int:
     """`garuda flow run|show|resume` (C.6a)."""
     import asyncio
@@ -1720,13 +1747,20 @@ def run_flow(args) -> int:
             print(f"  {receipt['step']} (attempt {receipt['attempt']}): {receipt['status']}; "
                   f"outputs: {outs}{extra}")
         return 0
+    terminated: list[bool] = []
     try:
         service = FlowExecutionService(store)
         if args.flow_command == "resume":
-            outcome = asyncio.run(service.resume(args.flow_session))
+            outcome = asyncio.run(_terminable(lambda: service.resume(args.flow_session), terminated))
         else:
-            outcome = asyncio.run(service.run(
-                args.name, args.task, args.workspace, checks=tuple(args.checks)))
+            outcome = asyncio.run(_terminable(lambda: service.run(
+                args.name, args.task, args.workspace, checks=tuple(args.checks)), terminated))
+    except asyncio.CancelledError:
+        # SIGTERM reached a point with no settled stop: the engine recorded the
+        # flow `interrupted` and released what it proved closed (#760).
+        print("Error: flow.interrupted: the flow was terminated before its step settled; "
+              "`garuda flow show` says what was kept", file=sys.stderr)
+        return 143
     except (GarudaConfigError, LeaseError, engine.FlowStopped, OSError, ValueError,
             KeyError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
@@ -1754,7 +1788,7 @@ def run_flow(args) -> int:
         # The id `garuda flow show` and `garuda flow resume` need.
         print(json.dumps({"flow_session": result.flow_session, "state": "stopped",
                           "code": result.stopped.code}))
-        return 3
+        return 143 if terminated else 3
     print(json.dumps({"flow_session": result.flow_session, "state": "completed"}))
     return 0
 
