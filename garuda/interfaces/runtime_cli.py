@@ -1127,7 +1127,10 @@ async def run_acp_task(
         if runtime is not None:
             # How the harness ended its last turn (#824), for a caller that keeps
             # the typed cause of a failed run (a checked flow's worker, #828).
-            exc.acp_stop_reason = (getattr(runtime, "last_turn", None) or {}).get("stop_reason")
+            try:
+                exc.acp_stop_reason = (getattr(runtime, "last_turn", None) or {}).get("stop_reason")
+            except AttributeError:
+                pass  # an exception type that takes no attributes keeps its own cause
         raise
     except asyncio.CancelledError as exc:
         # Ctrl-C or SIGTERM of `garuda run` names its reason (#807, #808).
