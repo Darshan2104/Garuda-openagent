@@ -92,7 +92,7 @@ class AgentSpec:
         inside the workspace is still project content under the project ceiling."""
         file = Path(path).expanduser()
         if not file.is_file():
-            raise FileNotFoundError(f"Agent file not found: {path}")
+            raise resolve.AgentNotFound(f"Agent file not found: {path}")
         from garuda.config.agent_home import resolve_agents_dirs
 
         dirs = resolve_agents_dirs(str(workspace), agents_dir)

@@ -118,8 +118,8 @@ async def run_task(args) -> int:
         run_acp_command,
         run_agent_task,
         task_text,
-        workspace_refusal,
     )
+    from garuda.workspace.paths import workspace_refusal
 
     fork = getattr(args, "fork", None)
     validate_fork_request(fork=fork, fork_at=getattr(args, "fork_at", None),

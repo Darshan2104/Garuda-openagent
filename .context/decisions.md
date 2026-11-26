@@ -1,5 +1,23 @@
 # Durable decisions
 
+## 2026-11-26 — SDK refusals carry the CLI's agent and workspace codes (#798)
+
+`AgentSpec.load("nonexist")` and `SoftwareAgent(agent="nonexist").run()` raised
+a bare `FileNotFoundError`, and `SoftwareAgent(workspace="/nonexistent").run()`
+surfaced a git `BaselineError`, where the CLI says `agent.not_found` and
+`workspace.missing`. `garuda/agents/resolve.py` now raises `AgentNotFound`
+(`FileNotFoundError`, `code = "agent.not_found"`) for an unknown name and from
+`AgentSpec.from_file` for a missing file. `workspace_refusal` moved from
+`garuda/interfaces/main.py` to `garuda/workspace/paths.py` (the SDK must not
+import the CLI module; `main` re-exports it) beside `require_workspace`, which
+raises `WorkspaceMissing` (`FileNotFoundError`) or `WorkspaceNotDirectory`
+(`NotADirectoryError`), both `WorkspaceUnavailable` with the CLI's codes.
+`SoftwareAgent.run` and `Conversation.run` check a local workspace first, as
+`garuda run` does. The classes subclass the old built-in types so existing
+`except FileNotFoundError` handlers keep working; following `sdk.*` errors, the
+message carries no code prefix and the code is on `.code`. All are exported from
+`garuda.sdk`.
+
 ## 2026-11-26 — A session list limit is an integer >= 1 everywhere (#792)
 
 `garuda sessions --limit -1` sliced away the oldest session, `--limit 0` printed

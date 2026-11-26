@@ -191,6 +191,13 @@ def _read(path: Path, root: Path) -> bytes:
     return data
 
 
+class AgentNotFound(FileNotFoundError):
+    """No agent definition matches the name or file (#798): the CLI's
+    ``agent.not_found``. A ``FileNotFoundError``, so existing handlers still match."""
+
+    code = "agent.not_found"
+
+
 def locate(ref: str, project_dirs: list[Path]) -> tuple[Source, bytes]:
     namespace, name = _split(ref)
     for authority, directory in _locations(namespace, project_dirs):
@@ -205,7 +212,7 @@ def locate(ref: str, project_dirs: list[Path]) -> tuple[Source, bytes]:
                     PACKAGED: directory}[authority]
             return Source(authority, path, hashlib.sha256(data).hexdigest(),
                           f"{qualified}/{name}", root), data
-    raise FileNotFoundError(f"Agent profile not found: {ref}")
+    raise AgentNotFound(f"Agent profile not found: {ref}")
 
 
 # --- parsing --------------------------------------------------------------------------
