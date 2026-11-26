@@ -362,14 +362,34 @@ there is no documented source, or proving one needs a prompt.
 | Login status | Supported: `claude auth status --json` (`loggedIn`, `authMethod`, `subscriptionType`) | Supported: `codex login status` (text) |
 | Opaque account id for binding a limit | Supported: `orgId` from `claude auth status --json` (organization-level) | Supported: `accountId` from `codex app-server` `account/rateLimits/read` |
 | Plan usage windows (used fraction, window, reset) | Unknown: no documented non-interactive interface (`/usage` is interactive) | Supported: `codex app-server` `account/rateLimits/read`, a 300-minute and a 10,080-minute window, each with `usedPercent` and `resetsAt` |
-| Limit-reached signal | Unknown | Declared: `rateLimitReachedType` field (not observed at a limit) |
-| Limit data from the ACP adapter | Unknown: none advertised | Unknown: none advertised |
+| Limit-reached signal | Declared: `claude-agent-acp` fails the turn with JSON-RPC `-32603` `Internal error: You've hit your ...` and `data.errorKind: "rate_limit"` (0.110 adds `data.rateLimit`); read from the adapter source, not observed at a limit | Declared: `rateLimitReachedType` field (not observed at a limit) |
+| Limit data from the ACP adapter | Declared: `usage_update._meta["_claude/rateLimit"]` (`status`, `resetsAt`, `rateLimitType`) during normal turns | Unknown: none advertised |
 | Per-turn or cumulative token usage | Unknown: the adapter reports context occupancy, not per-turn tokens | Unknown: the adapter reports context occupancy, not per-turn tokens |
 
 For native API providers, LiteLLM 1.87 forwards provider rate-limit headers
 (`x-ratelimit-*`, and every header as `llm_provider-*`) in a response's
 `_hidden_params["additional_headers"]`. That is declared, not exercised, since
 proving it needs a paid call.
+
+**Claude limits over ACP.** A Claude Code turn refused at its account limit
+(`data.errorKind` `rate_limit`, or the CLI's own limit wording) stops as
+`harness.limit_reached`, and the stop message of `garuda run` and of a flow step
+says when the limit resets in UTC, for example `harness.limit_reached: You've hit
+your limit ...; the five_hour limit resets at 2026-11-26 15:00 UTC (agent error
+-32603)`. When the error itself carries no reset time (claude-agent-acp 0.85.0),
+the reset comes from the latest `_claude/rateLimit` the adapter reported in the
+same session. The session keeps only `status`, `resets_at` (epoch seconds) and
+`rate_limit_type` as structured fields: in `error_limit` of the session record, in
+the failure evidence, and with the session's reported usage
+(`rate_limit_status`, `rate_limit_resets_at`, `rate_limit_type`). Nothing resumes
+automatically when the limit resets.
+
+**Turn stop reason.** Each ACP turn records the harness's own `stopReason`
+(`end_turn`, `max_tokens`, `max_turn_requests`, `refusal`, `cancelled`) as
+`raw_stop_reason` on its closing event, and `approval_denied` when Garuda denied
+an action in it. Claude ends a turn `end_turn` after a denial, so this flag is how a
+denied turn is told apart. It changes neither the run's status nor how the turn
+settles.
 
 Codex's `getAuthStatus` app-server method can return an auth token when asked.
 Garuda never calls it. A limit or usage value without a supported source stays

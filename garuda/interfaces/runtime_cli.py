@@ -1078,6 +1078,10 @@ async def run_acp_task(
             # Denied tool calls: a completed turn may still have been blocked (#691).
             "approvals": _approval_summary(store, session_id),
             "turn": turn,
+            # How the harness ended the turn (#824): its raw v1 stopReason and whether
+            # Garuda denied an action in it. Additive; the status below is unchanged.
+            "stop_reason": (getattr(runtime, "last_turn", None) or {}).get("stop_reason"),
+            "approval_denied": (getattr(runtime, "last_turn", None) or {}).get("approval_denied"),
             "events": len(events),
             # In memory only: flow artifacts and consult answers sit at the end
             # of replies longer than the stored summary.
@@ -1184,8 +1188,13 @@ def _record_run_error(store, session_id: str, exc: BaseException) -> None:
         if not isinstance(code, str) or not code:
             code = f"acp.rpc_{code}" if type(code) is int else type(exc).__name__
         message, _ = redact_text(" ".join(str(exc).split()))
-        store.update_meta(session_id, {"error_code": code[:120],
-                                       "error_detail": message[:500] or None})
+        updates = {"error_code": code[:120], "error_detail": message[:500] or None}
+        from garuda.acp.protocol import rate_limit_fields
+
+        # A usage limit's structured reset, never text (#824).
+        if limit := rate_limit_fields(getattr(exc, "rate_limit", None), validated=True):
+            updates["error_limit"] = limit
+        store.update_meta(session_id, updates)
     except Exception:
         logger.warning("ACP run error not recorded", exc_info=True)
 

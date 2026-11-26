@@ -69,6 +69,9 @@ class UsageReport:
     harness: str | None = None
     model: str | None = None  # only when the adapter reported it; never the selected role's
     confined: bool = False  # the adapter ran in the harness's confinement image
+    #: The latest account limit the harness reported (#824): ``status``, ``resets_at``
+    #: (epoch seconds) and ``rate_limit_type``, as validated by ``rate_limit_fields``.
+    rate_limit: dict | None = None
 
 
 def _digest(*parts) -> str:
@@ -103,10 +106,15 @@ class AcpUsageNormalizer:
                                             report.context_used, report.context_size,
                                             report.session_id)
         record = self._base(report, SNAPSHOT, f"snap:{report.source}:{ident}")
+        from garuda.acp.protocol import rate_limit_fields
+
+        limit = rate_limit_fields(report.rate_limit, validated=True)
         record.update(
             segment=report.source[:128], cumulative=report.kind == "cumulative",
             context_used=report.context_used, context_size=report.context_size,
             report_id=report.report_id, seq=report.seq, delta_unavailable=unavailable,
+            rate_limit_status=limit.get("status"), rate_limit_resets_at=limit.get("resets_at"),
+            rate_limit_type=limit.get("rate_limit_type"),
             **{k: report.counters.get(k) for k in COUNTERS})
         return {k: v for k, v in record.items() if v is not None}
 

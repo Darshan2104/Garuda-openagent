@@ -107,7 +107,10 @@ SCHEMA: dict[str, dict[str, Any]] = {
     SNAPSHOT: {**_COMMON, **_TOKENS, "segment": _opt_token, "source": _opt_token,
                "context_used": _count, "context_size": _count, "cumulative": _flag,
                "delta_unavailable": _opt_token, "report_id": _opt_token, "seq": _count,
-               "confined": _flag},
+               "confined": _flag,
+               # The harness's latest account limit snapshot (#824), validated upstream.
+               "rate_limit_status": _opt_token, "rate_limit_resets_at": _count,
+               "rate_limit_type": _opt_token},
     DELTA: {**_COMMON, **_TOKENS, "segment": _opt_token, "source": _opt_token, "epoch": _count,
             "window": _opt_token, "turn_id": _opt_token, "report_id": _opt_token, "seq": _count,
             "duration_ms": _number, "confined": _flag},

@@ -94,9 +94,11 @@ Click a problem to see the fix.
     - Leave the collection model off unless you need it (`--no-collection`).
     - Your provider's billing page is the authority on cost.
     - `harness.limit_reached: You've hit your usage limit ...` means an
-      external harness (for example Codex) refused the turn at its plan
-      limit. Wait for the reset time in the message, or use another harness
-      in the role's `fallback:` chain. A host error such as `Disk quota
+      external harness (for example Codex or Claude Code) refused the turn at
+      its plan limit. Wait for the reset time in the message (Claude's is
+      given in UTC, for example `resets at 2026-11-26 15:00 UTC`), or use
+      another harness in the role's `fallback:` chain. Garuda does not resume
+      the run by itself when the limit resets. A host error such as `Disk quota
       exceeded (os error 122)` is not typed as a limit: it stays a plain
       `agent error`, so free disk space instead. Error text an agent sends
       back is redacted for secret patterns before Garuda stores or shows it.
