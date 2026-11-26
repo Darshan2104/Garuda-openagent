@@ -35,9 +35,8 @@ only their sort key and are re-read when a response includes them. A record larg
 :data:`MAX_META_BYTES` is reported unreadable without being read.
 
 **Never waiting on a writer.** ``load_meta`` waits up to five seconds for a protected
-session's metadata lock. Listing does not: it makes one non-blocking attempt
-(:func:`read_protected_nowait`), and a record that is locked serves its previous cached
-version, or — with none — is reported *being written* and retried on the next request.
+session's metadata lock. Listing does not: it reads with ``load_meta(wait=False)``, one
+attempt at the lock, and a record that is locked serves its previous cached version, or — with none — is reported *being written* and retried on the next request.
 
 **Concurrency.** ``http.py`` runs each connection on its own thread. The lock guards only
 the cache's dictionaries and is never held across a file read, so one request's reads
@@ -54,7 +53,7 @@ import threading
 import time
 from dataclasses import dataclass
 
-from garuda.core.session_publication import META_LIMIT, REGISTRY
+from garuda.core.session_publication import META_LIMIT, REGISTRY, MetadataBusy
 from garuda.core.sessions import SessionStore, UnreadableSession, validate_session_limit
 
 #: The strict-publication ceiling for one ``meta.json``. A larger file is not a record
@@ -72,50 +71,8 @@ TORN_READ_RETRIES = 3
 MAX_REPORTED_IDS = 50
 
 
-class SessionBusy(Exception):
-    """A protected session's metadata lock is held by a writer right now."""
-
-
 class BeingWritten(str):
     """A session id in an ``unreadable`` list whose record was locked, not damaged."""
-
-
-def read_protected_nowait(meta_path):
-    """``load_meta``'s strict read for a protected session, with one non-blocking lock try.
-
-    The same steps as ``session_publication.publication_cycle`` — policy, owner-only
-    directory and lock, ownership validation before and after locking, then
-    ``MetadataCycle.read`` — except that a held lock raises :class:`SessionBusy` instead
-    of being polled for five seconds. ``None`` for an ordinary (unprotected) session.
-    """
-    from garuda.core.session_publication import MetadataCycle, _policy, _private_directory
-    from garuda.runtime.private_records import FLAGS, open_directory, private_file
-    from garuda.runtime.strict_store import StorageUnavailable, fcntl
-
-    meta_path = meta_path.absolute()
-    policy = _policy(meta_path)
-    if policy is None:
-        return None
-    if fcntl is None:
-        raise StorageUnavailable("strict metadata requires cross-process locking")
-    directory = open_directory(meta_path.parent)
-    lock = None
-    try:
-        _private_directory(directory)
-        lock = os.open("meta.json.lock", os.O_RDWR | FLAGS, dir_fd=directory)
-        private_file(lock)
-        cycle = MetadataCycle(meta_path, policy, directory, lock, False)
-        cycle.validate()
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise SessionBusy(meta_path.parent.name) from None
-        cycle.validate()
-        return cycle.read()
-    finally:
-        for fd in (lock, directory):  # closing the lock descriptor releases the flock
-            if fd is not None:
-                os.close(fd)
 
 
 def _file_key(st: os.stat_result) -> tuple[int, int, int, int]:
@@ -259,7 +216,7 @@ class CachedSessionStore(SessionStore):
                 meta = self._read(name)
             except FileNotFoundError:
                 return None
-            except SessionBusy:
+            except MetadataBusy:
                 if cached is not None and cached.raw is not None:
                     # Serve the previous version; its stale key makes the next request retry.
                     return cached
@@ -285,13 +242,7 @@ class CachedSessionStore(SessionStore):
         """The record, validated as ``list_sessions`` admits it, without waiting on a lock."""
         with self._lock:
             self.reads += 1
-
-        def load(session_id: str) -> dict:
-            document = read_protected_nowait(self.session_dir(session_id) / "meta.json")
-            # An ordinary record has no lock to wait on: ``load_meta`` reads it directly.
-            return self.load_meta(session_id) if document is None else document
-
-        return self.listed_meta(name, load=load)
+        return self.listed_meta(name, wait=False)
 
     def _materialize(self, selected: list[str], current: dict[str, _Entry],
                      bad: list[str]) -> list[dict]:
@@ -305,7 +256,7 @@ class CachedSessionStore(SessionStore):
                     meta = self._read(name)
                 except FileNotFoundError:
                     continue
-                except SessionBusy:
+                except MetadataBusy:
                     bad.append(BeingWritten(name))
                     continue
                 except (UnreadableSession, ValueError):

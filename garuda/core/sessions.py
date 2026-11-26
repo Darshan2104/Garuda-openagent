@@ -631,12 +631,14 @@ class SessionStore:
             raise ValueError("saved messages must be a JSON list")
         return [message_from_dict(value) for value in values]
 
-    def load_meta(self, session_id: str) -> dict:
+    def load_meta(self, session_id: str, *, wait: bool = True) -> dict:
+        """The session's metadata. ``wait=False`` never waits on a protected session's
+        metadata lock: a held lock raises ``session_publication.MetadataBusy``."""
         path = self.session_dir(session_id) / "meta.json"
         from garuda.config_sources import record_source
         from garuda.core.session_publication import publication_cycle
 
-        with publication_cycle(path) as cycle:
+        with publication_cycle(path, wait=wait) as cycle:
             if cycle is not None:
                 document = cycle.read()
                 record_source(path, cycle.raw)
@@ -720,15 +722,15 @@ class SessionStore:
         metas.sort(key=lambda m: m.get("updated_at", ""), reverse=True)
         return metas if limit is None else metas[:limit]
 
-    def listed_meta(self, session_id: str, *, load=None) -> dict:
+    def listed_meta(self, session_id: str, *, wait: bool = True) -> dict:
         """One session's metadata as ``list_sessions`` admits it.
 
         ``FileNotFoundError`` when the directory holds no ``meta.json`` (not a
         session), :class:`UnreadableSession` when it cannot be read or parsed,
-        and ``ValueError`` when it parses but is not a listable record.
-        ``load`` replaces ``load_meta`` for a reader that must not wait on a
-        writer's lock; whatever else it raises propagates unchanged.
+        and ``ValueError`` when it parses but is not a listable record. With
+        ``wait=False`` a held metadata lock raises ``MetadataBusy`` unchanged.
         """
+        from garuda.core.session_publication import MetadataBusy
         from garuda.runtime.strict_store import StorageError
 
         try:
@@ -740,7 +742,9 @@ class SessionStore:
         if not stat.S_ISREG(mode):
             raise FileNotFoundError(session_id)
         try:
-            meta = (load or self.load_meta)(session_id)
+            meta = self.load_meta(session_id, wait=wait)
+        except MetadataBusy:
+            raise
         except (OSError, ValueError, StorageError) as exc:
             raise UnreadableSession(f"Session {session_id} metadata is unreadable") from exc
         if not isinstance(meta, dict):
