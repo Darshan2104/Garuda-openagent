@@ -11,6 +11,7 @@ import os
 import tempfile
 from pathlib import Path
 
+from browser_support import launch
 from playwright.sync_api import sync_playwright
 
 BASE = os.environ.get("GARUDA_CHECK_BASE", "http://127.0.0.1:8899/")
@@ -28,8 +29,7 @@ def check(label, cond, detail=""):
 
 
 with sync_playwright() as p:
-    channel = os.environ.get("GARUDA_CHECK_CHANNEL")
-    browser = p.chromium.launch(channel=channel) if channel else p.chromium.launch()
+    browser = launch(p)
     page = browser.new_page(viewport={"width": 1500, "height": 1200})
     page.on("console", lambda m: problems.append(f"console.{m.type}: {m.text}")
             if m.type in ("error", "warning") else None)

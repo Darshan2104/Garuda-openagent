@@ -17,6 +17,7 @@ import tempfile
 import time
 from pathlib import Path
 
+from browser_support import launch
 from playwright.sync_api import sync_playwright
 
 BASE = os.environ.get("GARUDA_CHECK_BASE", "http://127.0.0.1:8897/")
@@ -58,8 +59,7 @@ def no_horizontal_scroll(page):
 
 
 with sync_playwright() as p:
-    channel = os.environ.get("GARUDA_CHECK_CHANNEL")
-    browser = p.chromium.launch(channel=channel) if channel else p.chromium.launch()
+    browser = launch(p)
     context = browser.new_context(viewport={"width": 1440, "height": 1000})
     page = context.new_page()
     page.on("console", on_console)
@@ -210,7 +210,11 @@ with sync_playwright() as p:
     page.wait_for_selector("#home-running-list li")
     page.evaluate("window.__row = document.querySelector('#home-running-list li'); window.scrollTo(0, 200)")
     before = len([u for u in requests if "/api/overview" in u])
-    page.wait_for_timeout(1600)
+    # Three polls at 300 ms; waited for rather than slept on, so a loaded machine is not a FAIL.
+    deadline = time.monotonic() + 10
+    while (len([u for u in requests if "/api/overview" in u]) - before < 3
+           and time.monotonic() < deadline):
+        page.wait_for_timeout(100)
     polled = len([u for u in requests if "/api/overview" in u]) - before
     check("the overview refreshes on its interval", polled >= 3, str(polled))
     check("a poll leaves unchanged rows and scroll in place",

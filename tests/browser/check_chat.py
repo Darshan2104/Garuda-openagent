@@ -27,6 +27,7 @@ import os
 import sys
 import tempfile
 
+from browser_support import count_at_least, launch, settle, text_contains
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
@@ -85,8 +86,18 @@ def open_dashboard(browser, width=1400, height=1000):
     page = browser.new_page(viewport={"width": width, "height": height})
     collect(page)
     page.goto(f"{BASE}#t={TOKEN}", wait_until="networkidle")
-    page.wait_for_timeout(600)
+    settle(page, "() => !!STATE.health")
     return page
+
+
+def wait_server(page, predicate, timeout_ms=15_000):
+    """Poll the server until ``predicate(page)`` holds; its last value either way."""
+    waited, value = 0, predicate(page)
+    while not value and waited < timeout_ms:
+        page.wait_for_timeout(250)
+        waited += 250
+        value = predicate(page)
+    return value
 
 
 def wait_for_card(page, timeout=10_000):
@@ -126,7 +137,7 @@ def narrow(page, name):
 
 
 with sync_playwright() as p:
-    browser = p.chromium.launch(channel="chrome")
+    browser = launch(p)
     page = open_dashboard(browser)
     if page.query_selector("#nav-chat") is None:
         problems.append("the chat nav entry is missing in write mode")
@@ -155,7 +166,7 @@ with sync_playwright() as p:
 
     # --- opening the page starts nothing --------------------------------------
     page.goto(f"{BASE}#/chat", wait_until="networkidle")
-    page.wait_for_timeout(1200)
+    settle(page, "() => !!document.querySelector('#chat-new-form, #chat-form')")
     chats_after_open = len(server(page, "/api/chat")["body"]["chats"])
     print("chats after opening the page:", chats_after_open)
     if chats_after_open:
@@ -175,10 +186,10 @@ with sync_playwright() as p:
     # --- a draft survives a trip to another page -----------------------------
     page.fill("#chat-task", "half-typed thought")
     page.goto(f"{BASE}#/runs", wait_until="networkidle")
-    page.wait_for_timeout(500)
+    # Runs finishes loading first: its late render would otherwise replace whatever came next.
+    settle(page, "() => !document.querySelector('#chat-form, #view .loading')")
     page.goto(f"{BASE}#/chat", wait_until="networkidle")
     page.wait_for_selector("#chat-form", timeout=10_000)
-    page.wait_for_timeout(500)
     draft = page.input_value("#chat-task")
     if draft != "half-typed thought":
         problems.append(f"the typed draft was lost across navigation (now {draft!r})")
@@ -193,7 +204,7 @@ with sync_playwright() as p:
     with open(upload, "w", encoding="utf-8") as handle:
         handle.write("The retry ceiling is 120 seconds.\n")
     page.set_input_files("#src-file", upload)
-    page.wait_for_timeout(1500)
+    count_at_least(page, ".source")
     sources = page.query_selector_all(".source")
     print("\nsources after upload:", len(sources))
     if len(sources) != 1:
@@ -219,7 +230,7 @@ with sync_playwright() as p:
         problems.append("native text did not appear before the streamed call finished")
 
     card = wait_for_card(page)
-    page.wait_for_timeout(500)
+    settle(page, "() => !document.querySelector('.chat-preview')")
     print("approval card:", bool(card))
     if not card:
         problems.append("no approval card appeared for a smart-mode ask")
@@ -333,7 +344,11 @@ with sync_playwright() as p:
         page.mouse.down()
         page.wait_for_timeout(1500)
         page.mouse.up()
-    page.wait_for_timeout(3000)
+    # The turn has finished once its answer is drawn and the poll says the chat is idle.
+    settle(page, """() => !document.querySelector('.notice.approval')
+                     && !document.querySelector('.chat-preview')
+                     && document.querySelectorAll('.chat-agent pre').length >= 2
+                     && STATE.chat && STATE.chat.info && !STATE.chat.info.busy""")
     print("approval POSTs from one long press:", len(approval_posts))
     if len(approval_posts) != 1:
         problems.append(f"a 1.5s press on Approve sent {len(approval_posts)} answers, expected 1")
@@ -386,7 +401,7 @@ with sync_playwright() as p:
         expected_http_errors["on"] = True
         page.route("**/api/approvals/*", conflict)
         page.click("[data-deny]")
-        page.wait_for_timeout(800)
+        text_contains(page, ".notice.approval", "approval_mismatch", timeout=5000)
         page.unroute("**/api/approvals/*")
         expected_http_errors["on"] = False
         shown = (page.inner_text("#toast") or "") + " " + (page.inner_text(".notice.approval") or "")
@@ -403,7 +418,8 @@ with sync_playwright() as p:
         }""")
         approval_posts.clear()
         page.dblclick("[data-deny]")
-        page.wait_for_timeout(2500)
+        text_contains(page, "#chat-log", "denied by you")
+        page.wait_for_timeout(500)   # observation: a second POST would have been sent by now
         print("POSTs from a double-click on Deny:", len(approval_posts))
         if len(approval_posts) != 1:
             problems.append(f"a double-click sent {len(approval_posts)} answers, expected 1")
@@ -420,7 +436,8 @@ with sync_playwright() as p:
     # the route, the panel and the provenance line in the saved file.
     page.fill("#src-url", "https://example.test/retry-docs")
     page.click("#src-add-url")
-    page.wait_for_timeout(2000)
+    count_at_least(page, ".source", 2)
+    text_contains(page, ".sources", "example.test")
     rows = page.query_selector_all(".source")
     print("\nsources after a URL fetch:", len(rows))
     if len(rows) != 2:
@@ -454,7 +471,7 @@ with sync_playwright() as p:
     page.unroute("**/api/**")
     if page.query_selector("#chat-retry"):
         page.click("#chat-retry")
-    page.wait_for_timeout(2000)
+    settle(page, "() => { const b = document.getElementById('chat-offline'); return b && b.hidden; }")
     expected_http_errors["on"] = False
     banner = page.query_selector("#chat-offline")
     if banner is None or banner.is_visible():
@@ -470,9 +487,8 @@ with sync_playwright() as p:
     page.click("#chat-send")
     page.wait_for_timeout(100)
     page.click("a[data-nav='runs']")
-    page.wait_for_timeout(4000)
+    parked = wait_server(page, pending_count)
     page.unroute("**/api/chat/*/turn")
-    parked = pending_count(page)
     print("\nthird ask parked while the user is on Runs:", parked)
     if parked != 1:
         problems.append("the third ask did not park (or was reaped while the tab was open)")
@@ -509,7 +525,7 @@ with sync_playwright() as p:
     page.wait_for_selector("#chat-form", timeout=10_000)
     if (page.text_content("#chat-meta") or "").strip() != meta.strip():
         problems.append("a new tab did not resume the live chat")
-    page.wait_for_timeout(1500)
+    text_contains(page, "#chat-log", "stopped watching")
     denied = [t for t in page.locator(".chat-denied pre").all_text_contents()]
     print("denial rows:", denied)
     if not denied or "stopped watching" not in denied[-1]:
@@ -579,7 +595,7 @@ with sync_playwright() as p:
     # --- the server losing the chat is said, never papered over ----------------
     expected_http_errors["on"] = True
     server(page, f"/api/chat/{page.evaluate('STATE.chat.id')}", method="DELETE")
-    page.wait_for_timeout(2500)
+    count_at_least(page, ".chat-gone")
     gone = page.query_selector(".chat-gone")
     print("\nafter the chat was ended elsewhere:", bool(gone))
     if not gone or "gone" not in gone.inner_text().lower():
@@ -593,7 +609,7 @@ with sync_playwright() as p:
     if page.query_selector("#chat-new-start"):
         page.click("#chat-new-start")
         page.wait_for_selector("#chat-form", timeout=10_000)
-        page.wait_for_timeout(1200)
+        settle(page, "() => STATE.chat && STATE.chat.info && STATE.chat.info.session_id")
 
         def slow_delete(route):
             if route.request.method == "DELETE":
@@ -606,7 +622,7 @@ with sync_playwright() as p:
         page.wait_for_timeout(200)
         in_flight = page.evaluate("(() => { const b = document.getElementById('chat-close');"
                                   " return b ? b.disabled : null; })()")
-        page.wait_for_timeout(1500)
+        settle(page, "() => location.hash === '#/runs'")
         page.unroute("**/api/chat/*")
         if len(dialogs) != before:
             problems.append("End chat asked for confirmation with nothing running")
