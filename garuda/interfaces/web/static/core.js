@@ -127,9 +127,34 @@ var fmt = {
   }
 };
 
+/* Every legacy `status` word a session record carries, by meaning: a native run writes
+ * `success`, an external harness or a flow `completed`, a dashboard chat `finished` — one
+ * outcome, three words. Anything else (queued, cancelled, a word from a newer writer) stays
+ * the neutral colour rather than claiming success or failure. */
+var STATUS_PILL = { success: "success", completed: "success", finished: "success",
+                    failed: "failed", refused: "failed", running: "running" };
+
+/* A harness login reading, always with when it was taken: a check days old must not read
+ * as current. Runtimes, Providers and Setup all render the same record through this. */
+function loginAge(check) {
+  if (check && check.state === "no_probe") return "no documented status command";
+  if (!check || typeof check.age_seconds !== "number") return "never checked";
+  var s = check.age_seconds;
+  if (s < 60) return "checked just now";
+  if (s < 3600) return "checked " + Math.floor(s / 60) + "m ago";
+  if (s < 86400) return "checked " + Math.floor(s / 3600) + "h ago";
+  return "checked " + Math.floor(s / 86400) + "d ago";
+}
+
+function loginPill(check) {
+  var state = (check && check.state) || "not_checked";
+  var cls = state === "authenticated" ? "success" : (state === "logged_out" ? "failed" : "unknown");
+  return '<span class="pill ' + cls + '" data-login="' + esc(state) + '">login: ' + esc(state.replace(/_/g, " ")) +
+         "</span> " + '<span class="stat-sub login-age">' + esc(loginAge(check)) + "</span>";
+}
+
 function statusPill(status) {
-  var known = { success: 1, failed: 1, running: 1 };
-  var cls = known[status] ? status : "unknown";
+  var cls = STATUS_PILL[status] || "unknown";
   return '<span class="pill ' + cls + '">' + esc(status || "?") + "</span>";
 }
 

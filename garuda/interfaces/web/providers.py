@@ -32,6 +32,7 @@ from garuda.observability.limits import (
 
 WINDOWS = {"5h": 5 * 3600, "7d": 7 * 86400, "30d": 30 * 86400}
 THROUGH_GARUDA = "through Garuda only"
+_TOKEN_KEYS = ("input_tokens", "output_tokens", "total_tokens")
 
 
 def observed_use(records: list[dict], now: float) -> dict[str, Any]:
@@ -41,14 +42,22 @@ def observed_use(records: list[dict], now: float) -> dict[str, Any]:
         native = [r for r in recent if r.get("kind") == "native_model_call"]
         deltas = [r for r in recent if r.get("kind") == "acp_usage_delta"]
         counted = native + deltas
+        snapshots = [r for r in recent if r.get("kind") == "acp_usage_snapshot"]
         known = [r["cost_usd"] for r in counted if r.get("cost_usd") is not None]
+        # A record with no token field is unknown, not zero: summing it as 0 printed
+        # "0 tokens" for a window whose calls never reported a count.
+        tokened = [r for r in counted if any(r.get(k) is not None for k in _TOKEN_KEYS)]
         out[name] = {
-            "sessions": len({r.get("session_id") for r in counted if r.get("session_id")}),
+            "sessions": len({r.get("session_id") for r in counted + snapshots
+                             if r.get("session_id")}),
             "native_calls": sum(r.get("calls", 1) for r in native),
             "acp_turns": len(deltas),
+            # Adapter snapshots: running figures, never summed or counted as turns.
+            "acp_reports": len(snapshots),
             "total_tokens": sum((r.get("total_tokens") or ((r.get("input_tokens") or 0)
                                                            + (r.get("output_tokens") or 0)))
-                                for r in counted),
+                                for r in tokened) if tokened else None,
+            "tokens_unknown_records": len(counted) - len(tokened),
             "cost_usd": round(sum(known), 8) if known else None,
             "cost_unknown_records": sum(cost_is_unknown(record) for record in counted),
         }
@@ -99,10 +108,42 @@ def _login_block(manifest, now: float) -> dict:
 
     cached = cached_login(manifest)
     if cached is None:
-        return {"state": "not_checked", "checked_at": None}
+        return {"state": "not_checked", "checked_at": None, "age_seconds": None}
     state, at = cached
     return {"state": state.value, "checked_at": at or None,
             "age_seconds": round(max(0.0, now - at), 1) if at else None}
+
+
+def login_readings(manifests, *, disabled=frozenset(), refresh: bool = False, run=None,
+                   now: float | None = None) -> dict[str, dict]:
+    """One login reading per harness, the one every dashboard page shows, with its age.
+
+    The Runtimes page used to show discovery's own status-command run (``catalog.discover``:
+    unrecorded, untimed, every inconclusive answer folded into ``unknown``, and not run at
+    all when the adapter binary is missing) while Providers and Setup showed the recorded
+    login check (``acp.login_probe``) however old it was, so one machine read logged in on
+    one page and logged out on the next. The recorded check is the authoritative reading:
+    it keeps logged-out apart from failed/timeout/unrecognized, carries the time it was
+    taken, and is what launch-time checks and Refresh record.
+
+    With ``refresh`` the record is renewed first through ``probe_login``'s own cache (at
+    most once per :data:`~garuda.acp.login_probe.CACHE_TTL`). Only the Runtimes read asks
+    for that, because it already runs the same documented status command through discovery
+    on every request; Providers and Setup only read, and show the reading's age. A disabled
+    harness is never probed.
+    """
+    from garuda.acp.login_probe import CACHE_TTL, probe_login
+
+    out: dict[str, dict] = {}
+    for manifest in manifests:
+        if refresh and manifest.runtime_id not in disabled \
+                and getattr(manifest, "auth_probe", None) is not None:
+            try:
+                probe_login(manifest, cache_ttl=CACHE_TTL, run=run)
+            except Exception:  # a probe that cannot run leaves the last record standing
+                pass
+        out[manifest.runtime_id] = _login_block(manifest, time.time() if now is None else now)
+    return out
 
 
 def cards(entries: list[dict], manifests: dict, *, ledger: Ledger | None = None,
@@ -140,13 +181,38 @@ def cards(entries: list[dict], manifests: dict, *, ledger: Ledger | None = None,
     return {"generated_at": now, "harnesses": harness_cards, "providers": provider_cards}
 
 
-def refresh(workspace: str, *, login_run=None, limit_refresh=None) -> dict[str, Any]:
+def annotate_setup_logins(payload: dict[str, Any], checks: dict[str, dict]) -> dict[str, Any]:
+    """Setup's view with each harness's login reading and when it was taken.
+
+    Setup's diagnostics (``core.setup_view``) read the same recorded check but say only
+    "logged in (last check)", so a reading days old looked current. Each harness login
+    diagnostic gains ``checked_at``/``age_seconds`` from the reading, and ``logins`` lists
+    every harness's reading, the same values the Runtimes and Providers pages show.
+    """
+    login_codes = ("harness.ok", "harness.logged_out", "harness.login_unknown")
+    for diagnostic in payload.get("diagnostics") or []:
+        if diagnostic.get("code") not in login_codes:
+            continue
+        message = str(diagnostic.get("message") or "")
+        rid = diagnostic.get("runtime") or next(
+            (r for r in sorted(checks, key=len, reverse=True) if message.startswith(r + " ")), None)
+        if rid in checks:
+            diagnostic["runtime"] = rid
+            diagnostic["checked_at"] = checks[rid].get("checked_at")
+            diagnostic["age_seconds"] = checks[rid].get("age_seconds")
+    payload["logins"] = [{"runtime_id": rid, **reading} for rid, reading in sorted(checks.items())]
+    return payload
+
+
+def refresh(workspace: str, *, extra: dict | None = None, login_run=None,
+            limit_refresh=None) -> dict[str, Any]:
     """Re-run the documented status reads (no prompt). Returns what was refreshed."""
     from garuda.acp.limit_probe import refresh_codex
     from garuda.acp.login_probe import probe_login
     from garuda.interfaces.web.runtimes import registry_from_context
 
-    registry = registry_from_context({}, workspace)
+    # The dashboard's own registry: the cards it refreshes are the cards it shows.
+    registry = registry_from_context(extra or {}, workspace)
     store = LimitStore()
     done = {"login": [], "limits": []}
     for manifest in registry.manifests:

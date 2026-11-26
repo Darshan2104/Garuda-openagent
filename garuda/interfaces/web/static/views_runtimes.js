@@ -53,7 +53,7 @@ function renderRuntimes(runtimes, detail, detailId) {
       "<td>" + esc(rt.kind) + "</td>" +
       "<td>" + rtPill(rt) + "</td>" +
       "<td>" + esc(rt.version) + "</td>" +
-      "<td>" + esc((rt.auth || "").toUpperCase()) + "</td>" +
+      "<td>" + loginPill(rt.login_check) + "</td>" +
       "</tr>";
   }).join("");
   var detailHtml = '<p class="stat-sub" id="rt-detail">Click a runtime name for its executable, capabilities and auth guidance.</p>';
@@ -62,7 +62,7 @@ function renderRuntimes(runtimes, detail, detailId) {
     '<div class="page-head"><h1>Runtimes</h1>' +
     '<span class="meta">' + runtimes.length + " harnesses</span></div>" +
     '<div class="table-wrap"><table id="rt-table"><thead><tr>' +
-    "<th>Runtime</th><th>Kind</th><th>Health</th><th>Version</th><th>Auth</th>" +
+    "<th>Runtime</th><th>Kind</th><th>Health</th><th>Version</th><th>Login</th>" +
     "</tr></thead><tbody>" + rows + "</tbody></table></div>" +
     detailHtml +
     renderRtOps() + rtDatalistsHtml(runtimes, STATE.rtSessions || [])
@@ -109,7 +109,7 @@ function renderRtDetail(rt) {
   }).join("");
   return '<div class="card" id="rt-detail"><h2>' + esc(rt.runtime_id) + "</h2>" +
     '<div class="meta">kind ' + esc(rt.kind) + " · version " + esc(rt.version) +
-    " · auth " + esc(rt.auth) + "</div>" +
+    "</div>" + (rt.login_check ? "<div class=\"meta\">" + loginPill(rt.login_check) + "</div>" : "") +
     (rt.executable ? '<div class="meta">executable <code>' + esc(rt.executable) + "</code></div>" : "") +
     '<div class="meta">capabilities: ' + esc(caps) + "</div>" +
     (auth ? '<div class="stack">' + auth + "</div>" : "") +
@@ -278,7 +278,10 @@ function useRowHtml(use) {
   return Object.keys(use.windows).map(function (name) {
     var w = use.windows[name];
     return "<tr><td>" + esc(name) + '</td><td class="num">' + esc(w.sessions) + '</td><td class="num">' + esc(w.native_calls) +
-      '</td><td class="num">' + esc(w.acp_turns) + '</td><td class="num">' + esc(fmt.tokens(w.total_tokens)) +
+      '</td><td class="num">' + esc(w.acp_turns === 0 && w.acp_reports ? "not metered" : w.acp_turns) +
+      '</td><td class="num">' + esc(w.total_tokens === null || w.total_tokens === undefined
+        ? (w.tokens_unknown_records ? "unknown" : "—")
+        : fmt.tokens(w.total_tokens) + (w.tokens_unknown_records ? " + " + w.tokens_unknown_records + " unrecorded" : "")) +
       '</td><td class="num">' + (w.cost_usd === null ? "unknown" : esc(fmt.cost(w.cost_usd))) +
       (w.cost_unknown_records && w.cost_usd !== null ? " known + " + esc(w.cost_unknown_records) + " unpriced" : "") + "</td></tr>";
   }).join("");
@@ -320,16 +323,14 @@ function providerCardHtml(card) {
                              : "API provider · " + esc(card.models.join(", "))) + "</span></h2>";
   var body = "";
   if (card.kind === "harness") {
-    var login = card.login.state;
-    body += '<p><span class="pill ' + (login === "authenticated" ? "success" : (login === "logged_out" ? "failed" : "unknown")) +
-            '" data-login="' + esc(login) + '">login: ' + esc(login.replace("_", " ")) + "</span> " +
+    body += "<p>" + loginPill(card.login) + " " +
             (card.available ? '<span class="pill success">available</span>' : '<span class="pill unknown">unavailable</span>') + "</p>";
     body += limitsHtml(card.limits);
   } else {
     body += '<p class="stat-sub">' + esc(card.rate_limits.status) + " — " + esc(card.rate_limits.reason) + "</p>";
   }
   body += '<p class="stat-sub">Observed use (' + esc(card.observed_use.label) + ")</p>" +
-    '<table class="table"><thead><tr><th>Window</th><th>Sessions</th><th>Native calls</th><th>ACP turns</th><th>Tokens</th><th>Cost</th></tr></thead><tbody>' +
+    '<table class="table"><thead><tr><th>Window</th><th class="num">Sessions</th><th class="num">Native calls</th><th class="num">ACP turns</th><th class="num">Tokens</th><th class="num">Cost</th></tr></thead><tbody>' +
     useRowHtml(card.observed_use) + "</tbody></table>";
   return '<div class="card provider-card" data-provider="' + esc(card.id) + '" data-kind="' + esc(card.kind) + '">' + head + body + "</div>";
 }

@@ -145,6 +145,8 @@ def summarize_session(meta: dict[str, Any], store: SessionStore) -> dict[str, An
     live = bool(claims_running and written_ago is not None and written_ago <= LIVE_WINDOW_SECONDS)
     return {
         **row,
+        **_recorded_counts(meta),
+        "duration_ms": _duration_ms(meta, store, session_id),
         "live": live,
         #: Claims to be running but its log went quiet. Surfaced rather than corrected: the
         #: run really did not finish, and silently relabelling it "failed" would invent an
@@ -193,8 +195,6 @@ def list_runs(
     metas = store.list_sessions(limit=MAX_LIMIT)
     rows = []
     for meta in metas:
-        if status and meta.get("status") != status:
-            continue
         if agent and meta.get("agent") != agent:
             continue
         if model and model not in (meta.get("model") or ""):
@@ -203,8 +203,111 @@ def list_runs(
             haystack = f"{meta.get('task') or ''}\n{meta.get('session_id') or ''}".lower()
             if query.lower() not in haystack:
                 continue
-        rows.append(summarize_session(meta, store))
+        row = summarize_session(meta, store)
+        if status and not _matches_status(meta, row, status):
+            continue
+        rows.append(row)
     return {"runs": rows[:limit], "total": len(rows), "limit": limit}
+
+
+#: Token fields a run's ``usage`` may carry; each is read only when it was recorded.
+_TOKEN_FIELDS = ("prompt_tokens", "completion_tokens", "total_tokens")
+
+
+def _count_or_none(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        return None
+    return int(value)
+
+
+def _recorded_counts(meta: dict[str, Any]) -> dict[str, Any]:
+    """Turns and tokens as the session recorded them; ``None`` where nothing was recorded.
+
+    ``row_from_session_meta`` zero-fills both: ``begin`` writes ``turns: 0`` for every
+    session and only the native finisher replaces it, and absent usage reads as 0 tokens.
+    An external-harness session or a flow records neither, so its row said "0 turns,
+    0 tokens" where the truth is "not recorded". A turn count is believed when the native
+    finisher wrote it (that writer always records ``usage``) or a writer recorded a positive
+    count (the SDK's ACP turns); a token count only when ``usage`` carries it.
+    """
+    usage = meta.get("usage") if isinstance(meta.get("usage"), dict) else None
+    turns = _count_or_none(meta.get("turns"))
+    if turns == 0 and usage is None:
+        turns = None
+    counts = {name: _count_or_none((usage or {}).get(name)) for name in _TOKEN_FIELDS}
+    if counts["total_tokens"] is None and None not in (counts["prompt_tokens"],
+                                                         counts["completion_tokens"]):
+        counts["total_tokens"] = counts["prompt_tokens"] + counts["completion_tokens"]
+    return {"turns": turns, **counts}
+
+
+#: Step receipts read at most for one flow's end time.
+MAX_FLOW_RECEIPTS = 200
+
+
+def _stamp(value: Any):
+    from datetime import timezone
+
+    from garuda.eval.costs import parse_timestamp
+
+    parsed = parse_timestamp(value) if isinstance(value, str) else None
+    if parsed is not None and parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _flow_end(store: SessionStore, session_id: str) -> str | None:
+    """The latest time a flow's step receipts recorded, or ``None``.
+
+    A flow written before #763 never advanced its own ``updated_at``, so its created and
+    updated stamps are one instant while its steps ran for minutes. Each step receipt
+    records when that attempt settled.
+    """
+    directory = store.session_dir(session_id) / "flow" / "receipts"
+    if not directory.is_dir():
+        return None
+    latest, latest_text = None, None
+    for path in sorted(directory.glob("*.json"))[:MAX_FLOW_RECEIPTS]:
+        try:
+            receipt = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(receipt, dict):
+            continue
+        for key in ("finished_at", "recorded_at"):
+            stamp = _stamp(receipt.get(key))
+            if stamp is not None and (latest is None or stamp > latest):
+                latest, latest_text = stamp, receipt[key]
+    return latest_text
+
+
+def _duration_ms(meta: dict[str, Any], store: SessionStore, session_id: str) -> int | None:
+    """Wall-clock time from the session's recorded start to its recorded end.
+
+    ``None`` when no end was recorded: ``begin`` stamps ``created_at`` and ``updated_at``
+    with one instant, and a writer that never advances ``updated_at`` (an external
+    harness's settle, a pre-#763 flow) leaves them equal, which used to render as "0ms".
+    A flow ends at the later of its own ``updated_at`` and its step receipts.
+    """
+    start, end = _stamp(meta.get("created_at")), _stamp(meta.get("updated_at"))
+    if meta.get("kind") == "flow" and session_id:
+        receipt_end = _stamp(_flow_end(store, session_id))
+        if receipt_end is not None and (end is None or receipt_end > end):
+            end = receipt_end
+    if start is None or end is None or end <= start:
+        return None
+    return int((end - start).total_seconds() * 1000)
+
+
+def _matches_status(meta: dict[str, Any], row: dict[str, Any], status: str) -> bool:
+    """The status filter matches the legacy ``status`` word or the session's state label.
+
+    Native runs record ``success`` and external harnesses and flows ``completed`` for the
+    same outcome, so filtering on the stored word alone hid half the finished runs.
+    """
+    if meta.get("status") == status or row.get("state_label") == status:
+        return True
+    return status == "success" and (row.get("state") or {}).get("outcome") == "completed"
 
 
 def condenser_threshold(name: str | None) -> float | None:

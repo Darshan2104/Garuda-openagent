@@ -281,6 +281,17 @@ def main() -> int:
         if not run_check("check_consults.py", con_port, shots, con_env):
             failures.append("check_consults.py")
 
+        # --- data correctness: unknowns, outcomes and one login story across pages ------
+        dc_sessions = workdir / "dc-sessions"
+        dc_env = {"GARUDA_GLOBAL_SETTINGS": str(workdir / "dc-settings.yaml")}
+        subprocess.run([sys.executable, str(HERE / "seed_data_correctness.py"), str(dc_sessions)],
+                       check=True, env={**os.environ, **dc_env})
+        dc_port = free_port(8960)
+        processes.append(start_dashboard(dc_sessions, dc_port, workdir / "web-dc.log",
+                                         extra_env=dc_env))
+        if not run_check("check_data_correctness.py", dc_port, shots, dc_env):
+            failures.append("check_data_correctness.py")
+
         # --- read-only starters, with real ACP/flow/acceptance history --------
         starter_workdir = workdir / "starters"
         starter_workdir.mkdir()
