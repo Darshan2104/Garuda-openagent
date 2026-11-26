@@ -4808,3 +4808,13 @@ Absent original authority, changed workspace or evidence, and any phase intent
 or partial check records fail closed. Started checks keep their existing
 read-only reconciliation path. Dashboard ownership and quota continuation
 retain their existing boundaries.
+
+## 2026-11-26: Doctor refuses an unknown `--runtime` id (#777)
+
+`garuda doctor --runtime ID` resolves each ID through the runtime registry, the
+same lookup `garuda run --runtime` uses, so an alias checks the harness it
+names. An unknown ID becomes an error diagnostic, `harness.unknown`. Its message
+is run's refusal ("runtime selection refused: unknown runtime 'ID'"), and its
+fix lists the known harness ids. Doctor keeps its existing exit code contract:
+any error diagnostic exits 1, in text and `--json` output. Known runtimes passed
+in the same call are still checked.

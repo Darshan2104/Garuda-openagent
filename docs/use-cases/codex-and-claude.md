@@ -36,6 +36,8 @@ garuda doctor --runtime claude
 `claude 0.85.0 … logged in`. Garuda reads only the status commands' answers,
 never either login. Don't set `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` when you
 mean to use the subscriptions.
+A mistyped `--runtime` id fails `garuda doctor` with `harness.unknown`,
+which lists the harness ids Garuda knows.
 
 Save the roles and flows below as your user `garuda.yaml`. `garuda doctor`
 prints the path it reads: normally `~/.agent/garuda.yaml`, or
