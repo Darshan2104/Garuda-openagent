@@ -194,9 +194,18 @@ class SoftwareAgent:
         disabled ids are refused before anything launches) and the tenure
         attaches to a persisted unified session — selection is a session
         transition, not an in-memory choice.
+
+        Approvals are fail-closed, as in a headless ``garuda run --runtime``
+        (#801): every ``session/request_permission`` ask parks in the session
+        approval broker and is denied at once (audited), so no ask is ever
+        left unanswered. ``SoftwareAgent`` takes no approval callback; use
+        ``Conversation(approval_handler=...)`` to answer asks. A run that ends
+        by exception, cancellation or timeout settles its session ``failed``
+        or ``cancelled``; it is never left ``running``.
         """
         from garuda.core.events import EventStore
         from garuda.core.sessions import SessionStore
+        from garuda.interfaces.run_guard import broker_approval_handler
         from garuda.interfaces.runtime_cli import (
             acp_adapter_for_workspace,
             attach_acp_segment,
@@ -205,17 +214,30 @@ class SoftwareAgent:
 
         store = self._store or SessionStore()
         events = EventStore()
+        # Bound to the resolved runtime id once the adapter exists; asks only
+        # arrive during the prompt, after that.
+        brokered: list = []
+
+        async def _approve(action: str):
+            return await brokered[0](action)
+
         try:
             _, adapter = acp_adapter_for_workspace(
                 self.workspace,
                 self.runtime_name,
                 store=store,
                 persist_dir=str(store.session_dir(events.session_id)),
+                approval_handler=_approve,
             )
         except ValueError as exc:
             if "disabled by user configuration" in str(exc):
                 raise RegistryError(str(exc)) from exc
             raise
+        # No answerer: the broker denies every ask, audited (fail-closed).
+        handler, _broker = broker_approval_handler(
+            store, events.session_id, adapter.runtime_id, handler=None
+        )
+        brokered.append(handler)
         # The harness ran, not the SDK's native model or agent: record the
         # runtime the way the CLI does (#702).
         store.begin(
@@ -225,17 +247,17 @@ class SoftwareAgent:
             agent=adapter.runtime_id,
             workspace=self.workspace,
         )
-        store.ensure_unified(events.session_id)
-        if self.workspace_kind == "local":
-            try:
-                from garuda.workspace.diff import capture_baseline
-
-                store.record_baseline(
-                    events.session_id, capture_baseline(self.workspace).to_dict()
-                )
-            except Exception:
-                pass
         try:
+            store.ensure_unified(events.session_id)
+            if self.workspace_kind == "local":
+                try:
+                    from garuda.workspace.diff import capture_baseline
+
+                    store.record_baseline(
+                        events.session_id, capture_baseline(self.workspace).to_dict()
+                    )
+                except Exception:
+                    pass
             await adapter.start(task=task, session_id=events.session_id)
             try:
                 # The harness must run in a mode that brokers its approvals (#700).
@@ -248,23 +270,23 @@ class SoftwareAgent:
                 # Like the CLI (#690): the adapter's last usage report is
                 # recorded whatever the outcome, not only after a completed turn.
                 trail = await _acp_trail_with_usage(store, events.session_id, adapter)
+            texts = [
+                e.payload.get("chunk", "") or e.payload.get("text", "")
+                for e in trail
+                if e.kind.value == "message"
+            ]
+            result = AgentResult(
+                success=True,
+                final_message="".join(t for t in texts if isinstance(t, str)),
+                messages=[],
+                turns=turn,
+                metadata={"runtime": self.runtime_name, "api": RUNTIME_API_VERSION},
+            )
+            attach_acp_segment(store, events.session_id, adapter)
+            store.finish(events.session_id, result)
         except BaseException as exc:
             _settle_unfinished(store, events.session_id, exc)
             raise
-        texts = [
-            e.payload.get("chunk", "") or e.payload.get("text", "")
-            for e in trail
-            if e.kind.value == "message"
-        ]
-        result = AgentResult(
-            success=True,
-            final_message="".join(t for t in texts if isinstance(t, str)),
-            messages=[],
-            turns=turn,
-            metadata={"runtime": self.runtime_name, "api": RUNTIME_API_VERSION},
-        )
-        attach_acp_segment(store, events.session_id, adapter)
-        store.finish(events.session_id, result)
         result.metadata["session_id"] = events.session_id
         return result
 

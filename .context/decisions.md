@@ -1,5 +1,22 @@
 # Durable decisions
 
+## 2026-11-26 — SDK ACP runs deny unattended approvals (#801)
+
+`SoftwareAgent._run_acp` attached no approval path, so the harness's first
+`session/request_permission` (e.g. an `execute` call) was never answered and
+the run hung with its session `running`. It now passes the same broker-backed
+handler a headless `garuda run --runtime` uses (`run_guard.broker_approval_handler`
+with no answerer): every ask is parked, denied at once and audited as an
+`approval:*` meta record. `acp_adapter_for_workspace` gained an
+`approval_handler` pass-through for this. `SoftwareAgent` exposes no approval
+callback (native runs have none either), so none is added; callers who want to
+answer asks use `Conversation(approval_handler=...)`, which was already
+deny-by-default. The session record, baseline, start, prompt, segment attach and
+finish now sit in one `try`, so any exception, cancellation or
+`asyncio.wait_for` timeout settles the session `failed`/`cancelled`. A process
+killed by a signal still cannot settle itself; that stays the job of session
+recovery.
+
 ## 2026-11-26 — A session list limit is an integer >= 1 everywhere (#792)
 
 `garuda sessions --limit -1` sliced away the oldest session, `--limit 0` printed

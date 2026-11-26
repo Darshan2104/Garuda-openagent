@@ -241,7 +241,12 @@ export never launch a harness or query its login/quota state.
 - **SDK:** `SoftwareAgent(runtime="codex")` runs one ACP turn and returns an
   `AgentResult`. SDK ACP runs may do at most what `smart` allows, so OpenCode and
   harnesses whose modes Garuda does not classify refuse with
-  `role.mode_unenforced`. `Conversation` can start on ACP and switch ACP-to-ACP through
+  `role.mode_unenforced`. `SoftwareAgent.run` takes no approval callback: like a
+  headless `garuda run --runtime claude`, it denies every harness permission request
+  at once (recorded in the session), so a turn never waits on an unanswered
+  ask; pass `approval_handler=` to `Conversation` to answer them. A run that
+  ends by error, cancellation or timeout settles its session as `failed` or
+  `cancelled`. `Conversation` can start on ACP and switch ACP-to-ACP through
   the transactional handoff path, but refuses an in-process native-to-ACP
   switch; use the CLI handoff for that.
 - **Service:** the JSON-RPC server exposes runtime list, inspect, handoff,
