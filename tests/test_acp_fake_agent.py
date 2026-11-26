@@ -173,6 +173,36 @@ async def test_a_timed_out_prompt_is_cancelled_over_acp_before_the_reap():
     await slow.close()
 
 
+async def test_cancelling_the_awaiting_task_cancels_the_turn_over_acp():
+    """#803: a cancelled prompt task tells the agent `session/cancel`, records
+    the turn cancelled and closes like `cancel()`, never left RUNNING."""
+    slow = _adapter("slow")
+    await slow.start(task="t", session_id="s3")
+    process = slow._process
+    sent = []
+    original = process.session_cancel
+
+    async def recording(session_id):
+        sent.append(session_id)
+        await original(session_id)
+
+    process.session_cancel = recording
+    prompting = asyncio.ensure_future(slow.prompt("slow work"))
+    await asyncio.sleep(0.5)
+    prompting.cancel()
+    # The `slow` agent never reads the notification: the wait is bounded.
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(prompting, 15)
+    assert sent == [slow.native_session_id]
+    assert slow.state is LifecycleState.CLOSED and not process.is_running
+    events, _ = await slow.poll_events(0)
+    assert any(e.kind.value == "lifecycle" and e.payload.get("stop_reason") == "cancelled"
+               for e in events)
+    with pytest.raises(RuntimeClosedError):
+        await slow.prompt("next turn")
+    await slow.close()
+
+
 async def test_approval_flow_and_cancel_paths():
     approval = _adapter("approval")
     await approval.start(task="t", session_id="a1")

@@ -173,6 +173,40 @@ async def test_closing_a_pending_acp_turn_records_cancellation(tmp_path, monkeyp
         await conversation.close()
 
 
+async def test_cancelling_an_acp_turn_task_settles_the_conversation(tmp_path, monkeypatch):
+    """#803: cancelling the task awaiting `run()` ends the harness turn; the
+    next `run()` gets a typed closed error, not `prompt needs IDLE`."""
+    import asyncio
+
+    from garuda.config import agent_home
+    from garuda.core.sessions import SessionStore
+    from garuda.runtime import RuntimeClosedError
+
+    runtimes = _fake_extra()
+    runtimes[0]["command"] = [*FAKE_ARGV[:-1], "slow"]
+    monkeypatch.setattr(agent_home, "resolve_agent_home", lambda workspace: _FakeHome(runtimes))
+    store = SessionStore()
+    conversation = Conversation(workspace=tmp_path, runtime="faketest", store=store)
+    turn = asyncio.create_task(conversation.run("slow work"))
+    try:
+        for _ in range(100):
+            await asyncio.sleep(0.05)
+            if conversation._acp is not None and conversation._acp.state.value == "running":
+                break
+        turn.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(turn, 15)
+        (record,) = store.list_sessions()
+        (child,) = store.load_meta(record["session_id"])["runtime_children"]
+        assert child["state"] == "exited"
+        events, _ = await conversation._acp.poll_events(0)
+        assert any(e.payload.get("stop_reason") == "cancelled" for e in events)
+        with pytest.raises(RuntimeClosedError):
+            await conversation.run("next turn")
+    finally:
+        await conversation.close()
+
+
 class _FakeHome:
     def __init__(self, runtimes):
         self.global_settings = {"runtimes": runtimes}
