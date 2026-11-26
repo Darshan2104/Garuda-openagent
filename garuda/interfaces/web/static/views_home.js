@@ -8,7 +8,7 @@
  *   /api/providers  (slow) each harness's availability and recorded login reading
  *
  * The session rows are the shared read model's, selected on the server from every session
- * (not the newest 200), so an old crashed or waiting session is never missed. Nothing is
+ * (not the newest page /api/sessions returns), so an old crashed or waiting session is never missed. Nothing is
  * computed here that the read model does not say: unknown stays "unknown", a login reading
  * shows its age, and a review is never shown as verification.
  *
@@ -36,6 +36,7 @@ function overviewView() {
   render(
     '<div id="home-root">' +
     '<div class="page-head"><h1>Overview</h1><span class="meta" id="home-updated"></span></div>' +
+    '<div id="home-unreadable"></div>' +
     '<section class="card home-section" id="home-attention" aria-labelledby="home-attention-h">' +
     '<h2 id="home-attention-h">Needs attention</h2><ul class="home-list" id="home-attention-list"></ul>' +
     '<div class="home-status" id="home-attention-status"></div></section>' +
@@ -321,6 +322,8 @@ function homeRenderAll(state) {
 
   // Needs attention: session rows first (fast), then configuration and harness rows (slow).
   var attention = (o ? homeSessionAttention(o) : []).concat(homeSlowAttention(state, harnesses));
+  // Sessions whose records could not be read are left out of every list here; say so.
+  homeSet(el("home-unreadable"), unreadableNote(o));
   homePatchList(el("home-attention-list"), attention);
   var status = [];
   if (state.overviewError) status.push(homeError("sessions", state.overviewError, "overview"));

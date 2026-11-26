@@ -106,7 +106,7 @@ successfully submitted or you navigate away.
   not checked` until one exists).
 
 The session sections come from one fast read, `GET /api/overview`, which
-selects from every session rather than the newest 200, so an old crashed or
+selects from every session rather than the newest page of the Sessions list, so an old crashed or
 waiting session is never missed. Configuration and harness rows come from
 the slower Setup and Providers reads, load separately with a placeholder, and
 show an inline error with **Retry** if they fail; the rest of the page stays
@@ -432,11 +432,15 @@ by a non-atomic writer is `503 session_being_written` with `Retry-After`. An
 agent loop that does not answer in time is `504 unavailable`.
 
 **List responses.** `/api/runs`, `/api/sessions`, `/api/inbox` and `/api/overview` carry
-`unreadable_sessions: {"count", "ids"}` (at most 50 ids; the count is exact).
-The lists are served from an in-memory index of the store that re-reads only
-the `meta.json` files whose size, modification time or inode changed, and
-notices sessions created or deleted since the last request; records over 1 MiB
-are reported unreadable rather than read. `/api/runs/<id>/buffers` and
+`unreadable_sessions: {"count", "ids", "being_written"}` (at most 50 ids; the
+count is exact). The lists are served from an in-memory index of session
+records only: queue positions, approvals, leases and flow journals are read on
+every request. A record is re-read when its `meta.json`, its session directory
+or its publication policy record changes, and sessions created or deleted since
+the last request are noticed. Listing never waits on a writer: a record locked
+mid-publication shows its previous version, or with none is listed under
+`being_written` and read again on the next request. Records over 1 MiB are
+reported unreadable rather than read. `/api/runs/<id>/buffers` and
 `/api/memory/proposals` take `limit` (default 200, at most 1000) and report
 `total`; `/api/runs/<id>/raw` refuses a document over 16 MiB with `413 too_large`.
 
@@ -455,7 +459,7 @@ Providers page discards it.
 | `GET /api/scenario-runs/<id>` | Shared selected-session evidence; `limit` 1–200 and non-negative `offset`, optional workspace index for names |
 | `GET /api/runs`, `GET /api/runs/<id>` | Runs and one run's trace |
 | `GET /api/runs/<id>/tail` | Poll a run for new events |
-| `GET /api/sessions` | `limit` an integer >= 1, capped at 200; every session's row: the four facts, the derived `crashed` label, queue position, worker, approvals waiting, agent digest, resume provenance |
+| `GET /api/sessions` | `limit` an integer >= 1, default 100, capped at 500; every session's row: the four facts, the derived `crashed` label, queue position, worker, approvals waiting, agent digest, resume provenance |
 | `GET /api/sessions/<id>` | One session, with pending approvals and, for a flow, its steps, attempts and review outcome |
 | `GET /api/sessions/<id>/stream` | Live events as server-sent events |
 | `GET /api/sessions/<id>/conversation` | The Models used, links and lanes data |

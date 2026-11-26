@@ -1,13 +1,13 @@
 """Drive the list views over a store with one damaged session.
 
-    python tests/browser/check_unreadable.py
-
-Standalone: it seeds its own sessions directory (one readable run and one directory
-whose ``meta.json`` is ``[]``), starts its own read-only dashboard and drives Chrome.
-What only a browser shows: the Runs, Sessions and Approvals pages all still render, the
-readable run is listed, and each page says "1 session could not be read" instead of
-silently showing fewer rows (or, before the fix, a 400 for the whole page). Fails on any
+Run by ``run_checks.py``, which seeds the store with :func:`seed` (one readable run and one
+directory whose ``meta.json`` is ``[]``) and starts a read-only dashboard over it. What only
+a browser shows: the Overview, Runs, Sessions and Approvals pages all still render, the
+readable run is listed, and each page says "1 session could not be read" instead of silently
+showing fewer rows (or, before the fix, failing the whole page with a 400). Fails on any
 console error or page error.
+
+    python tests/browser/check_unreadable.py --seed SESSIONS_DIR   # what the runner does first
 """
 
 import os
@@ -15,20 +15,10 @@ import sys
 import tempfile
 from pathlib import Path
 
-from playwright.sync_api import sync_playwright
-
-HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
-
-from run_checks import TOKEN, free_port, start_dashboard  # noqa: E402
-
-problems: list[str] = []
-
-
-def check(label, cond, detail=""):
-    print(f"{label}: {'ok' if cond else 'FAIL'} {detail}")
-    if not cond:
-        problems.append(label)
+BASE = os.environ.get("GARUDA_CHECK_BASE", "http://127.0.0.1:8897/")
+TOKEN = os.environ.get("GARUDA_CHECK_TOKEN", "check-token")
+SHOTS = Path(os.environ.get("GARUDA_CHECK_SHOTS", tempfile.mkdtemp(prefix="garuda-check-")))
+NOTE = "1 session could not be read"
 
 
 def seed(sessions: Path) -> None:
@@ -42,50 +32,53 @@ def seed(sessions: Path) -> None:
     (sessions / "zz-damaged" / "meta.json").write_text("[]")
 
 
-workdir = Path(tempfile.mkdtemp(prefix="garuda-check-unreadable-"))
-shots = Path(os.environ.get("GARUDA_CHECK_SHOTS", workdir))
-sessions = workdir / "sessions"
-sessions.mkdir()
-seed(sessions)
-port = free_port(8961)
-process = start_dashboard(sessions, port, workdir / "web.log")
-base = f"http://127.0.0.1:{port}/"
-try:
+def main() -> int:
+    from browser_support import count_is, text_contains
+    from browser_support import launch as launch_browser
+    from playwright.sync_api import sync_playwright
+
+    problems: list[str] = []
+
+    def check(label, cond, detail=""):
+        print(f"{label}: {'ok' if cond else 'FAIL'} {detail}")
+        if not cond:
+            problems.append(label)
+
     with sync_playwright() as p:
-        channel = os.environ.get("GARUDA_CHECK_CHANNEL")
-        browser = p.chromium.launch(channel=channel) if channel else p.chromium.launch()
+        browser = launch_browser(p)
         page = browser.new_page(viewport={"width": 1400, "height": 900})
         page.on("console", lambda m: problems.append(f"console.{m.type}: {m.text}")
                 if m.type in ("error", "warning") else None)
         page.on("pageerror", lambda e: problems.append(f"pageerror: {e}"))
-        page.goto(f"{base}#t={TOKEN}", wait_until="load")
+        page.goto(f"{BASE}#t={TOKEN}", wait_until="load")
 
-        page.goto(f"{base}#/runs", wait_until="load")
-        page.wait_for_selector("#table-card")
-        check("the readable run is listed", "a readable run" in page.locator("#table-card").inner_text())
+        check("the overview says one session could not be read",
+              text_contains(page, "#home-unreadable", NOTE))
+
+        page.goto(f"{BASE}#/runs", wait_until="load")
+        check("the readable run is listed", text_contains(page, "#table-card", "a readable run"))
+        check("runs say one session could not be read", text_contains(page, ".unreadable-note", NOTE))
         note = page.locator(".unreadable-note")
-        check("runs say one session could not be read",
-              note.count() == 1 and "1 session could not be read" in note.inner_text())
         check("the note names the session in its tooltip",
               note.count() == 1 and note.get_attribute("title") == "zz-damaged")
-        page.screenshot(path=str(shots / "unreadable-runs.png"))
+        page.screenshot(path=str(SHOTS / "unreadable-runs.png"))
 
-        page.goto(f"{base}#/sessions", wait_until="load")
-        page.wait_for_selector("#sessions-table")
-        check("sessions still list the readable one", page.locator("tr.session-row").count() == 1)
-        check("sessions say one could not be read",
-              "1 session could not be read" in page.locator(".unreadable-note").inner_text())
+        page.goto(f"{BASE}#/sessions", wait_until="load")
+        check("sessions still list the readable one", count_is(page, "tr.session-row", 1))
+        check("sessions say one could not be read", text_contains(page, ".unreadable-note", NOTE))
 
-        page.goto(f"{base}#/inbox", wait_until="load")
-        page.wait_for_selector(".page-head h1")
-        check("approvals still render", page.locator("#inbox-empty").count() == 1)
-        check("approvals say one could not be read",
-              "1 session could not be read" in page.locator(".unreadable-note").inner_text())
+        page.goto(f"{BASE}#/inbox", wait_until="load")
+        check("approvals still render", count_is(page, "#inbox-empty", 1))
+        check("approvals say one could not be read", text_contains(page, ".unreadable-note", NOTE))
         browser.close()
-finally:
-    process.terminate()
-    process.wait(timeout=10)
 
-for problem in problems:
-    print("PROBLEM:", problem)
-sys.exit(1 if problems else 0)
+    for problem in problems:
+        print("PROBLEM:", problem)
+    return 1 if problems else 0
+
+
+if __name__ == "__main__":
+    if sys.argv[1:2] == ["--seed"]:
+        seed(Path(sys.argv[2]))
+        sys.exit(0)
+    sys.exit(main())

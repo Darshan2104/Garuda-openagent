@@ -101,7 +101,8 @@ def test_one_malformed_session_leaves_every_list_up_and_is_counted(world, raw):
         if ids is not None:
             assert ids == {"good-one"}
         if path != "/api/config":
-            assert payload["unreadable_sessions"] == {"count": 1, "ids": ["zz-bad"]}
+            assert payload["unreadable_sessions"] == {"count": 1, "ids": ["zz-bad"],
+                                                      "being_written": []}
     assert body(call(ctx, "/api/config"))["recent_models"] == ["openrouter/x/y"]
 
 
@@ -227,12 +228,12 @@ def test_a_torn_meta_read_is_retried_not_reported(tmp_path, monkeypatch):
     real = SessionStore.listed_meta
     calls = []
 
-    def racing(self, session_id):
+    def racing(self, session_id, **kwargs):
         calls.append(session_id)
         if len(calls) == 1:
             meta.write_text(complete)  # the writer finishes while we read
             raise UnreadableSession("torn")
-        return real(self, session_id)
+        return real(self, session_id, **kwargs)
 
     monkeypatch.setattr(SessionStore, "listed_meta", racing)
     skipped: list[str] = []
@@ -327,6 +328,174 @@ def test_the_dashboard_context_uses_the_cached_store(tmp_path):
 
     ctx = build_context(DashboardConfig(sessions_dir=tmp_path / "s", allow_run=False))
     assert isinstance(ctx.store, CachedSessionStore)
+
+
+def _cached_ctx(tmp_path):
+    store = CachedSessionStore(root=tmp_path / "sessions")
+    return store, DashboardContext(port=PORT, token=TOKEN, store=store)
+
+
+def _session_row(ctx, session_id):
+    rows = body(call(ctx, "/api/sessions"))["sessions"]
+    return next(row for row in rows if row["session_id"] == session_id)
+
+
+def test_every_record_writer_is_seen_on_the_next_list(tmp_path):
+    """Each writer that changes what ``load_meta`` returns, against a warm cache."""
+    from garuda.runtime import session_state
+
+    store, ctx = _cached_ctx(tmp_path)
+    store.begin("w1", task="t", model="m", agent="build", workspace="/tmp")
+    assert _session_row(ctx, "w1")["state"]["work"] == "working"
+
+    store.update_meta("w1", {"state": {**session_state.started(), "work": "waiting"}})
+    assert _session_row(ctx, "w1")["state"]["work"] == "waiting"  # state change
+
+    store.update_meta("w1", {"quota_recovery": {"state": "waiting", "reason": "limit"}})
+    assert _session_row(ctx, "w1")["quota_recovery"]["reason"] == "limit"  # quota recovery
+
+    store.update_meta("w1", {"flow_state": "step-2"})
+    assert body(call(ctx, "/api/runs"))["runs"][0]["session_id"] == "w1"
+    store.mutate_meta("w1", lambda meta: {"name": "renamed"})  # read-modify-write path
+    assert _session_row(ctx, "w1")["name"] == "renamed"
+
+    store.finish("w1", AgentResult(success=True, final_message="ok", messages=[], turns=1))
+    row = _session_row(ctx, "w1")
+    assert row["state"]["work"] != "working" and row["status"] == "success"  # finish
+
+
+def test_a_protected_sessions_publications_and_tampering_are_seen(tmp_path):
+    from garuda.core import session_publication as publication
+
+    store, ctx = _cached_ctx(tmp_path)
+    store.protect_publication("flow")
+    store.begin("flow", task="verify", model="flow", agent="flow:build", workspace=str(tmp_path))
+    assert _session_row(ctx, "flow")["task"] == "verify"
+    store.update_meta("flow", {"task": "republished"})  # cycle.write: meta, then head
+    assert _session_row(ctx, "flow")["task"] == "republished"
+
+    # Validity that lives beside meta.json: a lost head or registry record makes the strict
+    # read refuse, and the cached list must stop serving the record at once.
+    head = store.session_dir("flow") / publication.HEAD
+    saved = head.read_bytes()
+    head.unlink()
+    payload = body(call(ctx, "/api/sessions"))
+    assert "flow" not in {r["session_id"] for r in payload["sessions"]}
+    assert payload["unreadable_sessions"]["ids"] == ["flow"]
+    head.write_bytes(saved)
+    head.chmod(0o600)
+    assert _session_row(ctx, "flow")["task"] == "republished"
+
+    record = store.root / publication.REGISTRY / "flow.json"
+    record.rename(record.with_suffix(".moved"))
+    assert "flow" in body(call(ctx, "/api/sessions"))["unreadable_sessions"]["ids"]
+
+
+def test_rows_derived_from_other_files_are_never_cached(tmp_path, monkeypatch):
+    """Only the record is cached: approvals, the queue and a flow's journal are read live."""
+    from types import SimpleNamespace
+
+    from garuda.acp.approval_channel import FileApprovalChannel
+    from garuda.acp.broker import ApprovalRequest
+    from garuda.flows import engine
+    from garuda.interfaces.web import routes
+
+    store, ctx = _cached_ctx(tmp_path)
+    store.begin("w1", task="t", model="m", agent="build", workspace="/tmp")
+    store.update_meta("w1", {"kind": "flow", "flow": {"name": "f", "steps": ["plan", "build"]}})
+    # The approvals directory exists before the cache is warmed: creating it is a change to
+    # the session directory, which (correctly) re-reads the record once.
+    (store.session_dir("w1") / "approvals").mkdir(mode=0o700)
+    channel = FileApprovalChannel(store.session_dir("w1") / "approvals", "w1")
+    assert body(call(ctx, "/api/inbox"))["approvals"] == []
+    assert _session_row(ctx, "w1")["approvals_pending"] == 0
+    reads_before = store.reads
+
+    channel.publish(ApprovalRequest("a1", "rm -rf build", "terminal", "native", "w1"),  # park
+                    ceiling="smart", expires_at=time.time() + 3600)
+    assert [a["approval_id"] for a in body(call(ctx, "/api/inbox"))["approvals"]] == ["a1"]
+    assert _session_row(ctx, "w1")["approvals_pending"] == 1
+
+    entries = [{"id": "w1", "state": "queued", "position": 3, "scope": "s"}]  # queue change
+    monkeypatch.setattr(routes, "_queue_or_none", lambda: SimpleNamespace(entries=lambda: entries))
+    assert _session_row(ctx, "w1")["queue"]["position"] == 3
+    entries[0]["position"] = 1
+    assert _session_row(ctx, "w1")["queue"]["position"] == 1
+
+    pending = [("plan", 1)]  # flow step progress lives in the journal, not the record
+    monkeypatch.setattr(engine, "unsettled_attempts", lambda store, sid: list(pending))
+    running = body(call(ctx, "/api/overview"))["running"]["items"]
+    assert running[0]["progress"]["step"] == "plan"
+    pending[:] = [("build", 1)]
+    running = body(call(ctx, "/api/overview"))["running"]["items"]
+    assert running[0]["progress"]["step"] == "build"
+    # None of that needed the record again: it really is the only thing cached.
+    assert store.reads == reads_before
+
+
+def _hold_metadata_lock(store, session_id):
+    import fcntl
+
+    fd = os.open(store.session_dir(session_id) / "meta.json.lock", os.O_RDWR)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    return fd
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="flock")
+def test_a_locked_session_never_delays_a_list(tmp_path):
+    store, ctx = _cached_ctx(tmp_path)
+    _finished(store, "good-one")
+    store.protect_publication("flow")
+    store.begin("flow", task="first", model="flow", agent="flow:build", workspace=str(tmp_path))
+
+    held = _hold_metadata_lock(store, "flow")  # a writer mid-publication, cold cache
+    try:
+        timings, payloads = [], []
+
+        def list_once():
+            started = time.monotonic()
+            payloads.append(body(call(ctx, "/api/sessions")))
+            timings.append(time.monotonic() - started)
+
+        threads = [threading.Thread(target=list_once) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(10)
+        assert len(timings) == 2 and max(timings) < 0.2, timings
+        for payload in payloads:
+            assert {r["session_id"] for r in payload["sessions"]} == {"good-one"}
+            assert payload["unreadable_sessions"]["being_written"] == ["flow"]
+    finally:
+        os.close(held)
+
+    assert _session_row(ctx, "flow")["task"] == "first"  # retried on the next request
+    store.update_meta("flow", {"task": "second"})
+    held = _hold_metadata_lock(store, "flow")  # changed and locked, with a cached version
+    try:
+        started = time.monotonic()
+        row = _session_row(ctx, "flow")
+        assert time.monotonic() - started < 0.2
+        assert row["task"] == "first"  # the previous version, not a wait and not a gap
+    finally:
+        os.close(held)
+    assert _session_row(ctx, "flow")["task"] == "second"
+
+
+def test_the_sessions_cap_is_the_one_the_guide_states(tmp_path, monkeypatch):
+    import re
+    from pathlib import Path
+
+    guide = (Path(__file__).resolve().parents[1] / "docs/guides/web-dashboard.md").read_text()
+    row = next(line for line in guide.splitlines() if line.startswith("| `GET /api/sessions` |"))
+    default, cap = map(int, re.search(r"default (\d+), capped at (\d+)", row).groups())
+    assert (default, cap) == (reads.DEFAULT_LIMIT, reads.MAX_LIMIT)
+
+    store, ctx = _cached_ctx(tmp_path)
+    for i in range(4):
+        _finished(store, f"s{i}")
+    monkeypatch.setattr(reads, "MAX_LIMIT", 3)
+    assert len(body(call(ctx, "/api/sessions", query="limit=999"))["sessions"]) == 3
 
 
 def test_runs_list_summarizes_only_the_rows_it_returns(tmp_path, monkeypatch):

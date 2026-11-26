@@ -402,8 +402,9 @@ def _diagnostic_export(request: Request, ctx: DashboardContext, match) -> Respon
 def _inbox(request: Request, ctx: DashboardContext, _match) -> Response:
     """Pending approvals across active sessions, with the digest each answer must bind.
 
-    Every session, not the newest 200: a session parked on an approval stops updating,
-    so a cap by ``updated_at`` would hide exactly the request that is waiting longest."""
+    Every session, not ``read_model.inbox``'s newest 200: a session parked on an approval
+    stops updating, so a cap by ``updated_at`` would hide exactly the request that is
+    waiting longest."""
     unreadable: list[str] = []
     metas = ctx.store.list_sessions(limit=None, unreadable=unreadable)
     rows = rows_isolating(lambda chunk: read_model.inbox(ListedStore(ctx.store, chunk), limit=None),

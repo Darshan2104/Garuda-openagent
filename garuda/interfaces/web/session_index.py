@@ -1,32 +1,48 @@
-"""The dashboard's session listing: cached, bounded, and tolerant of bad records.
+"""The dashboard's session listing: cached, bounded, tolerant of bad records, never waiting.
 
-Every list view (runs, sessions, inbox, config's recent models) starts from
+Every list view (runs, sessions, inbox, overview, config's recent models) starts from
 ``SessionStore.list_sessions``, which reads and parses every ``meta.json`` in the store
 on every call. At a few thousand sessions that is half a second per request, and the
 nav badge alone asks every 20 seconds. :class:`CachedSessionStore` answers the same call
 from memory and re-reads only what changed.
 
-**What makes a cached entry current.** Each ``meta.json`` is keyed on its inode, size,
-``mtime_ns`` and ``ctime_ns``. Session writers publish with ``os.replace`` (a new inode)
-and a ``chmod`` moves ``ctime``, so a changed, replaced or re-permissioned record never
-matches its old key. The directory listing is keyed on the store root's own ``mtime_ns``,
-which moves whenever a session directory is created or removed. The file is stat'ed
-*before* it is read: a replacement landing between the two leaves new bytes under the old
-key, which the next stat then misses — never old bytes under a new key, which would stick.
+**Only the record is cached.** What a list row derives from other files — the queue
+index, pending approvals, leases and owner liveness, a flow's journal and receipts — is
+read by ``read_model`` and ``overview`` on every request, exactly as before.
+
+**What makes a cached record current.** ``load_meta`` returns the parse of ``meta.json``
+and nothing else, but whether it *succeeds* for a protected session also depends on files
+beside it: the publication marker, initialization stamp, head and lock in the session
+directory, and the policy record in the store's registry. Every writer of a record
+(``merge_meta``, ``mutate_meta``, the publication cycle) publishes ``meta.json`` with
+``os.replace``, so a changed record is a new inode. The key is therefore:
+
+* ``meta.json``'s inode, size, ``mtime_ns`` and ``ctime_ns`` (a ``chmod`` moves ``ctime``);
+* the session directory's inode, ``mtime_ns`` and ``ctime_ns``, which move whenever a
+  file in it is created, removed or replaced — the head, marker, stamp and lock included;
+* the stat of the session's registry policy record, or its absence (skipped while the
+  store has no registry at all, the common case).
+
+The directory listing is keyed on the store root's own ``mtime_ns``. Everything is
+stat'ed *before* it is read: a replacement landing between the two leaves new bytes under
+the old key, which the next stat then misses — never old bytes under a new key.
 
 **What is kept.** Only records that loaded; a record that could not be read is retried
-on the next request rather than remembered as broken, because a protected session that
-is mid-publication reads as broken for a moment and must not stay that way. Records are
-held as compact JSON bytes, not parsed objects, and parsed fresh for each response, so no
-caller can mutate what another request is served. Their total is capped
-(:data:`CACHE_BYTES`); beyond it the oldest sessions keep only their sort key and are
-re-read when a response actually includes them. A record larger than
+on the next request rather than remembered as broken. Records are held as compact JSON
+bytes and parsed fresh for each response, so no caller can mutate what another request
+is served. Their total is capped (:data:`CACHE_BYTES`); beyond it the oldest sessions keep
+only their sort key and are re-read when a response includes them. A record larger than
 :data:`MAX_META_BYTES` is reported unreadable without being read.
 
-**Concurrency.** ``http.py`` runs each connection on its own thread, so one lock guards
-the cache. It is held across a refresh: two threads that both found the cache stale
-would otherwise read the same files twice and race to install their results, and the
-second request of a burst should be served by the first one's work.
+**Never waiting on a writer.** ``load_meta`` waits up to five seconds for a protected
+session's metadata lock. Listing does not: it makes one non-blocking attempt
+(:func:`read_protected_nowait`), and a record that is locked serves its previous cached
+version, or — with none — is reported *being written* and retried on the next request.
+
+**Concurrency.** ``http.py`` runs each connection on its own thread. The lock guards only
+the cache's dictionaries and is never held across a file read, so one request's reads
+cannot delay another's. Two threads that both find a record changed both read it, and the
+next stat corrects whichever installed last if it was the older.
 """
 
 from __future__ import annotations
@@ -38,7 +54,7 @@ import threading
 import time
 from dataclasses import dataclass
 
-from garuda.core.session_publication import META_LIMIT
+from garuda.core.session_publication import META_LIMIT, REGISTRY
 from garuda.core.sessions import SessionStore, UnreadableSession, validate_session_limit
 
 #: The strict-publication ceiling for one ``meta.json``. A larger file is not a record
@@ -56,13 +72,59 @@ TORN_READ_RETRIES = 3
 MAX_REPORTED_IDS = 50
 
 
-def _key(st: os.stat_result) -> tuple[int, int, int, int]:
+class SessionBusy(Exception):
+    """A protected session's metadata lock is held by a writer right now."""
+
+
+class BeingWritten(str):
+    """A session id in an ``unreadable`` list whose record was locked, not damaged."""
+
+
+def read_protected_nowait(meta_path):
+    """``load_meta``'s strict read for a protected session, with one non-blocking lock try.
+
+    The same steps as ``session_publication.publication_cycle`` — policy, owner-only
+    directory and lock, ownership validation before and after locking, then
+    ``MetadataCycle.read`` — except that a held lock raises :class:`SessionBusy` instead
+    of being polled for five seconds. ``None`` for an ordinary (unprotected) session.
+    """
+    from garuda.core.session_publication import MetadataCycle, _policy, _private_directory
+    from garuda.runtime.private_records import FLAGS, open_directory, private_file
+    from garuda.runtime.strict_store import StorageUnavailable, fcntl
+
+    meta_path = meta_path.absolute()
+    policy = _policy(meta_path)
+    if policy is None:
+        return None
+    if fcntl is None:
+        raise StorageUnavailable("strict metadata requires cross-process locking")
+    directory = open_directory(meta_path.parent)
+    lock = None
+    try:
+        _private_directory(directory)
+        lock = os.open("meta.json.lock", os.O_RDWR | FLAGS, dir_fd=directory)
+        private_file(lock)
+        cycle = MetadataCycle(meta_path, policy, directory, lock, False)
+        cycle.validate()
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise SessionBusy(meta_path.parent.name) from None
+        cycle.validate()
+        return cycle.read()
+    finally:
+        for fd in (lock, directory):  # closing the lock descriptor releases the flock
+            if fd is not None:
+                os.close(fd)
+
+
+def _file_key(st: os.stat_result) -> tuple[int, int, int, int]:
     return (st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
 
 
 @dataclass
 class _Entry:
-    key: tuple[int, int, int, int]
+    key: tuple
     #: The sort key of a listable record; ``None`` for a malformed one.
     updated_at: str | None
     #: Why a parsed record is not listable (``list_sessions``' strict ``ValueError``).
@@ -74,14 +136,17 @@ class _Entry:
 def unreadable_report(ids: list[str]) -> dict:
     """The ``unreadable_sessions`` block every list payload carries."""
     unique = sorted(set(ids))
-    return {"count": len(unique), "ids": [name[:128] for name in unique[:MAX_REPORTED_IDS]]}
+    busy = sorted({name for name in ids if isinstance(name, BeingWritten)})
+    return {"count": len(unique), "ids": [name[:128] for name in unique[:MAX_REPORTED_IDS]],
+            "being_written": [name[:128] for name in busy[:MAX_REPORTED_IDS]]}
 
 
 class CachedSessionStore(SessionStore):
     """A :class:`SessionStore` whose ``list_sessions`` is served from a stat-keyed cache.
 
     Same contract as the base method, including its strict default; only the cost
-    differs. Writes, ``load_meta`` and everything else are inherited unchanged.
+    differs, and it never waits on a writer's lock. Writes, ``load_meta`` and everything
+    else are inherited unchanged.
     """
 
     def __init__(self, root=None, *, cache_bytes: int = CACHE_BYTES,
@@ -90,6 +155,7 @@ class CachedSessionStore(SessionStore):
         self._cache_bytes = max(0, cache_bytes)
         self._max_meta_bytes = max_meta_bytes
         self._root_text = os.fspath(self.root)
+        self._registry_text = os.path.join(self._root_text, REGISTRY)
         self._lock = threading.Lock()
         self._entries: dict[str, _Entry] = {}
         self._names: tuple[tuple[int, int], list[str]] | None = None
@@ -102,19 +168,32 @@ class CachedSessionStore(SessionStore):
                       unreadable: list[str] | None = None) -> list[dict]:
         if limit is not None:
             limit = validate_session_limit(limit)
-        with self._lock:
-            names = self._listing()
-            if names is None:
+        names = self._listing()
+        if names is None:
+            with self._lock:
                 self._entries.clear()
-                return []
-            bad: list[str] = []
-            listable, malformed = self._refresh(names, bad)
-            if malformed and unreadable is None:
-                raise ValueError(self._entries[malformed[0]].problem)
-            listable.sort(key=lambda name: self._entries[name].updated_at or "", reverse=True)
-            selected = listable if limit is None else listable[:limit]
-            metas = self._materialize(selected, bad)
-            self._apply_budget(listable)
+            return []
+        with self._lock:
+            known = dict(self._entries)
+        registry = os.path.isdir(self._registry_text)
+        bad: list[str] = []
+        current: dict[str, _Entry] = {}
+        for name in names:
+            entry = self._current(name, known.get(name), bad, registry)
+            if entry is not None:
+                current[name] = entry
+        with self._lock:
+            # Sessions deleted from disk leave the cache here.
+            self._entries = current
+        malformed = [name for name, entry in current.items() if entry.problem is not None]
+        if malformed and unreadable is None:
+            raise ValueError(current[malformed[0]].problem)
+        listable = [name for name, entry in current.items() if entry.problem is None]
+        listable.sort(key=lambda name: current[name].updated_at or "", reverse=True)
+        selected = listable if limit is None else listable[:limit]
+        metas = self._materialize(selected, current, bad)
+        with self._lock:
+            self._apply_budget(listable, current)
         if unreadable is not None:
             unreadable.extend(malformed)
             unreadable.extend(bad)
@@ -125,66 +204,72 @@ class CachedSessionStore(SessionStore):
     def _listing(self) -> list[str] | None:
         """The store root's entries, re-listed only when the root itself changed."""
         try:
-            st = os.stat(self.root)
+            st = os.stat(self._root_text)
         except FileNotFoundError:
-            self._names = None
+            with self._lock:
+                self._names = None
             return None
         key = (st.st_ino, st.st_mtime_ns)
-        if self._names is None or self._names[0] != key:
-            self._names = (key, os.listdir(self.root))
-        return self._names[1]
+        with self._lock:
+            names = self._names
+        if names is None or names[0] != key:
+            names = (key, os.listdir(self._root_text))
+            with self._lock:
+                self._names = names
+        return names[1]
 
-    def _refresh(self, names: list[str], bad: list[str]) -> tuple[list[str], list[str]]:
-        """Bring every entry up to date; return the listable and the malformed names."""
-        listable: list[str] = []
-        malformed: list[str] = []
-        current: dict[str, _Entry] = {}
-        for name in names:
-            entry = self._current(name, bad)
-            if entry is None:
-                continue
-            current[name] = entry
-            (listable if entry.problem is None else malformed).append(name)
-        # Sessions deleted from disk leave the cache here.
-        self._entries = current
-        return listable, malformed
-
-    def _stat(self, name: str) -> os.stat_result | None | bool:
-        """The record's stat; ``None`` when this is not a session, ``False`` if unreadable."""
+    def _key(self, name: str, registry: bool) -> tuple | None | bool:
+        """Everything a record's readability depends on; ``None`` when this is not a
+        session, ``False`` when it cannot be read."""
+        # Plain string joins: pathlib costs more than the stats themselves at this scale.
+        directory = os.path.join(self._root_text, name)
         try:
-            # A plain string join: pathlib costs more than the stat itself at this scale.
-            st = os.stat(os.path.join(self._root_text, name, "meta.json"))
+            meta = os.stat(os.path.join(directory, "meta.json"))
+            folder = os.stat(directory)
         except (FileNotFoundError, NotADirectoryError):
             return None
         except OSError:
             return False
-        if not stat.S_ISREG(st.st_mode):
+        if not stat.S_ISREG(meta.st_mode):
             return None
-        if st.st_size > self._max_meta_bytes:
+        if meta.st_size > self._max_meta_bytes:
             return False
-        return st
+        policy = None
+        if registry:
+            try:
+                policy = _file_key(os.stat(os.path.join(self._registry_text, name + ".json")))
+            except FileNotFoundError:
+                policy = "missing"
+            except OSError:
+                return False
+        return (_file_key(meta), folder.st_ino, folder.st_mtime_ns, folder.st_ctime_ns, policy)
 
-    def _current(self, name: str, bad: list[str]) -> _Entry | None:
+    def _current(self, name: str, cached: _Entry | None, bad: list[str],
+                 registry: bool) -> _Entry | None:
         for _attempt in range(TORN_READ_RETRIES):
-            st = self._stat(name)
-            if st is None:
+            key = self._key(name, registry)
+            if key is None:
                 return None
-            if st is False:
+            if key is False:
                 bad.append(name)
                 return None
-            key = _key(st)
-            cached = self._entries.get(name)
             if cached is not None and cached.key == key:
                 return cached
             try:
                 meta = self._read(name)
             except FileNotFoundError:
                 return None
+            except SessionBusy:
+                if cached is not None and cached.raw is not None:
+                    # Serve the previous version; its stale key makes the next request retry.
+                    return cached
+                bad.append(BeingWritten(name))
+                return None
             except UnreadableSession:
                 # Torn by a writer that does not replace atomically, or mid-publication:
                 # if the file moved while it was read, read it again rather than report it.
-                again = self._stat(name)
-                if again is not None and again is not False and _key(again) != key:
+                again = self._key(name, registry)
+                if again not in (None, False) and again != key:
                     time.sleep(0.01)
                     continue
                 bad.append(name)
@@ -197,18 +282,31 @@ class CachedSessionStore(SessionStore):
         return None
 
     def _read(self, name: str) -> dict:
-        self.reads += 1
-        return self.listed_meta(name)
+        """The record, validated as ``list_sessions`` admits it, without waiting on a lock."""
+        with self._lock:
+            self.reads += 1
 
-    def _materialize(self, selected: list[str], bad: list[str]) -> list[dict]:
+        def load(session_id: str) -> dict:
+            document = read_protected_nowait(self.session_dir(session_id) / "meta.json")
+            # An ordinary record has no lock to wait on: ``load_meta`` reads it directly.
+            return self.load_meta(session_id) if document is None else document
+
+        return self.listed_meta(name, load=load)
+
+    def _materialize(self, selected: list[str], current: dict[str, _Entry],
+                     bad: list[str]) -> list[dict]:
         metas: list[dict] = []
         for name in selected:
-            entry = self._entries[name]
-            if entry.raw is None:
+            entry = current[name]
+            raw = entry.raw
+            if raw is None:
                 # Evicted by the byte budget: re-read the one record this response needs.
                 try:
                     meta = self._read(name)
                 except FileNotFoundError:
+                    continue
+                except SessionBusy:
+                    bad.append(BeingWritten(name))
                     continue
                 except (UnreadableSession, ValueError):
                     bad.append(name)
@@ -216,14 +314,14 @@ class CachedSessionStore(SessionStore):
                 entry.raw = json.dumps(meta, separators=(",", ":")).encode("utf-8")
                 metas.append(meta)
                 continue
-            metas.append(json.loads(entry.raw))
+            metas.append(json.loads(raw))
         return metas
 
-    def _apply_budget(self, newest_first: list[str]) -> None:
+    def _apply_budget(self, newest_first: list[str], current: dict[str, _Entry]) -> None:
         """Keep the newest records' bytes within the budget; the rest keep their sort key."""
         used = 0
         for name in newest_first:
-            entry = self._entries[name]
+            entry = current[name]
             if entry.raw is None:
                 continue
             used += len(entry.raw)

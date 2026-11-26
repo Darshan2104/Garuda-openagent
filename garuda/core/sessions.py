@@ -720,12 +720,14 @@ class SessionStore:
         metas.sort(key=lambda m: m.get("updated_at", ""), reverse=True)
         return metas if limit is None else metas[:limit]
 
-    def listed_meta(self, session_id: str) -> dict:
+    def listed_meta(self, session_id: str, *, load=None) -> dict:
         """One session's metadata as ``list_sessions`` admits it.
 
         ``FileNotFoundError`` when the directory holds no ``meta.json`` (not a
         session), :class:`UnreadableSession` when it cannot be read or parsed,
         and ``ValueError`` when it parses but is not a listable record.
+        ``load`` replaces ``load_meta`` for a reader that must not wait on a
+        writer's lock; whatever else it raises propagates unchanged.
         """
         from garuda.runtime.strict_store import StorageError
 
@@ -738,7 +740,7 @@ class SessionStore:
         if not stat.S_ISREG(mode):
             raise FileNotFoundError(session_id)
         try:
-            meta = self.load_meta(session_id)
+            meta = (load or self.load_meta)(session_id)
         except (OSError, ValueError, StorageError) as exc:
             raise UnreadableSession(f"Session {session_id} metadata is unreadable") from exc
         if not isinstance(meta, dict):
