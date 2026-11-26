@@ -5061,11 +5061,11 @@ owner answers as before. This only ever refuses, so a stale answer can never
 become an allow. `approvals list` marks such requests `owner gone` (JSON
 `owner_gone: true`).
 
-`garuda runtime recover` (release_dead_owner) of a non-flow session now
-withdraws, with an exclusive `cancelled` decision via `recover` and an
+`garuda runtime recover` now withdraws (in `cmd_recover`, since `garuda/runtime`
+must not import `garuda.acp`), with an exclusive `cancelled` decision via `recover` and an
 `approval:<id>` audit record, every undecided request whose owner is
 confirmed dead (an owner-less legacy request only when the session's owner is
-confirmed dead), and records a still-`running` session whose owner is
+confirmed dead); `recovery.recover` (release_dead_owner, non-flow) records a still-`running` session whose owner is
 confirmed dead and that holds no lease or slot as `failed`/interrupted with
 `run.owner_lost`. A live owner's requests and sessions are never touched;
 since decisions are exclusive, a live broker racing the withdrawal fails closed.

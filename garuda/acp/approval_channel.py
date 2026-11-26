@@ -336,6 +336,50 @@ def withdraw_orphaned(directory: str | Path, session_id: str, *, session_owner_d
     return withdrawn
 
 
+WITHDRAWN_REASON = ("the run's process exited before an answer; withdrawn by "
+                    "`garuda runtime recover`")
+
+
+def withdraw_dead_session_approvals(store, session_id: str) -> list[str]:
+    """``garuda runtime recover``: withdraw a dead run's parked approvals (#807).
+
+    Each withdrawal is an exclusive ``cancelled`` decision (via ``recover``) and
+    an ``approval:<id>`` audit record. Returns notes for the recovery report.
+    """
+    from garuda.runtime.ownership import owner_liveness
+
+    try:
+        meta = store.load_meta(session_id)
+    except Exception as exc:
+        return [f"parked approvals were not inspected: session unreadable ({exc})"]
+    state = meta.get("state") if isinstance(meta, dict) else None
+    owner = state.get("owner") if isinstance(state, dict) else None
+    owner_dead = isinstance(owner, dict) and owner_liveness(owner) is False
+    try:
+        withdrawn = withdraw_orphaned(Path(store.session_dir(session_id)) / "approvals",
+                                      session_id, session_owner_dead=owner_dead,
+                                      reason=WITHDRAWN_REASON)
+    except (ChannelError, OSError) as exc:
+        return [f"parked approvals were not withdrawn: {exc}"]
+    notes = []
+    for request in withdrawn:
+        approval_id = request["approval_id"]
+        try:
+            from garuda.acp.broker import ApprovalRecord
+            from garuda.core.approval_outcome import ApprovalOutcome
+
+            record = ApprovalRecord(
+                approval_id=approval_id, outcome=ApprovalOutcome.CANCELLED,
+                action=str(request.get("action", "")), family=str(request.get("family", "")),
+                runtime_id=str(request.get("runtime_id", "")), via="recover",
+                reason=WITHDRAWN_REASON)
+            store.update_meta(session_id, {f"approval:{approval_id}": record.to_dict()})
+        except Exception:
+            notes.append(f"withdrawn approval {approval_id} was not audited in the session record")
+        notes.append(f"withdrew parked approval {approval_id}: its run's process is gone")
+    return notes
+
+
 class AnswerRefused(ValueError):
     """An answer that must not be written; ``code`` says why (stable, for callers)."""
 

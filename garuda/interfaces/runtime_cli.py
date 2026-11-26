@@ -577,6 +577,13 @@ def cmd_recover(store, session_id: str, *, as_json: bool = False) -> str:
     # The operator's explicit recovery also releases leases and capacity slots
     # whose owner is proved dead with no surviving descendants (#676, #703).
     report = recover(store, session_id, release_dead_owner=True)
+    from dataclasses import replace
+
+    from garuda.acp.approval_channel import withdraw_dead_session_approvals
+
+    # A dead run's parked approvals are withdrawn so nothing can answer them (#807).
+    report = replace(report, notes=(*report.notes,
+                                    *withdraw_dead_session_approvals(store, report.session_id)))
     if as_json:
         return json.dumps(report_to_dict(report), indent=2)
     lines = [
