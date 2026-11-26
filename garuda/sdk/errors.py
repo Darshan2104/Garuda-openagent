@@ -2,6 +2,25 @@
 
 from __future__ import annotations
 
+from garuda.agents.resolve import AgentNotFound
+from garuda.workspace.paths import (
+    WorkspaceMissing,
+    WorkspaceNotDirectory,
+    WorkspaceUnavailable,
+    require_workspace,
+)
+
+__all__ = ["AgentNotFound", "OptionsUnsupportedOnRuntime", "ToolsUnsupportedOnRuntime",
+           "WorkspaceMissing", "WorkspaceNotDirectory", "WorkspaceUnavailable",
+           "refuse_unservable_options", "refuse_unservable_tools", "require_local_workspace"]
+
+
+def require_local_workspace(workspace, workspace_kind: str) -> None:
+    """Refuse a local workspace that is not an existing directory, as the CLI does
+    (``workspace.missing`` / ``workspace.not_directory``), before anything runs (#798)."""
+    if workspace_kind == "local":
+        require_workspace(workspace)
+
 
 class ToolsUnsupportedOnRuntime(ValueError):
     """Custom SDK tools cannot reach the selected runtime (#702).

@@ -15,6 +15,45 @@ from pathlib import Path
 from garuda.workspace.protocol import WorkspaceAccessDenied
 
 
+class WorkspaceUnavailable(OSError):
+    """The workspace is not an existing directory (#774, #798).
+
+    ``code`` matches the CLI refusal: ``workspace.missing`` or
+    ``workspace.not_directory``. The concrete subclasses are also a
+    ``FileNotFoundError`` or ``NotADirectoryError``.
+    """
+
+    code = "workspace.unavailable"
+
+
+class WorkspaceMissing(WorkspaceUnavailable, FileNotFoundError):
+    code = "workspace.missing"
+
+
+class WorkspaceNotDirectory(WorkspaceUnavailable, NotADirectoryError):
+    code = "workspace.not_directory"
+
+
+def workspace_refusal(workspace) -> str | None:
+    """A typed refusal for a workspace that is not an existing directory,
+    checked before any config, session or lease touches it (#774)."""
+    path = Path(workspace).expanduser()
+    if not path.exists():
+        return f"{WorkspaceMissing.code}: {workspace} does not exist"
+    if not path.is_dir():
+        return f"{WorkspaceNotDirectory.code}: {workspace} is not a directory"
+    return None
+
+
+def require_workspace(workspace) -> None:
+    """Raise the typed :class:`WorkspaceUnavailable` for :func:`workspace_refusal`."""
+    path = Path(workspace).expanduser()
+    if not path.exists():
+        raise WorkspaceMissing(f"{workspace} does not exist")
+    if not path.is_dir():
+        raise WorkspaceNotDirectory(f"{workspace} is not a directory")
+
+
 def resolve_workspace_path(workspace_root: Path, path: str, confine: bool) -> Path:
     candidate = Path(path)
     if candidate.is_absolute():

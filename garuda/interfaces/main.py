@@ -19,6 +19,7 @@ from garuda.interfaces.web.security import DEFAULT_PORT as WEB_DEFAULT_PORT
 from garuda.model.litellm_model import LitellmModel  # noqa: F401
 from garuda.tools import build_toolkit  # noqa: F401
 from garuda.workspace.factory import WORKSPACE_KINDS
+from garuda.workspace.paths import workspace_refusal  # noqa: F401  (moved, #798)
 
 
 def _add_model_flags(parser) -> None:
@@ -1327,17 +1328,6 @@ def task_text(args) -> str | None:
 TASK_REQUIRED = "task.missing: provide -t/--task or -f/--file"
 
 
-def workspace_refusal(workspace) -> str | None:
-    """A typed refusal for a ``--workspace`` that is not an existing directory,
-    checked before any config, session or lease touches it (#774)."""
-    path = Path(workspace).expanduser()
-    if not path.exists():
-        return f"workspace.missing: {workspace} does not exist"
-    if not path.is_dir():
-        return f"workspace.not_directory: {workspace} is not a directory"
-    return None
-
-
 def check_garuda_config(args):
     """Validate garuda.yaml layering before anything starts (C.1); raises on
     refusal. Returns the effective configuration, or ``None`` without one."""
@@ -1896,8 +1886,11 @@ def run_approvals(args) -> int:
     import sys
 
     from garuda.acp.approval_channel import (
+        AnswerRefused,
         ChannelError,
         FileApprovalChannel,
+        RequestExpired,
+        StaleRequest,
         UnsafeApprovalId,
         write_answer,
     )
@@ -1915,8 +1908,14 @@ def run_approvals(args) -> int:
         try:
             write_answer(directory, session_id, args.approval_id, allow=args.allow,
                          expect_digest=getattr(args, "digest", None))
+        except FileNotFoundError:
+            # No parked request by that id (#797): typed, and never the internal path.
+            print(f"Error: approval.not_found: no parked approval {args.approval_id!r} "
+                  f"for session {session_id}", file=sys.stderr)
+            return 2
         except FileExistsError:
-            print(f"Error: approval {args.approval_id} already has an answer", file=sys.stderr)
+            print(f"Error: approval.answered: approval {args.approval_id!r} already has an answer",
+                  file=sys.stderr)
             return 2
         except UnsafeApprovalId as exc:
             # Refused before any path is touched: the id could leave the approvals directory.
@@ -1926,8 +1925,23 @@ def run_approvals(args) -> int:
             print(f"Error: approval.unavailable: cannot answer {args.approval_id!r}: {exc}",
                   file=sys.stderr)
             return 2
-        except (OSError, ValueError) as exc:
-            print(f"Error: cannot answer {args.approval_id}: {exc}", file=sys.stderr)
+        except StaleRequest as exc:
+            print(f"Error: approval.stale_request: cannot answer {args.approval_id!r}: {exc}",
+                  file=sys.stderr)
+            return 2
+        except RequestExpired as exc:
+            print(f"Error: approval.expired: cannot answer {args.approval_id!r}: {exc}",
+                  file=sys.stderr)
+            return 2
+        except (AnswerRefused, ValueError) as exc:
+            # A refused or unreadable request file; these messages name no path.
+            print(f"Error: approval.refused: cannot answer {args.approval_id!r}: {exc}",
+                  file=sys.stderr)
+            return 2
+        except OSError as exc:
+            # The OS error's text carries the absolute path; keep only its reason (#797).
+            print(f"Error: approval.unavailable: cannot answer {args.approval_id!r}: "
+                  f"{exc.strerror or type(exc).__name__}", file=sys.stderr)
             return 2
         print(f"[garuda] answered {args.approval_id}: {'allow' if args.allow else 'deny'} "
               "(the session decides once; a late or mismatched answer is a denial)")

@@ -17,6 +17,24 @@ finish now sit in one `try`, so any exception, cancellation or
 killed by a signal still cannot settle itself; that stays the job of session
 recovery.
 
+## 2026-11-26 — SDK refusals carry the CLI's agent and workspace codes (#798)
+
+`AgentSpec.load("nonexist")` and `SoftwareAgent(agent="nonexist").run()` raised
+a bare `FileNotFoundError`, and `SoftwareAgent(workspace="/nonexistent").run()`
+surfaced a git `BaselineError`, where the CLI says `agent.not_found` and
+`workspace.missing`. `garuda/agents/resolve.py` now raises `AgentNotFound`
+(`FileNotFoundError`, `code = "agent.not_found"`) for an unknown name and from
+`AgentSpec.from_file` for a missing file. `workspace_refusal` moved from
+`garuda/interfaces/main.py` to `garuda/workspace/paths.py` (the SDK must not
+import the CLI module; `main` re-exports it) beside `require_workspace`, which
+raises `WorkspaceMissing` (`FileNotFoundError`) or `WorkspaceNotDirectory`
+(`NotADirectoryError`), both `WorkspaceUnavailable` with the CLI's codes.
+`SoftwareAgent.run` and `Conversation.run` check a local workspace first, as
+`garuda run` does. The classes subclass the old built-in types so existing
+`except FileNotFoundError` handlers keep working; following `sdk.*` errors, the
+message carries no code prefix and the code is on `.code`. All are exported from
+`garuda.sdk`.
+
 ## 2026-11-26 — A session list limit is an integer >= 1 everywhere (#792)
 
 `garuda sessions --limit -1` sliced away the oldest session, `--limit 0` printed
@@ -4986,3 +5004,23 @@ A request without an `id` is a JSON-RPC notification and gets no response
 object; over HTTP the reply is `204 No Content`. No repo client or test sent
 id-less requests to this server. Auth is unchanged: an unauthorized request,
 notification or not, is still refused with -32001 (HTTP 401).
+
+## 2026-11-26: Flow stops say their code once and name the step; approval answers are typed (#796, #797)
+
+A role refused while its plan is built (`role.mode_unknown` and the other
+`RoleRefused` codes) stopped the flow at the role name, and its message was
+`str(RoleRefused)`, which already starts with the code, so `flow run` / `flow
+resume` printed the code twice. `FlowStopped` now drops a leading copy of its own
+code from the message, so every stop (including ones rebuilt from a recorded
+message) reads `code: message` once; `flow show` keeps its #749 de-dup.
+`FlowRunner._role_plan` takes the step id and records it as the stop's step; the
+per-role quota recovery admission check, which has no step, names the first step
+of that role. Stop codes and resumability are unchanged.
+
+`garuda approvals answer S ID` on an id with no parked request exits 2 with
+`approval.not_found: no parked approval 'ID' for session S` instead of the raw
+ENOENT text with the session's absolute path. Every other answer refusal is
+typed too: `approval.answered`, `approval.stale_request`, `approval.expired`,
+`approval.refused`, and `approval.unavailable` for an OS error, which prints only
+the OS reason (`strerror`), never the path. The dashboard answer route already
+mapped a missing request to 404; its generic OS-error branch now also drops the path.
