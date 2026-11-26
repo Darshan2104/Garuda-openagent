@@ -256,3 +256,173 @@ async def test_packaged_flow_prompts_keep_task_role_inputs_and_rules(repo, name)
         for kind in step.get("inputs", []):
             sources = [text for (_, k), text in bodies.items() if k == kind]
             assert tuple(sources[-1].splitlines()) in delivered, (step["id"], kind)
+
+
+# -- #820: a patch is a summary; Garuda attaches the real diff ---------------------------
+
+ROLES_820 = {
+    "coder": {"harness": "native", "model_id": "c/1"},
+    "writer": {"harness": "native", "model_id": "w/1"},
+    "planner": {"harness": "native", "model_id": "p/1", "write_policy": "no-edits"},
+    "scout": {"harness": "native", "model_id": "s/1", "write_policy": "no-edits"},
+    "reviewer": {"harness": "native", "model_id": "r/1", "write_policy": "no-edits"},
+}
+CALC = "def add(a, b):\n    return a + b\n"
+
+
+class Edits:
+    """A stub launcher: a step named in ``edits`` is a real session with a
+    recorded baseline that writes its files; every step outputs its artifacts."""
+
+    def __init__(self, edits, steps):
+        self.edits = edits
+        self.outputs = {s["id"]: s.get("outputs", []) for s in steps}
+        self.prompts = {}
+
+    async def __call__(self, launch):
+        from pathlib import Path
+
+        from garuda.workspace import evidence
+
+        self.prompts[launch.step_id] = launch.prompt
+        sid = str(uuid.uuid4())
+        if launch.step_id in self.edits:
+            store, workspace = SessionStore(), Path(launch.workspace)
+            store.begin(sid, task="t", model="m", agent="a", workspace=str(workspace))
+            evidence.begin_session_evidence(store, sid, workspace, "local")
+            for path, text in self.edits[launch.step_id].items():
+                (workspace / path).write_text(text)
+            evidence.finish_session_evidence(store, sid, workspace)
+        return StepResult(sid, True, "\n".join(
+            _block(kind, APPROVE if kind == "review" else f"{kind} from {launch.step_id}")
+            for kind in self.outputs[launch.step_id]))
+
+
+async def _flow_820(repo, steps, edits):  # noqa: F811
+    config = {"version": 1, "roles": ROLES_820, "flows": {"f": {"steps": steps}}}
+    resolved = gy.resolve(gy.parse(config), None)
+    launcher = Edits(edits, steps)
+    result = await FlowRunner(SessionStore(), repo, "f", resolved.config["flows"]["f"], resolved,
+                              task="ship it", launcher=launcher).run()
+    return result, launcher.prompts
+
+
+def test_the_patch_instruction_asks_for_a_summary_not_a_diff():
+    rules = art.instructions(["patch"])
+    assert '<garuda-artifact type="patch">\n...a short summary of your change...\n' in rules
+    assert ("what changed and why, the files you touched, and anything the next step should "
+            "know") in rules
+    assert "Do not paste a diff; Garuda attaches the real diff" in rules
+    assert "your patch" not in rules
+    assert "paste a diff" not in art.instructions(["notes", "plan"])
+    # Parsing is unchanged: any text in the block, a pasted diff included, is the patch.
+    pasted = "diff --git a/x b/x\n@@ -0,0 +1,7 @@\n+x"
+    assert art.extract(_block("patch", pasted)) == {"patch": pasted}
+
+
+async def test_a_patch_consumer_gets_garudas_diff_once(repo):  # noqa: F811
+    steps = [{"id": "build", "role": "coder", "outputs": ["patch"]},
+             {"id": "next", "role": "writer", "inputs": ["patch"], "outputs": ["notes"]}]
+    result, prompts = await _flow_820(
+        repo, steps, {"build": {"calc.py": CALC, "settings.txt": "password: hunter2-secret\n"}})
+    assert result.completed, result.stopped
+    assert art.PATCH_SUMMARY in prompts["build"]
+    prompt = prompts["next"]
+    blocks = fenced_blocks(prompt)
+    assert [tag for tag, _, _ in blocks] == ["flow-input", "flow-diff"]
+    assert len({marker for _, marker, _ in blocks}) == 1
+    assert blocks[0][2] == ["patch from build"]
+    diff = blocks[1][2]
+    assert "=== calc.py" in diff and "+    return a + b" in diff
+    assert '<flow-diff from="build" by="garuda" fence="' in prompt
+    assert prompt.count("[garuda] The diff of step `build`, computed by Garuda") == 1
+    assert prompt.count("+    return a + b") == 1
+    # Bounded and redacted: a file matching a secret pattern has no excerpt.
+    assert "hunter2" not in prompt
+    assert any(line.startswith("=== settings.txt (excerpt withheld") for line in diff)
+    assert "workspace has changed" not in prompt
+
+
+async def test_the_terminal_reviewer_gets_no_second_diff(repo):  # noqa: F811
+    steps = [{"id": "build", "role": "coder", "outputs": ["patch"],
+              "review": {"by": "reviewer", "max_rounds": 0}},
+             {"id": "review", "role": "reviewer", "inputs": ["patch"], "outputs": ["review"]}]
+    result, prompts = await _flow_820(repo, steps, {"build": {"calc.py": CALC}})
+    assert result.completed, result.stopped
+    prompt = prompts["review"]
+    assert [tag for tag, _, _ in fenced_blocks(prompt)] == ["flow-input", "review-packet"]
+    assert "computed by Garuda" not in prompt and "<flow-diff" not in prompt
+    assert prompt.count("return a + b") == 1  # only in the packet's excerpts
+
+
+WRITERS = [{"id": "sa", "role": "coder", "outputs": ["patch"]},
+           {"id": "sb", "role": "writer", "outputs": ["notes"]}]
+WRITER_EDITS = {"sa": {"a.txt": "A edit\n"}, "sb": {"b.txt": "B edit\n"}}
+
+
+@pytest.mark.parametrize("role, outputs", [("writer", ["notes"]), ("coder", ["patch"]),
+                                           ("planner", ["plan"])])
+async def test_a_later_writer_or_planner_reads_a_patch_past_a_second_writer(
+        repo, role, outputs):  # noqa: F811
+    steps = [*WRITERS, {"id": "sc", "role": role, "inputs": ["patch"], "outputs": outputs}]
+    result, prompts = await _flow_820(repo, steps, WRITER_EDITS)
+    assert result.completed, result.stopped
+    prompt = prompts["sc"]
+    assert ("[garuda] The workspace has changed since step `sa` produced this patch: a later "
+            "step changed it. Check the patch against the workspace as it is now.") in prompt
+    blocks = fenced_blocks(prompt)
+    assert [tag for tag, _, _ in blocks] == ["flow-input", "flow-diff"]
+    assert blocks[0][2] == ["patch from sa"]
+    assert "=== a.txt" in blocks[1][2] and "+A edit" in blocks[1][2]
+    assert "also includes changes made after that step" in prompt
+
+
+@pytest.mark.parametrize("role, outputs", [("scout", ["notes"]), ("reviewer", ["review"]),
+                                           ("writer", ["findings"])])
+async def test_a_read_only_step_or_reviewer_still_refuses_a_stale_patch(
+        repo, role, outputs):  # noqa: F811
+    steps = [*WRITERS, {"id": "sc", "role": role, "inputs": ["patch"], "outputs": outputs}]
+    result, prompts = await _flow_820(repo, steps, WRITER_EDITS)
+    assert not result.completed and result.stopped.code == "flow.input_stale"
+    assert "sc" not in prompts
+
+
+async def test_the_terminal_reviewer_still_refuses_a_stale_patch(repo):  # noqa: F811
+    steps = [{"id": "sa", "role": "coder", "outputs": ["patch"]},
+             {"id": "build", "role": "writer", "outputs": ["patch"],
+              "review": {"by": "reviewer", "max_rounds": 0}},
+             {"id": "review", "role": "reviewer", "inputs": [{"type": "patch", "from": "sa"}],
+              "outputs": ["review"]}]
+    result, prompts = await _flow_820(repo, steps, {"sa": {"a.txt": "A edit\n"},
+                                                    "build": {"b.txt": "B edit\n"}})
+    assert not result.completed and result.stopped.code == "flow.input_stale"
+    assert "review" not in prompts
+
+
+@pytest.mark.parametrize("kind", ["review", "findings"])
+async def test_review_and_findings_stay_workspace_bound_for_a_writer(repo, kind):  # noqa: F811
+    steps = [{"id": "sa", "role": "scout", "outputs": [kind]},
+             {"id": "sb", "role": "writer", "outputs": ["notes"]},
+             {"id": "sc", "role": "writer", "inputs": [kind], "outputs": ["notes"]}]
+    result, prompts = await _flow_820(repo, steps, {"sb": {"b.txt": "B edit\n"}})
+    assert not result.completed and result.stopped.code == "flow.input_stale"
+    assert "sc" not in prompts
+
+
+@pytest.mark.parametrize("kind, allowed", [("patch", True), ("review", False),
+                                           ("findings", False)])
+def test_only_a_patch_is_read_past_a_moved_workspace(kind, allowed):
+    import hashlib
+    from dataclasses import replace
+
+    data = b"body"
+    ref = replace(_ref(kind), digest=hashlib.sha256(data).hexdigest(), size=len(data),
+                  workspace_version="before")
+    with pytest.raises(art.ArtifactError, match="flow.input_stale"):
+        art.validate_content(ref, data, workspace_version="after")
+    if allowed:
+        assert art.validate_content(ref, data, workspace_version="after",
+                                    moved_on_ok=True) == "body"
+    else:
+        with pytest.raises(art.ArtifactError, match="flow.input_stale"):
+            art.validate_content(ref, data, workspace_version="after", moved_on_ok=True)
