@@ -498,6 +498,11 @@ and final message. The ACP result has no independent verification by default:
 `success` is `True` when the harness ended its turn, whatever it answered.
 The session saves the harness as `model: acp:<runtime>` and `agent: <runtime>`,
 as `garuda run` does, and each turn's usage report goes to the usage ledger.
+Cancelling the task awaiting an ACP `run()` cancels the turn as
+`close()` would: Garuda sends the harness `session/cancel` (waiting at most two
+seconds), reaps it, records the turn cancelled and re-raises `CancelledError`.
+The conversation's runtime is then closed: a later `run()` raises
+`RuntimeClosedError`, so start a new conversation for the next task.
 An unknown agent name or a missing agent file raises
 `garuda.sdk.AgentNotFound` (a `FileNotFoundError`, code `agent.not_found`) from
 `AgentSpec.load`, `AgentSpec.from_file` and `run()`. A local `workspace=` that
@@ -578,6 +583,10 @@ retain the permission engine's configured root.
 `SoftwareAgent` also accepts `model=`, `workspace_kind=` (for example
 `"docker"`), `docker_image=`, and `runtime=` to run one turn on an
 [external harness](advanced.md#run-a-task-with-claude-code-codex-or-another-harness).
+On a harness, `SoftwareAgent.run` denies every permission request the harness
+sends (shell commands, edits), the same as a headless `garuda run --runtime claude`;
+use `agent.conversation()` with `Conversation(approval_handler=...)` to answer
+them yourself.
 `agent.run(task, resume="latest")` continues this workspace's newest saved
 session; pass `resume_all_projects=True` for the newest one anywhere.
 

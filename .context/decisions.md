@@ -1,5 +1,22 @@
 # Durable decisions
 
+## 2026-11-26 — SDK ACP runs deny unattended approvals (#801)
+
+`SoftwareAgent._run_acp` attached no approval path, so the harness's first
+`session/request_permission` (e.g. an `execute` call) was never answered and
+the run hung with its session `running`. It now passes the same broker-backed
+handler a headless `garuda run --runtime` uses (`run_guard.broker_approval_handler`
+with no answerer): every ask is parked, denied at once and audited as an
+`approval:*` meta record. `acp_adapter_for_workspace` gained an
+`approval_handler` pass-through for this. `SoftwareAgent` exposes no approval
+callback (native runs have none either), so none is added; callers who want to
+answer asks use `Conversation(approval_handler=...)`, which was already
+deny-by-default. The session record, baseline, start, prompt, segment attach and
+finish now sit in one `try`, so any exception, cancellation or
+`asyncio.wait_for` timeout settles the session `failed`/`cancelled`. A process
+killed by a signal still cannot settle itself; that stays the job of session
+recovery.
+
 ## 2026-11-26 — SDK refusals carry the CLI's agent and workspace codes (#798)
 
 `AgentSpec.load("nonexist")` and `SoftwareAgent(agent="nonexist").run()` raised
@@ -4987,6 +5004,21 @@ A request without an `id` is a JSON-RPC notification and gets no response
 object; over HTTP the reply is `204 No Content`. No repo client or test sent
 id-less requests to this server. Auth is unchanged: an unauthorized request,
 notification or not, is still refused with -32001 (HTTP 401).
+
+## 2026-11-26: Cancelling an ACP prompt task closes the runtime (#803)
+
+`AcpRuntime.prompt`'s `CancelledError` branch only cancelled its local
+`session/prompt` future, so a cancelled `Conversation.run` left the adapter
+RUNNING with the harness still generating, and the next turn failed with
+`prompt needs IDLE`. The branch now ends the turn the way an explicit
+`cancel()` during a turn does: answer pending approvals `cancelled`, send
+`session/cancel` through `_notify_cancel` (bounded to 2 s, so an agent that
+never reads it cannot hang the caller), close the normalizer turn as
+`cancelled`, reap the process, move CANCELLING -> CLOSED and re-raise. CLOSED,
+not IDLE, because a `cancelled` finish terminates the normalizer's session and
+`cancel()` already closes; the next `prompt` raises `RuntimeClosedError`. The
+state moves sit in a `finally` so a cleanup failure still never leaves RUNNING.
+The plan-mode path (#778) is not reached: it only reads a returned stop reason.
 
 ## 2026-11-26: Flow stops say their code once and name the step; approval answers are typed (#796, #797)
 
