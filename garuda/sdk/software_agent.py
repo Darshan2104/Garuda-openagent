@@ -143,7 +143,9 @@ class SoftwareAgent:
                 reasoning_model=self.reasoning_model, collection_model=self.collection_model,
                 model_binding=self.model_binding, mode=self.mode,
                 mcp_config=self.mcp_config, resume=resume,
-                resume_all_projects=resume_all_projects, events=events)
+                resume_all_projects=resume_all_projects, events=events,
+                workspace_kind=self.workspace_kind, docker_image=self.docker_image,
+                docker_host=self.docker_host)
             return await self._run_acp(task)
         from garuda.config.agent_home import resolve_agents_dirs
 

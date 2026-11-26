@@ -588,14 +588,18 @@ async def test_acp_permission_wait_settles_without_an_editor_answer(acp_native, 
         broker._timeout_sec = 0.3
     params = {"sessionId": sid, "prompt": [{"type": "text", "text": "write proof"}]}
     prompting = asyncio.create_task(duplex.call("session/prompt", params))
-    try:
-        request = None
-        for _ in range(200):
+
+    async def first_permission_request():
+        # #830: a deadline, not a fixed 2 s poll; a slow macOS runner exceeded that.
+        while True:
             request = next((decode_frame(frame)[0] for frame in duplex.sent
                             if decode_frame(frame)[0].get("method") == "session/request_permission"), None)
-            if request is not None:
-                break
+            if request is not None or prompting.done():
+                return request
             await asyncio.sleep(0.01)
+
+    try:
+        request = await asyncio.wait_for(first_permission_request(), 15)
         assert request is not None
         if settlement == "cancel":
             await duplex.call("session/cancel", {"sessionId": sid})
@@ -606,7 +610,7 @@ async def test_acp_permission_wait_settles_without_an_editor_answer(acp_native, 
             write_answer(store.session_dir(sid) / "approvals", sid,
                          request["params"]["approvalId"], False,
                          expect_digest=broker.pending()[0].digest)
-        await asyncio.wait_for(entered.wait(), 2)
+        await asyncio.wait_for(entered.wait(), 10)
         # The turn is still executing another tool when broker settlement retires the wire wait.
         for _ in range(200):
             if not server._client_requests:
@@ -615,7 +619,7 @@ async def test_acp_permission_wait_settles_without_an_editor_answer(acp_native, 
         assert not prompting.done() and not server._client_requests
         assert not server._permission_requests and not broker.pending()
         release.set()
-        assert (await asyncio.wait_for(prompting, 2))["stopReason"] == (
+        assert (await asyncio.wait_for(prompting, 10))["stopReason"] == (
             "cancelled" if settlement == "cancel" else "end_turn")
         await server.handle({"jsonrpc": "2.0", "id": request["id"], "result": {"approved": True}})
         records = [v for k, v in store.load_meta(sid).items() if k.startswith("approval:")]
@@ -623,7 +627,7 @@ async def test_acp_permission_wait_settles_without_an_editor_answer(acp_native, 
         assert records[0]["outcome"] == {"cancel": "disconnected", "timeout": "timeout"}.get(settlement, "deny")
         assert not (tmp_path / "proof.txt").exists()
         if settlement != "cancel":
-            assert (await asyncio.wait_for(duplex.call("session/prompt", params), 2))["stopReason"] == "end_turn"
+            assert (await asyncio.wait_for(duplex.call("session/prompt", params), 10))["stopReason"] == "end_turn"
     finally:
         release.set()
         if not prompting.done():

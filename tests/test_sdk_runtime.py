@@ -207,6 +207,43 @@ async def test_cancelling_an_acp_turn_task_settles_the_conversation(tmp_path, mo
         await conversation.close()
 
 
+async def test_a_run_refused_after_a_cancelled_acp_turn_keeps_the_record_cancelled(
+        tmp_path, monkeypatch):
+    """#813 follow-up: the refused `run()` after a cancelled turn used to reset the
+    cancellation, so `close()` recorded the session `failed`."""
+    import asyncio
+
+    from garuda.config import agent_home
+    from garuda.core.sessions import SessionStore
+    from garuda.runtime import RuntimeClosedError
+
+    runtimes = _fake_extra()
+    runtimes[0]["command"] = [*FAKE_ARGV[:-1], "slow"]
+    monkeypatch.setattr(agent_home, "resolve_agent_home", lambda workspace: _FakeHome(runtimes))
+    store = SessionStore()
+    conversation = Conversation(workspace=tmp_path, runtime="faketest", store=store)
+    turn = asyncio.create_task(conversation.run("slow work"))
+    try:
+        for _ in range(200):
+            await asyncio.sleep(0.05)
+            if conversation._acp is not None and conversation._acp.state.value == "running":
+                break
+        turn.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(turn, 15)
+        with pytest.raises(RuntimeClosedError):
+            await conversation.run("next turn")
+        (record,) = store.list_sessions()
+        await asyncio.wait_for(conversation.close(), 15)
+        meta = store.load_meta(record["session_id"])
+        assert (meta["status"], meta["state"]["outcome"]) == ("cancelled", "cancelled")
+    finally:
+        if not turn.done():
+            turn.cancel()
+        await asyncio.gather(turn, return_exceptions=True)
+        await conversation.close()
+
+
 class _FakeHome:
     def __init__(self, runtimes):
         self.global_settings = {"runtimes": runtimes}
@@ -854,6 +891,46 @@ async def test_sdk_refuses_run_arguments_an_acp_run_would_ignore(tmp_path, monke
     assert refused.value.code == "sdk.options_unsupported"
     assert next(iter(option)) in str(refused.value)
     assert "conversation()" in str(refused.value)
+    assert store.list_sessions() == []
+
+
+@pytest.mark.parametrize("option", [{"workspace_kind": "docker"},
+                                    {"docker_image": "python:3.12"},
+                                    {"docker_host": "ssh://builder"}],
+                         ids=["workspace_kind", "docker_image", "docker_host"])
+@pytest.mark.parametrize("via", ["run", "conversation", "direct_conversation"])
+async def test_sdk_refuses_docker_options_an_acp_runtime_would_ignore(tmp_path, monkeypatch, via,
+                                                                     option):
+    """An SDK ACP run launches the harness on the host in the local workspace, so a
+    Docker workspace, image or host would be dropped while the run reported success."""
+    from garuda.config import agent_home
+    from garuda.core.sessions import SessionStore
+    from garuda.interfaces import runtime_cli
+    from garuda.sdk import OptionsUnsupportedOnRuntime
+
+    store = SessionStore(tmp_path / "sessions")
+    monkeypatch.setattr(agent_home, "resolve_agent_home", lambda workspace: _FakeHome(_fake_extra()))
+
+    def no_launch(*args, **kwargs):
+        pytest.fail("a refused run must not construct the harness")
+
+    monkeypatch.setattr(runtime_cli, "acp_adapter_for_workspace", no_launch)
+    with pytest.raises(OptionsUnsupportedOnRuntime) as refused:
+        if via == "run":
+            await SoftwareAgent(workspace=tmp_path, runtime="faketest", store=store,
+                                **option).run("hello")
+        else:
+            conversation = (
+                Conversation(workspace=tmp_path, runtime="faketest", store=store, **option)
+                if via == "direct_conversation"
+                else SoftwareAgent(workspace=tmp_path, runtime="faketest", store=store,
+                                   **option).conversation())
+            try:
+                await conversation.run("hello")
+            finally:
+                await conversation.close()
+    assert refused.value.code == "sdk.options_unsupported"
+    assert next(iter(option)) in str(refused.value)
     assert store.list_sessions() == []
 
 
