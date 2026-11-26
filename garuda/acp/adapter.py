@@ -18,6 +18,13 @@ Resume reattaches to the live process, or in a new process reloads the
 agent's session with `session/load` — attempted only for adapters whose load
 was exercised (`runtime.resume.PROVEN_LOAD`); otherwise sessions continue
 through a brief (B.7).
+
+A session in the harness's ``plan`` mode never leaves it (#771). The agent
+ends planning by asking to switch mode (Claude's ExitPlanMode, "Approve
+Plan", ``kind=switch_mode``); Garuda refuses that request itself, whatever the
+approval handler would answer, and the plan it carries becomes the turn's
+reply: the agent's interrupted (``cancelled``) turn closes ``completed`` with
+the plan as its message.
 """
 
 from __future__ import annotations
@@ -163,6 +170,10 @@ class AcpRuntime:
         self._effective_mode: dict[str, Any] | None = None
         #: Actions denied this turn, named when the agent then ends the turn cancelled.
         self._denied: list[str] = []
+        #: The plan of a plan-mode exit Garuda refused this turn (#771): the turn's reply.
+        self._plan_result: str | None = None
+        #: Whether Garuda cancelled this turn (a plan then never stands for the reply).
+        self._cancel_requested = False
         #: What the session request sent (#726): method, cwd and MCP server names only.
         self._session_request: dict[str, Any] | None = None
 
@@ -814,6 +825,8 @@ class AcpRuntime:
         self._move(LifecycleState.RUNNING)
         self._turn += 1
         self._denied = []
+        self._plan_result = None
+        self._cancel_requested = False
         self._record_outbound_prompt(text)
         prompt_task = asyncio.ensure_future(
             self._process.session_prompt(self._agent_session_id or "", text)
@@ -855,9 +868,20 @@ class AcpRuntime:
             self._move(LifecycleState.FAILED)
             raise
         stop = result.get("stopReason") if isinstance(result, dict) else None
+        plan = self._plan_result if stop == "cancelled" and not self._cancel_requested else None
         try:
             if not isinstance(stop, str):
                 raise AcpProtocolError("session/prompt returned no valid stopReason")
+            if plan is not None:
+                # The agent stopped because Garuda refused its plan-mode exit
+                # (#771): the plan is the reply and the turn is complete; the
+                # harness stays in plan mode for any later turn.
+                self._absorb(self._normalizer.feed({"sessionUpdate": "agent_message_chunk",
+                                                    "content": {"type": "text", "text": plan}}))
+                self._emit(RuntimeEventKind.LIFECYCLE, {
+                    "state": "plan_produced", "chars": len(plan), "mode": PLAN_MODE,
+                    "detail": "plan returned as the result; leaving plan mode refused"})
+                stop = "end_turn"
             closing = self._normalizer.finish(stop)
         except AcpProtocolError as exc:
             # An unknown stop reason or an orphaned tool_call_update means the
@@ -951,6 +975,9 @@ class AcpRuntime:
             return
         action = _approval_action(tool_call, options, approval_id)
         self._pending_approvals[approval_id] = (request_id, options, action)
+        if self._plan_mode_exit(tool_call):
+            await self._refuse_plan_exit(approval_id, action, tool_call, options)
+            return
         if self._consult_host is not None and self._consult_host.allows_permission(
                 params, self._agent_info, agent_session_id=self._agent_session_id):
             try:
@@ -989,6 +1016,42 @@ class AcpRuntime:
             task = asyncio.ensure_future(self._answer_with_handler(approval_id, action))
             self._answer_tasks.add(task)
             task.add_done_callback(self._answer_tasks.discard)
+
+    def _plan_mode_exit(self, tool_call: dict[str, Any]) -> bool:
+        """Whether this request asks to leave the harness's plan mode (#771).
+
+        Any ``switch_mode`` request while the agent reports ``plan`` counts,
+        with or without a plan: a plan-mode run must never switch into a mode
+        that edits, so no handler gets the chance to allow it.
+        """
+        return (normalize_tool_kind(tool_call.get("kind")) == "switch_mode"
+                and self.reported_mode == PLAN_MODE)
+
+    async def _refuse_plan_exit(self, approval_id: str, action: str,
+                                tool_call: dict[str, Any], options: list) -> None:
+        """Refuse a plan-mode exit and keep its plan as the turn's reply.
+
+        The reject option is the answer claude-agent-acp reads as "keep
+        planning": it stops the turn (``cancelled``) and leaves the session in
+        plan mode. Without a reject option the answer is ``cancelled``, which
+        refuses too. Never an allow option: each one switches mode.
+        """
+        self._emit(RuntimeEventKind.APPROVAL_REQUEST, {
+            "approval_id": approval_id, "action": action,
+            "tool_call_id": tool_call.get("toolCallId", ""),
+            "options": [{"option_id": option.get("optionId", ""), "kind": option.get("kind", ""),
+                         "name": option.get("name", "")} for option in options],
+        })
+        self._emit(RuntimeEventKind.LIFECYCLE, {
+            "state": "approval_settled", "approval_id": approval_id,
+            "tool_kind": "switch_mode", "outcome": "deny",
+            "reason": "plan mode: the plan is the result; Garuda does not leave plan mode",
+        })
+        await self.permission_response(approval_id=approval_id, allow=False)
+        # Not a denial that fails the turn: the refusal is how planning ends.
+        if self._denied and self._denied[-1] == action:
+            self._denied.pop()
+        self._plan_result = _plan_text(tool_call)
 
     async def _answer_with_handler(self, approval_id: str, action: str) -> None:
         assert self._approval_handler is not None
@@ -1115,6 +1178,8 @@ class AcpRuntime:
             await self._process.respond(request_id, result={"outcome": outcome})
         if not allow or option_id is None:
             self._denied.append(action)
+            # A later denial, not a plan exit before it, is what ends this turn.
+            self._plan_result = None
 
     async def cancel(self, *, reason: str = "") -> None:
         if self._state in (LifecycleState.CLOSED, LifecycleState.FAILED):
@@ -1135,6 +1200,7 @@ class AcpRuntime:
             except Exception as exc:
                 logger.warning("Could not persist ACP cancellation", exc_info=True)
                 audit_error = exc
+        self._cancel_requested = True
         await self._cancel_pending_approvals()
         # The in-flight prompt can observe its ACP error and finish verified
         # process cleanup while cancellation is crossing lease.race(). In that
@@ -1212,6 +1278,29 @@ class AcpRuntime:
             auth=AuthStatus.AUTHENTICATED,
             native_session_id=self._agent_session_id,
         )
+
+
+#: The harness mode a plan-mode run keeps (claude-agent-acp's ``plan``).
+PLAN_MODE = "plan"
+#: The longest plan kept as a turn's reply.
+_PLAN_LIMIT = 200_000
+
+
+def _plan_text(tool_call: dict[str, Any]) -> str | None:
+    """The plan a plan-mode exit request carries: its ``rawInput.plan``
+    (claude-agent-acp's ExitPlanMode input), else the text of its content."""
+    raw = tool_call.get("rawInput")
+    plan = raw.get("plan") if isinstance(raw, dict) else None
+    if not isinstance(plan, str) or not plan.strip():
+        parts = []
+        for item in tool_call.get("content") or []:
+            block = item.get("content") if isinstance(item, dict) else None
+            if isinstance(block, dict) and block.get("type") == "text" and isinstance(
+                    block.get("text"), str):
+                parts.append(block["text"])
+        plan = "\n\n".join(parts)
+    plan = plan.strip()
+    return plan[:_PLAN_LIMIT] or None
 
 
 def _pick_option(options: list[dict[str, Any]], allow: bool) -> str | None:
