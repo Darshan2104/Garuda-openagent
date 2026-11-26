@@ -4,9 +4,11 @@ import asyncio
 import hmac
 import json
 import logging
+import os
 import secrets
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from garuda.agents.loader import list_profiles
@@ -21,6 +23,25 @@ logger = logging.getLogger(__name__)
 
 UNAUTHORIZED_CODE = -32001
 PARSE_ERROR_CODE = -32700
+METHOD_NOT_FOUND_CODE = -32601
+INVALID_PARAMS_CODE = -32602
+SERVER_ERROR_CODE = -32000
+
+
+class InvalidParams(ValueError):
+    """A request refused before any work starts: JSON-RPC -32602 with a typed
+    Garuda code (``task.missing``, ``workspace.missing``, ...), the same codes
+    the CLI prints for the same inputs."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(f"{code}: {message}")
+        self.code = code
+
+
+class MethodNotFound(ValueError):
+    pass
+
+
 LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 
 
@@ -154,8 +175,12 @@ class JsonRpcServer:
         self,
         payload: dict[str, Any],
         headers: dict[str, str] | None = None,
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | None:
+        """Dispatch one request. Returns ``None`` for a notification (a request
+        without an ``id``), which JSON-RPC 2.0 says gets no response; an
+        unauthorized notification is still refused with an error, as before."""
         req_id = payload.get("id")
+        notification = "id" not in payload
         method = payload.get("method")
         params = payload.get("params") or {}
 
@@ -171,6 +196,8 @@ class JsonRpcServer:
             }
 
         try:
+            if not isinstance(params, dict):
+                raise InvalidParams("params.invalid", "params must be an object")
             if method == "health":
                 result = await self._health()
             elif method == "run":
@@ -190,11 +217,12 @@ class JsonRpcServer:
             elif method == "sessions":
                 from garuda.core.sessions import SessionLimitError, validate_session_limit
 
+                # The #792 rule (a real integer >= 1, never coerced), in this
+                # server's -32602 shape with a typed `data.code`.
                 try:
                     limit = validate_session_limit(params.get("limit", 20))
                 except SessionLimitError as exc:
-                    return {"jsonrpc": "2.0", "id": req_id,
-                            "error": {"code": -32602, "message": f"Invalid params: {exc}"}}
+                    raise InvalidParams("params.invalid", str(exc)) from None
                 result = {"sessions": SessionStore().list_sessions(limit=limit)}
             elif method == "list_agents":
                 agents_dir = params.get("agents_dir", self._config.agents_dir)
@@ -214,14 +242,19 @@ class JsonRpcServer:
             elif method == "runtime_support":
                 result = await self._runtime_support(params)
             else:
-                raise ValueError(f"Unknown method: {method}")
-            return {"jsonrpc": "2.0", "id": req_id, "result": result}
+                raise MethodNotFound(f"Unknown method: {method}")
+            response = {"jsonrpc": "2.0", "id": req_id, "result": result}
         except Exception as exc:
-            return {
-                "jsonrpc": "2.0",
-                "id": req_id,
-                "error": {"code": -32000, "message": str(exc)},
-            }
+            from garuda.agents.selection import SelectionRefused
+
+            error: dict[str, Any] = {"code": SERVER_ERROR_CODE, "message": str(exc)}
+            if isinstance(exc, MethodNotFound):
+                error["code"] = METHOD_NOT_FOUND_CODE
+            elif isinstance(exc, (InvalidParams, SelectionRefused)):
+                error["code"] = INVALID_PARAMS_CODE
+                error["data"] = {"code": exc.code}
+            response = {"jsonrpc": "2.0", "id": req_id, "error": error}
+        return None if notification else response
 
     async def _health(self) -> dict[str, Any]:
         # `garuda.__version__`, not importlib.metadata: under `pip install -e .` the
@@ -372,20 +405,20 @@ class JsonRpcServer:
         payload["api"] = f"runtime/v{RUNTIME_API_VERSION}"
         return payload
 
-    async def _execute(self, params: dict[str, Any], events: EventStore):
-        """Build run dependencies from params and execute one agent task.
-
-        Shared by the blocking ``run`` and the async job queue. The caller owns
-        the ``events`` store so a submitted job can poll it incrementally.
-        """
-        task = params.get("task")
-        if not task:
-            raise ValueError("params.task is required")
-
+    def _vet(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Refuse a request the CLI would refuse, before any job, session or
+        workspace exists (#790, #791). Raises :class:`InvalidParams` or
+        ``SelectionRefused``; returns the checked selections."""
         from garuda.agents.selection import SelectionRefused, check_named
         from garuda.config.agent_home import resolve_agents_dirs
+        from garuda.core.modes import MODE_CHOICES
+        from garuda.interfaces.main import task_text, workspace_refusal
 
-        agent_name = params.get("agent", self._config.agent)
+        # The CLI's own checks (#780): a blank task and a missing workspace are
+        # refused with the same codes `garuda run` prints.
+        task = params.get("task")
+        if not isinstance(task, str) or task_text(SimpleNamespace(task=task)) is None:
+            raise InvalidParams("task.missing", "params.task must be a non-empty string")
         for forbidden in ("agent_file", "agent_spec", "definition"):
             if forbidden in params:
                 raise SelectionRefused("agent.inline_over_http",
@@ -401,19 +434,62 @@ class JsonRpcServer:
                         f"params.{field} cannot override a restricted server's launch settings",
                     )
         mode = params.get("mode")  # None -> honor the profile's own mode
-        workspace_kind = params.get("workspace_kind", self._config.workspace_kind)
+        if mode is not None and mode not in MODE_CHOICES:
+            raise InvalidParams("mode.invalid", f"params.mode must be one of "
+                                f"{', '.join(MODE_CHOICES)}; got {mode!r}")
+        for field in ("model", "reasoning_model", "collection_model"):
+            value = params.get(field)
+            if field in params and (not isinstance(value, str) or not value.strip()):
+                raise InvalidParams("model.invalid",
+                                    f"params.{field} must be a non-empty model name")
+        if not isinstance(params.get("no_collection", False), bool):
+            raise InvalidParams("params.invalid", "params.no_collection must be a boolean")
         workspace = params.get("workspace", self._config.workspace)
+        if not isinstance(workspace, str) or not workspace:
+            raise InvalidParams("workspace.missing", "params.workspace must be a directory path")
+        refusal = workspace_refusal(workspace)
+        if refusal:
+            code, _, message = refusal.partition(": ")
+            raise InvalidParams(code, message)
+        resume = params.get("resume")
+        if resume is not None:
+            if not isinstance(resume, str) or not resume.strip():
+                raise InvalidParams("session.not_found", "params.resume must be a session reference")
+            from garuda.core.project_identity import ProjectIdentityError
+
+            # The selection `garuda run --resume` makes (``plan_resume``).
+            try:
+                SessionStore().resolve(resume, workspace=os.path.realpath(workspace))
+            except (OSError, ValueError, ProjectIdentityError) as exc:
+                raise InvalidParams("session.not_found", str(exc)) from exc
+        agent_name = params.get("agent", self._config.agent)
         agents_dir = params.get("agents_dir", self._config.agents_dir)
-        mcp_config = params.get("mcp_config", self._config.mcp_config)
         # Default the profiles dirs to the workspace's `.agent/agents` (then
         # `.garuda/agents`) when unset, so both the top-level run and any forked
         # subagents resolve custom profiles the same standard way.
         agents_path = resolve_agents_dirs(workspace, agents_dir)
+        try:
+            capped = check_named(agent_name, workspace=workspace, agents_dirs=agents_path,
+                                 allowed=self._config.allowed_agents,
+                                 ceiling=self._config.permission_ceiling,
+                                 default_agent=self._config.agent)
+        except FileNotFoundError as exc:
+            raise InvalidParams("agent.not_found", str(exc)) from exc
+        return {"task": task, "workspace": workspace, "agents_path": agents_path,
+                "mode": mode, "agent": agent_name, "capped": capped}
 
-        capped = check_named(agent_name, workspace=workspace, agents_dirs=agents_path,
-                             allowed=self._config.allowed_agents,
-                             ceiling=self._config.permission_ceiling,
-                             default_agent=self._config.agent)
+    async def _execute(self, params: dict[str, Any], events: EventStore):
+        """Build run dependencies from params and execute one agent task.
+
+        Shared by the blocking ``run`` and the async job queue. The caller owns
+        the ``events`` store so a submitted job can poll it incrementally.
+        """
+        vetted = self._vet(params)
+        task, workspace, agents_path, mode = (
+            vetted["task"], vetted["workspace"], vetted["agents_path"], vetted["mode"])
+        agent_name, capped = vetted["agent"], vetted["capped"]
+        workspace_kind = params.get("workspace_kind", self._config.workspace_kind)
+        mcp_config = params.get("mcp_config", self._config.mcp_config)
         # Resolved fresh per request through shared setup: one job's models
         # never leak into another's, and identical inputs resolve identically
         # to every other entry point.
@@ -485,9 +561,8 @@ class JsonRpcServer:
         return job
 
     async def _submit(self, params: dict[str, Any]) -> dict[str, Any]:
-        task = params.get("task")
-        if not task:
-            raise ValueError("params.task is required")
+        # Refused synchronously, never queued to fail later (#790, #791).
+        task = self._vet(params)["task"]
         events = EventStore()
         job = self._jobs().submit(
             lambda j: self._execute(params, j.events),
@@ -544,7 +619,7 @@ class JsonRpcServer:
     def _list_jobs(self, params: dict[str, Any]) -> dict[str, Any]:
         return {
             "jobs": [
-                {"job_id": j.id, "state": j.state.value, "task": j.task[:120]}
+                {"job_id": j.id, "state": j.state.value, "task": str(j.task)[:120]}
                 for j in self._jobs().list()
             ]
         }
@@ -677,6 +752,11 @@ class JsonRpcServer:
                     "id": None,
                     "error": {"code": PARSE_ERROR_CODE, "message": "Parse error: body must be a JSON object"},
                 }
+            if response is None:
+                # A notification: JSON-RPC 2.0 sends no response object.
+                writer.write(b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n")
+                await writer.drain()
+                return
             status = b"HTTP/1.1 200 OK"
             if response.get("error", {}).get("code") == UNAUTHORIZED_CODE:
                 status = b"HTTP/1.1 401 Unauthorized"
