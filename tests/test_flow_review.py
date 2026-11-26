@@ -1138,8 +1138,11 @@ def _packaged_pbr_runner(repo, launcher, **kw):
 
 
 def _assert_reviewer_saw_plan_and_patch(prompt, patch):
-    assert '<flow-input type="plan" from="plan">\n| do it\n</flow-input>' in prompt
-    assert f'<flow-input type="patch" from="build">\n| {patch}\n</flow-input>' in prompt
+    marker = prompt.split('<flow-input type="plan" from="plan" fence="', 1)[1][:16]
+    assert (f'<flow-input type="plan" from="plan" fence="{marker}">\n| do it\n'
+            f'</flow-input fence="{marker}">') in prompt
+    assert (f'<flow-input type="patch" from="build" fence="{marker}">\n| {patch}\n'
+            f'</flow-input fence="{marker}">') in prompt
     assert prompt.index('type="plan"') < prompt.index('type="patch"')
 
 

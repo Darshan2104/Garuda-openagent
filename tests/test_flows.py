@@ -1212,5 +1212,5 @@ def test_checked_packaged_flow_resumes_with_the_definition_it_started_with(
     meta = SessionStore().load_meta(stopped["flow_session"])
     assert meta["review"]["status"] == "review_approved"
     assert meta["state"]["verification"] == {"status": "passed", "authority": "user-request"}
-    saw_plan = '<flow-input type="plan" from="plan">' in prompts[("review", 2)]
+    saw_plan = '<flow-input type="plan" from="plan" fence="' in prompts[("review", 2)]
     assert saw_plan is (recorded == "current")
