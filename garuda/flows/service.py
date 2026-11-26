@@ -14,7 +14,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from garuda.config.garuda_yaml import load_effective
+from garuda.config.garuda_yaml import FLOW_ISOLATION, load_effective
 from garuda.core.sessions import SessionStore
 from garuda.flows import engine, packaged
 
@@ -60,15 +60,50 @@ def _bound_root(workspace) -> str:
     return str(Path(workspace).resolve())
 
 
+_PLAN_KEYS = ("isolation", "worktree", "branch", "source_repo", "source_head",
+              "dirty_source", "dirty_fingerprint")
+
+
+def _flow_source(meta: dict) -> str:
+    """The checkout a flow was started from; a worktree flow records it apart."""
+    execution = meta.get("flow_execution_workspace")
+    if isinstance(execution, dict) and isinstance(execution.get("source"), str):
+        return execution["source"]
+    return meta["workspace"]
+
+
+def _recorded_worktree(meta: dict) -> tuple[dict | None, dict | None]:
+    """A resumed worktree flow goes back to the same worktree, proved by identity."""
+    execution = meta.get("flow_execution_workspace")
+    if execution is None:
+        return None, None
+    if (not isinstance(execution, dict) or set(execution) != {"source", "path", "identity"}
+            or meta.get("isolation") != "worktree" or meta.get("worktree") != execution["path"]
+            or type(execution.get("identity")) is not list):
+        raise engine.FlowStopped("flow.workspace_changed",
+                                 "the flow's recorded worktree is inconsistent")
+    try:
+        info = os.stat(execution["path"])
+    except OSError as exc:
+        raise engine.FlowStopped("flow.workspace_changed",
+                                 f"the flow's worktree {execution['path']} is gone") from exc
+    if [info.st_dev, info.st_ino] != execution["identity"]:
+        raise engine.FlowStopped("flow.workspace_changed",
+                                 f"the flow's worktree {execution['path']} was replaced")
+    return dict(execution), {key: meta.get(key) for key in _PLAN_KEYS}
+
+
 class FlowExecutionService:
     def __init__(self, store: SessionStore | None = None):
         self.store = store if store is not None else SessionStore()
 
     async def run(self, name: str, task: str, workspace: str, *,
                   starter_record: dict | None = None,
-                  checks: tuple[str, ...] | None = None) -> FlowExecutionResult:
+                  checks: tuple[str, ...] | None = None,
+                  isolation: str | None = None) -> FlowExecutionResult:
+        """Run a flow; ``isolation`` overrides the flow's own (default ``shared``)."""
         return await self._execute(name, task, workspace, starter_record=starter_record,
-                                   checks=checks)
+                                   checks=checks, isolation=isolation)
 
     async def run_prepared(self, plan, context, *, flow_session: str,
                            operation_binding: dict, on_admitted, approval_handler,
@@ -188,6 +223,13 @@ class FlowExecutionService:
 
         from garuda.agents.run_workspace import run_workspace
 
+        if launch_kind == "flow" and flow.get("isolation", "shared") != "shared":
+            # A dashboard flow's admitted authority binds the shared checkout;
+            # it is never silently moved into a worktree.
+            raise engine.FlowStopped(
+                "flow.isolation_unsupported",
+                f"flow {name} sets isolation: {flow['isolation']}, which dashboard flow starts "
+                f"do not support; run it with `garuda flow run {name}`")
         isolation = plan.options.get("isolation", "shared") if launch_kind == "run" else "shared"
         async with run_workspace(self.store, plan.workspace, flow_session, isolation,
                                  reserved_background=background_admission is not None) as selected:
@@ -319,7 +361,7 @@ class FlowExecutionService:
                 if recovery_record is not None:
                     raise engine.FlowStopped("flow.recovery_claim_invalid",
                                              "checked flows require an explicit resume")
-                return await self._execute(meta["flow"]["name"], meta["task"], meta["workspace"],
+                return await self._execute(meta["flow"]["name"], meta["task"], _flow_source(meta),
                                            flow_session=flow_session,
                                            checks=tuple(request["checks"]),
                                            checked_checkpoint=meta["flow_resume_checkpoint"],
@@ -328,7 +370,7 @@ class FlowExecutionService:
             if classification != "uncertain" and meta.get("flow_verification_phase") is not None:
                 rerun = self._rerun_request(flow_session, meta, records)
                 if rerun is not None:
-                    return await self._execute(meta["flow"]["name"], meta["task"], meta["workspace"],
+                    return await self._execute(meta["flow"]["name"], meta["task"], _flow_source(meta),
                                                flow_session=flow_session,
                                                checks=tuple(rerun["checks"]),
                                                saved_request=rerun, rerun_checks=True)
@@ -360,7 +402,7 @@ class FlowExecutionService:
         elif recovery_record is not None:
             raise engine.FlowStopped("flow.recovery_claim_invalid", "continuation claim is missing")
         try:
-            return await self._execute(meta["flow"]["name"], meta["task"], meta["workspace"],
+            return await self._execute(meta["flow"]["name"], meta["task"], _flow_source(meta),
                                        flow_session=flow_session,
                                        recovery=recovery if pending is not None else None)
         except Exception as exc:
@@ -413,7 +455,8 @@ class FlowExecutionService:
                        starter_record: dict | None = None,
                        checks: tuple[str, ...] | None = None,
                        recovery=None, checked_checkpoint=None,
-                       saved_request=None, rerun_checks: bool = False) -> FlowExecutionResult:
+                       saved_request=None, rerun_checks: bool = False,
+                       isolation: str | None = None) -> FlowExecutionResult:
         from garuda.config_sources import SourceCapture
         from garuda.flows.launch import launch_step
         from garuda.flows.quota_recovery import FlowRecovery
@@ -460,35 +503,80 @@ class FlowExecutionService:
                     "owned flow checks require the Linux supervisor on this host")
         else:
             request = permissions = None
-        runner = engine.FlowRunner(self.store, workspace, name, flow, resolved, task=task,
-                                   launcher=launch_step, flow_session=flow_session,
-                                   starter_record=starter_record,
-                                   verification_request=request,
-                                   verification_permissions=permissions,
-                                   verification_cli_checks=checks if request is not None else None,
-                                   configuration_sources=capture.facts())
-        if recovery is not None:
-            runner.quota_recovery = recovery
-        elif flow_session is None:
-            candidate = FlowRecovery(self.store)
-            if candidate.records.settings().get("enabled") is True:
-                if request is not None or any("parallel" in step or step.get("retries")
-                                              for step in flow["steps"]):
-                    runner.quota_recovery_status = {"state": "unsupported", "reason":
-                        "quota recovery does not support protected/check-enabled, parallel "
-                        "or retrying flows"}
-                else:
-                    runner.quota_recovery = candidate
-        if rerun_checks:
-            if request is None:
-                raise engine.FlowStopped("flow.verification_reconciliation_required",
-                                         "the interrupted flow's checks are no longer selected")
-            result = await runner.rerun_checks()
+        resumed = flow_session is not None
+        mode = isolation if isolation is not None else flow.get("isolation", "shared")
+        if mode not in FLOW_ISOLATION:
+            raise engine.FlowStopped("flow.isolation_invalid",
+                                     f"isolation must be one of {', '.join(FLOW_ISOLATION)}")
+        if resumed and isolation is not None:
+            raise engine.FlowStopped("flow.isolation_resume",
+                                     "a resumed flow keeps the workspace it ran in")
+
+        async def execute(path, session, execution, worktree):
+            runner = engine.FlowRunner(self.store, path, name, flow, resolved, task=task,
+                                       launcher=launch_step, flow_session=session,
+                                       starter_record=starter_record,
+                                       verification_request=request,
+                                       verification_permissions=permissions,
+                                       verification_cli_checks=checks if request is not None else None,
+                                       configuration_sources=capture.facts(),
+                                       execution_workspace=execution, worktree_plan=worktree)
+            if recovery is not None:
+                runner.quota_recovery = recovery
+            elif not resumed:
+                candidate = FlowRecovery(self.store)
+                if candidate.records.settings().get("enabled") is True:
+                    if request is not None or any("parallel" in step or step.get("retries")
+                                                  for step in flow["steps"]):
+                        runner.quota_recovery_status = {"state": "unsupported", "reason":
+                            "quota recovery does not support protected/check-enabled, parallel "
+                            "or retrying flows"}
+                    else:
+                        runner.quota_recovery = candidate
+            if rerun_checks:
+                if request is None:
+                    raise engine.FlowStopped("flow.verification_reconciliation_required",
+                                             "the interrupted flow's checks are no longer selected")
+                return await runner.rerun_checks()
+            return await runner.run(resume=resumed, checked_checkpoint=checked_checkpoint)
+
+        if resumed:
+            execution, worktree = _recorded_worktree(self.store.load_meta(flow_session))
+            path = execution["path"] if execution is not None else workspace
+            result = await execute(path, flow_session, execution, worktree)
+        elif mode == "shared":
+            result = await execute(workspace, None, None, None)
         else:
-            result = await runner.run(resume=flow_session is not None,
-                                      checked_checkpoint=checked_checkpoint)
+            result = await self._execute_in_worktree(workspace, resolved, execute)
         meta = self.store.load_meta(result.flow_session)
         return FlowExecutionResult(result, meta.get("review"), meta.get("state"))
+
+    async def _execute_in_worktree(self, workspace: str, resolved, execute):
+        """Run a new flow in its own worktree from the checkout's HEAD.
+
+        The starter machinery selects it (`run_workspace`): a worktree the
+        flow never admitted is discarded; an admitted one is kept for
+        `garuda sessions merge` and `garuda flow rollback`.
+        """
+        from garuda.agents.run_workspace import run_workspace
+        from garuda.flows import checkpoints
+        from garuda.workspace.worktrees import WorktreeError
+
+        keep_days = (resolved.config.get("sessions") or {}).get("keep_days")
+        try:
+            await engine._settled_sync(checkpoints.prune_expired, workspace, keep_days)
+        except (OSError, checkpoints.CheckpointError):
+            pass  # pruning old refs never blocks a new flow
+        flow_session = str(uuid.uuid4())
+        try:
+            async with run_workspace(self.store, workspace, flow_session, "worktree") as selected:
+                path, worktree, identity = selected
+                path = _bound_root(path)
+                execution = {"source": workspace, "path": path, "identity": identity}
+                worktree = {**worktree, "worktree": path}
+                return await execute(path, flow_session, execution, worktree)
+        except WorktreeError as exc:
+            raise engine.FlowStopped(exc.code, str(exc)) from exc
 
 
 def _refuse_unsettled_checked(store, flow_session: str, meta: dict) -> None:
