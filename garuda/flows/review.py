@@ -245,7 +245,7 @@ def _parse_structured(text: str) -> Review:
     return Review(verdict, [(f["severity"], summary(f)) for f in structured], structured)
 
 
-PACKET_VERSION = 1
+PACKET_VERSION = 2
 MAX_PACKET_FILES = 200
 
 
@@ -271,7 +271,8 @@ def change_list_complete(changed: list | None, recorded) -> bool | None:
 def build_packet(*, task: str, step: dict, reviewer: dict, spec: dict, candidate: dict,
                  changed: list | None, reviewer_plan: dict | None, no_edits: bool,
                  changed_total: int | None = None, version_binds: bool = True,
-                 config: dict | None = None, diff: dict | None = None) -> dict:
+                 config: dict | None = None, diff: dict | None = None,
+                 attempts: dict | None = None) -> dict:
     """The bounded evidence a reviewer is given, with a digest of it.
 
     Built from the reviewed step's own receipt and session records; a manifest
@@ -282,6 +283,10 @@ def build_packet(*, task: str, step: dict, reviewer: dict, spec: dict, candidate
     ``version_binds`` (the version can tell workspaces apart). ``config`` is the
     loader evidence for changed configuration files, ``unknown`` when absent.
     ``diff`` carries bounded patch excerpts from the session's diff owner.
+    ``attempts`` names the reviewed step's first and latest attempts the
+    change list and excerpts cover and ``baseline_session``, the first session
+    of the first attempt, whose baseline both compare the candidate with
+    (version 2, #814).
     """
     import hashlib
 
@@ -295,6 +300,10 @@ def build_packet(*, task: str, step: dict, reviewer: dict, spec: dict, candidate
                      "max_rounds": spec.get("max_rounds", 1),
                      "independent": spec.get("independent", True)},
         "candidate": candidate,
+        "attempts": {**(attempts or {"first": None, "latest": None, "baseline_session": None}),
+                     "note": "changed files and diff excerpts cover every attempt from the "
+                             "first, compared with the baseline of the first attempt's first "
+                             "session (baseline_session)"},
         "binding": {"enforced": enforced,
                     "note": "the workspace must still match this candidate version" if enforced
                     else "the candidate workspace version is unknown or cannot tell "
