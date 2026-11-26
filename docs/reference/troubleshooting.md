@@ -94,9 +94,11 @@ Click a problem to see the fix.
     - Leave the collection model off unless you need it (`--no-collection`).
     - Your provider's billing page is the authority on cost.
     - `harness.limit_reached: You've hit your usage limit ...` means an
-      external harness (for example Codex) refused the turn at its plan
-      limit. Wait for the reset time in the message, or use another harness
-      in the role's `fallback:` chain. A host error such as `Disk quota
+      external harness (for example Codex or Claude Code) refused the turn at
+      its plan limit. Wait for the reset time in the message (Claude's is
+      given in UTC, for example `resets at 2026-11-26 15:00 UTC`), or use
+      another harness in the role's `fallback:` chain. Garuda does not resume
+      the run by itself when the limit resets. A host error such as `Disk quota
       exceeded (os error 122)` is not typed as a limit: it stays a plain
       `agent error`, so free disk space instead. Error text an agent sends
       back is redacted for secret patterns before Garuda stores or shows it.
@@ -450,6 +452,17 @@ Click a problem to see the fix.
     step needs. For a native role, the block must be in the summary it passes to
     `task_complete`. Give the role an agent that says so; see
     [Level 5](../use-cases/teams.md#run-a-plan-build-review-flow).
+
+??? question "A flow stops with `flow.artifact_malformed`"
+
+    The step's answer has a `</garuda-artifact>` tag outside any block, or a
+    `<garuda-artifact>` block (or one quoted inside it) that never closes.
+    Garuda stops instead of guessing where the artifact ends. A complete
+    envelope quoted inside a block is fine; the stop message names the line.
+    Ask the role's agent to close each block once, at the end of its answer.
+    A checked flow (`--check`) stopped this way, or with
+    `flow.artifact_too_large`, resumes with `garuda flow resume FLOW_ID`,
+    which runs that step again.
 
 ??? question "A read-only flow step runs until it hits its turn limit"
 

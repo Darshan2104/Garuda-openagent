@@ -147,6 +147,25 @@ async def test_only_the_reviewed_step_retries_until_approval(repo):
     assert meta["state"]["verification"]["status"] == "unavailable"  # a review is not verification
 
 
+async def test_a_secret_in_a_finding_is_redacted_and_the_review_still_parses(repo):
+    # #812: findings go back to the reviewed step, possibly another vendor's agent.
+    secret = "sk-FAKEreviewtoken0123456789"
+    script = Script([f"verdict: changes\nfindings:\n- [major] {secret} is hard-coded in a.txt",
+                     APPROVE])
+    runner = _run(repo, script, _config(max_rounds=1))
+    result = await runner.run()
+
+    assert result.completed
+    retry = script.prompts[("build", 2)]
+    assert secret not in retry and "| - [major] [REDACTED:api-token] is hard-coded" in retry
+    first = next(r for r in result.receipts if r["step"] == "review" and r["attempt"] == 1)
+    ref = first["outputs"][0]
+    assert ref["redactions"] == 1
+    assert secret not in (runner.dir / ref["path"]).read_text()
+    history = SessionStore().load_meta(result.flow_session)["review"]["history"]
+    assert history[0]["findings"] == [["major", "[REDACTED:api-token] is hard-coded in a.txt"]]
+
+
 @pytest.mark.parametrize("reviews, stopped", [
     (["looks good to me"], "flow.review_invalid"),
     ([CHANGES], "flow.review_changes_requested"),
@@ -1103,3 +1122,56 @@ async def test_a_resumed_retry_packet_covers_the_failed_attempts_partial_edits(r
     assert packet["attempts"]["first"] == {"attempt": 1, "session_id": first.sessions[1]}
     assert packet["attempts"]["latest"] == {"attempt": 2, "session_id": second.sessions[2]}
     assert packet["attempts"]["baseline_session"] == first.sessions[1]
+
+def _packaged_pbr_runner(repo, launcher, **kw):
+    from garuda.flows import packaged
+
+    config = {**_config(), "flows": {"plan-build-review": packaged.FLOWS["plan-build-review"]}}
+    resolved = gy.resolve(gy.parse(config), None)
+    return FlowRunner(SessionStore(), repo, "plan-build-review",
+                      resolved.config["flows"]["plan-build-review"], resolved, task="t",
+                      launcher=launcher, **kw)
+
+
+def _assert_reviewer_saw_plan_and_patch(prompt, patch):
+    assert '<flow-input type="plan" from="plan">\n| do it\n</flow-input>' in prompt
+    assert f'<flow-input type="patch" from="build">\n| {patch}\n</flow-input>' in prompt
+    assert prompt.index('type="plan"') < prompt.index('type="patch"')
+
+
+async def test_the_packaged_reviewer_receives_the_plan_in_every_round(repo):
+    """#818: the packaged plan-build-review reviewer judges the patch against the plan."""
+    script = Script([CHANGES, APPROVE])
+    result = await _packaged_pbr_runner(repo, script).run()
+
+    assert result.completed
+    assert script.sequence == [("plan", 1), ("build", 1), ("review", 1), ("build", 2),
+                               ("review", 2)]
+    for attempt in (1, 2):
+        _assert_reviewer_saw_plan_and_patch(script.prompts[("review", attempt)],
+                                            f"patch {attempt}")
+    meta = SessionStore().load_meta(result.flow_session)
+    assert meta["review"]["status"] == "review_approved"
+    assert meta["review"]["independence"]["policy"] == "required"
+
+
+async def test_the_packaged_reviewer_receives_the_plan_after_a_resume(repo):
+    """#818: a resumed flow hands the reviewer the plan recorded before the stop."""
+
+    class FailFirstBuild(Script):
+        async def __call__(self, launch):
+            if launch.step_id == "build" and launch.attempt == 1:
+                self.sequence.append((launch.step_id, launch.attempt))
+                return StepResult(str(uuid.uuid4()), False, "", error="agent crashed")
+            return await super().__call__(launch)
+
+    script = FailFirstBuild([APPROVE])
+    first = await _packaged_pbr_runner(repo, script).run()
+    assert first.stopped.code == "flow.step_failed"
+
+    resumed = await _packaged_pbr_runner(repo, script, flow_session=first.flow_session).run(
+        resume=True)
+
+    assert resumed.completed
+    assert script.sequence == [("plan", 1), ("build", 1), ("build", 2), ("review", 1)]
+    _assert_reviewer_saw_plan_and_patch(script.prompts[("review", 1)], "patch 2")

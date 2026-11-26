@@ -207,7 +207,7 @@ Three flows ship with Garuda:
 |---|---|---|
 | `plan-only` | scout → planner | No |
 | `pair` | coder, reviewed by reviewer (up to three rounds) | Yes (the coder) |
-| `plan-build-review` | planner → coder, reviewed by reviewer | Yes (the coder) |
+| `plan-build-review` | planner → coder, reviewed by reviewer (who gets the plan and the patch) | Yes (the coder) |
 
 ```bash
 garuda flow run plan-build-review -t "Add a --version flag"
@@ -308,7 +308,8 @@ recorded (task, error detail) is redacted again on the way out.
 After a checked CLI flow stops at a settled step failure, a step's own
 deadline or silence limit (`flow.step_deadline`, `flow.step_silent`), a role refusal
 before the prompt (for example `role.start_failed` from a logged-out harness or
-`role.model_unavailable`), missing output, an invalid review
+`role.model_unavailable`), missing output, output that could not be stored
+(`flow.artifact_malformed`, `flow.artifact_too_large`), an invalid review
 (`flow.review_invalid`), or confinement refusal,
 `garuda flow resume FLOW_ID` retries the pending step and continues with the
 original checks. Such a stop keeps the step's own code and releases the
@@ -384,6 +385,21 @@ artifact only in this envelope at the end of its answer:
 </garuda-artifact>
 ```
 
+Only blocks at the top level count, and the last block of a type wins, so an
+answer that repeats the example above and then ends with its real block passes
+on the real block. A complete envelope quoted inside a block (for example a
+plan about Garuda itself) stays part of that block. Garuda never shortens an
+artifact to make sense of the tags: a `</garuda-artifact>` outside any block,
+or a block that is never closed, stops the step with
+`flow.artifact_malformed`.
+
+Secrets in an artifact (tokens, keys, `password: ...` lines and the other
+patterns Garuda redacts elsewhere) are replaced with `[REDACTED:<kind>]`
+before it is stored, so neither the flow directory nor the next agent sees
+them; the artifact reference records how many were removed as `redactions`.
+Review findings sent back to the reviewed step are redacted too, and the
+review packet's diff excerpts already withhold any file excerpt with a secret.
+
 Garuda stores each artifact once, records its digest, and checks it again
 before the next step reads it. An artifact that describes the workspace
 (`patch`, `review`, `findings`) is refused if the workspace has changed since
@@ -400,8 +416,9 @@ receipt lists all of them in `inputs`.
 
 `retries: N` on a plain step (not reviewed, not a parallel group) runs it again,
 up to N more times, when the step itself failed (`flow.step_failed`), gave no
-required artifact (`flow.output_missing`) or gave one that was too large
-(`flow.artifact_too_large`). Each attempt has its own number, intent and
+required artifact (`flow.output_missing`), gave one that was too large
+(`flow.artifact_too_large`) or an envelope that could not be read
+(`flow.artifact_malformed`). Each attempt has its own number, intent and
 receipt; the failed attempt's stopped receipt stays. A retried attempt's prompt
 ends with a `[garuda]` line saying an earlier attempt failed and its partial
 edits may already be in the workspace. Refusals (confinement, role,

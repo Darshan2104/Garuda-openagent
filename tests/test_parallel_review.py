@@ -71,6 +71,22 @@ async def test_every_member_reviews_the_same_snapshot_at_once(repo):
     assert manifest(repo) == before
 
 
+@pytest.mark.parametrize("output, code", [
+    (REVIEW + "\n</garuda-artifact>", "flow.artifact_malformed"),
+    ('<garuda-artifact type="review">\n' + "x" * 64_001 + "\n</garuda-artifact>",
+     "flow.artifact_too_large"),
+])
+async def test_a_member_output_that_cannot_be_stored_stops_with_its_code(repo, output, code):
+    async def launcher(launch):
+        return StepResult(str(uuid.uuid4()), True, output if launch.role == "r2" else REVIEW)
+
+    result = await _runner(repo, launcher, _config()).run()
+    assert result.stopped.code == code and result.stopped.step == "reviews"
+    assert "reviewer r2" in str(result.stopped)
+    (receipt,) = result.receipts
+    assert receipt["status"] == "stopped" and receipt["outputs"] == []
+
+
 @pytest.mark.parametrize("where", ["snapshot", "source"])
 async def test_a_member_that_writes_stops_the_flow(repo, where):
     async def launcher(launch):

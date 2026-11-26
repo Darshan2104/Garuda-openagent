@@ -237,6 +237,91 @@ async def test_only_the_envelope_counts_and_a_model_path_is_ignored(repo):
     assert ref["path"] == "artifacts/plan-1-plan.txt"
 
 
+
+QUOTED_ENVELOPE = ('Step 1: emit this\n<garuda-artifact type="plan">\n...your plan...\n'
+                   '</garuda-artifact>\nStep 2: TAIL-AFTER-ENVELOPE')
+
+
+async def test_a_quoted_envelope_inside_an_artifact_is_kept_whole(repo):
+    # #811: the first closing tag used to cut the plan silently.
+    async def plan(launch):
+        return StepResult("s", True, _block("plan", QUOTED_ENVELOPE))
+
+    async def build(launch):
+        assert "TAIL-AFTER-ENVELOPE" in launch.prompt
+        return StepResult("s", True, _block("patch", "x"))
+
+    runner = _runner(repo, Fake(repo, {"plan": plan, "build": build}))
+    result = await runner.run()
+    assert result.completed
+    stored = runner.dir / result.receipts[0]["outputs"][0]["path"]
+    assert stored.read_text() == QUOTED_ENVELOPE
+
+
+def test_an_echoed_instruction_example_then_the_real_block_passes_the_real_block():
+    output = ("You asked me to end like this:\n" + art.instructions(["plan"])
+              + "\nSo here it is.\n" + _block("plan", "1. the real plan")
+              + '\n<garuda-artifact type="other" x="1">ignored</garuda-artifact>')
+    assert art.extract(output) == {"plan": "1. the real plan"}
+
+
+@pytest.mark.parametrize("output, where", [
+    (_block("plan", "p") + "\nmore text\n</garuda-artifact>", "outside any block"),
+    ('notes\n<garuda-artifact type="plan">\n1. the plan, never closed', "never closed"),
+    (_block("plan", 'quoting <garuda-artifact type="plan"> without its end'), "never closed"),
+    ("</garuda-artifact>\n" + _block("plan", "p"), "outside any block"),
+])
+def test_an_ambiguous_envelope_is_malformed_never_cut(output, where):
+    with pytest.raises(art.ArtifactError, match=where) as caught:
+        art.extract(output)
+    assert caught.value.code == "flow.artifact_malformed"
+
+
+async def test_a_stray_closing_tag_stops_the_step_with_a_typed_code(repo):
+    async def plan(launch):
+        return StepResult("s", True, _block("plan", "1. part one") + "\n2. part two\n</garuda-artifact>")
+
+    fake = Fake(repo, {"plan": plan})
+    result = await _runner(repo, fake).run()
+    assert result.stopped.code == "flow.artifact_malformed" and result.stopped.step == "plan"
+    assert [launch.step_id for launch in fake.launches] == ["plan"]  # build never started
+    assert result.receipts[0]["outputs"] == []
+
+
+FAKE_SECRETS = ("AKIAFAKEFAKEFAKE0000", "sk-FAKEnotarealtoken0123456789")
+
+
+async def test_artifact_secrets_are_redacted_before_storing_and_passing_on(repo):
+    # #812: the secret reached the flow directory and the next agent verbatim.
+    notes = f"key id {FAKE_SECRETS[0]}\ntoken {FAKE_SECRETS[1]}\n1. edit a.txt"
+
+    async def plan(launch):
+        return StepResult("s", True, _block("plan", notes))
+
+    async def build(launch):
+        assert not any(secret in launch.prompt for secret in FAKE_SECRETS)
+        assert "[REDACTED:aws-key]" in launch.prompt and "| 1. edit a.txt" in launch.prompt
+        return StepResult("s", True, _block("patch", "x"))
+
+    runner = _runner(repo, Fake(repo, {"plan": plan, "build": build}))
+    result = await runner.run()
+    assert result.completed
+    ref = result.receipts[0]["outputs"][0]
+    stored = (runner.dir / ref["path"]).read_bytes()
+    assert not any(secret.encode() in stored for secret in FAKE_SECRETS)
+    assert ref["redactions"] == 2 and ref["size"] == len(stored)
+    assert result.receipts[1]["outputs"][0]["redactions"] == 0
+
+
+def test_a_reference_from_before_redaction_counts_still_loads(tmp_path):
+    flow = tmp_path / "flow"
+    ref = art.store(flow, type="plan", content="the plan", step="plan", session_id="s",
+                    attempt=1, workspace_version="v1")
+    old = {k: v for k, v in ref.to_dict().items() if k != "redactions"}
+    loaded = art.ArtifactRef.from_dict(old)
+    assert loaded.redactions is None
+    assert art.load(flow, loaded, workspace_version="v1") == "the plan"
+
 async def test_a_no_edits_step_that_writes_stops_the_flow_before_the_next(repo):
     async def sneaky_plan(launch):
         (repo / "planted.txt").write_text("x")
@@ -577,6 +662,7 @@ def test_resume_plan_only_after_confinement_refusal(repo, monkeypatch, capsys, c
 @pytest.mark.parametrize("stop_step, stop_code", [
     ("build", "flow.step_failed"), ("review", "flow.output_missing"),
     ("build", "workspace.readonly_unenforced"), ("review", "flow.review_invalid"),
+    ("review", "flow.artifact_malformed"), ("review", "flow.artifact_too_large"),
 ])
 def test_checked_flow_resumes_settled_attempt_and_runs_original_check(
         repo, monkeypatch, capsys, stop_step, stop_code):
@@ -617,6 +703,11 @@ def test_checked_flow_resumes_settled_attempt_and_runs_original_check(
                 # #761: a request for changes without any finding never parses.
                 return StepResult(session, True, _block("review", "verdict: changes\nfindings:\n- none."),
                                   closure)
+            if stop_code == "flow.artifact_malformed":  # #811: a stray closing tag
+                return StepResult(session, True, outputs["review"] + "\n</garuda-artifact>", closure)
+            if stop_code == "flow.artifact_too_large":
+                return StepResult(session, True,
+                                  _block("review", "x" * (art.MAX_ARTIFACT_CHARS + 1)), closure)
             return StepResult(session, True, "missing review artifact", closure)
         if launch.step_id == "build" and launch.attempt == 2:
             (repo / "a.txt").write_text("a\n")
@@ -995,6 +1086,27 @@ async def test_a_failed_step_is_retried_with_a_note_and_new_attempts(repo):
         "intent", "receipt"] * 4
 
 
+async def test_a_malformed_artifact_is_retried_like_a_missing_one(repo):
+    """#811: the step ran; only its envelope could not be read, so it may run again."""
+    config = {**RETRY_CONFIG, "flows": {"pbr": {"steps": [
+        {**RETRY_CONFIG["flows"]["pbr"]["steps"][0], "retries": 1},
+        *RETRY_CONFIG["flows"]["pbr"]["steps"][1:]]}}}
+    outcomes = iter([StepResult(str(uuid.uuid4()), True,
+                                _block("plan", "p") + "\n</garuda-artifact>")])
+
+    async def plan(launch):
+        return next(outcomes, None) or await _plan(launch)
+
+    async def build(launch):
+        return StepResult(str(uuid.uuid4()), True, _block("patch", "x"))
+
+    result = await _runner(repo, Fake(repo, {"plan": plan, "build": build}), config=config).run()
+    assert result.completed
+    assert [(r["step"], r["attempt"], (r.get("stop") or {}).get("code"))
+            for r in result.receipts] == [
+        ("plan", 1, "flow.artifact_malformed"), ("plan", 2, None), ("build", 1, None)]
+
+
 async def test_retries_stop_after_n_and_a_resume_runs_one_more_attempt(repo):
     async def failing(launch):
         return StepResult(str(uuid.uuid4()), False, "")
@@ -1038,3 +1150,64 @@ async def test_retries_are_refused_where_every_attempt_is_accounted_for(repo, ow
         await runner.run()
     assert caught.value.code == "flow.retries_unsupported"
     assert fake.launches == [] and LeaseStore().holders_of(repo) == []
+
+@pytest.mark.skipif(sys.platform != "linux", reason="owned flow checks require Linux")
+@pytest.mark.parametrize("recorded", ["previous", "current"])
+def test_checked_packaged_flow_resumes_with_the_definition_it_started_with(
+        repo, monkeypatch, capsys, recorded):
+    """#818: a checked flow binds its definition digest into its saved check request.
+
+    One started under an earlier packaged plan-build-review (reviewer inputs
+    [patch]) still resumes after the upgrade, with that recorded definition;
+    one started under the current definition resumes with the current one.
+    """
+    from garuda.flows import packaged
+    from tests.test_runtime_cli import _main
+
+    gy.user_path().write_text(
+        "version: 1\nroles:\n  planner: {harness: native, model_id: p/1}\n"
+        "  coder: {harness: native, model_id: c/1}\n"
+        "  reviewer: {harness: native, model_id: r/1}\n")
+    current = packaged.FLOWS["plan-build-review"]
+    (previous,) = packaged.PREVIOUS["plan-build-review"]
+    assert [s.get("inputs") for s in previous["steps"]][-1] == ["patch"]
+    assert [s.get("inputs") for s in current["steps"]][-1] == ["plan", "patch"]
+    launches, prompts = [], {}
+    outputs = {"plan": _block("plan", "edit a.txt"), "build": _block("patch", "a.txt"),
+               "review": _block("review", "verdict: approve")}
+
+    async def launcher(launch):
+        launches.append((launch.step_id, launch.attempt))
+        prompts[(launch.step_id, launch.attempt)] = launch.prompt
+        session = str(uuid.uuid4())
+        lease = launch.capability._parent.snapshot_ownership()["lease"]
+        info = repo.stat()
+        closure = {"version": 1, "request_digest": "a" * 64, "session_id": session,
+                   "parent_id": launch.flow_session, "step_id": launch.step_id,
+                   "attempt": launch.attempt, "workspace_identity": [info.st_dev, info.st_ino],
+                   "parent_owner": {key: lease[key] for key in ("pid", "identity", "pgid", "epoch")},
+                   "process": {"cleanup": {"backend": "linux-subreaper", "echild": True},
+                               "outcome": "exited", "supervisor": {}, "command": {}, "exit_code": 0}}
+        if launch.step_id == "review" and launch.attempt == 1:
+            return StepResult(session, True, "missing review artifact", closure)
+        return StepResult(session, True, outputs[launch.step_id], closure)
+
+    monkeypatch.setattr("garuda.flows.launch.launch_step", launcher)
+    with monkeypatch.context() as patch:
+        if recorded == "previous":
+            patch.setitem(packaged.FLOWS, "plan-build-review", previous)
+        code, out = _main(monkeypatch, capsys, "flow", "run", "plan-build-review", "-t", "ship it",
+                          "--workspace", str(repo), "--check", "true")
+    assert code == 3, out
+    stopped = json.loads(next(line for line in out.splitlines() if line.startswith("{")))
+    assert stopped["code"] == "flow.output_missing"
+    assert packaged.FLOWS["plan-build-review"] is current
+
+    code, out = _main(monkeypatch, capsys, "flow", "resume", stopped["flow_session"])
+    assert code == 0, out
+    assert launches == [("plan", 1), ("build", 1), ("review", 1), ("review", 2)]
+    meta = SessionStore().load_meta(stopped["flow_session"])
+    assert meta["review"]["status"] == "review_approved"
+    assert meta["state"]["verification"] == {"status": "passed", "authority": "user-request"}
+    saw_plan = '<flow-input type="plan" from="plan">' in prompts[("review", 2)]
+    assert saw_plan is (recorded == "current")
