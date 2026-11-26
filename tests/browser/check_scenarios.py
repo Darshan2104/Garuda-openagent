@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 
+from browser_support import launch
 from playwright.sync_api import expect, sync_playwright
 
 BASE = os.environ["GARUDA_CHECK_BASE"]
@@ -44,7 +45,7 @@ def main():
     before = snapshot()
     errors = []
     with sync_playwright() as p:
-        browser = p.chromium.launch(channel="chrome")
+        browser = launch(p)
         context = browser.new_context(viewport={"width": 1500, "height": 1100},
                                       permissions=["clipboard-read", "clipboard-write"])
         page = context.new_page()
