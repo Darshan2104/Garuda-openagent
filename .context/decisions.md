@@ -4831,6 +4831,17 @@ or partial check records fail closed. Started checks keep their existing
 read-only reconciliation path. Dashboard ownership and quota continuation
 retain their existing boundaries.
 
+## 2026-11-26 — Run inputs are refused before anything starts (#774, #775)
+
+`garuda flow run` and `garuda run` share one task helper and one workspace
+check. The task comes from `-t` or `-f/--file` (now also on `flow run`); an
+empty or whitespace-only task refuses with `task.missing` (exit 1). A local
+`--workspace` that does not exist or is not a directory refuses with
+`workspace.missing` or `workspace.not_directory` (exit 2). Both checks run
+before garuda.yaml, sessions, leases or agents are touched, so no traceback
+and no billed turn. The project-file loader names a symlink only when the
+open failed with `ELOOP`.
+
 ## 2026-11-26: Doctor refuses an unknown `--runtime` id (#777)
 
 `garuda doctor --runtime ID` resolves each ID through the runtime registry, the

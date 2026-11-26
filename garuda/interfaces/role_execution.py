@@ -9,7 +9,6 @@ from __future__ import annotations
 import contextlib
 import math
 import os
-from pathlib import Path
 
 from garuda.core.events import EventStore
 
@@ -102,6 +101,7 @@ async def run_task(args) -> int:
 
     from garuda.core.session_fork import validate_fork_request
     from garuda.interfaces.main import (
+        TASK_REQUIRED,
         _accept_session,
         _apply_role,
         _enable_consults,
@@ -117,6 +117,8 @@ async def run_task(args) -> int:
         check_garuda_config,
         run_acp_command,
         run_agent_task,
+        task_text,
+        workspace_refusal,
     )
 
     fork = getattr(args, "fork", None)
@@ -126,12 +128,15 @@ async def run_task(args) -> int:
         if getattr(args, "as_runtime", None) or getattr(args, "runtime", None) not in (None, "native"):
             raise ValueError("context fork requires the native runtime")
         args.runtime = "native"
-    task = args.task
-    if args.file:
-        task = Path(args.file).read_text(encoding="utf-8")
-    if not task:
-        print("Error: provide -t/--task or -f/--file", file=sys.stderr)
+    task = task_text(args)
+    if task is None:
+        print(f"Error: {TASK_REQUIRED}", file=sys.stderr)
         return 1
+    if getattr(args, "workspace_kind", "local") == "local":
+        refusal = workspace_refusal(getattr(args, "workspace", "."))
+        if refusal:
+            print(f"Error: {refusal}", file=sys.stderr)
+            return 2
     # Run-tree spend caps (#405) are validated by the gate that will enforce them,
     # before any runtime is selected: an invalid cap never reaches a run.
     spend_caps = (getattr(args, "max_run_tokens", None), getattr(args, "max_run_cost_usd", None))

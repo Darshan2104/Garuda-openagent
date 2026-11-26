@@ -224,11 +224,11 @@ def launch(args: argparse.Namespace | None = None, *, store=None, queue=None, sp
                             request=owned_request)
     if args is None:
         raise BackgroundRefused("background launch requires arguments")
-    task = args.task
-    if getattr(args, "file", None):
-        task = Path(args.file).read_text(encoding="utf-8")
-    if not task:
-        raise BackgroundRefused("provide -t/--task or -f/--file")
+    from garuda.interfaces.main import TASK_REQUIRED, task_text
+
+    task = task_text(args)
+    if task is None:
+        raise BackgroundRefused(TASK_REQUIRED)
     for flag in ("resume", "trajectory", "fork", "fork_at"):
         if getattr(args, flag, None) or (flag == "fork_at" and getattr(args, flag, None) is not None):
             raise BackgroundRefused(f"--bg does not combine with --{flag.replace('_', '-')}")
