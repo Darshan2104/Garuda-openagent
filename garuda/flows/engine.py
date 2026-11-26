@@ -47,8 +47,11 @@ JOURNAL = "journal.jsonl"
 #: same frozen candidate (#761); an invalid review never counts as a round.
 #: ``flow.interrupted`` is a checked step stopped by a signal (SIGTERM, Ctrl-C)
 #: after its owned worker tree and confinement were proved closed (#760).
+#: ``flow.artifact_malformed`` and ``flow.artifact_too_large`` are settled like
+#: ``flow.output_missing``: the step ran, only its output could not be stored.
 INTERRUPTED_STOP = "flow.interrupted"
 RESUMABLE_CHECKED_STOPS = {"workspace.readonly_unenforced", "flow.step_failed", "flow.output_missing",
+                           "flow.artifact_malformed", "flow.artifact_too_large",
                            "flow.review_invalid", INTERRUPTED_STOP}
 
 
@@ -1428,9 +1431,14 @@ class FlowRunner:
                     stop = FlowStopped("flow.output_missing", f"reviewer {role} gave no {kind}",
                                        step=step["id"])
                     break
-                ref = art.store(self.dir, type=kind, content=produced[kind],
-                                step=f"{step['id']}-{role}", session_id=outcome.session_id,
-                                attempt=attempt, workspace_version=version)
+                try:
+                    ref = art.store(self.dir, type=kind, content=produced[kind],
+                                    step=f"{step['id']}-{role}", session_id=outcome.session_id,
+                                    attempt=attempt, workspace_version=version)
+                except art.ArtifactError as exc:
+                    stop = FlowStopped(exc.code, f"reviewer {role}: {exc.message}",
+                                       step=step["id"])
+                    break
                 member["outputs"].append(ref.to_dict())
             receipt["members"].append(member)
         if stop is None:

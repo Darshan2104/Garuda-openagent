@@ -662,6 +662,7 @@ def test_resume_plan_only_after_confinement_refusal(repo, monkeypatch, capsys, c
 @pytest.mark.parametrize("stop_step, stop_code", [
     ("build", "flow.step_failed"), ("review", "flow.output_missing"),
     ("build", "workspace.readonly_unenforced"), ("review", "flow.review_invalid"),
+    ("review", "flow.artifact_malformed"), ("review", "flow.artifact_too_large"),
 ])
 def test_checked_flow_resumes_settled_attempt_and_runs_original_check(
         repo, monkeypatch, capsys, stop_step, stop_code):
@@ -702,6 +703,11 @@ def test_checked_flow_resumes_settled_attempt_and_runs_original_check(
                 # #761: a request for changes without any finding never parses.
                 return StepResult(session, True, _block("review", "verdict: changes\nfindings:\n- none."),
                                   closure)
+            if stop_code == "flow.artifact_malformed":  # #811: a stray closing tag
+                return StepResult(session, True, outputs["review"] + "\n</garuda-artifact>", closure)
+            if stop_code == "flow.artifact_too_large":
+                return StepResult(session, True,
+                                  _block("review", "x" * (art.MAX_ARTIFACT_CHARS + 1)), closure)
             return StepResult(session, True, "missing review artifact", closure)
         if launch.step_id == "build" and launch.attempt == 2:
             (repo / "a.txt").write_text("a\n")

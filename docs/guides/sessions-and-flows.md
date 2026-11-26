@@ -307,7 +307,8 @@ recorded (task, error detail) is redacted again on the way out.
 
 After a checked CLI flow stops at a settled step failure, a role refusal
 before the prompt (for example `role.start_failed` from a logged-out harness or
-`role.model_unavailable`), missing output, an invalid review
+`role.model_unavailable`), missing output, output that could not be stored
+(`flow.artifact_malformed`, `flow.artifact_too_large`), an invalid review
 (`flow.review_invalid`), or confinement refusal,
 `garuda flow resume FLOW_ID` retries the pending step and continues with the
 original checks. Such a stop keeps the step's own code and releases the

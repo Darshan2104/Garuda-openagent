@@ -458,6 +458,9 @@ Click a problem to see the fix.
     Garuda stops instead of guessing where the artifact ends. A complete
     envelope quoted inside a block is fine; the stop message names the line.
     Ask the role's agent to close each block once, at the end of its answer.
+    A checked flow (`--check`) stopped this way, or with
+    `flow.artifact_too_large`, resumes with `garuda flow resume FLOW_ID`,
+    which runs that step again.
 
 ??? question "A read-only flow step runs until it hits its turn limit"
 

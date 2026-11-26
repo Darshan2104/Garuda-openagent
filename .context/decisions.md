@@ -5064,3 +5064,11 @@ from a redacted review artifact); the review packet is unchanged because
 Redaction can break a structured (JSON) review whose string holds an escaped
 quote after a credential key; that review stops with `flow.review_invalid`,
 never approves.
+
+`flow.artifact_malformed` and `flow.artifact_too_large` join
+`RESUMABLE_CHECKED_STOPS`: like `flow.output_missing`, the step ran and settled
+and only its output could not be stored, so a checked flow resumes by running
+that step again. Every resumability and evidence-coverage check reads that set;
+quota recovery only considers `flow.step_failed`. A parallel review member's
+artifact that cannot be stored now stops the group with its own code instead of
+escaping `_run_group` unhandled.
