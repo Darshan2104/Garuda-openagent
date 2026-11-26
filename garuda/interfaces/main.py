@@ -615,6 +615,8 @@ def build_parser():
     config_show.add_argument("--workspace", default=".")
     config_show.add_argument("--flow", metavar="NAME",
                              help="Print one flow (packaged or yours) to copy into garuda.yaml")
+    config_show.add_argument("--json", action="store_true",
+                             help="Print the effective config, provenance and withheld keys as JSON")
     config_trust = config_sub.add_parser(
         "trust",
         help="Trust this project's garuda.yaml checks and native models (exact bytes; "
@@ -689,6 +691,10 @@ def build_parser():
 
     flow_parser = subparsers.add_parser("flow", help="Run a garuda.yaml flow of role steps")
     flow_sub = flow_parser.add_subparsers(dest="flow_command")
+    flow_list = flow_sub.add_parser(
+        "list", help="Flows available here: packaged, user and project, with steps and roles")
+    flow_list.add_argument("--workspace", default=".")
+    flow_list.add_argument("--json", action="store_true")
     flow_run = flow_sub.add_parser("run", help="Run a flow by name")
     flow_run.add_argument("name")
     flow_run.add_argument("-t", "--task", help="Task description")
@@ -1245,6 +1251,13 @@ def run_config(args) -> int:
                     print(f"Error: flow.unknown: no flow named {args.flow!r}", file=sys.stderr)
                     return 2
                 return 0
+            if getattr(args, "json", False):
+                import json
+
+                from garuda.interfaces.onboarding import config_show_json
+
+                print(json.dumps(config_show_json(args.workspace), indent=2, default=str))
+                return 0
             print("\n".join(config_show(args.workspace)))
         except GarudaConfigError as exc:
             print(f"Error: {exc}", file=sys.stderr)
@@ -1718,8 +1731,35 @@ async def _terminable(start, terminated: list[bool]):
         loop.remove_signal_handler(signal.SIGTERM)
 
 
+def _list_flows(args) -> int:
+    """`garuda flow list`: packaged flows and the user's and project's own."""
+    import json
+    import sys
+
+    from garuda.config.garuda_yaml import GarudaConfigError, load_effective
+    from garuda.flows import packaged
+
+    try:
+        rows = packaged.listing(load_effective(args.workspace))
+    except GarudaConfigError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    if getattr(args, "json", False):
+        print(json.dumps(rows, indent=2))
+        return 0
+    width = max(len(row["name"]) for row in rows)
+    for row in rows:
+        missing = (f"; undefined roles: {', '.join(row['missing_roles'])}"
+                   if row["missing_roles"] else "")
+        print(f"{row['name']:<{width}}  {row['source']:<8}  {row['steps']} step(s)  "
+              f"roles: {', '.join(row['roles'])}{missing}")
+    return 0
+
+
 def run_flow(args) -> int:
-    """`garuda flow run|show|resume` (C.6a)."""
+    """`garuda flow list|run|show|resume|export` (C.6a)."""
+    if args.flow_command == "list":
+        return _list_flows(args)
     import asyncio
     import json
     import sys

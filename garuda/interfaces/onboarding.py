@@ -390,6 +390,17 @@ def config_show(workspace) -> list[str]:
     return lines
 
 
+def config_show_json(workspace) -> dict:
+    """``garuda config show --json``: the same effective config as ``config_show``."""
+    from garuda.config import garuda_yaml as gy
+
+    resolved = gy.load_effective(workspace)
+    if resolved is None:
+        return {"config": None, "provenance": {}, "withheld": []}
+    return {"config": resolved.config, "provenance": dict(sorted(resolved.provenance.items())),
+            "withheld": list(resolved.withheld)}
+
+
 def write_file(path: Path, text: str) -> Path | None:
     """Write ``text`` to ``path`` atomically; returns the backup made, if any."""
     import datetime as _dt

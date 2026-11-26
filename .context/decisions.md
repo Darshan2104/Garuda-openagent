@@ -4882,3 +4882,20 @@ is run's refusal ("runtime selection refused: unknown runtime 'ID'"), and its
 fix lists the known harness ids. Doctor keeps its existing exit code contract:
 any error diagnostic exits 1, in text and `--json` output. Known runtimes passed
 in the same call are still checked.
+
+## 2026-11-26: `garuda flow list` and `garuda config show --json` (#782)
+
+`garuda flow list [--json] [--workspace DIR]` lists every flow `garuda flow run`
+would accept in that workspace. It reuses `packaged.available()` over
+`load_effective()`, the same lookup the flow service and dashboard Setup use, so
+a user or project flow of a packaged name replaces it. Each row has `name`,
+`source` (`packaged`, `user` or `project`, short labels for the provenance
+`package-default`, `user-config` and `trusted-project`), `description`, `steps`,
+`roles` and `missing_roles`. Missing roles are reported, not refused: an
+unconfigured install still lists the packaged flows. An invalid `garuda.yaml`
+exits 2 with its config error, like `config show`.
+
+`garuda config show --json` prints `{config, provenance, withheld}`: the same
+resolved config, per-key sources and withheld project keys the text view prints
+as YAML and comments. With no `garuda.yaml` it prints `config: null` and exits 0,
+matching the text view's notice rather than failing.
