@@ -720,6 +720,7 @@ async def run_acp_task(
     require_cleanup: bool = False,
     codex_executable: str | None = None,
     before_prompt=None,
+    silence_watchdog: dict | None = None,
 ) -> dict[str, Any]:
     """Run one task on an ACP runtime under the same invariants as native.
 
@@ -736,7 +737,14 @@ async def run_acp_task(
     (#701). The prompt gets what remains; when it runs out the turn is
     cancelled (`session/cancel`), the agent process is reaped, the session
     settles `failed` with ``stop_reason: deadline`` and
-    ``error_code: run.deadline_exceeded``, and ``AcpTimeoutError`` is raised.
+    ``error_code: run.deadline_exceeded``, and ``AcpTimeoutError`` is raised
+    (its ``liveness`` is ``"deadline"``).
+
+    ``silence_watchdog`` (``{"silence_sec", "tool_silence_sec"}``, flows only, #828)
+    asks the adapter to stop a turn whose harness is silent too long
+    (:meth:`AcpRuntime.watch_silence`); the session then settles `failed` with
+    ``stop_reason: silence`` and ``error_code: run.silence_exceeded``. Without it,
+    as for `garuda run` and the SDK, nothing watches the turn.
     """
     import time
 
@@ -861,6 +869,7 @@ async def run_acp_task(
     began = False
     transferred_to_native = False
     deadline_hit = False
+    silence_hit = False
     cancel_reason: str | None = None
     outcome: dict[str, Any] | None = None
     try:
@@ -884,8 +893,11 @@ async def run_acp_task(
         store.update_meta(session_id, {"workspace_kind": "local"})
         if session_record:
             store.update_meta(session_id, session_record)
-        if deadline_sec is not None:
-            store.update_meta(session_id, {"limits": {"deadline_sec": deadline_sec}})
+        if deadline_sec is not None or silence_watchdog:
+            store.update_meta(session_id, {"limits": {
+                **({"deadline_sec": deadline_sec} if deadline_sec is not None else {}),
+                **{key: value for key, value in (silence_watchdog or {}).items()
+                   if value is not None}}})
         if worktree:
             store.update_meta(session_id, plan_meta(worktree))
         if starter_record is not None:
@@ -927,6 +939,8 @@ async def run_acp_task(
         )
         def make_runtime():
             runtime = build_runtime()
+            if silence_watchdog:
+                runtime.watch_silence(**silence_watchdog)
             if consult_host is not None and confinement is None:  # no host socket in a container
                 runtime.attach_consult(consult_host)  # exposed only for a proved adapter (G.3)
             return runtime
@@ -1067,14 +1081,19 @@ async def run_acp_task(
                 runtime.prompt(prompt_with(attached, first_message), timeout=timeout)
             )
         except AcpTimeoutError as exc:
+            if getattr(exc, "liveness", None) == "silence":
+                silence_hit = True  # the opt-in watchdog (#828) cancelled and reaped
+                raise
             if deadline_sec is None:
                 raise
             # The adapter has sent session/cancel and reaped the agent; the
             # session settles failed below with the deadline as its cause.
             deadline_hit = True
-            raise AcpTimeoutError(
+            deadline_error = AcpTimeoutError(
                 f"the run exceeded --deadline-sec {deadline_sec:g}; the ACP turn was "
-                "cancelled and the agent stopped") from exc
+                "cancelled and the agent stopped")
+            deadline_error.liveness = "deadline"
+            raise deadline_error from exc
         events, _ = await runtime.poll_events(0)
         for event in events:
             emit(format_event(event) if format_event is not None
@@ -1105,6 +1124,13 @@ async def run_acp_task(
     except Exception as exc:
         if began and not transferred_to_native:
             _record_run_error(store, session_id, exc)
+        if runtime is not None:
+            # How the harness ended its last turn (#824), for a caller that keeps
+            # the typed cause of a failed run (a checked flow's worker, #828).
+            try:
+                exc.acp_stop_reason = (getattr(runtime, "last_turn", None) or {}).get("stop_reason")
+            except AttributeError:
+                pass  # an exception type that takes no attributes keeps its own cause
         raise
     except asyncio.CancelledError as exc:
         # Ctrl-C or SIGTERM of `garuda run` names its reason (#807, #808).
@@ -1158,6 +1184,8 @@ async def run_acp_task(
                     }
                     if deadline_hit:
                         settled.update(stop_reason="deadline", error_code="run.deadline_exceeded")
+                    elif silence_hit:
+                        settled.update(stop_reason="silence", error_code="run.silence_exceeded")
                     elif cancel_reason is not None and outcome is None:
                         # A cancelled run is not a failure (#808): its parked
                         # approval was withdrawn by the broker on the way out.

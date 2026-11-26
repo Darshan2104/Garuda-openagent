@@ -58,6 +58,10 @@ MAX_HANDSHAKE_SEC = 600
 PERMISSIONS = ("readonly", "smart", "auto", "yolo")  # most to least restrictive
 EFFORTS = ("minimal", "low", "medium", "high")
 WRITE_POLICIES = ("edits", "no-edits")
+#: A step's liveness limits in minutes (#828): ``deadline_min`` up to 7 days,
+#: ``silence_min`` and ``tool_silence_min`` up to one day.
+STEP_LIMITS = {"deadline_min": (1, 7 * 24 * 60), "silence_min": (1, 24 * 60),
+               "tool_silence_min": (1, 24 * 60)}
 ISOLATION = ("shared", "worktree", "auto")
 ARTIFACTS = ("plan", "patch", "review", "findings", "notes", "summary")
 #: Keys that belong to ``settings.yaml``; in a ``garuda.yaml`` they conflict.
@@ -263,7 +267,7 @@ def _step(value, path) -> dict:
     if isinstance(value, dict) and "flow" in value:
         _fail(f"{path}.flow", "a step cannot be a flow (nested flows are not supported)")
     data = _mapping(value, path, ("id", "role", "parallel", "write_policy", "inputs", "outputs",
-                                  "retries", "review"))
+                                  "retries", "review", "limits"))
     out: dict[str, Any] = {}
     if "id" in data:
         out["id"] = _name(data["id"], f"{path}.id")
@@ -289,6 +293,8 @@ def _step(value, path) -> dict:
         out["outputs"] = _artifacts(data["outputs"], f"{path}.outputs")
     if "retries" in data:
         out["retries"] = _int(data["retries"], f"{path}.retries", 0, MAX_RETRIES)
+    if "limits" in data:
+        out["limits"] = _limits(data["limits"], f"{path}.limits")
     if "review" in data:
         review = _mapping(data["review"], f"{path}.review", ("by", "max_rounds", "independent"))
         out["review"] = {"by": _name(review.get("by"), f"{path}.review.by")}
@@ -300,6 +306,27 @@ def _step(value, path) -> dict:
                 _fail(f"{path}.review.independent", "must be true or false")
             out["review"]["independent"] = review["independent"]
     return out
+
+
+def _limits(value, path) -> dict:
+    """A step's (or a flow's default) liveness limits, whole minutes (#828).
+
+    Present keys only, so a flow without ``limits`` parses (and digests) exactly
+    as before. While a tool call runs, ``tool_silence_min`` replaces
+    ``silence_min``, so it may not be the shorter of the two.
+    """
+    data = _mapping(value, path, tuple(STEP_LIMITS))
+    if not data:
+        _fail(path, f"must set at least one of {', '.join(STEP_LIMITS)}")
+    out = {key: _int(data[key], f"{path}.{key}", *STEP_LIMITS[key])
+           for key in STEP_LIMITS if key in data}
+    _check_silences(out, path)
+    return out
+
+
+def _check_silences(limits: dict, path: str) -> None:
+    if limits.get("tool_silence_min", float("inf")) < limits.get("silence_min", 0):
+        _fail(f"{path}.tool_silence_min", "must not be shorter than silence_min")
 
 
 def effective_flow_steps(flow: dict, *, path: str = "flow.steps") -> list[dict]:
@@ -428,7 +455,7 @@ def validate_flow_retries(steps: list[dict], *, path: str) -> None:
 
 
 def _flow(value, path) -> dict:
-    data = _mapping(value, path, ("steps", "description"))
+    data = _mapping(value, path, ("steps", "description", "limits"))
     steps = data.get("steps")
     if not isinstance(steps, list) or not steps:
         _fail(f"{path}.steps", "must be a non-empty list")
@@ -440,6 +467,11 @@ def _flow(value, path) -> dict:
     validate_flow_inputs(steps, path=steps_path)
     validate_flow_reviews(steps, path=steps_path)
     validate_flow_retries(steps, path=steps_path)
+    if "limits" in data:
+        out["limits"] = _limits(data["limits"], f"{path}.limits")
+    for i, step in enumerate(out["steps"]):
+        if "limits" in step and "limits" in out:  # a step overrides the default per key
+            _check_silences({**out["limits"], **step["limits"]}, f"{steps_path}[{i}].limits")
     if "description" in data:
         out["description"] = _str(data["description"], f"{path}.description")
     return out

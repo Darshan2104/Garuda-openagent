@@ -305,7 +305,8 @@ commands in the events. A native step's transcript (messages and tool output) is
 never exported; it contributes its record and usage only. Free text a session
 recorded (task, error detail) is redacted again on the way out.
 
-After a checked CLI flow stops at a settled step failure, a role refusal
+After a checked CLI flow stops at a settled step failure, a step's own
+deadline or silence limit (`flow.step_deadline`, `flow.step_silent`), a role refusal
 before the prompt (for example `role.start_failed` from a logged-out harness or
 `role.model_unavailable`), missing output, output that could not be stored
 (`flow.artifact_malformed`, `flow.artifact_too_large`), an invalid review
@@ -461,6 +462,38 @@ flow. A checked (`--check`) or dashboard-owned flow, or one under automatic
 quota recovery, refuses a flow with `retries` with `flow.retries_unsupported`
 before anything starts, because those flows account for every attempt
 themselves; remove `retries` to run it there.
+
+### Step limits
+
+A step can run for hours. Without `limits` it has no deadline and nothing
+watches whether its harness is still working, so an agent that is alive but
+silent holds the flow and its workspace lease until you stop it. Set
+[`limits`](configuration.md) on the step or the flow:
+
+- **`deadline_min`**: when the step has run this long, Garuda cancels the
+  agent's turn (`session/cancel`), stops the agent and stops the flow with
+  **`flow.step_deadline`**. A native step stops at its next turn boundary
+  instead, the same deadline as `garuda run --deadline-sec N`.
+- **`silence_min`**: an external (ACP) step whose harness sends no event for
+  this long, while no tool call is running and no approval is waiting for an
+  answer, is cancelled the same way and stops with **`flow.step_silent`**.
+  While a tool call is running (a long build or test run) the separate
+  `tool_silence_min` applies instead (default 120 minutes). An approval waiting
+  for you never counts as silence, however long it waits.
+
+Either stop is an ordinary stopped receipt (status `stopped`, the code in
+`stop.code`, the step session's error code and the harness's last stop reason
+in `stop.cause`), and the attempt keeps its intent and receipt in the journal.
+It is never retried by `retries`. `garuda flow resume FLOW_ID` runs the step
+again as a new attempt, from the workspace as the stopped attempt left it, and
+continues the flow; a checked (`--check`) flow resumes it under its original
+checks.
+
+In a checked flow the step's worker enforces its deadline itself and exits
+cleanly, so the step stops with `flow.step_deadline` and is not quarantined.
+Its supervisor only kills a worker still running 10 minutes past the deadline.
+A checked step without `deadline_min` keeps the one-hour limit of its worker,
+so set `deadline_min` on any checked step that may run longer.
 
 ### Reviews
 

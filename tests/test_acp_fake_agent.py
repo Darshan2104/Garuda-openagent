@@ -61,6 +61,9 @@ def test_public_profile_sets_are_pinned():
         "edits-unless-read-only",
         "probe-writes",
         "plan-exit",
+        "silent",
+        "long-tool",
+        "parked-approval",
     }
     assert set(PROFILES) == set(BASE_PROFILES) | {
         "capabilities-full",

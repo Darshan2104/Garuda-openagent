@@ -30,7 +30,10 @@ async def test_an_agent_that_stops_returns_a_failed_result(tmp_path, monkeypatch
 
     monkeypatch.setattr("garuda.interfaces.runtime_cli.run_acp_task", stop)
     result = await role_worker.execute(_payload(tmp_path), _Control())
-    assert result == {"session_id": "owned-1", "success": False, "output": ""}
+    # The typed cause is kept (#828), not collapsed to a bare failed result.
+    assert result == {"session_id": "owned-1", "success": False, "output": "",
+                      "failure": {"code": "acp.cancelled",
+                                  "detail": "agent ended the turn cancelled"}}
 
 
 async def test_a_refusal_before_launch_keeps_its_own_error(tmp_path, monkeypatch):

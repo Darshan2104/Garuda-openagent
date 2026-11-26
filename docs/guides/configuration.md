@@ -601,6 +601,32 @@ refused on a parallel group, a reviewed step (use `review.max_rounds`) and the
 terminal reviewer of a reviewed flow. See
 [Retries](sessions-and-flows.md#retries).
 
+A step, or a flow as the default for all its steps, may set `limits` in whole
+minutes, so a long step cannot hang the flow:
+
+```yaml
+flows:
+  long-build:
+    limits: {silence_min: 30}            # every step: stop after 30 silent minutes
+    steps:
+      - {id: plan, role: planner, outputs: [plan]}
+      - id: build
+        role: coder
+        inputs: [plan]
+        limits: {deadline_min: 720, tool_silence_min: 180}
+```
+
+- `deadline_min` (1 to 10080, 7 days): the step's wall-clock budget.
+- `silence_min` (1 to 1440): how long an external (ACP) harness may send
+  nothing while no tool call is running and no approval is waiting.
+- `tool_silence_min` (1 to 1440, default 120 when `silence_min` is set): the
+  same, while a tool call is running. It may not be shorter than `silence_min`.
+
+A step's own keys override the flow's, key by key. A step that runs out stops
+with `flow.step_deadline` or `flow.step_silent`, and `garuda flow resume` runs
+it again; see [Step limits](sessions-and-flows.md#step-limits). Without
+`limits` a step has no deadline and no silence watchdog, as before.
+
 `harnesses.<id>.handshake_timeout_sec` is how long Garuda waits for an
 external (ACP) harness to answer its startup calls (`initialize`,
 `session/new`, `session/load` and setting role options), in whole seconds
