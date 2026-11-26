@@ -28,11 +28,11 @@ var ROUTES = [
 function navigate() {
   // stopLive() clears STATE.live as well as the poller: an in-flight poll checks that
   // reference to decide whether its response is still wanted, so leaving it set lets a late
-  // response render into the view that replaced it. stopChat() is the same idea for the chat
-  // poller — and leaving that one running would keep refreshing the heartbeat for a chat
-  // nobody is looking at, which is precisely what the reaper is for.
+  // response render into the view that replaced it. leaveChat() unmounts the chat but keeps
+  // its heartbeat while a turn runs or an approval waits: the chat lives on the server either
+  // way, and stopping here denied the user's own approval. Closing the tab still stops it.
   stopLive();
-  stopChat();
+  leaveChat();
   if (typeof stopSessionStream === "function") stopSessionStream();
   stopStarterViews();
   stopHomeView();

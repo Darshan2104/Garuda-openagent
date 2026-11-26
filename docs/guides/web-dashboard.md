@@ -282,6 +282,35 @@ session row's own usage and cost still read `unknown`; the Usage page has the
 totals, and a session's detail adds `reported_usage`, what an external harness's
 adapter reported (see [Sessions](sessions-and-flows.md)).
 
+## Chat
+
+`#/chat` starts nothing on its own. It resumes the chat this tab was using (or
+the newest open one), and otherwise shows **New chat** with the workspace,
+agent, model and permission choices the server accepts. If the previous chat is
+no longer open on the server (ended, reclaimed after sitting unwatched, or the
+dashboard restarted), the page says so instead of opening a new one; its
+transcript stays in Runs.
+
+- A typed message is kept per chat while you visit other pages.
+- **End chat** asks first when a turn is running or an approval is waiting.
+- If the dashboard stops answering, the page says so, retries with backoff (up
+  to 30 seconds between tries) and recovers by itself.
+
+A tool call that needs approval shows a card in the chat. The chat's poll is
+also its heartbeat: while a turn runs or an approval waits, it keeps going when
+the tab is in the background or you are on another dashboard page (the Chat
+tab then shows a count). The same holds for every chat the tab has open:
+**New chat** inside a chat starts another without dropping the first, and while
+you work in one, the others that wait for an answer are listed above it with a
+link back (and marked in the New chat page's list of open chats). Once the tab is closed, the server denies the waiting
+approval after a 90-second grace window, so the run is not blocked for the full
+five-minute timeout. 90 seconds is longer than the slowest heartbeat a
+background tab can send (browsers may wake a long-hidden tab's timers only once
+a minute). The transcript says who decided each denial: **denied by you**,
+**the dashboard stopped watching**, **nobody answered** within the timeout, or
+**the chat was closed**. A second answer to the same approval gets a 409 that
+names the first outcome.
+
 ## Approvals
 
 The Approvals page lists every approval waiting in an interactive session (a
