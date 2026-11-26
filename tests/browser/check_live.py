@@ -321,10 +321,14 @@ with sync_playwright() as p:
     page.wait_for_timeout(1200)   # let the list's own first loads finish
     idle_before = len(requests)
     page.wait_for_timeout(4000)
-    idle_after = len(requests)
-    print(f"requests while idle over ~4s: {idle_after - idle_before}")
-    if idle_after - idle_before > 0:
-        problems.append(f"an idle dashboard made {idle_after - idle_before} requests")
+    # The nav's approvals badge polls /api/inbox every 20 s by design (router.js), read-only
+    # and paused in a hidden tab; this check now runs long enough for one tick to land in the
+    # window. Anything else here is a leaked poller.
+    idle = [u for u in requests[idle_before:] if "/api/inbox" not in u]
+    print(f"requests while idle over ~4s: {len(requests) - idle_before} "
+          f"({len(idle)} besides the approvals badge) {requests[idle_before:]}")
+    if idle:
+        problems.append(f"an idle dashboard made {len(idle)} requests: {idle}")
 
     browser.close()
 
