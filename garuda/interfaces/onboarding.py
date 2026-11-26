@@ -261,6 +261,26 @@ def _capacity_diagnostics(liveness) -> list[Diagnostic]:
     return out
 
 
+def _requested_runtimes(catalog, runtimes, targets: set[str]) -> tuple[list[Diagnostic], set[str]]:
+    """Resolve each `--runtime` ref as `garuda run --runtime` does (#777).
+
+    An alias checks the harness it names. An unknown ref is an error carrying
+    the same refusal `run` prints, never a silent no-op.
+    """
+    from garuda.runtime.registry import RegistryError
+
+    out: list[Diagnostic] = []
+    resolved = set(targets) - set(runtimes)
+    known = ", ".join(m.runtime_id for m in catalog.registry.manifests) or "none"
+    for ref in dict.fromkeys(runtimes):
+        try:
+            resolved.add(catalog.registry.resolve_id(ref))
+        except RegistryError as exc:
+            out.append(diagnostic("harness.unknown", f"runtime selection refused: {exc}",
+                                  level="error", known=known))
+    return out, resolved
+
+
 def doctor_report(workspace, *, runtimes=(), login_run=None) -> list[Diagnostic]:
     """Every check `garuda doctor` runs, as diagnostics."""
     from garuda.agents.setup import prepare_runtime_catalog
@@ -282,6 +302,8 @@ def doctor_report(workspace, *, runtimes=(), login_run=None) -> list[Diagnostic]
         fallbacks = {c["harness"] for r in roles for c in r.get("fallback", [])} - targets
         targets |= fallbacks
     catalog = prepare_runtime_catalog(str(workspace))
+    unknown, targets = _requested_runtimes(catalog, runtimes, targets)
+    out += unknown
     out += _harness_diagnostics(catalog, targets, login_run=login_run,
                                 fallback_only=frozenset(fallbacks))
     out += _state_diagnostics()
@@ -366,6 +388,17 @@ def config_show(workspace) -> list[str]:
     if resolved.withheld:
         lines.append(f"# withheld until trusted: {', '.join(resolved.withheld)}")
     return lines
+
+
+def config_show_json(workspace) -> dict:
+    """``garuda config show --json``: the same effective config as ``config_show``."""
+    from garuda.config import garuda_yaml as gy
+
+    resolved = gy.load_effective(workspace)
+    if resolved is None:
+        return {"config": None, "provenance": {}, "withheld": []}
+    return {"config": resolved.config, "provenance": dict(sorted(resolved.provenance.items())),
+            "withheld": list(resolved.withheld)}
 
 
 def write_file(path: Path, text: str) -> Path | None:

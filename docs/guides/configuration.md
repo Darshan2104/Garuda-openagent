@@ -468,9 +468,13 @@ existing trail, and a resumed session records the level of its latest run.
 
 Independently of the level, an ACP session records what the agent offered
 (`acp_session`: its `initialize` identity, each session option with its current
-value and choices, and its modes), the code and a redacted message of a run that
-failed (`error_code`, `error_detail`), and `sessions show` adds `approval_summary`
-(see [Sessions](sessions-and-flows.md)).
+value and choices, and its modes). These are the options as the agent offered
+them at `session/new`, before the role's options are applied, so an option's
+"current value" there is the agent's default, not necessarily what ran. The
+options Garuda applied for the role are in `role.acp_options`, and the model the
+agent reported running is `reported_model`. The session also records the code
+and a redacted message of a run that failed (`error_code`, `error_detail`), and
+`sessions show` adds `approval_summary` (see [Sessions](sessions-and-flows.md)).
 
 ## Runtime capacity
 
@@ -644,6 +648,14 @@ launch (`role.mode_exceeds_permissions`).
 | `smart` (edits the workspace, asks for anything else) | `acceptEdits` | `workspace-write` |
 | `auto` (the agent's own judgement decides what to ask) | `auto` | `agent` (asks only for actions it judges unsafe) |
 | `yolo` (approves everything) | `bypassPermissions` | `agent-full-access` |
+
+A run in Claude Code's `plan` mode stays in plan mode. Claude ends planning by
+asking to approve the plan ("Approve Plan", which would switch to an editing
+mode). Garuda always answers "No, keep planning" and returns the plan as the
+run's reply, so the run completes with the plan as its output. Claude Code
+plans with Sonnet when the configured model is Haiku (its own "haiku plan
+upgrade"), so a plan-mode run can report and cost a larger model than the
+role's other runs.
 
 A role that names no mode gets one from what its step may do:
 

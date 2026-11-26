@@ -677,8 +677,12 @@ class FlowRunner:
                              "boundary_digest": boundary["boundary_digest"]})
         return coverage
 
-    async def _finalize_verification(self, lease, reference, manifest):
-        """Keep the original parent until the check commit and state both publish."""
+    async def _finalize_verification(self, lease, reference, manifest, *, supersedes=None):
+        """Keep the original parent until the check commit and state both publish.
+
+        ``supersedes`` (#772) is the digest of an interrupted phase this one
+        replaces; the owned prepare re-proves that phase has no possible writer.
+        """
         from garuda.core.acceptance_request import CheckContext
         from garuda.core.acceptance_runner import AcceptanceRunner
         from garuda.flows.verification_records import OwnedFlowVerification
@@ -697,7 +701,7 @@ class FlowRunner:
                                    tuple(manifest["changed"]), True, tuple(identity))
             publisher = OwnedFlowVerification(self.store, lease, request, context, permissions,
                                               baseline_digest=self._evidence.baseline_digest)
-            phase = await publisher.prepare()
+            phase = await publisher.prepare(supersedes=supersedes)
             # The intent precedes any acceptance launch. A crash after the
             # private intent but before this metadata update remains visible
             # and cannot be treated as a fresh flow run.
@@ -1195,6 +1199,116 @@ class FlowRunner:
                 terminal=isinstance(exc, asyncio.CancelledError) and not uncertain)
             if self.quota_recovery is not None:
                 await self.quota_recovery.interrupted(self, "flow interrupted; automatic replay refused")
+            raise
+        finally:
+            await lease.release()
+        result.receipts = receipts(self.store, self.flow_session)
+        return result
+
+    def _rerun_inputs(self):
+        """Prove an interrupted check phase may be run again (#772), read only.
+
+        Every step attempt must have settled, the original check request and
+        flow definition must be unchanged, the published phase must be the
+        durable one (or one a crashed rerun already archived), and it must be
+        bound to the flow's committed evidence manifest.
+        """
+        from garuda.core.acceptance_request import is_digest
+        from garuda.runtime.strict_store import CorruptRecord, StorageError
+
+        try:
+            prior = self.store.load_meta(self.flow_session)
+            records = self._verification_records()
+            if records.saved_request(prior) != self._resume_request():
+                raise CorruptRecord("the original check authority or flow definition changed")
+            if unsettled_attempts(self.store, self.flow_session):
+                raise CorruptRecord("a launched step attempt never settled")
+            phase, reference = records.current_phase()
+            published = prior.get("flow_verification_phase")
+            manifest = prior.get("flow_evidence_manifest")
+            baseline = (prior.get("flow_evidence_baseline") or {}).get("baseline_digest")
+            if (published != reference and not records.superseded(published)) \
+                    or not isinstance(manifest, dict) \
+                    or phase["evidence_digest"] != manifest.get("manifest_digest") \
+                    or not is_digest(baseline) or prior.get("flow_verification_commit") is not None \
+                    or prior["workspace"] != self.workspace or prior["task"] != self.task:
+                raise CorruptRecord("the interrupted check phase is not bound to this flow")
+            entries, attempts = self._checked_history()
+            self._prior_attempts = {(row["step"], row["attempt"]): row for row in attempts}
+            self._evidence_coverage(entries, attempts)
+            return phase, reference, manifest, baseline
+        except (StorageError, OSError, ValueError, KeyError, TypeError) as exc:
+            raise FlowStopped("flow.verification_reconciliation_required",
+                              "the interrupted check phase or its flow evidence could not be "
+                              "proved; checks are never replayed past it") from exc
+
+    async def rerun_checks(self) -> FlowResult:
+        """Run the check phase of a flow interrupted during it again (#772).
+
+        Steps never run again. The workspace must still be the exact candidate
+        the interrupted phase checked; a fresh phase then supersedes it under a
+        newly acquired lease, and only its own terminal receipts decide the
+        verdict. Nothing from the interrupted phase is published as a result.
+        """
+        from garuda.interfaces.run_guard import WorkspaceLeaseGuard
+        from garuda.runtime.ownership import current_owner
+        from garuda.runtime.process_supervision import CleanupUncertain
+        from garuda.runtime.session_state import finished, interrupted, started
+        from garuda.workspace.flow_evidence import OwnedFlowEvidence
+
+        phase, reference, manifest_reference, baseline = await _settled_sync(self._rerun_inputs)
+        lease = WorkspaceLeaseGuard(self.workspace, self.flow_session, mode="mutating",
+                                    ttl_sec=self.lease_ttl)
+        lease.acquire()
+        lease.start_heartbeat()
+        result = FlowResult(self.flow_session)
+        begun = False
+        try:
+            self._evidence = OwnedFlowEvidence(
+                self.store.session_dir(self.flow_session), self.flow_session, self.workspace,
+                lease, baseline_digest=baseline)
+            try:
+                manifest = await self._evidence.manifest(manifest_reference["manifest_digest"])
+                candidate = await self._evidence.version()
+            except CleanupUncertain as exc:
+                await lease.stop_heartbeat()
+                raise FlowStopped("flow.cleanup_unproved",
+                                  "the rerun evidence worker did not settle") from exc
+            except Exception as exc:
+                raise FlowStopped("flow.verification_reconciliation_required",
+                                  "the flow evidence manifest could not be read") from exc
+            if candidate != phase["candidate"]:
+                raise FlowStopped(
+                    "flow.verification_reconciliation_required",
+                    "the workspace changed after the interrupted check phase, so its checks "
+                    "would not verify the reviewed candidate; start a new flow")
+            await self._publish(self.flow_session, {
+                "flow_state": "running", "status": "running", "flow_stop": None,
+                "state": started(current_owner().to_dict())})
+            begun = True
+            await self._finalize_verification(lease, manifest_reference, manifest,
+                                              supersedes=reference["digest"])
+        except FlowStopped as stop:
+            result.stopped = stop
+            if begun:
+                await self._publish(self.flow_session, {
+                    "flow_state": "quarantined" if self._verification_quarantined
+                    or stop.code == "flow.cleanup_unproved" else "interrupted",
+                    "status": "failed", "state": finished(success=False),
+                    "flow_stop": {"code": stop.code, "step": None, "message": str(stop)}})
+            raise
+        except BaseException as exc:
+            uncertain = isinstance(exc, CleanupUncertain) or self._verification_quarantined
+            if uncertain:
+                await lease.stop_heartbeat()
+            if begun:
+                updates = {"flow_state": "quarantined" if uncertain else "interrupted",
+                           "status": "failed",
+                           "state": interrupted(cancelled=isinstance(exc, asyncio.CancelledError))}
+                if self._interrupted_acceptance_receipts is not None:
+                    updates["acceptance_receipts"] = self._interrupted_acceptance_receipts
+                await self._publish(self.flow_session, updates,
+                                    terminal=isinstance(exc, asyncio.CancelledError) and not uncertain)
             raise
         finally:
             await lease.release()

@@ -1,5 +1,27 @@
 # Durable decisions
 
+## 2026-11-26 — A plan-mode run returns its plan and never leaves plan mode (#771)
+
+claude-agent-acp 0.110.1 ends planning with ExitPlanMode, sent as an
+"Approve Plan" `session/request_permission` with `kind=switch_mode` and the
+plan in `toolCall.rawInput.plan`. Every allow option switches the session to
+an editing mode (`default`, `acceptEdits`, `auto`, `bypassPermissions`); the
+adapter has no "plan done" answer. Its "No, keep planning" (`reject`) answers
+`deny` with `interrupt: true` and the adapter ends the turn `cancelled`, still
+in plan mode. `AcpRuntime` now answers any `switch_mode` request itself while
+the agent reports mode `plan`: it selects the reject option (or answers
+`cancelled` without one), never consults the approval handler (so no
+`permissions` level or interactive answer can fail open), and records an
+`approval_request` plus an `approval_settled` deny event. When the agent then
+ends that turn `cancelled` and Garuda did not cancel it, the plan (the
+request's `rawInput.plan`, else its text content, at most 200,000 chars) is fed
+as the turn's message and the turn closes `completed` with a `plan_produced`
+lifecycle event; the session stays open in plan mode. A later denial in the
+same turn, or no plan text, keeps the old cancelled-turn handling. The
+`plan-exit` fake-agent profile reproduces the adapter's request shape. Plan-mode
+runs report `claude-sonnet-5-5` because Claude Code itself upgrades a Haiku
+main model while planning ("haiku plan upgrade"); Garuda sets no model there.
+
 ## 2026-11-26 — A context fork names a non-native source (#770)
 
 `prepare_context_fork`, shared by `garuda sessions fork-preview` and
@@ -42,6 +64,37 @@ merge only defaults it, so a completed flow reported `updated_at == created_at`.
 `created_at` never moves. `sessions list` and `latest` order by `updated_at`, so
 a flow now ranks by its last activity, as a run session already did via
 `finish()`.
+
+## 2026-11-26 — A checked flow stopped in its check phase reruns its checks (#772)
+
+Steps are never replayed past a durable check-phase intent, and that does not
+change. The check phase, however, can now run again. `flow resume` on a CLI
+checked flow recorded `interrupted` with a published phase that has no
+uncertain check (`FlowService._rerun_request`) calls `FlowRunner.rerun_checks`.
+That method re-proves the saved request and flow definition, that every step
+attempt settled, the published phase (or one a crashed rerun already archived),
+and that the phase is bound to the committed evidence manifest. It acquires a
+new mutating lease and requires the current fingerprint to equal the old
+phase's candidate. It then runs `_finalize_verification` with `supersedes=`
+the old phase digest. The owned prepare (`_may_supersede`) refuses unless the
+old phase's owner is another, provably dead process and no check of it is
+uncertain. `FlowVerificationRecords.prepare` archives the old phase, and any
+commit it never published, as `verification-{phase,commit}-<id>.superseded.json`
+before it replaces `verification-phase.json`, so a crash leaves one phase,
+never none. Only the new phase's receipts become the verdict. No interrupted
+receipt is ever published as a result. We rerun instead of publishing the old
+terminal receipts because a commit must be made by the phase owner, and a
+cancelled check has no verdict to publish. `runtime recover` releases a lease
+its owner quarantined only for the check phase
+(`_settled_check_quarantine`: the flow is `quarantined` with no commit and no
+unsettled step, the phase is published, no check is uncertain, and the
+holder is the phase owner), via `reclaim_dead(settled_quarantine=True)` with
+every other proof intact. It then records the flow `interrupted` with
+`flow.check_phase_interrupted`. A `quarantined` or `running` flow in that state
+refuses `flow resume` with `flow.recovery_required`. `AcceptanceRunner` now
+reconciles on cancellation. A terminal receipt that was durable before the
+cancel arrived (the field race: its acknowledgement was lost) is kept, and the
+flow is no longer treated as launch-ambiguous and quarantined.
 
 ## 2026-11-26 — Flow recovery and background writes advance `updated_at` too (#776)
 
@@ -4822,3 +4875,41 @@ Absent original authority, changed workspace or evidence, and any phase intent
 or partial check records fail closed. Started checks keep their existing
 read-only reconciliation path. Dashboard ownership and quota continuation
 retain their existing boundaries.
+
+## 2026-11-26 — Run inputs are refused before anything starts (#774, #775)
+
+`garuda flow run` and `garuda run` share one task helper and one workspace
+check. The task comes from `-t` or `-f/--file` (now also on `flow run`); an
+empty or whitespace-only task refuses with `task.missing` (exit 1). A local
+`--workspace` that does not exist or is not a directory refuses with
+`workspace.missing` or `workspace.not_directory` (exit 2). Both checks run
+before garuda.yaml, sessions, leases or agents are touched, so no traceback
+and no billed turn. The project-file loader names a symlink only when the
+open failed with `ELOOP`.
+
+## 2026-11-26: Doctor refuses an unknown `--runtime` id (#777)
+
+`garuda doctor --runtime ID` resolves each ID through the runtime registry, the
+same lookup `garuda run --runtime` uses, so an alias checks the harness it
+names. An unknown ID becomes an error diagnostic, `harness.unknown`. Its message
+is run's refusal ("runtime selection refused: unknown runtime 'ID'"), and its
+fix lists the known harness ids. Doctor keeps its existing exit code contract:
+any error diagnostic exits 1, in text and `--json` output. Known runtimes passed
+in the same call are still checked.
+
+## 2026-11-26: `garuda flow list` and `garuda config show --json` (#782)
+
+`garuda flow list [--json] [--workspace DIR]` lists every flow `garuda flow run`
+would accept in that workspace. It reuses `packaged.available()` over
+`load_effective()`, the same lookup the flow service and dashboard Setup use, so
+a user or project flow of a packaged name replaces it. Each row has `name`,
+`source` (`packaged`, `user` or `project`, short labels for the provenance
+`package-default`, `user-config` and `trusted-project`), `description`, `steps`,
+`roles` and `missing_roles`. Missing roles are reported, not refused: an
+unconfigured install still lists the packaged flows. An invalid `garuda.yaml`
+exits 2 with its config error, like `config show`.
+
+`garuda config show --json` prints `{config, provenance, withheld}`: the same
+resolved config, per-key sources and withheld project keys the text view prints
+as YAML and comments. With no `garuda.yaml` it prints `config: null` and exits 0,
+matching the text view's notice rather than failing.

@@ -615,6 +615,8 @@ def build_parser():
     config_show.add_argument("--workspace", default=".")
     config_show.add_argument("--flow", metavar="NAME",
                              help="Print one flow (packaged or yours) to copy into garuda.yaml")
+    config_show.add_argument("--json", action="store_true",
+                             help="Print the effective config, provenance and withheld keys as JSON")
     config_trust = config_sub.add_parser(
         "trust",
         help="Trust this project's garuda.yaml checks and native models (exact bytes; "
@@ -689,9 +691,14 @@ def build_parser():
 
     flow_parser = subparsers.add_parser("flow", help="Run a garuda.yaml flow of role steps")
     flow_sub = flow_parser.add_subparsers(dest="flow_command")
+    flow_list = flow_sub.add_parser(
+        "list", help="Flows available here: packaged, user and project, with steps and roles")
+    flow_list.add_argument("--workspace", default=".")
+    flow_list.add_argument("--json", action="store_true")
     flow_run = flow_sub.add_parser("run", help="Run a flow by name")
     flow_run.add_argument("name")
-    flow_run.add_argument("-t", "--task", required=True)
+    flow_run.add_argument("-t", "--task", help="Task description")
+    flow_run.add_argument("-f", "--file", help="Read task from file")
     flow_run.add_argument("--workspace", default=".")
     flow_run.add_argument(
         "--check", dest="checks", action="append", default=[], metavar="COMMAND",
@@ -1244,6 +1251,13 @@ def run_config(args) -> int:
                     print(f"Error: flow.unknown: no flow named {args.flow!r}", file=sys.stderr)
                     return 2
                 return 0
+            if getattr(args, "json", False):
+                import json
+
+                from garuda.interfaces.onboarding import config_show_json
+
+                print(json.dumps(config_show_json(args.workspace), indent=2, default=str))
+                return 0
             print("\n".join(config_show(args.workspace)))
         except GarudaConfigError as exc:
             print(f"Error: {exc}", file=sys.stderr)
@@ -1280,6 +1294,29 @@ def run_config(args) -> int:
     tmp.write_text(gy.dump(proposed), encoding="utf-8")
     os.replace(tmp, target)
     return 0
+
+
+def task_text(args) -> str | None:
+    """The task from ``-t`` or ``-f`` (the file wins), or ``None`` when it is
+    empty or only whitespace: such a task is refused before any agent starts."""
+    task = getattr(args, "task", None)
+    if getattr(args, "file", None):
+        task = Path(args.file).read_text(encoding="utf-8")
+    return task if task and task.strip() else None
+
+
+TASK_REQUIRED = "task.missing: provide -t/--task or -f/--file"
+
+
+def workspace_refusal(workspace) -> str | None:
+    """A typed refusal for a ``--workspace`` that is not an existing directory,
+    checked before any config, session or lease touches it (#774)."""
+    path = Path(workspace).expanduser()
+    if not path.exists():
+        return f"workspace.missing: {workspace} does not exist"
+    if not path.is_dir():
+        return f"workspace.not_directory: {workspace} is not a directory"
+    return None
 
 
 def check_garuda_config(args):
@@ -1694,8 +1731,35 @@ async def _terminable(start, terminated: list[bool]):
         loop.remove_signal_handler(signal.SIGTERM)
 
 
+def _list_flows(args) -> int:
+    """`garuda flow list`: packaged flows and the user's and project's own."""
+    import json
+    import sys
+
+    from garuda.config.garuda_yaml import GarudaConfigError, load_effective
+    from garuda.flows import packaged
+
+    try:
+        rows = packaged.listing(load_effective(args.workspace))
+    except GarudaConfigError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    if getattr(args, "json", False):
+        print(json.dumps(rows, indent=2))
+        return 0
+    width = max(len(row["name"]) for row in rows)
+    for row in rows:
+        missing = (f"; undefined roles: {', '.join(row['missing_roles'])}"
+                   if row["missing_roles"] else "")
+        print(f"{row['name']:<{width}}  {row['source']:<8}  {row['steps']} step(s)  "
+              f"roles: {', '.join(row['roles'])}{missing}")
+    return 0
+
+
 def run_flow(args) -> int:
-    """`garuda flow run|show|resume` (C.6a)."""
+    """`garuda flow list|run|show|resume|export` (C.6a)."""
+    if args.flow_command == "list":
+        return _list_flows(args)
     import asyncio
     import json
     import sys
@@ -1709,6 +1773,20 @@ def run_flow(args) -> int:
     from garuda.runtime.strict_store import StorageError
     from garuda.workspace.lease import LeaseError
 
+    if args.flow_command == "run":
+        # Inputs are refused before any session, lease or agent exists (#774, #775).
+        try:
+            args.task = task_text(args)
+        except OSError as exc:
+            print(f"Error: task.file_unreadable: {exc}", file=sys.stderr)
+            return 2
+        if args.task is None:
+            print(f"Error: {TASK_REQUIRED}", file=sys.stderr)
+            return 1
+        refusal = workspace_refusal(args.workspace)
+        if refusal:
+            print(f"Error: {refusal}", file=sys.stderr)
+            return 2
     store = SessionStore()
     if args.flow_command in ("show", "resume", "export"):
         flow_session, meta = _resolve_flow_session(
