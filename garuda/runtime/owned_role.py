@@ -37,6 +37,23 @@ class OwnedRoleRequest:
         return hashlib.sha256(encode_document({"payload": self.payload, "sources": [asdict(source) for source in self.sources], "capacity": asdict(self.capacity_policy) if self.capacity_policy else None}).encode()).hexdigest()
 
 
+#: The supervisor's process timeout for a step without a deadline.
+DEFAULT_TIMEOUT = 3600
+#: How long past its own deadline a step's worker may take to stop cleanly (#828).
+DEADLINE_MARGIN = 600
+
+
+def owned_timeout(limits) -> float:
+    """The supervisor's backstop for one owned step (#828).
+
+    The worker enforces the step's deadline itself and exits with a typed
+    result; the supervisor only kills a worker that has not stopped by
+    deadline + :data:`DEADLINE_MARGIN`. Without a deadline it is unchanged.
+    """
+    deadline = getattr(limits, "deadline_sec", None)
+    return deadline + DEADLINE_MARGIN if deadline else DEFAULT_TIMEOUT
+
+
 class StepInterrupted(asyncio.CancelledError):
     """A cancelled owned step whose worker tree and confinement are proved closed (#760).
 
@@ -50,7 +67,9 @@ class StepInterrupted(asyncio.CancelledError):
         self.result = result
 
 
-def prepare_owned_step(launch, *, timeout=3600) -> OwnedRoleRequest:
+def prepare_owned_step(launch, *, timeout=None) -> OwnedRoleRequest:
+    if timeout is None:
+        timeout = owned_timeout(getattr(launch, "limits", None))
     with SourceCapture() as capture:
         if launch.role_plan is not None and launch.role_plan.agent_spec is not None:
             for source in launch.role_plan.agent_spec.resolved().chain:
@@ -99,6 +118,8 @@ def _prepare_owned_step(launch, *, timeout) -> OwnedRoleRequest:
                "external_approvals": launch.external_approvals,
                "flow": {"flow_session": launch.flow_session, "step": launch.step_id,
                         "attempt": launch.attempt}}
+    if getattr(launch, "limits", None) is not None:  # absent: the request as before (#828)
+        payload["limits"] = launch.limits.record()
     if launch.worktree_plan is not None:
         from garuda.interfaces.session_service import plan_meta
 
@@ -237,8 +258,13 @@ async def execute_owned_role(request: OwnedRoleRequest, capability, *, approval=
                 refusal = result["refusal"]
                 return StepResult(result["session_id"], False, "", closure=closure,
                                   error=f"{refusal['code']}: {refusal['message']}", refusal=dict(refusal))
+            failure = result.get("failure") or {}
             return StepResult(result["session_id"], bool(result["success"] and terminal.exit_code == 0),
-                              result["output"], closure=closure)
+                              result["output"], closure=closure,
+                              error=failure.get("detail") or "",
+                              error_code=failure.get("code") or "",
+                              stop_reason=failure.get("stop_reason"),
+                              liveness=failure.get("liveness") if payload.get("limits") else None)
         except asyncio.CancelledError:
             await process.close()
             # Local closure and the separate Docker cleanup below must both settle;

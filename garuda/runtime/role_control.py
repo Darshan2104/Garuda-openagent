@@ -44,6 +44,22 @@ def valid_refusal(refusal) -> bool:
             and len(refusal["message"]) <= MAX_REFUSAL_MESSAGE)
 
 
+#: Why a worker's agent stopped (#828): keys a typed ``failure`` may carry.
+FAILURE_KEYS = frozenset({"code", "detail", "stop_reason", "liveness"})
+
+
+def valid_failure(failure) -> bool:
+    """A worker's typed failure cause: a bounded code, detail and raw stop reason,
+    and which of the step's own limits (``deadline``/``silence``) stopped it."""
+    def text(value, limit):
+        return value is None or (isinstance(value, str) and len(value) <= limit)
+
+    return (isinstance(failure, dict) and set(failure) <= FAILURE_KEYS
+            and text(failure.get("code"), 120) and text(failure.get("detail"), MAX_REFUSAL_MESSAGE)
+            and text(failure.get("stop_reason"), 64)
+            and failure.get("liveness") in (None, "deadline", "silence"))
+
+
 def bounded_output(text: str) -> str:
     """The end of ``text`` within :data:`MAX_RESULT_OUTPUT` bytes: flow artifact blocks
     close an answer, so the tail is what a step's outputs come from."""
@@ -196,13 +212,18 @@ class RoleControl:
             # A timeout or lost person stays a non-answer for the worker's broker to audit.
             return answer if isinstance(answer, Unanswered) else bool(answer)
         if operation == "result" and self.result is None:
-            if (not isinstance(value, dict) or set(value) - {"refusal"} != {"session_id", "success", "output"}
+            if (not isinstance(value, dict)
+                    or set(value) - {"refusal", "failure"} != {"session_id", "success", "output"}
+                    or {"refusal", "failure"} <= set(value)
                     or not isinstance(value["session_id"], str)
                     or type(value["success"]) is not bool or not isinstance(value["output"], str)
                     or len(value["output"].encode()) > MAX_RESULT_OUTPUT
                     # A typed refusal (#738) is only ever a failed step with no output.
                     or ("refusal" in value and (not valid_refusal(value["refusal"])
-                                                or value["success"] is not False or value["output"]))):
+                                                or value["success"] is not False or value["output"]))
+                    # A typed failure cause (#828) only ever describes a failed step.
+                    or ("failure" in value and (not valid_failure(value["failure"])
+                                                or value["success"] is not False))):
                 raise ValueError("invalid role result")
             from garuda.core.sessions import validate_session_ref
 

@@ -54,8 +54,77 @@ INTERRUPTED_STOP = "flow.interrupted"
 RETRYABLE_STOPS = frozenset({"flow.step_failed", "flow.output_missing", "flow.artifact_too_large"})
 RETRY_NOTE = ("[garuda] An earlier attempt of this step failed. Its partial edits may already be "
               "in the workspace; inspect existing work before acting.")
+#: A step stopped by its own liveness limits (#828): its ``deadline_min`` ran out,
+#: or its harness was silent for ``silence_min`` (``tool_silence_min`` while a
+#: tool call ran). Never retried; ``flow resume`` runs the step again.
+DEADLINE_STOP = "flow.step_deadline"
+SILENT_STOP = "flow.step_silent"
+LIVENESS_STOPS = {"deadline": DEADLINE_STOP, "silence": SILENT_STOP}
 RESUMABLE_CHECKED_STOPS = {"workspace.readonly_unenforced", "flow.step_failed", "flow.output_missing",
-                           "flow.review_invalid", INTERRUPTED_STOP}
+                           "flow.review_invalid", INTERRUPTED_STOP, DEADLINE_STOP, SILENT_STOP}
+#: While a tool call is in flight a silence-watched step waits this long (#828).
+DEFAULT_TOOL_SILENCE_MIN = 120
+
+
+@dataclass(frozen=True)
+class StepLimits:
+    """A step's liveness limits in seconds (#828); ``None`` is no limit.
+
+    ``garuda.yaml`` sets whole minutes; the engine accepts any positive number of
+    minutes, so tests can use fractions without a public seconds key.
+    """
+
+    deadline_sec: float | None = None
+    silence_sec: float | None = None
+    tool_silence_sec: float | None = None
+
+    @property
+    def watchdog(self) -> dict | None:
+        """The ACP silence watchdog's settings, or ``None`` when silence is not watched."""
+        if self.silence_sec is None and self.tool_silence_sec is None:
+            return None
+        return {"silence_sec": self.silence_sec, "tool_silence_sec": self.tool_silence_sec}
+
+    def record(self) -> dict:
+        return {key: value for key, value in (
+            ("deadline_sec", self.deadline_sec), ("silence_sec", self.silence_sec),
+            ("tool_silence_sec", self.tool_silence_sec)) if value is not None}
+
+
+def step_limits(flow: dict, step: dict) -> StepLimits | None:
+    """A step's limits: its own ``limits`` over its flow's, key by key; ``None`` if neither."""
+    merged = {**(flow.get("limits") or {}), **(step.get("limits") or {})}
+    if not merged:
+        return None
+
+    def seconds(key):
+        value = merged.get(key)
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not value > 0:
+            raise FlowStopped("flow.limits_invalid", f"limits.{key} must be a positive number "
+                              "of minutes", step=step.get("id"))
+        return float(value) * 60
+
+    silence, tool = seconds("silence_min"), seconds("tool_silence_min")
+    if silence is not None and tool is None:
+        tool = max(silence, DEFAULT_TOOL_SILENCE_MIN * 60.0)
+    return StepLimits(seconds("deadline_min"), silence, tool)
+
+
+def _liveness_stop(what: str, outcome, limits: StepLimits | None, step: str,
+                   cause: dict | None):
+    """The resumable stop of a step its own deadline or silence watchdog ended (#828)."""
+    code = LIVENESS_STOPS.get(outcome.liveness or "")
+    if code is None or limits is None:
+        return None
+    if code == DEADLINE_STOP:
+        reason = f"ran past its deadline of {limits.deadline_sec / 60:g} min"
+    else:
+        reason = "sent nothing for longer than its silence limit"
+    return FlowStopped(code, f"{what} {reason}; the turn was cancelled and the agent stopped. "
+                       "`garuda flow resume` runs it again as a new attempt",
+                       step=step, cause=cause)
 
 
 def _settled_refusal(receipt: dict) -> bool:
@@ -156,6 +225,8 @@ class StepLaunch:
     quota_recovery: bool = False
     codex_executable: str | None = None
     quota_guard: Any = None
+    #: The step's liveness limits (#828); ``None`` runs it as before.
+    limits: StepLimits | None = None
 
 
 @dataclass
@@ -170,6 +241,12 @@ class StepResult:
     #: An owned role worker's typed refusal, ``{"code", "message"}`` (#738). The step
     #: still has its proved closure; the flow stops with the role's own code.
     refusal: dict | None = None
+    #: Which liveness limit stopped the step (#828): ``"deadline"`` or ``"silence"``.
+    liveness: str | None = None
+    #: The harness's raw ACP ``stopReason`` for its last turn, when it sent one (#824).
+    stop_reason: str | None = None
+    #: The launcher's own error code, when the step session recorded none.
+    error_code: str = ""
 
 
 Launcher = Callable[[StepLaunch], Awaitable[StepResult]]
@@ -454,8 +531,10 @@ class FlowRunner:
                 return None
             return redact_text(" ".join(value.split()))[0][:limit] or None
 
-        cause = {"code": bounded(meta.get("error_code"), 120),
+        cause = {"code": bounded(meta.get("error_code") or outcome.error_code, 120),
                  "detail": bounded(meta.get("error_detail") or outcome.error, 500)}
+        if stop_reason := bounded(outcome.stop_reason, 64):
+            cause["stop_reason"] = stop_reason  # how the harness ended its turn (#824)
         return cause if any(cause.values()) else None
 
     async def _publish(self, session_id: str, updates: dict, *, terminal: bool = False):
@@ -1397,11 +1476,13 @@ class FlowRunner:
         source_guard, snapshot_guard = NoEditsGuard(self.workspace), NoEditsGuard(target)
         prompt = self._prompt(step, "reviewer", inputs, read_only=True)
 
+        limits = step_limits(self.flow, step)
+
         async def one(role):
             return role, await self.launcher(StepLaunch(
                 flow_session=self.flow_session, step_id=f"{step['id']}:{role}", role=role,
                 role_plan=plans[role], prompt=prompt, workspace=str(target), capability=None,
-                attempt=attempt, no_edits=True, store=self.store))
+                attempt=attempt, no_edits=True, store=self.store, limits=limits))
 
         results = await asyncio.gather(*(one(role) for role in members), return_exceptions=True)
         outcomes = []
@@ -1433,7 +1514,8 @@ class FlowRunner:
                       "role_plan": plans[role].record() if plans[role] is not None else None}
             if stop is None and not outcome.success:
                 cause = await _settled_sync(self._step_cause, outcome)
-                stop = FlowStopped("flow.step_failed",
+                stop = _liveness_stop(f"reviewer {role}", outcome, limits, step["id"], cause) \
+                    or FlowStopped("flow.step_failed",
                                    _failed(f"reviewer {role}", outcome, cause, no_edits=True),
                                    step=step["id"], cause=cause)
             produced = art.extract(outcome.output) if stop is None else {}
@@ -1808,6 +1890,7 @@ class FlowRunner:
                 raise FlowStopped("flow.recovery_changed", str(exc), step=step["id"]) from exc
         role = step["role"]
         no_edits = self._no_edits(step, role)
+        limits = step_limits(self.flow, step)
         plan = self._role_plan(role, step=step["id"], no_edits=no_edits)
         inputs = await self._inputs(step, done)
         version_before = await self._version_for_flow()
@@ -1865,7 +1948,8 @@ class FlowRunner:
                                   else None),
                 quota_guard=((lambda: self.quota_recovery.before_launch(self, plan))
                              if self.quota_recovery and plan and plan.runtime_id == "codex"
-                             else None)))
+                             else None),
+                limits=limits))
         except ConfinementRefused as exc:
             stop = FlowStopped(exc.code, exc.message, step=step["id"])
             # This refusal precedes agent start. Settle the intent so recovery
@@ -1936,6 +2020,7 @@ class FlowRunner:
             "inputs": [ref.to_dict() for ref, _ in inputs],
             "workspace_version_before": version_before, "recorded_at": _now(), "outputs": [],
             "role_plan": plan.record() if plan is not None else None,
+            **({"limits": limits.record()} if limits is not None else {}),
             **({"closure": closure} if closure is not None else {}),
             **({"evidence_boundary": boundary} if boundary is not None else {}),
         }
@@ -1962,7 +2047,9 @@ class FlowRunner:
             # The step session's own cause is kept for checked (owned worker) and
             # unchecked launches alike; the stop code is unchanged (#749).
             cause = await _settled_sync(self._step_cause, outcome)
-            stop = FlowStopped("flow.quota_wait" if outcome.quota_wait else "flow.step_failed",
+            stop = (None if outcome.quota_wait
+                    else _liveness_stop(f"step {step['id']}", outcome, limits, step["id"], cause)) \
+                or FlowStopped("flow.quota_wait" if outcome.quota_wait else "flow.step_failed",
                                _failed(f"step {step['id']}", outcome, cause,
                                        no_edits=self._read_only(step, role)),
                                step=step["id"], cause=cause)
