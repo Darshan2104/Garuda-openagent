@@ -17,6 +17,26 @@ finish now sit in one `try`, so any exception, cancellation or
 killed by a signal still cannot settle itself; that stays the job of session
 recovery.
 
+## 2026-11-26 — SDK ACP runs refuse resume; unknown runtimes are typed (#804, #805)
+
+`SoftwareAgent(runtime="claude").run(task, resume=...)` started a fresh harness
+session and returned `success=True`, dropping `resume`, `resume_all_projects`
+and `events`, while the docs said `resume="latest"` continues the newest
+session. The SDK now refuses them on ACP with `OptionsUnsupportedOnRuntime`
+(`sdk.options_unsupported`), through `refuse_unservable_options`, before the
+harness starts. Resuming was not wired up: the CLI's ACP resume is spread over
+`_plan_resume` (`interfaces/main.py`), `run_acp_task`'s `_resume_or_brief`
+(`session/load` or a brief fallback) and the attachment brief, none of which the
+SDK's `_run_acp` shares, so reusing it would not be a small change. The docs
+now say resume is native-only in the SDK and point to `Conversation` (which has
+no resume or events argument to drop) and `garuda run --resume`. An unknown
+`runtime=` raised a bare `ValueError` from `SoftwareAgent` and `Conversation`;
+`acp_adapter_for_workspace` now resolves the id first and raises
+`UnknownRuntime` (`garuda/runtime/registry.py`, a `ValueError` so existing
+handlers still match) with the CLI's `harness.unknown` code and the configured
+runtime ids on `.known`, as `garuda doctor --runtime` reports them. The message
+is unchanged. It is exported from `garuda.sdk`.
+
 ## 2026-11-26 — SDK refusals carry the CLI's agent and workspace codes (#798)
 
 `AgentSpec.load("nonexist")` and `SoftwareAgent(agent="nonexist").run()` raised

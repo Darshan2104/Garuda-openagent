@@ -153,6 +153,7 @@ def acp_adapter_for_workspace(
     from garuda.acp.catalog import AcpUnavailableError
     from garuda.runtime import RegistryError
     from garuda.runtime.protocol import RuntimeKind
+    from garuda.runtime.registry import UnknownRuntime
 
     workspace = os.path.abspath(workspace)
     catalog = configured_catalog(
@@ -161,6 +162,12 @@ def acp_adapter_for_workspace(
         global_settings=global_settings,
         project_settings=project_settings,
     )
+    try:
+        catalog.registry.resolve_id(runtime_name)
+    except RegistryError as exc:
+        raise UnknownRuntime(
+            f"Cannot use runtime {runtime_name!r} ({exc})",
+            known=[m.runtime_id for m in catalog.registry.manifests]) from exc
     try:
         if argv_override is None:
             manifest, discovered = acp_launch_target(catalog, runtime_name)
