@@ -15,6 +15,7 @@ import os
 import sys
 import tempfile
 
+from browser_support import count_at_least, count_is, launch, settle, text_contains
 from playwright.sync_api import sync_playwright
 
 BASE = os.environ.get("GARUDA_CHECK_BASE", "http://127.0.0.1:8891/")
@@ -52,7 +53,7 @@ problems: list[str] = []
 EXPECTED_ERRORS = [False]
 
 with sync_playwright() as p:
-    browser = p.chromium.launch(channel="chrome")
+    browser = launch(p)
     page = browser.new_page(viewport={"width": 1500, "height": 1100})
     page.on("console", lambda m: problems.append(f"[{page.url[-28:]}] console.{m.type}: {m.text}")
             if m.type in ("error", "warning") and not EXPECTED_ERRORS[0] else None)
@@ -63,7 +64,7 @@ with sync_playwright() as p:
     page.goto(f"{BASE}#t={TOKEN}", wait_until="networkidle")
     # The token URL lands on the Overview; the runs list is its own tab.
     page.goto(f"{BASE}#/runs", wait_until="networkidle")
-    page.wait_for_timeout(600)
+    count_at_least(page, "#table-card tbody tr", len(EXPECT) + len(EXTRA))
     rows = page.query_selector_all("#table-card tbody tr")
     print(f"runs list: {len(rows)} rows")
     if len(rows) != len(EXPECT) + len(EXTRA):
@@ -71,7 +72,7 @@ with sync_playwright() as p:
 
     for sid, want in EXPECT.items():
         page.goto(f"{BASE}#/runs/{sid}", wait_until="networkidle")
-        page.wait_for_timeout(500)
+        count_at_least(page, ".turn", want["turns"])
 
         turns = page.query_selector_all(".turn")
         gates = page.query_selector_all(".gate")
@@ -151,11 +152,11 @@ with sync_playwright() as p:
         # is not one-way. `inner_text` skips hidden nodes, so anything inside a body must be
         # asserted only while it is open.
         page.click("#collapse-all")
-        page.wait_for_timeout(200)
+        count_is(page, ".turn.open", 0)
         if page.query_selector_all(".turn.open"):
             problems.append(f"{sid}: Collapse all left turns open")
         page.click("#expand-all")
-        page.wait_for_timeout(250)
+        count_is(page, ".turn.open", len(turns))
         opened = page.query_selector_all(".turn.open")
         if len(opened) != len(turns):
             problems.append(f"{sid}: {len(opened)} of {len(turns)} turns opened on expand-all")
@@ -184,11 +185,11 @@ with sync_playwright() as p:
 
     # The raw-event escape hatch, and the buffer link that expands a [buffer:…] stub.
     page.goto(f"{BASE}#/runs/b2-rejected-then-passed", wait_until="networkidle")
-    page.wait_for_timeout(400)
+    page.wait_for_selector("#raw-filter")
     # Filtering before anything is loaded searches the first window instead of answering
     # "nothing matches" about zero events.
     page.fill("#raw-filter", "permission_ask")
-    page.wait_for_timeout(600)
+    count_at_least(page, "#raw-body .raw-row")
     early = page.query_selector_all("#raw-body .raw-row")
     print(f"filter typed before loading: {len(early)} rows")
     if len(early) != 1:
@@ -196,7 +197,7 @@ with sync_playwright() as p:
                         f"(raw pane said: {page.inner_text('#raw-body')[:120]!r})")
     page.fill("#raw-filter", "")
     page.click("#raw-load")
-    page.wait_for_timeout(600)
+    count_at_least(page, ".raw-row", 2)
     raw_rows = page.query_selector_all(".raw-row")
     print(f"\nraw events: {len(raw_rows)} rows")
     if not raw_rows:
@@ -205,7 +206,7 @@ with sync_playwright() as p:
     # also hits the task_complete calls that declare verification_commands. Assert on a
     # string that appears in exactly one event instead.
     page.fill("#raw-filter", "permission_ask")
-    page.wait_for_timeout(300)
+    count_is(page, ".raw-row", 1)
     filtered = page.query_selector_all(".raw-row")
     print(f"filtered to 'permission_ask': {len(filtered)} of {len(raw_rows)} rows")
     if len(filtered) != 1:
@@ -214,13 +215,13 @@ with sync_playwright() as p:
     # `Expand all`, not a click per head: the heads toggle, and a short run arrives already
     # open — so clicking each one *closed* it and hid the link this is looking for.
     page.click("#expand-all")
-    page.wait_for_timeout(300)
+    count_at_least(page, "[data-buffer]")
     buffer_link = page.query_selector("[data-buffer]")
     if not buffer_link:
         problems.append("no [buffer:…] stub was turned into a link")
     else:
         buffer_link.click()
-        page.wait_for_timeout(500)
+        text_contains(page, "#raw-body", "test_inclusive")
         if "test_inclusive" not in page.inner_text("#raw-body"):
             problems.append("the buffer link did not expand the archived output")
         print("buffer expansion: ok")
@@ -228,7 +229,7 @@ with sync_playwright() as p:
     # --- the overview strip, and the nested subagent trace --------------------
 
     page.goto(f"{BASE}#/runs/h8-subagent", wait_until="networkidle")
-    page.wait_for_timeout(500)
+    count_at_least(page, ".flow-row")
     flow_rows = page.query_selector_all(".flow-row")
     print(f"\noverview strip: {len(flow_rows)} rows")
     if len(flow_rows) != 2:
@@ -241,7 +242,8 @@ with sync_playwright() as p:
         problems.append("no button to open the subagent's own trace")
     else:
         opener.click()
-        page.wait_for_timeout(700)
+        settle(page, "() => document.querySelectorAll('.sub-turn').length > 0"
+                     " && !!document.querySelector('.sub-body')")
         sub_turns = page.query_selector_all(".sub-turn")
         print(f"nested subagent trace: {len(sub_turns)} turns")
         if len(sub_turns) != 2:
@@ -251,14 +253,14 @@ with sync_playwright() as p:
         page.screenshot(path=f"{SHOTS}/insp-subagent.png", full_page=True)
         # A second click closes it, rather than stacking a second copy underneath.
         opener.click()
-        page.wait_for_timeout(300)
+        count_is(page, ".sub-turn", 0)
         if page.query_selector_all(".sub-turn"):
             problems.append("clicking again did not close the nested trace")
 
     # --- a run that does not exist: a way back, not a dead end ------------------------------
     EXPECTED_ERRORS[0] = True
     page.goto(f"{BASE}#/runs/no-such-run", wait_until="networkidle")
-    page.wait_for_timeout(400)
+    page.wait_for_selector("#trace-error, .notice.err")
     EXPECTED_ERRORS[0] = False
     hrefs = page.eval_on_selector_all("#view a", "links => links.map(a => a.getAttribute('href'))")
     print(f"\nmissing run: links {hrefs}")
@@ -268,7 +270,7 @@ with sync_playwright() as p:
 
     # --- escaping: every value from data escaped exactly once ------------------------------
     page.goto(f"{BASE}#/runs/i9-ampersand-model", wait_until="networkidle")
-    page.wait_for_timeout(400)
+    count_at_least(page, ".grid.cols-4 .card", 4)
     tiles = page.inner_text(".grid.cols-4")
     print(f"ampersand model tile: {' '.join(tiles.split())[:120]}")
     if "acme/R&D-mini <beta>" not in tiles or "&amp;" in tiles or "&lt;" in tiles:
@@ -276,7 +278,8 @@ with sync_playwright() as p:
 
     # --- an external harness's run leads with what is known ----------------------------------
     page.goto(f"{BASE}#/runs/j10-external-acp", wait_until="networkidle")
-    page.wait_for_timeout(600)
+    settle(page, "() => !!document.querySelector('#external-summary, .trajectory')")
+    page.wait_for_load_state("networkidle")
     view_text = page.inner_text("#view")
     summary_node = page.query_selector("#external-summary")
     summary = summary_node.inner_text() if summary_node else ""
@@ -302,7 +305,7 @@ with sync_playwright() as p:
 
     # --- a 1,500-turn trace: still fast, and the raw filter says what it searched ------------
     page.goto(f"{BASE}#/runs/{LONG}", wait_until="networkidle")
-    page.wait_for_function("() => document.querySelectorAll('.turn').length === 1500", timeout=20000)
+    count_is(page, ".turn", 1500, timeout=20_000)
     render_ms = page.evaluate("""(sid) => {
         const base = "/api/runs/" + sid;
         const t0 = performance.now();
@@ -313,11 +316,11 @@ with sync_playwright() as p:
     print(f"\nlong trace: 1500 turns rendered in {render_ms:.0f} ms")
     if render_ms > 1500:
         problems.append(f"a 1,500-turn trace took {render_ms:.0f} ms to render")
-    page.wait_for_timeout(500)
+    count_is(page, ".turn", 1500)
     page.click("#raw-load")
-    page.wait_for_timeout(800)
+    count_at_least(page, "#raw-body .raw-row", 500)
     page.fill("#raw-filter", NEEDLE)
-    page.wait_for_timeout(400)
+    settle(page, "() => !!document.querySelector('#raw-summary')")
     raw_text = page.inner_text("#raw-body")
     print(f"filter over the first window: {' '.join(raw_text.split())[:160]}")
     if "1–500" not in raw_text or "7502" not in raw_text:
@@ -328,10 +331,7 @@ with sync_playwright() as p:
         problems.append("no way to search the rest of the log from an empty filter result")
     else:
         later.click()
-        try:
-            page.wait_for_function(
-                "() => document.querySelectorAll('#raw-body .raw-row').length > 0", timeout=15000)
-        except Exception:
+        if not count_at_least(page, "#raw-body .raw-row", 1, timeout=20_000):
             problems.append("searching later events never found the marker deep in the log")
         found = page.inner_text("#raw-body")
         print(f"after searching later events: {' '.join(found.split())[:160]}")

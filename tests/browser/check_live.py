@@ -21,6 +21,7 @@ import tempfile
 import time
 from pathlib import Path
 
+from browser_support import count_at_least, launch, settle
 from playwright.sync_api import sync_playwright
 
 BASE = os.environ.get("GARUDA_CHECK_BASE", "http://127.0.0.1:8893/")
@@ -68,7 +69,7 @@ def page_state(page) -> dict:
 
 
 with sync_playwright() as p:
-    browser = p.chromium.launch(channel="chrome")
+    browser = launch(p)
     page = browser.new_page(viewport={"width": 1500, "height": 1100})
     page.on("console", lambda m: problems.append(f"console.{m.type}: {m.text}")
             if m.type in ("error", "warning") and not OUTAGE[0] else None)
@@ -78,7 +79,8 @@ with sync_playwright() as p:
     page.goto(f"{BASE}#t={TOKEN}", wait_until="networkidle")
     # The token URL lands on the Overview; the runs list is its own tab.
     page.goto(f"{BASE}#/runs", wait_until="networkidle")
-    page.wait_for_timeout(1500)
+    count_at_least(page, "#table-card .pill.running")
+    page.wait_for_load_state("networkidle")
 
     # --- the runs list picks up a run started elsewhere ----------------------
     rows = page.query_selector_all("#table-card tbody tr")
@@ -111,14 +113,19 @@ with sync_playwright() as p:
     held = []
     page.route(f"**/api/runs/{SID}", lambda route: held.append(route))
     page.evaluate(f"location.hash = '#/runs/{SID}'")
-    page.wait_for_timeout(400)
+    for _ in range(50):
+        if held:
+            break
+        page.wait_for_timeout(100)
     page.evaluate("location.hash = '#/sessions'")
-    page.wait_for_timeout(600)
+    # Either view's placeholder (main's had no id): wait until the next view replaced it.
+    settle(page, "() => !document.querySelector('#view > .loading')")
     for route in held:
         route.continue_()
     page.unroute(f"**/api/runs/{SID}")
-    page.wait_for_timeout(300)
+    page.wait_for_load_state("networkidle")
     tails_before = tail_requests()
+    # An observation window: a leaked poller would tail every 750 ms in it.
     page.wait_for_timeout(2500)
     leaked_tails = tail_requests() - tails_before
     drew_over = bool(page.query_selector(".turn")) or bool(page.query_selector("#live-badge"))
@@ -133,7 +140,8 @@ with sync_playwright() as p:
 
     # --- the detail view fills in live --------------------------------------
     page.goto(f"{BASE}#/runs/{SID}", wait_until="networkidle")
-    page.wait_for_timeout(1200)
+    settle(page, "() => !!document.querySelector('#live-badge')"
+                 " && document.querySelectorAll('.turn').length > 0")
     live_badge = page.query_selector("#live-badge")
     print("\nlive badge:", bool(live_badge))
     if not live_badge:
@@ -155,8 +163,10 @@ with sync_playwright() as p:
     # Expand the first turn: it must survive the structure refresh.
     heads = page.query_selector_all(".turn-head")
     if heads:
+        first_open = "() => document.querySelector('.turn').classList.contains('open')"
+        was_open = page.evaluate(first_open)
         heads[0].click()
-        page.wait_for_timeout(200)
+        settle(page, f"() => ({first_open})() !== {str(was_open).lower()}")
     opened_before = len(page.query_selector_all(".turn.open"))
 
     # --- what the reader is doing survives a structure refresh ----------------
@@ -164,7 +174,7 @@ with sync_playwright() as p:
     # Models used panel and the first turn's node (tagged, so a redraw is detectable), and
     # the scroll position measured on a turn card near the top of the viewport.
     page.click("#raw-load")
-    page.wait_for_timeout(700)
+    count_at_least(page, "#raw-body .raw-row")
     page.fill("#raw-filter", "tool_call")
     page.focus("#raw-filter")
     page.evaluate("""() => {
@@ -173,8 +183,11 @@ with sync_playwright() as p:
         const panel = document.getElementById("conversation-panel");
         if (panel) panel.__probe = 1;
     }""")
+    settle(page, "() => document.querySelectorAll('#raw-body .raw-row').length > 0")
     before_state = page_state(page)
-    page.wait_for_timeout(6500)
+    # Two structure refreshes: the timeline grows by two turns.
+    settle(page, "n => document.querySelectorAll('.turn').length >= n + 2",
+           before_state["turns"], timeout=20_000)
     after_state = page_state(page)
     print(f"reader state before refreshes: {before_state}")
     print(f"reader state after ~6.5s:      {after_state}")
@@ -207,9 +220,11 @@ with sync_playwright() as p:
         selection.removeAllRanges();
         selection.addRange(range);
         return {id: turn.id, top: turn.getBoundingClientRect().top,
-                text: selection.toString()};
+                text: selection.toString(), turns: document.querySelectorAll(".turn").length};
     }""")
-    page.wait_for_timeout(6500)
+    if anchor:
+        settle(page, "n => document.querySelectorAll('.turn').length >= n + 2",
+               anchor["turns"], timeout=20_000)
     held_state = page.evaluate("""(id) => {
         const turn = document.getElementById(id);
         return {top: turn ? turn.getBoundingClientRect().top : null,
@@ -243,13 +258,12 @@ with sync_playwright() as p:
         problems.append(f"the outage was not reported as one calm line: {meta!r}")
     page.screenshot(path=str(SHOTS / "live-outage.png"))
     page.unroute("**/tail*")
-    recovered = False
-    for _ in range(40):   # the longest wait at this point in the backoff is 12 s
-        page.wait_for_timeout(500)
-        meta = page.text_content("#live-meta") or ""
-        if "can't reach" not in meta:
-            recovered = True
-            break
+    # The longest wait at this point in the backoff is 12 s.
+    recovered = settle(page, """() => {
+        const meta = document.getElementById("live-meta");
+        return !!meta && !meta.textContent.includes("can't reach");
+    }""", timeout=30_000)
+    meta = page.text_content("#live-meta") or ""
     OUTAGE[0] = False
     print(f"recovered: {recovered} ({meta!r})")
     if not recovered:
@@ -273,7 +287,9 @@ with sync_playwright() as p:
 
     # --- it stops when the run ends -----------------------------------------
     writer.wait(timeout=120)
-    page.wait_for_timeout(5000)
+    settle(page, """n => !document.querySelector('#live-badge')
+                     && document.querySelectorAll('.turn').length === n
+                     && document.querySelectorAll('.gate').length === 1""", TURNS, timeout=20_000)
     final_turns = len(page.query_selector_all(".turn"))
     badge_gone = page.query_selector("#live-badge") is None
     gates = len(page.query_selector_all(".gate"))
@@ -302,7 +318,7 @@ with sync_playwright() as p:
 
     # --- and an idle dashboard makes no requests ----------------------------
     page.goto(f"{BASE}#/runs", wait_until="networkidle")
-    page.wait_for_timeout(1200)
+    page.wait_for_timeout(1200)   # let the list's own first loads finish
     idle_before = len(requests)
     page.wait_for_timeout(4000)
     idle_after = len(requests)
