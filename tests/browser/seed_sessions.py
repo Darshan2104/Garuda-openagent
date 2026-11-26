@@ -348,9 +348,13 @@ def seed_observability(root: Path, workspace: str) -> dict:
                                      profile="lean"), workspace)
     async def measured_requests():
         for _ in range(2):
+            # Every ACP prompt confirms the harness mode first and refuses one Garuda cannot
+            # classify (#700, dd914f4f). The fake's default `ask` is not a claude mode, so it
+            # reports `acceptEdits` (smart), as a claude agent started in that mode would.
             runtime = AcpRuntime(
                 [sys.executable, str(Path(__file__).resolve().parents[2] / "garuda/acp/fake_agent.py"),
-                 "--profile", "streaming"], runtime_id="claude", cwd=workspace, store=store,
+                 "--profile", "streaming", "--initial-mode", "acceptEdits"],
+                runtime_id="claude", cwd=workspace, store=store,
                 persist_dir=str(store.session_dir(OBS["acp"])),
                 agent_definition=bound.record()["agent"],
             )

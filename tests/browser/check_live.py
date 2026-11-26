@@ -17,6 +17,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+from browser_support import count_at_least, launch, settle
 from playwright.sync_api import sync_playwright
 
 BASE = os.environ.get("GARUDA_CHECK_BASE", "http://127.0.0.1:8893/")
@@ -35,7 +36,7 @@ writer = subprocess.Popen(
 )
 
 with sync_playwright() as p:
-    browser = p.chromium.launch(channel="chrome")
+    browser = launch(p)
     page = browser.new_page(viewport={"width": 1500, "height": 1100})
     page.on("console", lambda m: problems.append(f"console.{m.type}: {m.text}")
             if m.type in ("error", "warning") else None)
@@ -43,7 +44,8 @@ with sync_playwright() as p:
     page.on("request", lambda r: requests.append(r.url))
 
     page.goto(f"{BASE}#t={TOKEN}", wait_until="networkidle")
-    page.wait_for_timeout(1500)
+    count_at_least(page, "#table-card .pill.running")
+    page.wait_for_load_state("networkidle")
 
     # --- the runs list picks up a run started elsewhere ----------------------
     rows = page.query_selector_all("#table-card tbody tr")
@@ -72,7 +74,8 @@ with sync_playwright() as p:
 
     # --- the detail view fills in live --------------------------------------
     page.goto(f"{BASE}#/runs/{SID}", wait_until="networkidle")
-    page.wait_for_timeout(1200)
+    settle(page, "() => !!document.querySelector('#live-badge')"
+                 " && document.querySelectorAll('.turn').length > 0")
     live_badge = page.query_selector("#live-badge")
     print("live badge:", bool(live_badge))
     if not live_badge:
@@ -83,11 +86,17 @@ with sync_playwright() as p:
     # Expand the first turn: it must survive the structure refresh.
     heads = page.query_selector_all(".turn-head")
     if heads:
+        first_open = "() => document.querySelector('.turn').classList.contains('open')"
+        was_open = page.evaluate(first_open)
         heads[0].click()
-        page.wait_for_timeout(200)
+        settle(page, f"() => ({first_open})() !== {str(was_open).lower()}")
     opened_before = len(page.query_selector_all(".turn.open"))
 
-    page.wait_for_timeout(5000)
+    # Wait for the timeline to grow by a turn: that is a structure refresh, which is what the
+    # expanded turn has to survive.
+    settle(page, """first => document.querySelectorAll('.turn').length > first
+                     && document.querySelectorAll('.live-body .raw-row').length > 0""",
+           first_turns, timeout=20_000)
     mid_turns = len(page.query_selector_all(".turn"))
     still_open = len(page.query_selector_all(".turn.open"))
     live_rows = len(page.query_selector_all(".live-body .raw-row"))
@@ -106,7 +115,9 @@ with sync_playwright() as p:
 
     # --- it stops when the run ends -----------------------------------------
     writer.wait(timeout=60)
-    page.wait_for_timeout(5000)
+    settle(page, """() => !document.querySelector('#live-badge')
+                     && document.querySelectorAll('.turn').length === 12
+                     && document.querySelectorAll('.gate').length === 1""", timeout=20_000)
     final_turns = len(page.query_selector_all(".turn"))
     badge_gone = page.query_selector("#live-badge") is None
     gates = len(page.query_selector_all(".gate"))
