@@ -294,6 +294,16 @@ def suite(workdir: Path, shots: Path, *, owned_starts: bool) -> list[str]:
         return run_check("check_overview.py", port, shots,
                          {**env, "GARUDA_CHECK_EMPTY_BASE": f"http://127.0.0.1:{empty_port}/"})
 
+    # --- data correctness: unknowns, outcomes and one login story across pages --
+    def data_correctness():
+        # Its own directory: the usage ledger and the login record live beside the settings
+        # file, and the sections that share `workdir` share those.
+        sessions = workdir / "dc" / "sessions"
+        env = {"GARUDA_GLOBAL_SETTINGS": str(workdir / "dc" / "settings.yaml")}
+        seed(str(HERE / "seed_data_correctness.py"), str(sessions), env=env)
+        port = dashboard(sessions, "web-dc.log", extra_env=env)
+        return run_check("check_data_correctness.py", port, shots, env)
+
     # --- read-only starters, with real ACP/flow/acceptance history ------------
     def starters():
         root = workdir / "starters"
@@ -346,6 +356,7 @@ def suite(workdir: Path, shots: Path, *, owned_starts: bool) -> list[str]:
         # consults: nested lanes, rollups, setup and usage by origin
         ("check_consults.py", lambda: seeded("con", "check_consults.py", "--consults")),
         ("check_overview.py", overview),
+        ("check_data_correctness.py", data_correctness),
         ("check_scenarios.py", starters),
         # Linux-owned flow and role starts in the real Chrome channel
         *([("owned starts", lambda: run_owned_starts(workdir, shots, ports.take()))]

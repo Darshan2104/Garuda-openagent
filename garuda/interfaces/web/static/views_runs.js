@@ -100,12 +100,33 @@ function wireRefresh(runs) {
     esc(fmt.truncate(live[0].task, 40)) + "</a>";
 }
 
+/* How a run ended, from the recorded outcome (B.2), never the legacy `status` word: a native
+ * run records `success`, an external harness or a flow `completed`, a chat `finished`, for
+ * the same outcome. `null` while the work is still active or the run never recorded one. */
+function runOutcome(r) {
+  return (r.state && r.state.outcome) || null;
+}
+
+/* Completed is how a run *ended*. It is not verification, which is a separate fact. */
+function outcomeCounts(runs) {
+  var finished = runs.filter(function (r) { return runOutcome(r) !== null; });
+  return {
+    finished: finished.length,
+    completed: finished.filter(function (r) { return runOutcome(r) === "completed"; }).length,
+    verified: finished.filter(function (r) {
+      return r.state && r.state.verification && r.state.verification.status === "passed";
+    }).length
+  };
+}
+
 function tilesHtml(runs) {
-  var finished = runs.filter(function (r) { return r.status === "success" || r.status === "failed"; });
-  var passed = runs.filter(function (r) { return r.status === "success"; }).length;
+  var counts = outcomeCounts(runs);
   var priced = runs.filter(function (r) { return typeof r.cost_usd === "number"; });
   var spend = priced.reduce(function (sum, r) { return sum + r.cost_usd; }, 0);
-  var tokens = runs.reduce(function (sum, r) { return sum + (r.total_tokens || 0); }, 0);
+  // Tokens are summed over the runs that recorded them, and say how many did not: a run
+  // with no token count is unknown, never zero.
+  var counted = runs.filter(function (r) { return typeof r.total_tokens === "number"; });
+  var tokens = counted.reduce(function (sum, r) { return sum + r.total_tokens; }, 0);
   var durations = runs
     .map(function (r) { return r.duration_ms; })
     .filter(function (d) { return typeof d === "number"; });
@@ -115,19 +136,25 @@ function tilesHtml(runs) {
   // Cost is reported over the runs that could be priced, and says so — an
   // unpriceable run must not be silently counted as free.
   var unpriced = runs.length - priced.length;
+  var untimed = runs.length - durations.length;
 
   return [
-    tile("Runs", String(runs.length), finished.length + " finished"),
-    tile("Pass rate", finished.length ? Math.round((passed / finished.length) * 100) + "%" : "—",
-         passed + " of " + finished.length),
-    tile("Spend", fmt.cost(spend), unpriced ? unpriced + " unpriced" : priced.length + " priced"),
-    tile("Median duration", fmt.duration(median), fmt.tokens(tokens) + " tokens total")
+    tile("Runs", String(runs.length), counts.finished + " finished"),
+    tile("Completed", counts.finished ? Math.round((counts.completed / counts.finished) * 100) + "%" : "—",
+         counts.completed + " of " + counts.finished + " finished · " + counts.verified + " verified"),
+    tile("Spend", priced.length ? fmt.cost(spend) + (unpriced ? " known" : "") : "unknown",
+         unpriced ? priced.length + " priced · " + unpriced + " unpriced" : priced.length + " priced"),
+    tile("Median duration", fmt.duration(median),
+         (untimed ? untimed + " untimed · " : "") +
+         (counted.length ? fmt.tokens(tokens) + " tokens over " + counted.length + " run" + (counted.length === 1 ? "" : "s") +
+                           (counted.length < runs.length ? " (" + (runs.length - counted.length) + " not recorded)" : "")
+                         : "tokens not recorded"))
   ].join("");
 }
 
 function tile(label, value, sub) {
   return (
-    '<div class="card"><div class="stat-label">' + esc(label) + "</div>" +
+    '<div class="card" data-tile="' + esc(label) + '"><div class="stat-label">' + esc(label) + "</div>" +
     '<div class="stat-value">' + esc(value) + "</div>" +
     '<div class="stat-sub">' + esc(sub) + "</div></div>"
   );
@@ -136,14 +163,17 @@ function tile(label, value, sub) {
 function chartsHtml(runs) {
   // Oldest-first so the charts read left-to-right in time; the table stays newest-first.
   var series = runs.slice().reverse();
-  var costs = series.map(function (r) {
+  // Only runs that recorded the measure are plotted; an unknown is left out, not drawn as 0.
+  var costs = series.filter(function (r) { return typeof r.cost_usd === "number"; }).map(function (r) {
     return {
-      value: typeof r.cost_usd === "number" ? r.cost_usd : 0,
-      cls: r.status === "failed" ? "bar-err" : "",
+      value: r.cost_usd,
+      cls: runOutcome(r) === "failed" ? "bar-err" : "",
       label: fmt.truncate(r.task, 60) + " — " + fmt.cost(r.cost_usd)
     };
   });
-  var tokens = series.map(function (r) {
+  var tokens = series.filter(function (r) {
+    return typeof r.prompt_tokens === "number" || typeof r.completion_tokens === "number";
+  }).map(function (r) {
     return {
       a: r.prompt_tokens || 0,
       b: r.completion_tokens || 0,
@@ -153,16 +183,15 @@ function chartsHtml(runs) {
   var durations = series
     .filter(function (r) { return typeof r.duration_ms === "number"; })
     .map(function (r) { return { value: r.duration_ms }; });
-  var finished = runs.filter(function (r) { return r.status === "success" || r.status === "failed"; });
-  var passed = finished.filter(function (r) { return r.status === "success"; }).length;
+  var counts = outcomeCounts(runs);
 
   return [
     '<div class="card">' + bars(costs, { title: "Cost per run", emptyNote: "No run could be priced." }) + "</div>",
     '<div class="card">' + stack(tokens, { title: "Tokens", aLabel: "prompt", bLabel: "completion", emptyNote: "No token counts recorded." }) + "</div>",
     '<div class="card">' + line(durations, { title: "Duration", emptyNote: "Need at least two timed runs." }) + "</div>",
-    '<div class="card">' + meter(finished.length ? passed / finished.length : 0, {
-      title: "Pass rate",
-      caption: passed + " / " + finished.length + " finished runs succeeded"
+    '<div class="card">' + meter(counts.finished ? counts.completed / counts.finished : 0, {
+      title: "Completed",
+      caption: counts.completed + " / " + counts.finished + " finished runs completed (not verification)"
     }) + "</div>"
   ].join("");
 }
@@ -204,8 +233,11 @@ function filtersHtml() {
     '<input type="search" id="f-q" placeholder="Search task or id…" value="' +
     esc(STATE.filters.q || "") + '">' +
     '<select id="f-status">' +
-    statusOption("", "Any status") + statusOption("success", "success") +
-    statusOption("failed", "failed") + statusOption("running", "running") +
+    // Outcome labels: the server matches them against each run's recorded outcome, so
+    // "completed" finds native `success` and external/flow `completed` runs alike.
+    statusOption("", "Any status") + statusOption("completed", "completed") +
+    statusOption("failed", "failed") + statusOption("cancelled", "cancelled") +
+    statusOption("refused", "refused") + statusOption("running", "running") +
     "</select>" +
     '<select id="f-agent"><option value="">Any agent</option>' + options.join("") + "</select>" +
     "</div>"

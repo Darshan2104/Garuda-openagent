@@ -127,9 +127,39 @@ var fmt = {
   }
 };
 
+/* Every legacy `status` word a session record carries, by meaning: a native run writes
+ * `success`, an external harness or a flow `completed`, a dashboard chat `finished` — one
+ * outcome, three words. Anything else (queued, cancelled, a word from a newer writer) stays
+ * the neutral colour rather than claiming success or failure. */
+var STATUS_PILL = { success: "success", completed: "success", finished: "success",
+                    failed: "failed", refused: "failed", running: "running" };
+
+/* A harness login reading, always with when it was taken: a check days old must not read
+ * as current. Runtimes, Providers and Setup all render the same record through this. */
+/* An age in seconds as "just now", "5m ago", "3h ago" or "3d ago"; "unknown" when absent. */
+function ageText(seconds) {
+  if (typeof seconds !== "number" || !isFinite(seconds)) return "unknown";
+  if (seconds < 60) return "just now";
+  if (seconds < 3600) return Math.floor(seconds / 60) + "m ago";
+  if (seconds < 86400) return Math.floor(seconds / 3600) + "h ago";
+  return Math.floor(seconds / 86400) + "d ago";
+}
+
+function loginAge(check) {
+  if (check && check.state === "no_probe") return "no documented status command";
+  if (!check || typeof check.age_seconds !== "number") return "never checked";
+  return "checked " + ageText(check.age_seconds);
+}
+
+function loginPill(check) {
+  var state = (check && check.state) || "not_checked";
+  var cls = state === "authenticated" ? "success" : (state === "logged_out" ? "failed" : "unknown");
+  return '<span class="pill ' + cls + '" data-login="' + esc(state) + '">login: ' + esc(state.replace(/_/g, " ")) +
+         "</span> " + '<span class="stat-sub login-age">' + esc(loginAge(check)) + "</span>";
+}
+
 function statusPill(status) {
-  var known = { success: 1, failed: 1, running: 1 };
-  var cls = known[status] ? status : "unknown";
+  var cls = STATUS_PILL[status] || "unknown";
   return '<span class="pill ' + cls + '">' + esc(status || "?") + "</span>";
 }
 

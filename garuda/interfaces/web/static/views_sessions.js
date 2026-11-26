@@ -118,7 +118,7 @@ function sessionsView() {
       }).join("") + "</div></div>" +
       '<div class="table-wrap"><table class="table" id="sessions-table"><thead><tr>' +
       "<th>Session</th><th>State</th><th>Runtime · role · model</th><th>Outcome / verification</th>" +
-      "<th>Queue</th><th>Workspace</th><th>Usage / cost</th><th>Approvals</th><th>Updated</th>" +
+      "<th>Queue</th><th>Workspace</th><th class=\"num\">Usage / cost</th><th class=\"num\">Approvals</th><th>Updated</th>" +
       "</tr></thead><tbody>" + rows.map(sessionRowHtml).join("") + "</tbody></table>" +
       '<div class="filter-empty" id="sessions-none" hidden>No session matches this filter.</div></div>'
     );
@@ -287,10 +287,49 @@ function ownershipHtml(view) {
     'The named path re-proves every prerequisite itself.</p></section>';
 }
 
+/* What the harness itself reported, labelled as such: an external session's adapter figure, or
+ * for a flow the total over its step sessions. Garuda's own metered usage stays the
+ * usage/cost chips above, which stay "unknown" when Garuda metered nothing. */
+function reportedUsageHtml(row) {
+  var flowTotal = row.kind === "flow" ? row.step_reported_usage : null;
+  var rep = row.reported_usage;
+  var text = null;
+  if (flowTotal) {
+    if (flowTotal.coverage !== "complete") text = "unknown (usage ledger unreadable)";
+    else if (!flowTotal.reporting_sessions) text = "not reported by any of " + flowTotal.step_sessions + " step session(s)";
+    else text = (typeof flowTotal.cost_usd === "number" ? "$" + flowTotal.cost_usd.toFixed(4) + (flowTotal.cost_complete ? "" : " (incomplete)") : "cost not reported") +
+      " · " + flowTotal.reporting_sessions + " of " + flowTotal.step_sessions + " step sessions reporting" +
+      (flowTotal.models.length ? " · " + flowTotal.models.join(", ") : "");
+  } else if (rep) {
+    text = (typeof rep.cost_usd === "number" ? "$" + rep.cost_usd.toFixed(4) : "cost not reported") +
+      (rep.models && rep.models.length ? " · " + rep.models.join(", ") : "") +
+      (rep.context_used !== null && rep.context_used !== undefined ? " · context " + rep.context_used + "/" + (rep.context_size || "?") : "");
+  }
+  if (text === null) return "";
+  return '<p class="stat-sub" id="session-reported-usage">' + (flowTotal ? "Step sessions' reported usage: " : "Harness-reported usage: ") +
+    esc(text) + " — adapter-reported, not metered by Garuda</p>";
+}
+
+/* The panels a session has nothing for, folded into one quiet line instead of empty cards. */
+function quietSessionHtml(row, streamable) {
+  var parts = [];
+  if (!row.spend) parts.push("no spend snapshot (spend gates are recorded for native run trees)");
+  if (!streamable) {
+    parts.push(row.kind === "flow" ? "no event log of its own: each step's session below has its own"
+      : (row.event_log && row.event_log.external ? "no native event log: the harness's own trail is on the Trace page"
+                                                 : "no event log recorded"));
+  }
+  return parts.length ? '<p class="stat-sub" id="session-quiet">' + esc(parts.join(" · ")) + "</p>" : "";
+}
+
 function sessionDetailView(id) {
   render('<div class="loading">Loading session…</div>');
   return api("/api/sessions/" + encodeURIComponent(id)).then(function (row) {
     var state = row.state || {};
+    // The live stream reads only the native event log. A finished session without one (a
+    // flow, an external harness) has nothing to stream, and "0 events · finished" read as
+    // if it had done nothing.
+    var streamable = !row.event_log || row.event_log.native || isActive(state);
     render(
       '<div class="page-head"><h1>' + esc(row.name || row.session_id.slice(0, 8)) + "</h1>" +
       '<span class="pill unknown" id="session-label">' + esc(row.label) + "</span>" +
@@ -304,8 +343,8 @@ function sessionDetailView(id) {
       verificationChip(row.verification) +
       selfCheckChip(row.self_check) +
       chip("queue", queueText(row.queue)) + chip("usage", row.usage) + chip("cost", row.cost) +
-      "</div>" +
-      '<div class="card" id="session-spend"><h2>Spend</h2>' + spendHtml(row.spend) + "</div>" +
+      "</div>" + reportedUsageHtml(row) +
+      (row.spend ? '<div class="card" id="session-spend"><h2>Spend</h2>' + spendHtml(row.spend) + "</div>" : "") +
       '<p class="stat-sub">' + esc(identityText(row)) + " · " + esc(row.workspace || "") +
       (row.branch ? " @ " + esc(row.branch) : "") + (row.isolation !== "shared" ? " (" + esc(row.isolation) + ")" : "") + "</p>" +
       (row.approvals.length ? '<h2>Waiting for you</h2><ul id="session-approvals">' + row.approvals.map(function (a) {
@@ -316,7 +355,8 @@ function sessionDetailView(id) {
       failureEvidenceHtml(row.failure_evidence) +
       flowHtml(row.flow) +
       '<div id="starter-result-host"></div>' +
-      '<h2>Live events</h2><div id="live-events" class="stat-sub">connecting…</div>'
+      (streamable ? '<h2>Live events</h2><div id="live-events" class="stat-sub">connecting…</div>' : "") +
+      quietSessionHtml(row, streamable)
     );
     var stop = el("session-stop");
     if (stop) stop.addEventListener("click", function () {
@@ -325,7 +365,7 @@ function sessionDetailView(id) {
         .then(function (r) { toast(r.result); return sessionDetailView(row.session_id); })
         .catch(function (err) { toast(err.message); stop.disabled = false; });
     });
-    startSessionStream(row.session_id);
+    if (streamable) startSessionStream(row.session_id); else stopSessionStream();
     loadStarterResult(row.session_id);
   }).catch(function (err) {
     if (err.status === 401) { render(tokenRequiredPanel()); return; }
@@ -546,7 +586,7 @@ function agentLineHtml(a) {
   }
   return '<div id="agent-line"><p class="stat-sub">Agent: <strong>' + esc(a.name || "—") + "</strong>" +
     (a.digest ? ' · definition <code id="agent-digest">' + esc(String(a.digest).slice(0, 12)) + "</code>" : "") +
-    (a.segment ? ' · <span class="pill unknown">definition changed on resume</span>' : "") + '</p>' +
+    (a.segment && a.segment.previous_digest ? ' · <span class="pill unknown">definition changed on resume</span>' : "") + '</p>' +
     (tenures ? '<ul class="stat-sub" id="agent-tenures">' + tenures + '</ul>' : '') +
     (segments ? '<ul class="stat-sub">' + segments + '</ul>' : '<p class="stat-sub">No system prompt recorded</p>') + '</div>';
 }
@@ -579,7 +619,7 @@ function conversationPanelHtml(c) {
     '<p class="stat-sub">Selected: ' + esc((c.selected.harness || c.session.runtime) + " · " + (c.selected.model_id || "—")) +
     ". Reported attribution is shown separately; ACP turns are not call counts.</p>" +
     (rows ? '<div class="table-wrap"><table class="table" id="models-table"><thead><tr><th>Work</th><th>Harness</th><th>Model</th>' +
-            "<th>Calls</th><th>ACP turns</th><th>Tokens</th><th>Cost</th></tr></thead><tbody>" + rows + "</tbody></table></div>"
+            "<th class=\"num\">Calls</th><th class=\"num\">ACP turns</th><th class=\"num\">Tokens</th><th class=\"num\">Cost</th></tr></thead><tbody>" + rows + "</tbody></table></div>"
           : '<p class="stat-sub">No model calls recorded.</p>') +
     (used.snapshots.length ? '<p class="stat-sub" id="snapshots-note">Context snapshots (occupancy, not billable usage): ' +
       used.snapshots.map(function (s) {
@@ -646,7 +686,7 @@ function setupAgentsHtml(agents) {
   return '<div class="card" id="agents-setup"><h2>Agents</h2><p class="stat-sub">Read-only. Digests identify exactly what a run would use; ' +
     "token sizes are estimated (chars/4). Instruction and prompt text is not shown here — use <code>garuda agent show NAME</code>.</p>" +
     '<div class="table-wrap"><table class="table" id="agents-table"><thead><tr><th>Agent</th><th>Source</th><th>Definition</th><th>Prompt</th>' +
-    "<th>Size</th><th>Declared</th></tr></thead><tbody>" + rows + "</tbody></table></div></div>";
+    "<th class=\"num\">Size</th><th>Declared</th></tr></thead><tbody>" + rows + "</tbody></table></div></div>";
 }
 
 function setupConsultsHtml(k) {
@@ -674,6 +714,7 @@ function diagnosticHtml(d) {
   return '<li class="diag" data-code="' + esc(d.code) + '" data-level="' + esc(d.level) + '">' +
     '<span class="pill ' + (d.level === "error" ? "failed" : (d.level === "warning" ? "running" : "unknown")) + '">' + esc(d.level) + "</span> " +
     "<strong>" + esc(d.code) + "</strong> " + esc(d.message) +
+    (d.code && d.code.indexOf("harness.") === 0 && "checked_at" in d ? " <span class=\"stat-sub login-age\">(" + esc(loginAge(d)) + ")</span>" : "") +
     (d.fix ? '<div class="stat-sub">Fix: <code>' + esc(d.fix) + "</code> " + copyButtonHtml(d.fix) + "</div>" : "") + "</li>";
 }
 
@@ -707,6 +748,14 @@ function setupDiagnosticsHtml(list) {
   return summary + '<ul class="diagnostics" id="setup-diagnostics">' + items + "</ul>";
 }
 
+/* Every harness's login reading, the same record and age the Runtimes and Providers pages show. */
+function setupLoginsHtml(logins) {
+  if (!logins || !logins.length) return "";
+  return '<p class="stat-sub" id="setup-logins">Logins: ' + logins.map(function (l) {
+    return '<span class="setup-login" data-runtime="' + esc(l.runtime_id) + '">' + esc(l.runtime_id) + " " + loginPill(l) + "</span>";
+  }).join(" · ") + "</p>";
+}
+
 function setupView() {
   render('<div class="loading">Loading setup…</div>');
   return api("/api/setup").then(function (s) {
@@ -728,7 +777,7 @@ function setupView() {
     render(
       '<div id="setup-root"><div class="page-head"><h1>Setup</h1><span class="meta">read-only</span></div>' +
       '<p class="stat-sub">Files: ' + esc(s.files.user) + " (yours), " + esc(s.files.project) + " (this project).</p>" +
-      '<div class="card"><h2>Diagnostics</h2>' + diagnostics + "</div>" +
+      '<div class="card"><h2>Diagnostics</h2>' + diagnostics + setupLoginsHtml(s.logins) + "</div>" +
       '<div class="card"><h2>Roles</h2>' + (roles ? '<div class="table-wrap"><table class="table" id="roles-table"><thead><tr><th>Role</th><th>Harness</th><th>Model</th><th>Effort</th><th>Permissions / writes</th><th>Harness mode</th><th>Agent</th><th>Fallback chain</th><th>From</th></tr></thead><tbody>' + roles + "</tbody></table></div>"
         : '<p class="stat-sub">No roles. <code>garuda init</code> proposes some.</p>') + "</div>" +
       setupAgentsHtml(s.agents) + setupConsultsHtml(s.consults) +
