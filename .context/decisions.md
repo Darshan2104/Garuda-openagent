@@ -5039,3 +5039,33 @@ typed too: `approval.answered`, `approval.stale_request`, `approval.expired`,
 `approval.refused`, and `approval.unavailable` for an OS error, which prints only
 the OS reason (`strerror`), never the path. The dashboard answer route already
 mapped a missing request to 404; its generic OS-error branch now also drops the path.
+
+## 2026-11-26: An interrupted `garuda run` settles as a cancel; dead-owner approvals are refused (#807, #808)
+
+`garuda run` now runs under `_interruptible`: the first SIGINT or SIGTERM
+cancels the run task with its reason (the pattern of #760's flow `_terminable`,
+extended to SIGINT so asyncio's own handler no longer turns Ctrl-C into a
+`KeyboardInterrupt` traceback). The ACP run's existing cancel path withdraws
+the parked approval (decision `cancelled`); its settlement now records
+`status: cancelled`, `state` outcome `cancelled`, `error_code: run.cancelled`
+and the reason as `error_detail` instead of `failed` with no error. The exit
+is 130 for Ctrl-C and 143 for SIGTERM, matching `flow run` and background
+workers. Later signals are recorded but do not cancel the cleanup again.
+
+A published approval request now names its owner (`owner`: pid and start
+identity of the process holding the broker), covered by the request digest.
+`write_answer` refuses with `OwnerGone` (`approval.owner_gone`, exit 2; the
+dashboard returns 410 `owner_gone`) when that owner is confirmed dead
+(`owner_liveness` is False); unknown liveness or a legacy request without an
+owner answers as before. This only ever refuses, so a stale answer can never
+become an allow. `approvals list` marks such requests `owner gone` (JSON
+`owner_gone: true`).
+
+`garuda runtime recover` now withdraws (in `cmd_recover`, since `garuda/runtime`
+must not import `garuda.acp`), with an exclusive `cancelled` decision via `recover` and an
+`approval:<id>` audit record, every undecided request whose owner is
+confirmed dead (an owner-less legacy request only when the session's owner is
+confirmed dead); `recovery.recover` (release_dead_owner, non-flow) records a still-`running` session whose owner is
+confirmed dead and that holds no lease or slot as `failed`/interrupted with
+`run.owner_lost`. A live owner's requests and sessions are never touched;
+since decisions are exclusive, a live broker racing the withdrawal fails closed.
