@@ -171,8 +171,8 @@ garuda starter run build-review --goal "Add reconnect status" --requirements "Ad
 ```
 
 The default `plan-build-review` flow runs planner → coder → reviewer. It requires
-a plan, patch and structured review; a failed review can request bounded coder
-retries. The existing intent-equivalent command is:
+a plan, patch and structured review; the reviewer receives both the plan and the
+patch, and a failed review can request bounded coder retries. The existing intent-equivalent command is:
 
 ```bash
 garuda flow run plan-build-review --task "Add reconnect status with deterministic transition tests; preserve retry behavior; exclude a transport rewrite"

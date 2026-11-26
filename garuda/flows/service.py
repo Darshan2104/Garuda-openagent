@@ -440,7 +440,11 @@ class FlowExecutionService:
         if name not in flows:
             raise engine.FlowStopped("flow.unknown", f"no flow named {name!r} "
                                      f"(have: {', '.join(sorted(flows))})")
-        flow, _source = flows[name]
+        flow, source = flows[name]
+        if saved_request is not None:
+            # A checked flow resumes with the packaged definition it started
+            # with, even after a Garuda upgrade changed that flow (#818).
+            flow = packaged.recorded(name, flow, source, saved_request.get("flow"))
         missing = packaged.missing_roles(flow, resolved)
         if missing:
             raise engine.FlowStopped(

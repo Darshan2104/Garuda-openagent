@@ -207,7 +207,7 @@ Three flows ship with Garuda:
 |---|---|---|
 | `plan-only` | scout → planner | No |
 | `pair` | coder, reviewed by reviewer (up to three rounds) | Yes (the coder) |
-| `plan-build-review` | planner → coder, reviewed by reviewer | Yes (the coder) |
+| `plan-build-review` | planner → coder, reviewed by reviewer (who gets the plan and the patch) | Yes (the coder) |
 
 ```bash
 garuda flow run plan-build-review -t "Add a --version flag"
