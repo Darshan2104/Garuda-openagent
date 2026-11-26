@@ -401,3 +401,113 @@ def test_an_unknown_flow_role_names_the_file(tmp_path):
     with pytest.raises(GarudaConfigError) as caught:
         gy.load_effective(ws)
     assert str(gy.user_path()) in str(caught.value) and caught.value.path == "roles.coder.consult"
+
+
+# --- addressable inputs (#817) --------------------------------------------------------
+
+_SCOUTS = [{"id": "scout-api", "role": "reviewer", "outputs": ["notes"]},
+           {"id": "scout-web", "role": "reviewer", "outputs": ["notes", "plan"]},
+           {"id": "panel", "parallel": ["coder", "reviewer"], "outputs": ["review"]}]
+
+
+def _with_inputs(*inputs):
+    return [*_SCOUTS, {"id": "use", "role": "coder", "inputs": list(inputs),
+                       "outputs": ["patch"]}]
+
+
+def test_mapping_inputs_name_their_producer_and_plain_ones_stay_strings():
+    doc = _user(roles=ROLES, flows={"f": {"steps": _with_inputs(
+        "plan", {"from": "scout-api", "type": "notes"}, {"type": "notes", "from": "scout-web"},
+        {"type": "review", "from": "panel:reviewer"})}})
+    assert doc["flows"]["f"]["steps"][3]["inputs"] == [
+        "plan", {"type": "notes", "from": "scout-api"}, {"type": "notes", "from": "scout-web"},
+        {"type": "review", "from": "panel:reviewer"}]
+
+
+@pytest.mark.parametrize("entry, path, message", [
+    ({"type": "notes", "from": "ghost"}, "inputs[0].from", "does not exist"),
+    ({"type": "notes", "from": "use"}, "inputs[0].from", "is not earlier"),
+    ({"type": "patch", "from": "scout-api"}, "inputs[0].from", "does not output a patch"),
+    ({"type": "notes", "from": "scout-api:coder"}, "inputs[0].from", "is not a parallel group"),
+    ({"type": "review", "from": "panel:other"}, "inputs[0].from", "is not a member"),
+    ({"type": "notes", "from": "scout-api", "step": "x"}, "inputs[0].step", "unknown key"),
+    ({"type": "notes"}, "inputs[0].from", "is required"),
+    ({"from": "scout-api"}, "inputs[0].type", "is required"),
+    ({"type": "nope", "from": "scout-api"}, "inputs[0].type", "must be one of"),
+    ({"type": "notes", "from": "Scout API"}, "inputs[0].from", "is not a name"),
+])
+def test_a_bad_mapping_input_is_refused_with_its_path(entry, path, message):
+    with pytest.raises(GarudaConfigError, match=message) as caught:
+        _user(roles=ROLES, flows={"f": {"steps": _with_inputs(entry)}})
+    assert (caught.value.code, caught.value.path) == ("config.invalid", f"flows.f.steps[3].{path}")
+
+
+@pytest.mark.parametrize("inputs, message", [
+    ([{"type": "notes", "from": "scout-api"}, {"type": "notes", "from": "scout-api"}],
+     "duplicate input"),
+    ([{"type": "review", "from": "panel"}, {"type": "review", "from": "panel:coder"}],
+     "duplicate input"),
+    ([{"type": "review", "from": "panel:coder"}, {"type": "review", "from": "panel"}],
+     "duplicate input"),
+    (["notes", {"type": "notes", "from": "scout-web"}], "also asked for plainly"),
+    ([{"type": "notes", "from": "scout-api"}, "notes"], "also asked for by producer"),
+])
+def test_an_input_delivered_twice_is_refused(inputs, message):
+    with pytest.raises(GarudaConfigError, match=message) as caught:
+        _user(roles=ROLES, flows={"f": {"steps": _with_inputs(*inputs)}})
+    assert caught.value.path == "flows.f.steps[3].inputs[1]"
+
+
+def test_from_names_a_generated_step_id():
+    doc = _user(roles=ROLES, flows={"f": {"steps": [
+        {"role": "reviewer", "outputs": ["notes"]},
+        {"role": "coder", "inputs": [{"type": "notes", "from": "reviewer-1"}]}]}})
+    assert doc["flows"]["f"]["steps"][1]["inputs"] == [{"type": "notes", "from": "reviewer-1"}]
+
+
+_CUSTOM_PLAIN = """\
+version: 1
+flows:
+  scouts:
+    steps:
+      - {id: scout-api, role: scout, write_policy: no-edits, outputs: [notes]}
+      - {id: scouts, parallel: [a, b], outputs: [notes]}
+      - {id: plan, role: planner, inputs: [notes, notes], outputs: [plan]}
+"""
+
+
+def _pre_817_inputs(raw_flow: dict, parsed_flow: dict) -> dict:
+    """A frozen copy of the normalization before #817: ``inputs`` was a list
+    of artifact-type strings, taken as written (``_artifacts``)."""
+    steps = []
+    for raw, parsed in zip(raw_flow["steps"], parsed_flow["steps"], strict=True):
+        step = {k: v for k, v in parsed.items() if k != "inputs"}
+        if "inputs" in raw:
+            assert all(isinstance(v, str) and v in gy.ARTIFACTS for v in raw["inputs"])
+            step["inputs"] = list(raw["inputs"])
+        steps.append(step)
+    return {**parsed_flow, "steps": steps}
+
+
+def test_flow_definition_digests_without_the_mapping_form_are_unchanged():
+    """Checked-flow resume compares ``digest(flow)``: a flow that uses only plain
+    inputs must normalize exactly as it did before #817."""
+    import yaml
+
+    from garuda.core.acceptance_records import digest
+    from garuda.flows import packaged
+
+    texts = [packaged.TEXT, _CUSTOM_PLAIN]
+    previous = getattr(packaged, "_PREVIOUS_TEXT", None)  # kept for resume (#826)
+    if previous is not None:
+        texts.append(previous)
+    checked = 0
+    for text in texts:
+        raw = yaml.safe_load(text)["flows"]
+        for name, flow in gy.load_text(text)["flows"].items():
+            assert digest(flow) == digest(_pre_817_inputs(raw[name], flow)), name
+            checked += 1
+    assert checked >= 4
+    # A literal pin only for a flow this test owns (recorded on main before #817).
+    flow = gy.load_text(_CUSTOM_PLAIN)["flows"]["scouts"]
+    assert digest(flow) == "ad9777ec0527c2ee3c3712b2cfdd1ce59de4c9c6851388db48e03af51f41d421"

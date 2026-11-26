@@ -1127,6 +1127,40 @@ async def test_a_resumed_retry_packet_covers_the_failed_attempts_partial_edits(r
     assert packet["attempts"]["latest"] == {"attempt": 2, "session_id": second.sessions[2]}
     assert packet["attempts"]["baseline_session"] == first.sessions[1]
 
+@pytest.mark.parametrize("builder", ["config", "runner"])
+def test_terminal_review_refuses_a_named_input_from_after_the_reviewed_build(repo, builder):
+    """#817: the terminal-review rule applies to ``{type, from}`` entries too."""
+    config = _config()
+    resolved = gy.resolve(gy.parse(config), None)
+    flow = config["flows"]["pbr"]
+    flow["steps"].insert(2, {"id": "test", "role": "planner", "outputs": ["notes"]})
+    flow["steps"][-1]["inputs"].append({"type": "notes", "from": "test"})
+    script = Script([APPROVE])
+
+    with pytest.raises(gy.GarudaConfigError, match="'test' runs after step 'build'") as caught:
+        if builder == "config":
+            gy.parse(config)
+        else:
+            FlowRunner(SessionStore(), repo, "pbr", flow, resolved, task="t", launcher=script)
+    assert caught.value.path == "flows.pbr.steps[3].inputs[1].from"
+    assert script.sequence == []
+
+
+async def test_a_named_input_takes_the_latest_attempt_of_its_step(repo):
+    """#817: ``from: build`` after a review round is the newest build receipt's patch."""
+    config = _config()
+    config["flows"]["pbr"]["steps"][-1]["inputs"] = [{"type": "patch", "from": "build"},
+                                                     {"type": "plan", "from": "plan"}]
+    script = Script([CHANGES, APPROVE])
+    result = await _run(repo, script, config).run()
+
+    assert result.completed
+    reviews = [r for r in result.receipts if r["step"] == "review"]
+    assert [[(i["producer_step"], i["attempt"]) for i in r["inputs"]] for r in reviews] == [
+        [("build", 1), ("plan", 1)], [("build", 2), ("plan", 1)]]
+    assert "patch 2" in script.prompts["review", 2]
+
+
 def _packaged_pbr_runner(repo, launcher, **kw):
     from garuda.flows import packaged
 
