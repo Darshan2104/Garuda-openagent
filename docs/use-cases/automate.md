@@ -520,6 +520,15 @@ The SDK runs the harness in the mode its default permission allows, so a
 `readonly` request is refused rather than run wider; `eval` and `rigorous`
 gates exist only in the native loop. For a confined readonly harness run, use
 `garuda run --runtime <id> --mode readonly`.
+Each `SoftwareAgent.run` on an ACP runtime starts a fresh harness session, so
+`resume=`, `resume_all_projects=True` and `events=` raise the same
+`OptionsUnsupportedOnRuntime` instead of being dropped. For several turns in one
+harness session, use `agent.conversation()`; to continue a saved session on a
+harness, use `garuda run --runtime <id> --resume SESSION -t "..."`.
+An unknown `runtime=` raises `garuda.sdk.UnknownRuntime` (a `ValueError`, code
+`harness.unknown`, the CLI's code) from `SoftwareAgent.run`, `Conversation.run`
+and `Conversation.switch_runtime`; its `known` attribute lists the configured
+runtime ids.
 If the harness fails to start, Garuda closes it and records that session as
 failed; the next `run` starts a new harness session.
 
@@ -578,8 +587,10 @@ retain the permission engine's configured root.
 `SoftwareAgent` also accepts `model=`, `workspace_kind=` (for example
 `"docker"`), `docker_image=`, and `runtime=` to run one turn on an
 [external harness](advanced.md#run-a-task-with-claude-code-codex-or-another-harness).
-`agent.run(task, resume="latest")` continues this workspace's newest saved
-session; pass `resume_all_projects=True` for the newest one anywhere.
+On the native runtime, `agent.run(task, resume="latest")` continues this
+workspace's newest saved session; pass `resume_all_projects=True` for the newest
+one anywhere. An ACP runtime refuses `resume=` (see above); use a `Conversation`
+for multi-turn work there.
 
 Native session `approval_handler` callbacks receive the action string and are
 serialized by the session broker. A callable object can opt into request-aware

@@ -238,8 +238,12 @@ export never launch a harness or query its login/quota state.
 - **Dashboard:** the Runtimes board lists and inspects catalog entries, previews
   and prepares handoffs, shows workspace deltas, and runs recovery. Dashboard
   chat still starts the native loop.
-- **SDK:** `SoftwareAgent(runtime="codex")` runs one ACP turn and returns an
-  `AgentResult`. SDK ACP runs may do at most what `smart` allows, so OpenCode and
+- **SDK:** `SoftwareAgent(runtime="codex")` runs one ACP turn in a fresh
+  harness session and returns an `AgentResult`; `run(resume=...)`,
+  `resume_all_projects=` and `events=` are native-only and raise
+  `OptionsUnsupportedOnRuntime` (`sdk.options_unsupported`), so use
+  `Conversation` for several turns or `garuda run --resume` to continue a saved
+  session. An unknown runtime id raises `UnknownRuntime` (`harness.unknown`). SDK ACP runs may do at most what `smart` allows, so OpenCode and
   harnesses whose modes Garuda does not classify refuse with
   `role.mode_unenforced`. `Conversation` can start on ACP and switch ACP-to-ACP through
   the transactional handoff path, but refuses an in-process native-to-ACP

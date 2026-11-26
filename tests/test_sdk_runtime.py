@@ -792,6 +792,37 @@ async def test_sdk_refuses_mode_or_mcp_config_an_acp_runtime_would_ignore(tmp_pa
     assert store.list_sessions() == []
 
 
+@pytest.mark.parametrize("option", [{"resume": "latest"}, {"resume": "abc123"},
+                                    {"resume_all_projects": True}, {"events": "store"}],
+                         ids=["resume_latest", "resume_id", "resume_all_projects", "events"])
+async def test_sdk_refuses_run_arguments_an_acp_run_would_ignore(tmp_path, monkeypatch, option):
+    """#804: an ACP run is a fresh harness session, so a resume (or a caller's
+    event store) would be dropped while the run reported success. Refused
+    before the harness starts."""
+    from garuda.config import agent_home
+    from garuda.core.events import EventStore
+    from garuda.core.sessions import SessionStore
+    from garuda.interfaces import runtime_cli
+    from garuda.sdk import OptionsUnsupportedOnRuntime
+
+    if option.get("events") == "store":
+        option = {"events": EventStore()}
+    store = SessionStore(tmp_path / "sessions")
+    agent = SoftwareAgent(workspace=tmp_path, runtime="faketest", store=store)
+    monkeypatch.setattr(agent_home, "resolve_agent_home", lambda workspace: _FakeHome(_fake_extra()))
+
+    def no_launch(*args, **kwargs):
+        pytest.fail("a refused run must not construct the harness")
+
+    monkeypatch.setattr(runtime_cli, "acp_adapter_for_workspace", no_launch)
+    with pytest.raises(OptionsUnsupportedOnRuntime) as refused:
+        await agent.run("hello", **option)
+    assert refused.value.code == "sdk.options_unsupported"
+    assert next(iter(option)) in str(refused.value)
+    assert "conversation()" in str(refused.value)
+    assert store.list_sessions() == []
+
+
 @pytest.mark.parametrize("mode", [None, "standard", "interactive"])
 async def test_sdk_default_modes_still_run_on_an_acp_runtime(tmp_path, monkeypatch, mode):
     """#724: the default posture asks for nothing the harness path ignores."""

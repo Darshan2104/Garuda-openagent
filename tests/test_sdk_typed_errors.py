@@ -3,7 +3,9 @@
 An unknown agent raises ``AgentNotFound`` (``agent.not_found``, still a
 ``FileNotFoundError``); a local workspace that is not an existing directory
 raises ``WorkspaceMissing`` / ``WorkspaceNotDirectory`` (``workspace.missing`` /
-``workspace.not_directory``) before any baseline, session or lease.
+``workspace.not_directory``) before any baseline, session or lease. An
+unknown runtime raises ``UnknownRuntime`` (``harness.unknown``, still a
+``ValueError``) with the configured runtime ids (#805).
 """
 
 import asyncio
@@ -14,6 +16,7 @@ from garuda.agents.spec_api import AgentSpec
 from garuda.sdk import (
     AgentNotFound,
     SoftwareAgent,
+    UnknownRuntime,
     WorkspaceMissing,
     WorkspaceNotDirectory,
     WorkspaceUnavailable,
@@ -90,3 +93,21 @@ def test_cli_still_exports_workspace_refusal():
     from garuda.interfaces import main
 
     assert main.workspace_refusal is workspace_refusal
+
+
+@pytest.mark.parametrize("kind", ["agent", "conversation"])
+def test_unknown_runtime_is_unknown_runtime(tmp_path, kind):
+    agent = SoftwareAgent(workspace=tmp_path, runtime="nope")
+    run = agent.run if kind == "agent" else agent.conversation().run
+    with pytest.raises(UnknownRuntime) as caught:
+        asyncio.run(run("hi"))
+    assert caught.value.code == "harness.unknown"
+    assert isinstance(caught.value, ValueError)
+    assert "unknown runtime 'nope'" in str(caught.value)
+    assert "native" in caught.value.known and "nope" not in caught.value.known
+
+
+def test_unknown_runtime_code_is_the_cli_diagnostic():
+    from garuda.diagnostics import REGISTRY
+
+    assert UnknownRuntime.code in REGISTRY

@@ -103,7 +103,10 @@ class SoftwareAgent:
         ``ToolsUnsupportedOnRuntime`` before it starts, and a ``model``,
         ``reasoning_model``, ``collection_model``, ``model_binding``,
         ``mcp_config``, non-default ``agent`` or a ``mode`` other than
-        ``standard``/``interactive`` with ``OptionsUnsupportedOnRuntime``. An ACP result's
+        ``standard``/``interactive`` with ``OptionsUnsupportedOnRuntime``, as are
+        ``resume``, ``resume_all_projects`` and ``events``: each ACP run is a fresh
+        harness session (use ``conversation()`` for several turns). An unknown
+        runtime raises ``UnknownRuntime`` (``harness.unknown``). An ACP result's
         ``success`` means the harness ended its turn, not that Garuda verified it.
         ``fork`` with ``fork_at`` starts a native context-only fork through an
         inclusive zero-based saved message index; files/processes are not restored.
@@ -139,7 +142,8 @@ class SoftwareAgent:
                 self.runtime_name, model=self.model_name, agent=self._agent,
                 reasoning_model=self.reasoning_model, collection_model=self.collection_model,
                 model_binding=self.model_binding, mode=self.mode,
-                mcp_config=self.mcp_config)
+                mcp_config=self.mcp_config, resume=resume,
+                resume_all_projects=resume_all_projects, events=events)
             return await self._run_acp(task)
         from garuda.config.agent_home import resolve_agents_dirs
 
