@@ -21,12 +21,31 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from garuda.workspace.lease import LeaseError
+from garuda.workspace.lease import LeaseConflictError, LeaseError
 
 logger = logging.getLogger(__name__)
+
+#: How many times one failed heartbeat write is retried before the run stops.
+HEARTBEAT_RETRIES = 3
+#: Retries are a twelfth of the TTL apart: the first write is a third of the TTL after
+#: the last success, so the last retry still lands at 7/12 of the TTL, inside it.
+HEARTBEAT_RETRY_FRACTION = 1 / 12
+
+
+def transient_heartbeat_failure(exc: BaseException) -> bool:
+    """A heartbeat write that failed on storage (a lock, read or write error), not a lost
+    lease. Another owner, a superseded epoch or a missing record is never transient."""
+    if isinstance(exc, OSError):
+        return True
+    if type(exc) is not LeaseError or isinstance(exc, LeaseConflictError):
+        return False
+    from garuda.runtime.strict_store import StorageError
+
+    return isinstance(exc.__cause__, (OSError, StorageError))
 
 
 def lease_mode_for(permission_mode: str | None) -> str:
@@ -148,13 +167,37 @@ class WorkspaceLeaseGuard:
             return
 
         async def _beat() -> None:
+            renewed = time.monotonic()
             while True:
                 await asyncio.sleep(self._ttl / 3)
                 # Losing the lease means the run can no longer prove exclusive
                 # mutation authority; the error ends `race` below.
-                self.leases.heartbeat(self.workspace, self.session_id, epoch=self._epoch)
+                renewed = await self._renew(renewed)
 
         self._heartbeat = asyncio.ensure_future(_beat())
+
+    async def _renew(self, renewed: float) -> float:
+        """One heartbeat, retrying a transient storage failure a bounded number of times.
+
+        Every retry happens while the last successful write still holds (before
+        ``renewed + ttl``), so ownership is never assumed past the TTL without a
+        write; a lost lease (another owner, superseded, missing) stops at once.
+        """
+        delay = self._ttl * HEARTBEAT_RETRY_FRACTION
+        for retry in range(HEARTBEAT_RETRIES + 1):
+            try:
+                self.leases.heartbeat(self.workspace, self.session_id, epoch=self._epoch)
+                return time.monotonic()
+            except Exception as exc:
+                if not transient_heartbeat_failure(exc):
+                    raise
+                if retry == HEARTBEAT_RETRIES or time.monotonic() + delay >= renewed + self._ttl:
+                    raise LeaseError(
+                        f"lease heartbeat failed {retry + 1} time(s) within the "
+                        f"{self._ttl:g}s lease TTL: {exc}") from exc
+                logger.warning("Lease heartbeat failed (%s); retrying in %.1fs", exc, delay)
+            await asyncio.sleep(delay)
+        raise AssertionError("unreachable")
 
     async def race(self, work: Awaitable[Any]) -> Any:
         """Await `work` while the heartbeat holds; a lost lease cancels it.
