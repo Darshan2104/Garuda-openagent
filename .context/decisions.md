@@ -5204,6 +5204,34 @@ artifact that cannot be stored now stops the group with its own code instead of
 escaping `_run_group` unhandled. It is also in `RETRYABLE_STOPS` (#823), so a
 step with `retries` runs again after a malformed envelope.
 
+## 2026-11-27: Flow inputs can name their producer (#817)
+
+A step's `inputs` entry is either a type (unchanged: the latest earlier
+receipt holding that type, every member's for a parallel group) or a mapping
+`{type: T, from: STEP}`. `from` is an effective step id (generated ids such as
+`coder-1` included) or `GROUP:ROLE` for one member of a parallel group; `:` is
+the member's launch id form and cannot occur in a step id, unlike the
+artifact `producer_step` form `GROUP-ROLE`, which is ambiguous with ids that
+contain `-`. The parser keeps a plain type as the same string and normalizes a
+mapping to `{type, from}`, so the parsed definition, and the `digest(flow)`
+that checked-flow resume compares, are byte-identical for flows that do not
+use the mapping (tested against digests recorded on main).
+
+`validate_flow_inputs` refuses, with `flows.NAME.steps[i].inputs[j]`: a
+missing, later or non-producing `from` step, a member on a non-group or a
+non-member, unknown keys, a repeated `(type, from)` entry, a group and one of
+its members for the same type, and a type asked for both plainly and by
+producer in one step (refused outright rather than computing whether the
+plain entry would resolve to the same artifact, which depends on run order).
+Plain-only lists are not checked for duplicates, so existing flows still
+load. `validate_flow_reviews` applies the terminal-review rule by step order
+for mapping entries: the producer must be the reviewed step or earlier.
+
+`FlowRunner._inputs` resolves a mapping entry from the latest `done` receipt
+of that step (so a reviewed or retried step's latest attempt) and loads it
+through the same `artifacts.load` digest and staleness checks; receipt
+`inputs` carry the producer's ref, so trajectory and read-model edges name it.
+
 ## 2026-11-26: Claude usage limits are typed with their reset; turns record the raw stop reason (#824)
 
 `claude-agent-acp` (0.85.0 on PATH, 0.110.1 upstream; read in its source, no live
