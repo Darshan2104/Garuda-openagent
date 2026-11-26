@@ -1,5 +1,18 @@
 # Durable decisions
 
+## 2026-11-26 — A context fork names a non-native source (#770)
+
+`prepare_context_fork`, shared by `garuda sessions fork-preview` and
+`garuda run --fork`, reads the selected meta before the snapshot of
+`messages.json`. A source whose last runtime segment is ACP (or, without
+segments, whose model is `acp:<runtime>`), or a flow session, raises
+`ForkSourceNotNative` (a `ValueError`) with `fork.source_not_native: ACP session
+<id> (runtime <r>) has no message history to fork; context forks work on native
+sessions only.` Before, the snapshot failed first on the absent `messages.json`
+with the generic `record is missing, unreadable or symlinked`, which suggested a
+corrupt store. Both entry points keep exit 2 and write nothing. A session
+whose last runtime segment is native is unaffected.
+
 ## 2026-11-26 — A checked flow's check ceiling binds the flow workspace, not the cwd (#768)
 
 `FlowExecutionService` builds the check `PermissionEngine` with
