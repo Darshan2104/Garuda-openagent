@@ -319,8 +319,11 @@ checked stop before the checks began (for example
 naming the stop; start a new flow. Resume requires the saved check request,
 unchanged workspace identity and candidate, matching configuration sources,
 and complete step and evidence records. Older checked sessions without a saved
-request need a new flow. Once the check phase has a durable intent, resume only
-reads and reconciles check records.
+request need a new flow. Once the check phase has a durable intent, resume
+never replays steps. A flow interrupted during its check phase runs the
+checks again in a fresh phase, as long as the workspace is still the exact
+candidate the interrupted phase checked and no check of that phase is still
+unsettled. Only the new phase's receipts decide the verdict.
 
 SIGTERM or Ctrl-C during a checked step cancels it. Once the step's worker tree
 (and any confinement container) is proved closed, the attempt is recorded as a
@@ -333,6 +336,16 @@ lease and slot and records the flow `interrupted` (`flow.owner_lost`). A
 checked flow in that state refuses `flow resume` with
 `flow.interrupted_unsettled`, and one still recorded `running` refuses with
 `flow.recovery_required`.
+
+SIGTERM during the check phase records the flow `interrupted`, and
+`flow resume` runs its checks again. If the flow was left `quarantined` in its
+check phase, `flow resume` refuses with `flow.recovery_required`. Then
+`garuda runtime recover --session FLOW_ID` releases the lease, but only when
+the owner is proved dead and every check it started has a terminal receipt or
+never launched. It records the flow `interrupted`
+(`flow.check_phase_interrupted`), so `flow resume` can rerun the checks. A
+changed workspace refuses the rerun with
+`flow.verification_reconciliation_required`, so start a new flow.
 
 The scout, planner and reviewer steps are `no-edits`: their requests to
 change files or run commands are refused, and afterwards Garuda checks that

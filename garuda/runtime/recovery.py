@@ -798,7 +798,48 @@ def _refuse_live_lease(session_id: str, leases) -> None:
         )
 
 
-def _dead_owner_leases(session_id: str, leases) -> list:
+def _settled_check_quarantine(store, session_id: str) -> dict | None:
+    """The owner that quarantined a flow only for a check phase with no writer (#772).
+
+    A checked flow's parent quarantines its lease when its check phase did
+    not settle in process. Its lease may be released when that phase can
+    have no writer left: the flow is ``quarantined`` with no published
+    verdict, every launched step attempt has its receipt, the published phase
+    is the durable one, and no check of it is uncertain (each is terminal,
+    with its subtree's ECHILD proof, or was never launched). Returns the
+    phase owner, which must be the quarantined holder; None keeps the refusal.
+    """
+    from garuda.flows.engine import unsettled_attempts
+    from garuda.flows.verification_records import FlowVerificationRecords
+
+    try:
+        meta = store.load_meta(session_id)
+        policy = meta.get("publication_policy") if isinstance(meta, dict) else None
+        if (not isinstance(meta, dict) or meta.get("kind") != "flow"
+                or meta.get("flow_state") != "quarantined"
+                or not isinstance(policy, dict) or policy.get("kind") != "flow-verification"
+                or meta.get("flow_operation") is not None
+                or meta.get("flow_verification_commit") is not None
+                or unsettled_attempts(store, session_id)):
+            return None
+        records = FlowVerificationRecords(store.session_dir(session_id), session_id)
+        phase, reference = records.current_phase()
+        published = meta.get("flow_verification_phase")
+        if published != reference and not records.superseded(published):
+            return None
+        if records.reconcile_unfinished()["classification"] == "uncertain":
+            return None
+    except Exception:
+        return None  # unreadable evidence never releases a quarantine
+    return phase["owner"]
+
+
+def _same_owner(holder, owner: dict | None) -> bool:
+    return owner is not None and owner == {"pid": holder.pid, "identity": holder.identity,
+                                           "pgid": holder.pgid, "epoch": holder.epoch}
+
+
+def _dead_owner_leases(session_id: str, leases, settled_owner: dict | None = None) -> list:
     """The session's retained leases, all of whose owners are confirmed dead.
 
     A live, unknown or quarantining owner refuses, exactly as before (#676).
@@ -816,8 +857,8 @@ def _dead_owner_leases(session_id: str, leases) -> list:
     for holder in holders:
         refusal = reclaim_refusal(
             {"pid": holder.pid, "identity": holder.identity, "pgid": holder.pgid},
-            quarantined=holder.quarantined, scan_descendants=False,
-            liveness=getattr(lease_store, "_liveness", None))
+            quarantined=holder.quarantined and not _same_owner(holder, settled_owner),
+            scan_descendants=False, liveness=getattr(lease_store, "_liveness", None))
         if refusal is not None:
             raise RecoveryError(
                 f"session {session_id} still holds a retained {holder.mode} workspace lease "
@@ -842,7 +883,8 @@ def _flow_step_sessions(store, session_id: str) -> list[str]:
 
 
 def _release_dead_owner_holdings(store, session_id: str, holders: list, leases, capacity,
-                                  settle: Callable[[str], tuple[list[int], list[str]]]
+                                  settle: Callable[[str], tuple[list[int], list[str]]],
+                                  settled_owner: dict | None = None
                                   ) -> tuple[list[int], list[str]]:
     """Settle flow-step children, then reclaim dead-owner leases and slots (#676, #703).
 
@@ -883,7 +925,8 @@ def _release_dead_owner_holdings(store, session_id: str, holders: list, leases, 
     lease_store = leases if leases is not None else LeaseStore()
     for holder in holders:
         try:
-            if lease_store.reclaim_dead(holder):
+            if lease_store.reclaim_dead(
+                    holder, settled_quarantine=_same_owner(holder, settled_owner)):
                 notes.append(f"released {holder.mode} workspace lease on {holder.workspace} "
                              f"held by dead owner pid {holder.pid}")
         except LeaseError as exc:
@@ -1023,13 +1066,40 @@ def _prove_flow_executors_gone(store, flow_session: str, *, docker=None) -> None
                 + "; refusing")
 
 
-def _settle_dead_flow(store, flow_session: str, meta: dict, leases, capacity) -> list[str]:
-    """Record a flow whose owner died ``running`` as interrupted, once nothing is held."""
+def _settle_dead_flow(store, flow_session: str, meta: dict, leases, capacity,
+                      settled_owner: dict | None = None) -> list[str]:
+    """Record a flow whose owner died ``running`` as interrupted, once nothing is held.
+
+    A flow quarantined only by its check phase (#772) is recorded
+    ``interrupted`` too once its lease is gone, so ``flow resume`` runs that
+    phase again.
+    """
     from garuda.runtime.capacity import CapacityError, CapacityStore
     from garuda.runtime.ownership import owner_liveness
     from garuda.runtime.session_state import interrupted
     from garuda.workspace.lease import LeaseError, LeaseStore
 
+    if meta.get("flow_state") == "quarantined" and settled_owner is not None:
+        try:
+            if (leases if leases is not None else LeaseStore()).live_holders_for_session(flow_session):
+                return [f"flow {flow_session} stays quarantined: a workspace lease remains"]
+        except (LeaseError, OSError) as exc:
+            return [f"flow {flow_session} stays quarantined: leases unreadable ({exc})"]
+
+        def _release(current: dict) -> dict:
+            if (current.get("flow_state") != "quarantined"
+                    or current.get("flow_verification_commit") is not None):
+                raise RecoveryError(f"flow {flow_session} changed while recovering; refusing")
+            return {"flow_state": "interrupted", "status": "failed",
+                    "flow_stop": {"code": "flow.check_phase_interrupted", "step": None,
+                                  "message": "the flow's process stopped during its check phase; "
+                                             "`garuda runtime recover` proved it and every check "
+                                             "process gone and released its workspace; "
+                                             "`garuda flow resume` runs the checks again"}}
+
+        store.mutate_meta(flow_session, _release)
+        return [f"flow {flow_session} recorded interrupted in its check phase; "
+                f"`garuda flow resume {flow_session}` runs its checks again"]
     if meta.get("flow_state") != "running":
         return []
     state = meta.get("state")
@@ -1185,8 +1255,10 @@ def recover(
     # The session record is the only source of signal targets.  Callers may
     # customise the probes for deterministic tests, but may not smuggle an
     # arbitrary PID into a production recovery operation.
+    settled_owner = None
     if release_dead_owner:
-        dead_leases = _dead_owner_leases(session_id, leases)
+        settled_owner = _settled_check_quarantine(store, session_id)
+        dead_leases = _dead_owner_leases(session_id, leases, settled_owner)
     else:
         _refuse_live_lease(session_id, leases)
     source = source_reader if source_reader is not None else store
@@ -1247,11 +1319,12 @@ def recover(
             # Every executor of the flow must be gone before its holdings go (#760).
             _prove_flow_executors_gone(store, session_id, docker=docker)
         step_reaped, release_notes = _release_dead_owner_holdings(
-            store, session_id, dead_leases, leases, capacity, _settle_step)
+            store, session_id, dead_leases, leases, capacity, _settle_step, settled_owner)
         reaped += step_reaped
         notes += release_notes
         if flow_meta is not None:
-            notes += _settle_dead_flow(store, session_id, flow_meta, leases, capacity)
+            notes += _settle_dead_flow(store, session_id, flow_meta, leases, capacity,
+                                       settled_owner)
     if report.state is RestartState.ROLLED_BACK:
         # Keep the target id so a prepared child left by a crash in a later
         # recovery attempt still binds to this handoff attempt.

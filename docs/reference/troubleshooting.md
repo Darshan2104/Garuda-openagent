@@ -219,6 +219,16 @@ Click a problem to see the fix.
     `flow resume` says so with `flow.interrupted_unsettled`, so start a new
     flow. Running `runtime recover` on a step session points you at its flow.
 
+    A SIGTERM during the **check phase** (every step done) records the flow
+    `interrupted`. `garuda flow resume FLOW_ID` runs the checks again on the
+    unchanged candidate. A flow left `quarantined` there, with
+    `lease.quarantined` in `doctor` and `flow resume` refusing
+    `flow.recovery_required`, needs `garuda runtime recover --session FLOW_ID`
+    first. That command releases the lease only when the owner is proved dead
+    and every check has a terminal receipt or never launched. A check that may
+    still be running keeps the quarantine. If the workspace changed since the
+    check phase, the rerun refuses, so start a new flow.
+
 ??? question "`sessions merge` fails with `integration.check_failed`"
 
     The check runs in Docker with your merged code mounted read-only, **no
