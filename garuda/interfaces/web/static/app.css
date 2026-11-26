@@ -340,6 +340,7 @@ svg { display: block; width: 100%; height: auto; }
 }
 .trace-facts dt { color: var(--muted); }
 .trace-facts dd { margin: 0; overflow-wrap: anywhere; }
+#external-turns th.num { text-align: right; }
 #external-summary h3 { font-size: 13px; margin: 14px 0 6px; }
 #external-summary .block { margin-top: 10px; }
 #external-summary .block pre { max-height: 320px; overflow: auto; }
