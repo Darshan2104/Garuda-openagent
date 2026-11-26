@@ -1624,6 +1624,7 @@ class FlowRunner:
                            tried: dict, *, checkpoint=None) -> None:
         """Run ``step`` and its terminal reviewer until approval or the rounds run out."""
         from garuda.context.redact import redact_text
+        from garuda.flows import memory
         from garuda.flows import review as rv
 
         spec = step["review"]
@@ -1669,12 +1670,18 @@ class FlowRunner:
                         "round": pair, "pending": target["id"], "history": history,
                         **prompting.extra_record(extra)}})
                 packet = None
+                prompt_extra = extra
                 if target is terminal:
-                    packet = await self._review_packet(step, terminal, done, spec, reviewer_plan)
+                    packet = await self._review_packet(step, terminal, done, spec, reviewer_plan,
+                                                       history=history)
+                    prompt_extra = prompting.Packet(packet)
+                elif history and isinstance(extra, prompting.Findings):
+                    # Round 2+: what Garuda recorded of the earlier rounds (#816).
+                    prompt_extra = await self._round_brief(step, done, history, extra, rounds)
                 tried[target["id"]] = tried.get(target["id"], 0) + 1
                 receipt = await self._run_step(
                     target, done, lease, attempt=tried[target["id"]],
-                    prompt_extra=extra if target is step else prompting.Packet(packet),
+                    prompt_extra=prompt_extra,
                     review_admission=admit_reviewer if target is terminal else None)
                 done.append(receipt)
             ref = next(art.ArtifactRef.from_dict(o) for o in receipt["outputs"]
@@ -1693,6 +1700,7 @@ class FlowRunner:
             history.append({"round": pair + 1, "verdict": parsed.verdict,
                             "approved": parsed.approved, "findings": parsed.findings,
                             "packet_digest": packet["digest"],
+                            "candidate": memory.candidate_record(packet),
                             **({"structured": parsed.structured}
                                if parsed.structured is not None else {})})
             independence = self._independence(step, terminal, done, spec, reviewed_plan,
@@ -1732,6 +1740,47 @@ class FlowRunner:
                           f"the reviewer still requests changes after {rounds + 1} rounds",
                           step=terminal["id"])
 
+    async def _round_brief(self, step: dict, done: list[dict], history: list,
+                           findings: prompting.Findings, max_rounds: int) -> prompting.Findings:
+        """``findings`` with the round brief for ``step``'s next round (#816).
+
+        Built only from the flow's records: the step's receipts, the review
+        ``history`` (which a continuation checkpoint keeps) and the artifacts
+        of the candidate the latest round reviewed, so a resume or a quota
+        continuation gets the same brief.
+        """
+        from garuda.flows import memory
+
+        def rows() -> list[dict]:
+            try:
+                found = [r for r in receipts(self.store, self.flow_session)
+                         if r.get("step") == step["id"]]
+            except (OSError, ValueError):
+                found = []
+            return found + [r for r in done if r.get("step") == step["id"]]
+
+        rows = await _settled_sync(rows)
+        facts = memory.facts(step=step["id"], round=len(history) + 1, max_rounds=max_rounds,
+                             receipts=rows, history=history)
+        attempt = facts.rounds[-1].candidate_attempt if facts.rounds else None
+        source = None
+        for row in rows:  # the reviewed candidate's receipt, else the latest with outputs
+            if (row.get("attempt") == attempt if attempt is not None
+                    else row.get("outputs") and (source is None
+                                                 or row["attempt"] >= source["attempt"])):
+                source = row
+        notes = []
+        for output in (source or {}).get("outputs", []):
+            ref = art.ArtifactRef.from_dict(output)
+            try:
+                # Notes on earlier work: bound to the workspace it described.
+                text = art.load(self.dir, ref, workspace_version=ref.workspace_version)
+            except art.ArtifactError:
+                continue
+            notes.append(memory.Note(ref.type, ref.producer_step, ref.attempt, text))
+        return prompting.Findings(findings.text,
+                                  memory.coder_brief(facts, notes, findings.text))
+
     def _first_attempt(self, step_id: str, done: list[dict]) -> dict | None:
         """The reviewed step's first attempt in this flow that could have edited.
 
@@ -1770,15 +1819,17 @@ class FlowRunner:
         return session if isinstance(session, str) and session else None
 
     async def _review_packet(self, step: dict, terminal: dict, done: list[dict], spec: dict,
-                             reviewer_plan) -> dict:
+                             reviewer_plan, *, history=()) -> dict:
         """Freeze what the reviewer is shown, from the reviewed step's own records.
 
         Refuses when the workspace no longer is the candidate the reviewed step
         produced; unknown identities and manifests stay explicitly unknown. A
         candidate version that is unknown, or cannot tell workspaces apart,
         leaves the binding unenforced, which a review that must be independent
-        refuses.
+        refuses. From round 2 the packet carries the reviewer's own earlier
+        findings from ``history`` (#816).
         """
+        from garuda.flows import memory
         from garuda.flows import review as rv
         from garuda.flows.review_evidence import config_evidence
         from garuda.workspace.evidence import changed_since_baseline, review_diff_evidence
@@ -1822,6 +1873,9 @@ class FlowRunner:
                       "latest": {"attempt": reviewed.get("attempt"),
                                  "session_id": reviewed.get("session_id")},
                       "baseline_session": base},
+            earlier_reviews=memory.earlier_reviews(memory.facts(
+                step=step["id"], round=len(history) + 1, max_rounds=spec.get("max_rounds", 1),
+                receipts=(), history=history)),
             version_binds=candidate is not None and self._version_binds(),
             reviewer_plan=reviewer_plan.record() if reviewer_plan is not None else None,
             no_edits=self._no_edits(terminal, terminal["role"]),
