@@ -12,7 +12,10 @@ import os
 from dataclasses import dataclass
 
 WIRE_VERSION = 2
-REQUEST_LIMITS = {"acceptance": (900, 65_536), "role": (3600, 2_097_152)}
+#: Per purpose, the longest timeout and largest request. A check command may be
+#: configured up to 4 h (``check_limits``); a role step's backstop is its
+#: ``deadline_min`` (up to 7 days) plus the 600 s stop margin.
+REQUEST_LIMITS = {"acceptance": (4 * 3600, 65_536), "role": (7 * 24 * 3600 + 600, 2_097_152)}
 MAX_REQUEST_BYTES = max(value[1] for value in REQUEST_LIMITS.values())
 
 

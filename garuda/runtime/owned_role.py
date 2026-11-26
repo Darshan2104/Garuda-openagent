@@ -54,6 +54,29 @@ def owned_timeout(limits) -> float:
     return deadline + DEADLINE_MARGIN if deadline else DEFAULT_TIMEOUT
 
 
+class StepBackstopExceeded(CleanupUncertain):
+    """The supervisor's backstop timeout killed an owned step's worker.
+
+    Still :class:`CleanupUncertain`, so the step is quarantined exactly as
+    before; ``stop`` is the reason a flow records (``flow_stop``) so that
+    ``flow show`` says why, and what to set, instead of a bare quarantine.
+    """
+
+    CODE = "flow.step_backstop"
+
+    def __init__(self, step: str, timeout: float, deadline: float | None):
+        if deadline:
+            message = (f"the step's worker did not stop within {DEADLINE_MARGIN} s of its "
+                       f"{deadline:g} s deadline (limits.deadline_min); the supervisor's "
+                       f"{timeout:g} s backstop killed it")
+        else:
+            message = (f"the step ran past the supervisor's {timeout:g} s backstop for a checked "
+                       "step without a deadline and was killed; a checked step that may run "
+                       "longer than that must set limits.deadline_min")
+        super().__init__(message)
+        self.stop = {"code": self.CODE, "step": step, "message": f"{self.CODE}: {message}"}
+
+
 class StepInterrupted(asyncio.CancelledError):
     """A cancelled owned step whose worker tree and confinement are proved closed (#760).
 
@@ -217,6 +240,10 @@ async def execute_owned_role(request: OwnedRoleRequest, capability, *, approval=
             control.activated()
             terminal = await control.guard.race(process.wait())
             result = control.result
+            if terminal.outcome == "timeout":
+                # Quarantined as any incomplete close; the recorded stop says why.
+                raise StepBackstopExceeded(flow["step"], request.timeout,
+                                           (payload.get("limits") or {}).get("deadline_sec"))
             if terminal.outcome != "exited" or (result is not None and result["session_id"] != request.session_id):
                 raise CleanupUncertain("owned role closed without a complete bound result")
             if control.quarantine_requested and (result is None or "refusal" in result):
