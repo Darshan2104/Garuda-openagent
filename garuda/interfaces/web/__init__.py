@@ -19,11 +19,11 @@ import webbrowser
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from garuda.core.sessions import SessionStore
 from garuda.interfaces.web import http as http_module
 from garuda.interfaces.web.live import DEFAULT_MAX_PERMISSION, LiveRuns
 from garuda.interfaces.web.routes import DashboardContext
 from garuda.interfaces.web.security import DEFAULT_PORT, generate_token
+from garuda.interfaces.web.session_index import CachedSessionStore
 from garuda.model.protocol import DEFAULT_MODEL
 
 logger = logging.getLogger(__name__)
@@ -84,7 +84,9 @@ def build_context(
     is. Without it, ``ctx.live`` stays None and every write route 503s — the fail-closed
     outcome rather than a launch button that misbehaves.
     """
-    store = SessionStore(root=config.sessions_dir)
+    # The list views read every session's meta.json; this store answers them from a
+    # stat-keyed cache instead (see session_index.py). Writes are the base store's.
+    store = CachedSessionStore(root=config.sessions_dir)
     workspaces = tuple(Path(p).expanduser().resolve() for p in config.workspaces) or (Path.cwd().resolve(),)
     ctx = DashboardContext(
         port=config.port,

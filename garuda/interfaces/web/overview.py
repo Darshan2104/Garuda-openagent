@@ -1,6 +1,7 @@
 """The Overview page's one read: what is happening, and does anything need you.
 
-``/api/sessions`` orders rows by ``updated_at`` and caps them at 200, and a session
+``/api/sessions`` orders rows by ``updated_at`` and returns at most ``reads.MAX_LIMIT``
+(500; 100 by default), and a session
 whose worker died stops updating — so the crashed run, or the one parked on an
 approval, is exactly the row that falls off the end of that list. This read
 therefore selects from *every* saved session, server side, and builds full rows

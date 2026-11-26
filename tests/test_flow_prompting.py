@@ -174,9 +174,10 @@ async def test_findings_reach_the_coder_raw_and_fenced(repo):  # noqa: F811
     assert result.completed, result.stopped
     retry = script.prompts[("build", 2)]
     blocks = fenced_blocks(retry)
-    assert [tag for tag, _, _ in blocks] == ["flow-input", "review-findings"]
+    # From round 2 its own previous patch comes too, as a note (#816).
+    assert [tag for tag, _, _ in blocks] == ["flow-input", "flow-note", "review-findings"]
     assert len({marker for _, marker, _ in blocks}) == 1  # one marker per prompt
-    assert blocks[1][2] == ["- [major] `a < b && c > d` is wrong for List<String>"]
+    assert blocks[2][2] == ["- [major] `a < b && c > d` is wrong for List<String>"]
     assert "&lt;" not in retry and "&amp;" not in retry
     review = script.prompts[("review", 1)]
     assert [tag for tag, _, _ in fenced_blocks(review)] == ["flow-input", "review-packet"]
