@@ -493,9 +493,67 @@ def seed_consults(root: Path, workspace: str) -> dict:
     return CON
 
 
+OVERVIEW = {
+    "flow_running": "00000000-0000-0000-0000-0000000000e1",
+    "flow_deadline": "00000000-0000-0000-0000-0000000000e2",
+    "flow_quota": "00000000-0000-0000-0000-0000000000e3",
+    "verified": "00000000-0000-0000-0000-0000000000e4",
+}
+#: Finished sessions newer than every crashed or waiting one: more than the 200 rows
+#: /api/sessions returns, so the overview must find those sessions on its own.
+OVERVIEW_BULK = 205
+
+
+def seed_overview(root: Path, workspace: str) -> dict:
+    """On top of seed(): a flow with a step in flight, flows paused on a deadline and on a
+    quota wait, one verified result, and enough newer finished sessions to push the crashed
+    and waiting ones out of the newest 200 - all through the production writers."""
+    from garuda.config import garuda_yaml as gy
+
+    store = SessionStore(root)
+    for index in range(OVERVIEW_BULK):
+        sid = f"00000000-0000-0000-0001-{index:012d}"
+        store.begin(sid, task=f"bulk {index}", model="m/x", agent="build", workspace=workspace,
+                    name=f"bulk-{index:03d}")
+        store.finish(sid, AgentResult(success=index % 3 != 0, final_message="ok", messages=[],
+                                      turns=1, metadata={}))
+    for name, sid in OVERVIEW.items():
+        store.begin(sid, task=f"overview {name}", model="m/x", agent="build",
+                    workspace=workspace, name="overview-" + name.replace("_", "-"))
+    steps = {"name": "build-review", "steps": ["code", "review"]}
+    store.update_meta(OVERVIEW["flow_running"], {
+        "kind": "flow", "flow": steps, "flow_state": "running",
+        "state": session_state.started()})
+    directory = engine.flow_dir(store, OVERVIEW["flow_running"])
+    directory.mkdir(parents=True, exist_ok=True)
+    engine._append(directory / engine.JOURNAL, {"event": "intent", "index": 0, "step": "code",
+                                                "attempt": 2, "at": "2026-11-01T00:00:00Z"})
+    for name, stop, extra in (
+            ("flow_deadline", {"code": engine.DEADLINE_STOP, "step": "code",
+                               "message": "code ran past its deadline of 30 min"}, {}),
+            ("flow_quota", {"code": "flow.step_failed", "step": "review",
+                            "message": "Codex quota exhausted"},
+             {"quota_recovery": {"state": "waiting-for-quota",
+                                 "reason": "Codex quota exhausted; waiting for availability",
+                                 "next_check": time.time() + 900}})):
+        store.update_meta(OVERVIEW[name], {
+            "kind": "flow", "flow": steps, "flow_state": "stopped", "status": "failed",
+            "state": session_state.finished(success=False), "flow_stop": stop, **extra})
+    store.finish(OVERVIEW["verified"], AgentResult(
+        success=True, final_message="ok", messages=[], turns=1,
+        metadata={"completion_gate": {"authoritative_grader_verdict": True}}))
+    # A role on a harness the runtime catalog does not know: Setup's role table names it,
+    # and the overview lists it as not in the catalog.
+    doc = gy.user_path().read_text()
+    gy.user_path().write_text(doc + "  planner:\n    harness: ghost\n    model_id: ghost-1\n")
+    return OVERVIEW
+
+
 if __name__ == "__main__":
     ids = seed(Path(sys.argv[1]), sys.argv[2] if len(sys.argv) > 2 else "/tmp")
     if "--observability" in sys.argv:
         seed_observability(Path(sys.argv[1]), sys.argv[2])
     if "--consults" in sys.argv:
         seed_consults(Path(sys.argv[1]), sys.argv[2])
+    if "--overview" in sys.argv:
+        seed_overview(Path(sys.argv[1]), sys.argv[2])
