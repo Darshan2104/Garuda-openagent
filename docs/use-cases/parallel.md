@@ -338,6 +338,7 @@ garuda web
 
 | Page | What you see |
 |---|---|
+| **Overview** (`#/`) | Where it opens: approvals waiting, crashed, waiting and paused sessions, what is running now (a flow's current step), the last results, and the harnesses your roles use. |
 | **Sessions** (`#/sessions`) | Every session's state, runtime, role and model, outcome and verification, queue position, branch, and approvals waiting. A session page streams live events and, for a flow, shows its steps and review. **Stop** cancels a background session. |
 | **Approvals** (`#/inbox`) | Every waiting approval, with Allow and Deny. |
 | **Setup** (`#/setup`) | Your roles, flows and agents, where each value came from, and diagnostics with a fix for each. Read-only. |

@@ -75,6 +75,44 @@ jobs:
         # Parallel across the runner's cores; the suite is verified worker-safe.
         run: pytest -q -n auto
 
+  browser-checks:
+    # The dashboard frontend is plain <script> files with no build step, so nothing in the
+    # pytest suite executes it; tests/browser is the only test of it, and it rotted while it
+    # ran nowhere. Seeds fixtures through the production writers, starts real dashboards and
+    # drives them in headless Chromium. The Linux owned starts need Google Chrome and run in
+    # browser-owned-starts.yml, so they are skipped here.
+    name: browser checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install package (pinned) and Playwright Chromium
+        run: |
+          pip install -e ".[dev]" -c constraints.txt
+          pip install "playwright==1.65.2"
+          python -m playwright install --with-deps chromium
+
+      - name: Run browser checks
+        run: >-
+          python tests/browser/run_checks.py --skip-owned-starts
+          --workdir "${{ runner.temp }}/browser-checks"
+
+      - name: Upload screenshots and dashboard logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-checks
+          path: |
+            ${{ runner.temp }}/browser-checks/screenshots/
+            ${{ runner.temp }}/browser-checks/*.log
+          if-no-files-found: ignore
+
   wheel-install:
     # Issue #145: a non-editable install must import and run without the
     # repository's tests/ directory. The test job only installs editable.

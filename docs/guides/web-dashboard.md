@@ -31,7 +31,7 @@ native Garuda agent.
     the `--max-permission` posture or a stricter one.
 
 The command prints a URL with a one-time token (`http://127.0.0.1:8787/#t=…`);
-open that exact URL.
+open that exact URL. It opens on the **Overview**.
 
 | Flag | Default | Use |
 |---|---|---|
@@ -51,6 +51,7 @@ open that exact URL.
 
 | Page | Route | What it's for |
 |---|---|---|
+| Overview | `#/` (also `#/overview`) | The landing page: what needs you, what is running, what finished last, and the health of the harnesses your roles use |
 | Starters | `#/starters`, `#/starters/<id>` | Five packaged journeys, configured readiness, preview/copy, and owned Linux flow starts in write mode |
 | Runs | `#/runs` | Every run: turns, tool calls, diffs, metrics, models used, consults |
 | Sessions | `#/sessions` | Live and past sessions with their state, queue and flow; Stop |
@@ -69,7 +70,7 @@ parked approval is visible from every page. The count is a read-only poll of
 
 | Key | Does |
 |---|---|
-| `1`–`9` | Switch to the nth tab |
+| `1`–`9`, `0` | Switch to the nth tab (`0` is the tenth, Chat in write mode) |
 | `/` | Focus the page's search field |
 | `r` | Reload the current view, except Chat or a view with unsubmitted edits |
 | `t` | Toggle light and dark |
@@ -79,6 +80,37 @@ parked approval is visible from every page. The count is a read-only poll of
 Keys do nothing while you are typing in a field or holding Cmd, Ctrl or Alt.
 Reload stays disabled after an edited field loses focus, until its inputs are
 successfully submitted or you navigate away.
+
+## Overview
+
+`#/` answers "what is happening, and does anything need me?" in four sections:
+
+- **Needs attention** lists only what applies, each with its age and a link to
+  where you act: approvals waiting (with expired ones counted apart, since they
+  will be denied) → **Approvals**; sessions whose worker **crashed** and
+  sessions **waiting** on an approval → the session; flows **paused** on a
+  resumable stop (a quota wait recorded by quota recovery, or a step's own
+  deadline or silence limit) → the session; configuration errors →
+  **Setup**; a harness a role uses that is unavailable, logged out or not in
+  the runtime catalog → **Providers**. With nothing to show it says
+  **Nothing needs you right now**.
+- **Running now**: queued, working and waiting sessions with runtime, role,
+  model, state and elapsed time; a flow shows the step its journal says is in
+  flight (**step 1 of 2 · code**) and no step when none is.
+- **Recent**: the last eight finished sessions with outcome and verification
+  as separate chips (a review is never shown as verification).
+- **Harness health**: one row per harness your roles or their fallbacks use,
+  with availability and the last recorded login reading and its age (`login
+  not checked` until one exists).
+
+The session sections come from one fast read, `GET /api/overview`, which
+selects from every session rather than the newest 200, so an old crashed or
+waiting session is never missed. Configuration and harness rows come from
+the slower Setup and Providers reads, load separately with a placeholder, and
+show an inline error with **Retry** if they fail; the rest of the page stays
+usable. The page refreshes every 10 seconds (Setup and Providers every
+minute) while the tab is visible, updates rows in place, and has no control
+that changes anything.
 
 ## Starters
 
@@ -396,7 +428,8 @@ allows up to 32 simultaneous connections, each with a 30-second read timeout.
 | `GET /api/sessions/<id>/stream` | Live events as server-sent events |
 | `GET /api/sessions/<id>/conversation` | The Models used, links and lanes data |
 | `POST /api/sessions/<id>/cancel` | Stop a background session (write) |
-| `GET /api/inbox` | Every pending approval, with the digest an answer must bind |
+| `GET /api/overview` | The Overview's session sections, selected from every session: crashed, waiting and paused sessions (each list `items`, at most 50, and `total`), running sessions with a flow's in-flight step, the last 8 finished, and approval counts |
+| `GET /api/inbox` | Every pending approval across every session, with the digest an answer must bind |
 | `POST /api/sessions/<id>/approvals/<approval>` | Answer one: `{"allow": true, "digest": "…"}` (write) |
 | `GET /api/usage?range=24h\|7d\|30d` | Usage statistics |
 | `GET /api/usage/export?range=…&format=csv\|json` | Usage export |

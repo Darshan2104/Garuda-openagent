@@ -19,6 +19,7 @@ import os
 import sys
 import tempfile
 
+from browser_support import count_at_least, launch, settle, text_contains
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
@@ -36,12 +37,12 @@ def collect(page):
 
 
 with sync_playwright() as p:
-    browser = p.chromium.launch(channel="chrome")
+    browser = launch(p)
     page = browser.new_page(viewport={"width": 1400, "height": 1000})
     collect(page)
 
     page.goto(f"{BASE}#t={TOKEN}", wait_until="networkidle")
-    page.wait_for_timeout(700)
+    count_at_least(page, "#nav-chat")
     if page.query_selector("#nav-chat") is None:
         problems.append("the chat nav entry is missing in write mode")
 
@@ -60,7 +61,7 @@ with sync_playwright() as p:
     with open(upload, "w", encoding="utf-8") as handle:
         handle.write("The retry ceiling is 120 seconds.\n")
     page.set_input_files("#src-file", upload)
-    page.wait_for_timeout(1500)
+    count_at_least(page, ".source")
     sources = page.query_selector_all(".source")
     print("\nsources after upload:", len(sources))
     if len(sources) != 1:
@@ -84,7 +85,7 @@ with sync_playwright() as p:
             problems.append("the in-flight native stream preview was empty")
     except PlaywrightTimeoutError:
         problems.append("native text did not appear before the streamed call finished")
-    page.wait_for_timeout(3500)
+    count_at_least(page, ".notice.approval")
 
     card = page.query_selector(".notice.approval")
     print("approval card:", bool(card))
@@ -106,7 +107,11 @@ with sync_playwright() as p:
 
     # --- approving unblocks the agent ---------------------------------------
     page.click("[data-approve]")
-    page.wait_for_timeout(3000)
+    # The turn has finished once its answer is drawn and the poll says the chat is idle.
+    settle(page, """() => !document.querySelector('.notice.approval')
+                     && !document.querySelector('.chat-preview')
+                     && document.querySelectorAll('.chat-agent pre').length >= 2
+                     && STATE.chat && STATE.chat.info && !STATE.chat.info.busy""")
     log = page.inner_text("#chat-log")
     print("\nafter approving, log rows:", len(page.query_selector_all(".chat-row")))
     # The turn carried the grounding preamble, so the transcript's own `you` row shows it —
@@ -128,12 +133,13 @@ with sync_playwright() as p:
     # --- a second turn, denied ----------------------------------------------
     page.fill("#chat-task", "clean it again")
     page.click("#chat-send")
-    page.wait_for_timeout(3500)
+    count_at_least(page, "[data-deny]")
     if not page.query_selector("[data-deny]"):
         problems.append("the second ask did not park")
     else:
         page.click("[data-deny]")
-        page.wait_for_timeout(2500)
+        settle(page, "() => document.querySelector('#chat-log').innerText.toLowerCase()"
+                     ".includes('denied')")
         log = page.inner_text("#chat-log")
         print("after denying, log mentions a denial:", "denied" in log.lower())
         if "denied" not in log.lower():
@@ -145,7 +151,8 @@ with sync_playwright() as p:
     # the route, the panel and the provenance line in the saved file.
     page.fill("#src-url", "https://example.test/retry-docs")
     page.click("#src-add-url")
-    page.wait_for_timeout(2000)
+    count_at_least(page, ".source", 2)
+    text_contains(page, ".sources", "example.test")
     rows = page.query_selector_all(".source")
     print("\nsources after a URL fetch:", len(rows))
     if len(rows) != 2:
@@ -158,12 +165,13 @@ with sync_playwright() as p:
     second = browser.new_page(viewport={"width": 1200, "height": 900})
     collect(second)
     second.goto(f"{BASE}#t={TOKEN}", wait_until="networkidle")
-    second.wait_for_timeout(600)
     second.goto(f"{BASE}#/chat", wait_until="networkidle")
-    second.wait_for_timeout(1200)
+    second.wait_for_selector("#chat-form", timeout=10_000)
+    # The denied turn may still be streaming its closing answer; a send now would be refused.
+    settle(second, "() => STATE.chat && STATE.chat.info && !STATE.chat.info.busy")
     second.fill("#chat-task", "clean once more")
     second.click("#chat-send")
-    second.wait_for_timeout(3000)
+    count_at_least(second, ".notice.approval")
     parked = bool(second.query_selector(".notice.approval"))
     print("\nthird ask parked in the second tab:", parked)
     if not parked:
