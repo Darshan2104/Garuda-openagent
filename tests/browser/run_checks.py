@@ -280,6 +280,20 @@ def suite(workdir: Path, shots: Path, *, owned_starts: bool) -> list[str]:
             env["GARUDA_CHECK_SESSIONS"] = str(sessions)
         return run_check(check, port, shots, env)
 
+    # --- overview: the landing page, over more than 200 sessions, and an empty store --
+    def overview():
+        sessions = workdir / "overview" / "sessions"
+        env = {"GARUDA_GLOBAL_SETTINGS": str(workdir / "overview" / "settings.yaml")}
+        seed(str(HERE / "seed_sessions.py"), str(sessions), str(workdir), "--overview", env=env)
+        port = dashboard(sessions, "web-ov.log", extra_env=env)
+        empty_sessions = workdir / "empty" / "sessions"
+        empty_sessions.mkdir(parents=True)
+        empty_port = dashboard(
+            empty_sessions, "web-empty.log", read_only=False,
+            extra_env={"GARUDA_GLOBAL_SETTINGS": str(workdir / "empty" / "settings.yaml")})
+        return run_check("check_overview.py", port, shots,
+                         {**env, "GARUDA_CHECK_EMPTY_BASE": f"http://127.0.0.1:{empty_port}/"})
+
     # --- read-only starters, with real ACP/flow/acceptance history ------------
     def starters():
         root = workdir / "starters"
@@ -331,6 +345,7 @@ def suite(workdir: Path, shots: Path, *, owned_starts: bool) -> list[str]:
                                                   "--observability", allow_workspace=True)),
         # consults: nested lanes, rollups, setup and usage by origin
         ("check_consults.py", lambda: seeded("con", "check_consults.py", "--consults")),
+        ("check_overview.py", overview),
         ("check_scenarios.py", starters),
         # Linux-owned flow and role starts in the real Chrome channel
         *([("owned starts", lambda: run_owned_starts(workdir, shots, ports.take()))]

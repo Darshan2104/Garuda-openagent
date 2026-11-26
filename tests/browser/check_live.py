@@ -44,6 +44,8 @@ with sync_playwright() as p:
     page.on("request", lambda r: requests.append(r.url))
 
     page.goto(f"{BASE}#t={TOKEN}", wait_until="networkidle")
+    # The token URL lands on the Overview; the runs list is its own tab.
+    page.goto(f"{BASE}#/runs", wait_until="networkidle")
     count_at_least(page, "#table-card .pill.running")
     page.wait_for_load_state("networkidle")
 

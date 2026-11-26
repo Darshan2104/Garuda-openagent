@@ -52,6 +52,8 @@ with sync_playwright() as p:
             lambda r: problems.append(f"requestfailed: {r.url} {r.failure}"))
 
     page.goto(f"{BASE}#t={TOKEN}", wait_until="networkidle")
+    # The token URL lands on the Overview; the runs list is its own tab.
+    page.goto(f"{BASE}#/runs", wait_until="networkidle")
     count_at_least(page, "#table-card tbody tr", len(EXPECT))
     rows = page.query_selector_all("#table-card tbody tr")
     print(f"runs list: {len(rows)} rows")
