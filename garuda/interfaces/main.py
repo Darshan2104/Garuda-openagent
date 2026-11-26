@@ -1889,9 +1889,11 @@ def run_approvals(args) -> int:
         AnswerRefused,
         ChannelError,
         FileApprovalChannel,
+        OwnerGone,
         RequestExpired,
         StaleRequest,
         UnsafeApprovalId,
+        owner_gone,
         write_answer,
     )
     from garuda.core.project_identity import ProjectIdentityError
@@ -1933,6 +1935,11 @@ def run_approvals(args) -> int:
             print(f"Error: approval.expired: cannot answer {args.approval_id!r}: {exc}",
                   file=sys.stderr)
             return 2
+        except OwnerGone as exc:
+            # The run that parked it is dead: nothing would consume the answer (#807).
+            print(f"Error: approval.owner_gone: cannot answer {args.approval_id!r}: {exc}",
+                  file=sys.stderr)
+            return 2
         except (AnswerRefused, ValueError) as exc:
             # A refused or unreadable request file; these messages name no path.
             print(f"Error: approval.refused: cannot answer {args.approval_id!r}: {exc}",
@@ -1947,6 +1954,9 @@ def run_approvals(args) -> int:
               "(the session decides once; a late or mismatched answer is a denial)")
         return 0
     pending = FileApprovalChannel(directory, session_id).pending()
+    for request in pending:
+        # Not answerable: the run that parked it has exited (#807).
+        request["owner_gone"] = owner_gone(request)
     if getattr(args, "json", False):
         print(json.dumps(pending, indent=2))
         return 0
@@ -1960,6 +1970,8 @@ def run_approvals(args) -> int:
             worker = str(requester.get("session_id") or "unknown")[:12]
             label = (f"  worker {worker} agent {requester.get('agent', 'unknown')} "
                      f"depth {requester.get('depth', 'unknown')}")
+        if request["owner_gone"]:
+            label += "  (owner gone: not answerable; `garuda runtime recover` withdraws it)"
         print(f"{request['approval_id']}  {request['family']:<10} {request['action']}"
               f"  digest={request.get('digest')}{label}")
     return 0
@@ -2822,11 +2834,68 @@ def agent_selection(args):
     return AgentSpec.from_file(path, args.workspace, getattr(args, "agents_dir", None))
 
 
-def _run_with_runtime_gate(args) -> int:
-    """`garuda run`, with a refused runtime selection as a message, not a traceback."""
-    import asyncio
+#: Why a signal stopped `garuda run`; recorded on the cancelled session (#807, #808).
+RUN_STOP_REASONS = {"SIGINT": "interrupted by the user (Ctrl-C)",
+                    "SIGTERM": "terminated by SIGTERM"}
 
-    return asyncio.run(run_task_guarded(args))
+
+async def _interruptible(start, stopped: list[str]):
+    """Run ``start()`` so SIGINT and SIGTERM cancel it like a turn cancel (#807, #808).
+
+    The first signal cancels the run with its reason; the run's own cancel path
+    withdraws a parked approval, settles the session ``cancelled`` and releases
+    the lease. Later signals are recorded but do not interrupt that cleanup.
+    """
+    import asyncio
+    import signal
+
+    task = asyncio.ensure_future(start())
+    loop = asyncio.get_running_loop()
+    installed = []
+
+    def _stop(name: str) -> None:
+        if not stopped:
+            task.cancel(msg=RUN_STOP_REASONS[name])
+        stopped.append(name)
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        try:
+            loop.add_signal_handler(sig, _stop, sig.name)
+            installed.append(sig)
+        except (NotImplementedError, RuntimeError, ValueError):  # pragma: no cover - not main thread / Windows
+            pass
+    try:
+        return await task
+    finally:
+        for sig in installed:
+            loop.remove_signal_handler(sig)
+
+
+def _run_with_runtime_gate(args) -> int:
+    """`garuda run`, with a refused runtime selection as a message, not a traceback.
+
+    Ctrl-C and SIGTERM end the run as a cancel, not a traceback (#807, #808):
+    exit 130 for Ctrl-C and 143 for SIGTERM, as `flow run` and background
+    workers already do.
+    """
+    import asyncio
+    import sys
+
+    stopped: list[str] = []
+    code = None
+    try:
+        code = asyncio.run(_interruptible(lambda: run_task_guarded(args), stopped))
+    except asyncio.CancelledError:
+        if not stopped:
+            raise
+    except KeyboardInterrupt:
+        # No loop handler could be installed; the default handler fired.
+        stopped.append("SIGINT")
+    if not stopped:
+        return code
+    print(f"[garuda] run.cancelled: {RUN_STOP_REASONS[stopped[0]]}; the session was recorded "
+          "cancelled and any parked approval withdrawn", file=sys.stderr)
+    return 130 if stopped[0] == "SIGINT" else 143
 
 
 async def run_task_guarded(args) -> int:
