@@ -5144,6 +5144,40 @@ confirmed dead and that holds no lease or slot as `failed`/interrupted with
 `run.owner_lost`. A live owner's requests and sessions are never touched;
 since decisions are exclusive, a live broker racing the withdrawal fails closed.
 
+## 2026-11-26: Flow artifacts are scanned, never cut, and redacted before storing (#811, #812)
+
+`artifacts.extract` no longer uses a non-greedy regex, which cut an artifact
+at the first `</garuda-artifact>` it quoted. A scanner counts opening and
+closing tags: a balanced envelope inside a block stays content, only top-level
+blocks are artifacts, unknown types and extra attributes are still ignored,
+and the last block of a type still wins (so an echoed instruction example
+followed by the real block keeps working). A closing tag outside any block or
+a block still open at the end raises `ArtifactError("flow.artifact_malformed")`,
+which `_run_step` and `_run_group` turn into a `FlowStopped`; nothing is passed
+on. The exact rules are in the module docstring.
+
+`artifacts.store` redacts content with `redact_text`, the consult path's
+redactor, before writing, so the file, digest, size and the next prompt all
+hold the redacted text. `ArtifactRef` gains `redactions` (spans removed);
+`from_dict` reads it with `.get`, so a reference from an older flow loads with
+`None`. `ARTIFACT_VERSION` stays 1: loading checks the bytes against the
+recorded digest and size, which old artifacts still satisfy. The review
+findings fed back to the reviewed step are redacted again (they already come
+from a redacted review artifact); the review packet is unchanged because
+`diff_excerpts` already withholds any excerpt that contains a secret.
+Redaction can break a structured (JSON) review whose string holds an escaped
+quote after a credential key; that review stops with `flow.review_invalid`,
+never approves.
+
+`flow.artifact_malformed` and `flow.artifact_too_large` join
+`RESUMABLE_CHECKED_STOPS`: like `flow.output_missing`, the step ran and settled
+and only its output could not be stored, so a checked flow resumes by running
+that step again. Every resumability and evidence-coverage check reads that set;
+quota recovery only considers `flow.step_failed`. A parallel review member's
+artifact that cannot be stored now stops the group with its own code instead of
+escaping `_run_group` unhandled. It is also in `RETRYABLE_STOPS` (#823), so a
+step with `retries` runs again after a malformed envelope.
+
 ## 2026-11-27: Flow inputs can name their producer (#817)
 
 A step's `inputs` entry is either a type (unchanged: the latest earlier

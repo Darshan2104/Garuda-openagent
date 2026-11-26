@@ -9,6 +9,39 @@ the end of its final output::
 
 Free text never satisfies an artifact, and any attribute other than ``type``
 — a ``path`` above all — is ignored: Garuda decides where an artifact lives.
+
+The envelope is read by a scanner, never cut at the first closing tag (#811).
+The rules, exactly:
+
+* Only two tags count: an opening tag ``<garuda-artifact>`` or
+  ``<garuda-artifact ...attributes...>`` (on one or more lines, no ``<`` or
+  ``>`` inside), and a closing tag ``</garuda-artifact>``. Everything else is
+  text.
+* Tags are counted in order. An opening tag outside any block starts a
+  top-level block; inside a block, every opening tag adds one level and every
+  closing tag removes one. The block ends at the closing tag that brings the
+  depth back to zero, so a balanced envelope quoted inside a block (an example,
+  a plan about Garuda itself) stays part of its content, tags included.
+* A block's content is the text between its opening and its final closing
+  tag, less one newline right after the opening tag and one right before the
+  closing tag.
+* Only top-level blocks are artifacts: the type comes from the top-level
+  opening tag's ``type="..."``; a block without one or with an unknown type is
+  skipped (its tags still count), extra attributes are ignored, and the last
+  block of a type wins. So an agent that echoes the instruction example and
+  then writes its real block at the end passes on the real block.
+* Anything else is malformed and stops the step with
+  ``flow.artifact_malformed``, never a shortened artifact: a closing tag
+  outside any block (a stray one after the last block above all), and a block
+  still open at the end of the output (unclosed, or a nested opening tag
+  without its closing tag).
+
+Artifact content is redacted with :func:`garuda.context.redact.redact_text`
+(the consult path's redactor) before it is stored, so the file, its digest and
+size, and what the next agent reads are the redacted text; the reference
+records how many spans were removed as ``redactions`` (#812). A reference
+written before that has no ``redactions`` and loads as ``None`` (unknown).
+
 Each artifact is bounded, stored once (exclusive, owner-only, no symlinks)
 under the flow's own directory, and described by a reference: type, digest,
 producer step and session, attempt, size, the workspace version it was
@@ -31,14 +64,15 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from garuda.config.garuda_yaml import ARTIFACTS
+from garuda.context.redact import redact_text
 
 MAX_ARTIFACT_CHARS = 64_000
 ARTIFACT_VERSION = 1
 #: Artifacts that describe the workspace as it was: stale once it changes. A
 #: plan or notes describe the task and stay usable across a retry (C.7).
 WORKSPACE_BOUND = ("patch", "review", "findings")
-_BLOCK = re.compile(
-    r"<garuda-artifact\s+([^>]*)>\n?(.*?)\n?</garuda-artifact>", re.DOTALL)
+#: An opening (group 1: its attributes) or closing envelope tag.
+_TAG = re.compile(r"<garuda-artifact(\s[^<>]*)?>|</garuda-artifact\s*>")
 _TYPE = re.compile(r'\btype\s*=\s*"([a-z]+)"')
 
 
@@ -46,6 +80,7 @@ class ArtifactError(Exception):
     def __init__(self, code: str, message: str):
         super().__init__(f"{code}: {message}")
         self.code = code
+        self.message = message
 
 
 @dataclass(frozen=True)
@@ -59,25 +94,52 @@ class ArtifactRef:
     workspace_version: str | None
     path: str  # relative to the flow directory
     version: int | None = ARTIFACT_VERSION
+    #: Secret spans redacted before storing (#812); ``None`` on older references.
+    redactions: int | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: dict) -> "ArtifactRef":
-        fields = {k: data[k] for k in cls.__dataclass_fields__ if k != "version"}
-        return cls(**fields, version=data.get("version"))
+        fields = {k: data[k] for k in cls.__dataclass_fields__
+                  if k not in ("version", "redactions")}
+        return cls(**fields, version=data.get("version"), redactions=data.get("redactions"))
 
 
 def extract(output: str) -> dict[str, str]:
-    """``{type: content}`` from the envelope blocks in ``output``; the last
-    block of a type wins. Unknown types are ignored."""
+    """``{type: content}`` from the top-level envelope blocks in ``output``, by
+    the rules in the module docstring; ``flow.artifact_malformed`` when the
+    envelope cannot be read unambiguously."""
+    text = output or ""
     found: dict[str, str] = {}
-    for attrs, body in _BLOCK.findall(output or ""):
-        match = _TYPE.search(attrs)
-        if not match or match.group(1) not in ARTIFACTS:
+    depth, start, attrs, opened = 0, 0, "", 0
+
+    def malformed(at: int, what: str) -> ArtifactError:
+        line = text.count("\n", 0, at) + 1
+        return ArtifactError("flow.artifact_malformed",
+                             f"{what} at line {line}; the artifact envelope is ambiguous, "
+                             "so nothing was passed on")
+
+    for tag in _TAG.finditer(text):
+        if not tag.group().startswith("</"):
+            if depth == 0:
+                start, attrs, opened = tag.end(), tag.group(1) or "", tag.start()
+            depth += 1
             continue
-        found[match.group(1)] = body
+        if depth == 0:
+            raise malformed(tag.start(), "a </garuda-artifact> outside any block")
+        depth -= 1
+        if depth:
+            continue
+        body = text[start:tag.start()]
+        body = body.removeprefix("\n").removesuffix("\n")
+        match = _TYPE.search(attrs)
+        if match and match.group(1) in ARTIFACTS:
+            found[match.group(1)] = body
+    if depth:
+        raise malformed(opened, "a <garuda-artifact> block, or an opening tag nested in it, "
+                        "that is never closed")
     return found
 
 
@@ -98,6 +160,8 @@ def store(flow_dir: Path, *, type: str, content: str, step: str, session_id: str
           attempt: int, workspace_version: str | None) -> ArtifactRef:
     if type not in ARTIFACTS:
         raise ArtifactError("flow.artifact_type", f"{type!r} is not an artifact type")
+    content, findings = redact_text(content)
+    redactions = sum(finding.count for finding in findings)
     if len(content) > MAX_ARTIFACT_CHARS:
         raise ArtifactError("flow.artifact_too_large",
                             f"{type} from {step} is {len(content)} characters "
@@ -129,7 +193,7 @@ def store(flow_dir: Path, *, type: str, content: str, step: str, session_id: str
                 pass
     return ArtifactRef(type=type, digest=hashlib.sha256(data).hexdigest(), producer_step=step,
                        producer_session=session_id, attempt=attempt, size=len(data),
-                       workspace_version=workspace_version, path=rel)
+                       workspace_version=workspace_version, path=rel, redactions=redactions)
 
 
 def load(flow_dir: Path, ref: ArtifactRef, *, workspace_version: str | None) -> str:
