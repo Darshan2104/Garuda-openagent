@@ -969,15 +969,21 @@ def run_doctor_report(args) -> int:
     return 1 if any(d.level == "error" for d in report) else 0
 
 
+def _interactive() -> bool:
+    import sys
+
+    try:
+        return sys.stdin.isatty() and sys.stderr.isatty()
+    except (AttributeError, ValueError):
+        return False
+
+
 def _confirmed(prompt: str, *, yes: bool) -> bool:
     import sys
 
     if yes:
         return True
-    try:
-        if not (sys.stdin.isatty() and sys.stderr.isatty()):
-            return False
-    except (AttributeError, ValueError):
+    if not _interactive():
         return False
     print(f"{prompt} [y/N] ", end="", file=sys.stderr, flush=True)
     try:
@@ -1007,13 +1013,23 @@ def run_init(args) -> int:
     for line in lines or ["nothing detected"]:
         print(f"  {line}")
     print(text.rstrip())
+    # Without a terminal nothing can be confirmed, so nothing is written: that
+    # is a failure, not a decline. A "no" typed in a terminal still exits 0.
     if args.project:
+        if not _interactive():
+            print("Error: config.trust_requires_terminal: not written; writing a project "
+                  "file creates trust, which needs a yes in a terminal (--yes does not "
+                  "apply to --project)", file=sys.stderr)
+            return 2
         if not _confirmed("Write it and trust exactly these bytes?", yes=False):
-            print("[garuda] not written (writing a project file creates trust, which needs a "
-                  "yes in a terminal: config.trust_requires_terminal)")
-            return 0 if not args.yes else 2
+            print("[garuda] not written")
+            return 0
+    elif not args.yes and not _interactive():
+        print("Error: init.requires_confirmation: not written; no terminal to confirm in. "
+              "Pass --yes to write it without asking", file=sys.stderr)
+        return 2
     elif not _confirmed("Write it?", yes=args.yes):
-        print("[garuda] not written; confirm in a terminal or pass --yes")
+        print("[garuda] not written")
         return 0
     backup = write_file(target, text)
     if backup is not None:
