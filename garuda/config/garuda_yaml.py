@@ -225,6 +225,44 @@ def _artifacts(value, path) -> list[str]:
     return [_choice(v, f"{path}[{i}]", ARTIFACTS) for i, v in enumerate(value)]
 
 
+def _input(value, path) -> str | dict:
+    """One ``inputs`` entry: a type, or ``{type: T, from: STEP}`` (#817).
+
+    A plain type stays the plain string it always was, so the normalized
+    definition (and its digest) of a flow without the mapping form is
+    unchanged. ``from`` is a step id, or ``GROUP:ROLE`` for one member of a
+    parallel group (the same ``:`` naming as the member's launch id).
+    """
+    if not isinstance(value, dict):
+        return _choice(value, path, ARTIFACTS)
+    data = _mapping(value, path, ("type", "from"))
+    if "type" not in data:
+        _fail(f"{path}.type", "is required")
+    if "from" not in data:
+        _fail(f"{path}.from", "is required (a plain type takes the latest earlier producer)")
+    kind = _choice(data["type"], f"{path}.type", ARTIFACTS)
+    source = _str(data["from"], f"{path}.from")
+    step, _, member = source.partition(":")
+    _name(step, f"{path}.from")
+    if ":" in source:
+        _name(member, f"{path}.from")
+    return {"type": kind, "from": source}
+
+
+def input_source(entry: str | dict) -> tuple[str, str | None, str | None]:
+    """``(type, step, member)`` of an ``inputs`` entry; step is None for a plain type."""
+    if isinstance(entry, str):
+        return entry, None, None
+    step, _, member = entry["from"].partition(":")
+    return entry["type"], step, member or None
+
+
+def _inputs(value, path) -> list:
+    if not isinstance(value, list):
+        _fail(path, "must be a list")
+    return [_input(v, f"{path}[{i}]") for i, v in enumerate(value)]
+
+
 def _step(value, path) -> dict:
     if isinstance(value, dict) and "flow" in value:
         _fail(f"{path}.flow", "a step cannot be a flow (nested flows are not supported)")
@@ -249,9 +287,10 @@ def _step(value, path) -> dict:
                                       WRITE_POLICIES)
         if "parallel" in out and out["write_policy"] == "no-edits":
             _fail(f"{path}.write_policy", "a parallel group cannot be no-edits")
-    for key in ("inputs", "outputs"):
-        if key in data:
-            out[key] = _artifacts(data[key], f"{path}.{key}")
+    if "inputs" in data:
+        out["inputs"] = _inputs(data["inputs"], f"{path}.inputs")
+    if "outputs" in data:
+        out["outputs"] = _artifacts(data["outputs"], f"{path}.outputs")
     if "retries" in data:
         out["retries"] = _int(data["retries"], f"{path}.retries", 0, MAX_RETRIES)
     if "limits" in data:
@@ -306,20 +345,57 @@ def effective_flow_steps(flow: dict, *, path: str = "flow.steps") -> list[dict]:
 def validate_flow_inputs(steps: list[dict], *, path: str) -> None:
     """Every step input must be an output of an earlier step.
 
-    The engine hands a step the latest earlier artifact of each input kind
-    (every member's, from a parallel group); a
-    kind no earlier step declares can never exist, so the flow is refused at
-    load time instead of stopping with ``flow.input_missing`` mid-run.
+    The engine hands a step the latest earlier artifact of each plain input
+    kind (every member's, from a parallel group); a kind no earlier step
+    declares can never exist, so the flow is refused at load time instead of
+    stopping with ``flow.input_missing`` mid-run.
+
+    A ``{type, from}`` entry (#817) names its producer: ``from`` must be an
+    earlier step that declares that output, and ``GROUP:ROLE`` must name a
+    member of a parallel group. Within one step a type is asked for either
+    plainly or by producer, never both, and the same producer (a group or
+    one of its members) is named at most once per type, so no artifact is
+    delivered twice.
     """
     available: set[str] = set()
+    earlier: dict[str, dict] = {}
     for i, step in enumerate(steps):
-        for j, kind in enumerate(step.get("inputs", [])):
-            if kind not in available:
-                _fail(f"{path}[{i}].inputs[{j}]",
-                      f"no earlier step outputs a {kind}"
-                      + (f" (earlier steps output {', '.join(sorted(available))})"
-                         if available else " (it is the first step)"))
+        plain: set[str] = set()
+        named: dict[str, set[str]] = {}
+        for j, entry in enumerate(step.get("inputs", [])):
+            at = f"{path}[{i}].inputs[{j}]"
+            kind, source, member = input_source(entry)
+            if source is None:
+                if kind not in available:
+                    _fail(at, f"no earlier step outputs a {kind}"
+                          + (f" (earlier steps output {', '.join(sorted(available))})"
+                             if available else " (it is the first step)"))
+                if kind in named:
+                    _fail(at, f"{kind} is also asked for by producer; use one form per type")
+                plain.add(kind)
+                continue
+            at_from = f"{at}.from"
+            producer = earlier.get(source)
+            if producer is None:
+                later = any(s["id"] == source for s in steps[i:])
+                _fail(at_from, f"step {source!r} "
+                      + ("is not earlier than this step" if later else "does not exist")
+                      + (f" (earlier steps: {', '.join(earlier)})"
+                         if earlier else " (it is the first step)"))
+            if kind not in producer.get("outputs", []):
+                _fail(at_from, f"step {source!r} does not output a {kind}")
+            if member is not None and member not in producer.get("parallel", []):
+                _fail(at_from, f"{member!r} is not a member of parallel step {source!r}"
+                      if "parallel" in producer else f"step {source!r} is not a parallel group")
+            if kind in plain:
+                _fail(at, f"{kind} is also asked for plainly; use one form per type")
+            taken = named.setdefault(kind, set())
+            if source in taken or f"{source}:{member}" in taken or (
+                    member is None and any(t.startswith(f"{source}:") for t in taken)):
+                _fail(at, f"duplicate input: {kind} from {entry['from']!r} is already delivered")
+            taken.add(source if member is None else f"{source}:{member}")
         available.update(step.get("outputs", []))
+        earlier[step["id"]] = step
 
 
 def validate_flow_reviews(steps: list[dict], *, path: str) -> None:
@@ -341,11 +417,20 @@ def validate_flow_reviews(steps: list[dict], *, path: str) -> None:
         terminal_outputs = terminal.get("outputs", [])
         if "review" not in terminal_outputs:
             _fail(f"{path}[{len(steps) - 1}].outputs", "the terminal reviewer must output a review")
-        missing = set(terminal.get("inputs", [])) - available
+        plain = {e for e in terminal.get("inputs", []) if isinstance(e, str)}
+        missing = plain - available
         if missing:
             _fail(f"{path}[{len(steps) - 1}].inputs",
                   f"{', '.join(sorted(missing))} must be produced before or by step {step['id']!r}, "
                   "which the terminal reviewer reviews immediately")
+        # The mapping form (#817): its producer must run before or be the reviewed step.
+        order = {s["id"]: k for k, s in enumerate(steps)}
+        for j, entry in enumerate(terminal.get("inputs", [])):
+            _, source, _ = input_source(entry)
+            if source is not None and order.get(source, len(steps)) > i:
+                _fail(f"{path}[{len(steps) - 1}].inputs[{j}].from",
+                      f"step {source!r} runs after step {step['id']!r}, "
+                      "which the terminal reviewer reviews immediately")
         available.update(terminal_outputs)
 
 

@@ -588,6 +588,14 @@ A flow step has a `role` or a `parallel` list of roles, and may name
 `inputs` and `outputs` (artifact types), `write_policy: no-edits`, a `review`
 and `retries` (0 to 10). Every input must be an output of an earlier step;
 after a parallel group, a step receives every member's artifact of that type.
+An input is a type (`notes`: the latest earlier one) or a mapping that names
+its producer, `{type: notes, from: scout-api}`, where `from` is an earlier step
+id that declares that output, or `GROUP:ROLE` for one member of a parallel
+group (`from: GROUP` takes every member's). The mapping takes only `type` and
+`from`; a duplicate entry, and one type asked for both plainly and by
+producer in the same step, are refused with the path of the entry
+(`flows.NAME.steps[i].inputs[j]`). See
+[What passes between steps](sessions-and-flows.md#what-passes-between-steps).
 `retries` reruns a plain step that failed or gave no usable output and is
 refused on a parallel group, a reviewed step (use `review.max_rounds`) and the
 terminal reviewer of a reviewed flow. See

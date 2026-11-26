@@ -412,6 +412,33 @@ the step receives every member's artifact of that type, each labelled with its
 member (`from="g-r1"`, `from="g-r2"`, ...) and checked the same way, and its
 receipt lists all of them in `inputs`.
 
+When two earlier steps output the same type, name the one you want with
+`from`:
+
+```yaml
+steps:
+  - {id: scout-api, role: scout, write_policy: no-edits, outputs: [notes]}
+  - {id: scout-web, role: scout, write_policy: no-edits, outputs: [notes]}
+  - {id: reviews, parallel: [r1, r2], outputs: [review]}
+  - id: plan
+    role: planner
+    inputs: [{type: notes, from: scout-api}, {type: notes, from: scout-web},
+             {type: review, from: "reviews:r2"}]
+    outputs: [plan]
+```
+
+`from` is an earlier step id that declares that output. A parallel group's id
+delivers every member's artifact; `GROUP:ROLE` (quote it in flow-style YAML)
+delivers that one member's. When the named step ran more than once (review
+rounds, retries), its latest attempt's artifact is used. The artifact is
+checked exactly like a plain input, and the receipt, `flow show --json` and
+`flow export` name the real producer. The flow is refused at load, with the
+path of the entry, if the step does not exist, is not earlier, does not output
+that type or is not a group with that member, and when an entry repeats one
+(a group and one of its members count as the same producer) or a type is asked
+for both plainly and by producer in one step. A terminal reviewer may name only
+steps that run before or are the reviewed step.
+
 ### Retries
 
 `retries: N` on a plain step (not reviewed, not a parallel group) runs it again,

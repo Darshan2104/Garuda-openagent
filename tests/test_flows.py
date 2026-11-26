@@ -1151,6 +1151,71 @@ async def test_retries_are_refused_where_every_attempt_is_accounted_for(repo, ow
     assert caught.value.code == "flow.retries_unsupported"
     assert fake.launches == [] and LeaseStore().holders_of(repo) == []
 
+ADDRESSED = {
+    "version": 1,
+    "roles": {"planner": {"harness": "native", "write_policy": "no-edits"}},
+    "flows": {"two": {"steps": [
+        {"id": "s1", "role": "planner", "outputs": ["notes"]},
+        {"id": "s2", "role": "planner", "outputs": ["notes"]},
+        {"id": "z", "role": "planner", "inputs": [{"type": "notes", "from": "s1"}],
+         "outputs": ["plan"]},
+        {"id": "y", "role": "planner",
+         "inputs": [{"type": "notes", "from": "s2"}, {"type": "notes", "from": "s1"}],
+         "outputs": ["plan"]},
+        {"id": "x", "role": "planner", "inputs": ["notes"], "outputs": ["plan"]},
+    ]}},
+}
+
+
+async def test_a_step_receives_the_named_producers_artifact(repo):
+    """#817: two steps output notes; ``from`` picks each, a plain type the latest."""
+    from garuda.core import read_model
+    from garuda.flows.trajectory import trajectory
+
+    prompts = {}
+
+    async def step(launch):
+        prompts[launch.step_id] = launch.prompt
+        kind = "notes" if launch.step_id in {"s1", "s2"} else "plan"
+        return StepResult(str(uuid.uuid4()), True, _block(kind, f"by {launch.step_id}"))
+
+    fake = Fake(repo, {sid: step for sid in ("s1", "s2", "z", "y", "x")})
+    result = await _runner(repo, fake, flow="two", config=ADDRESSED).run()
+
+    assert result.completed
+    by = {r["step"]: r for r in result.receipts}
+    assert [ref["producer_step"] for ref in by["z"]["inputs"]] == ["s1"]
+    assert by["z"]["inputs"][0]["digest"] == by["s1"]["outputs"][0]["digest"]
+    assert '<flow-input type="notes" from="s1">' in prompts["z"]
+    assert "| by s1" in prompts["z"] and "by s2" not in prompts["z"]
+    assert [ref["producer_step"] for ref in by["y"]["inputs"]] == ["s2", "s1"]
+    assert [ref["producer_step"] for ref in by["x"]["inputs"]] == ["s2"]  # unchanged meaning
+    edges = read_model.flow(SessionStore(), result.flow_session)["edges"]
+    assert {(e["from_step"], e["to_step"]) for e in edges} == {
+        ("s1", "z"), ("s2", "y"), ("s1", "y"), ("s2", "x")}
+    assert trajectory(SessionStore(), result.flow_session)["edges"] == edges
+
+
+async def test_a_named_input_with_a_stale_artifact_refuses(repo):
+    """The mapping form goes through the same ``artifacts.load`` staleness check."""
+    config = {**CONFIG, "flows": {"pbr": {"steps": [
+        {"id": "build", "role": "coder", "outputs": ["patch"]},
+        {"id": "more", "role": "coder", "outputs": ["notes"]},
+        {"id": "check", "role": "reviewer", "inputs": [{"type": "patch", "from": "build"}],
+         "outputs": ["review"]}]}}}
+
+    async def build(launch):
+        return StepResult("s", True, _block("patch", "x"))
+
+    async def more(launch):  # changes the workspace after the patch was produced
+        (repo / "a.txt").write_text("changed\n")
+        return StepResult("s", True, _block("notes", "n"))
+
+    fake = Fake(repo, {"build": build, "more": more})
+    result = await _runner(repo, fake, config=config).run()
+    assert result.stopped.code == "flow.input_stale" and result.stopped.step == "check"
+
+
 @pytest.mark.skipif(sys.platform != "linux", reason="owned flow checks require Linux")
 @pytest.mark.parametrize("recorded", ["previous", "current"])
 def test_checked_packaged_flow_resumes_with_the_definition_it_started_with(
