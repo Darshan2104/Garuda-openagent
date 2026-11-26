@@ -446,7 +446,7 @@ silent holds the flow and its workspace lease until you stop it. Set
 - **`deadline_min`**: when the step has run this long, Garuda cancels the
   agent's turn (`session/cancel`), stops the agent and stops the flow with
   **`flow.step_deadline`**. A native step stops at its next turn boundary
-  instead, the same deadline as `garuda run --deadline-sec`.
+  instead, the same deadline as `garuda run --deadline-sec N`.
 - **`silence_min`**: an external (ACP) step whose harness sends no event for
   this long, while no tool call is running and no approval is waiting for an
   answer, is cancelled the same way and stops with **`flow.step_silent`**.

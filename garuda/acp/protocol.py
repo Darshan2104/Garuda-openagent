@@ -33,6 +33,16 @@ class AcpTimeoutError(AcpError):
     """A bounded call exceeded its deadline."""
 
 
+class AcpSilenceError(AcpTimeoutError):
+    """The opt-in silence watchdog stopped a turn whose harness sent nothing (#828).
+
+    Only a caller that asked for the watchdog (a flow step with ``limits``)
+    can see it; ``liveness`` names the limit for the flow's stop.
+    """
+
+    liveness = "silence"
+
+
 class AcpProtocolError(AcpError):
     """Framing, JSON, or envelope violated the contract."""
 

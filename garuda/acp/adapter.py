@@ -34,6 +34,7 @@ import contextlib
 import json
 import logging
 import os
+import time
 import uuid
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -51,6 +52,7 @@ from garuda.acp.protocol import (
     AcpCancelledError,
     AcpError,
     AcpProtocolError,
+    AcpSilenceError,
     AcpTimeoutError,
     AcpUsageLimitError,
 )
@@ -181,6 +183,45 @@ class AcpRuntime:
         #: (``None`` when it sent none: Garuda cancelled, timed out or it failed)
         #: and whether Garuda denied an action during it.
         self._last_turn: dict[str, Any] | None = None
+        #: The opt-in silence watchdog (#828): ``(silence_sec, tool_silence_sec)``,
+        #: ``None`` (the default) for every caller that did not ask for one.
+        self._silence: tuple[float | None, float | None] | None = None
+        #: Tool calls of the current turn that have not completed or failed.
+        self._calls_in_flight: set[str] = set()
+
+    def watch_silence(self, *, silence_sec: float | None,
+                      tool_silence_sec: float | None) -> None:
+        """Stop a turn whose harness sends nothing for too long (#828); flows only.
+
+        Silence is the time since the harness's last notification or request.
+        While a permission request is parked it never counts; while a tool call
+        is in flight (``tool_call`` / ``tool_call_update`` not yet ``completed``
+        or ``failed``) ``tool_silence_sec`` applies instead of ``silence_sec``.
+        ``None`` is no limit in that state. When it fires the turn is cancelled
+        and the agent stopped as at a prompt deadline, and the prompt raises
+        :class:`AcpSilenceError`. Without this call nothing is watched.
+        """
+        for value in (silence_sec, tool_silence_sec):
+            if value is not None and not (isinstance(value, (int, float)) and value > 0):
+                raise ValueError("silence limits must be positive seconds or None")
+        self._silence = (silence_sec, tool_silence_sec)
+
+    def _silence_limit(self) -> float | None:
+        assert self._silence is not None
+        if self._pending_approvals:
+            return None  # a parked approval waits for a person: never silence
+        return self._silence[1] if self._calls_in_flight else self._silence[0]
+
+    def _track_tool_call(self, update: dict[str, Any]) -> None:
+        kind = update.get("sessionUpdate")
+        call_id = update.get("toolCallId")
+        if kind not in ("tool_call", "tool_call_update") or not isinstance(call_id, str):
+            return
+        status = update.get("status")
+        if status in ("completed", "failed"):
+            self._calls_in_flight.discard(call_id)
+        elif kind == "tool_call" or status in ("pending", "in_progress"):
+            self._calls_in_flight.add(call_id)
 
     def attach_consult(self, host) -> None:
         """Offer the ``consult`` tool to this agent when its adapter identity is proved (G.3)."""
@@ -849,6 +890,7 @@ class AcpRuntime:
         self._last_turn = {"turn": self._turn, "stop_reason": None, "approval_denied": False}
         self._plan_result = None
         self._cancel_requested = False
+        self._calls_in_flight = set()
         self._record_outbound_prompt(text)
         prompt_task = asyncio.ensure_future(
             self._process.session_prompt(self._agent_session_id or "", text)
@@ -886,6 +928,16 @@ class AcpRuntime:
             self._emit(RuntimeEventKind.LIFECYCLE, {"state": "failed", "reason": "timeout"})
             self._move(LifecycleState.FAILED)
             raise timeout_error from exc
+        except AcpSilenceError as silence_error:
+            # The opt-in watchdog (#828): end the turn as the deadline path does.
+            prompt_task.cancel()
+            self._note_error(silence_error)
+            self._record_failure(silence_error, phase="prompt")
+            await self._notify_cancel()
+            await self._close_process()
+            self._emit(RuntimeEventKind.LIFECYCLE, {"state": "failed", "reason": "silence"})
+            self._move(LifecycleState.FAILED)
+            raise
         except AcpCancelledError:
             self._finish_turn("cancelled")
             await self._close_process()
@@ -973,18 +1025,33 @@ class AcpRuntime:
     async def _drain_until_done(self, prompt_task: asyncio.Task) -> Any:
         """Feed notifications as they stream, returning the prompt result."""
         assert self._process is not None and self._normalizer is not None
+        heard = time.monotonic()
         while True:
             done, _ = await asyncio.wait({prompt_task}, timeout=0.05)
-            for notification in self._process.drain_notifications():
+            notifications = self._process.drain_notifications()
+            for notification in notifications:
                 if notification.get("method") != "session/update":
                     continue
                 update = (notification.get("params") or {}).get("update")
                 if update:
+                    if self._silence is not None and isinstance(update, dict):
+                        self._track_tool_call(update)
                     self._absorb(self._normalizer.feed(update))
-            for request in self._process.drain_requests():
+            requests = self._process.drain_requests()
+            for request in requests:
                 await self._on_agent_request(request)
             if done:
                 return prompt_task.result()
+            if self._silence is not None:
+                now = time.monotonic()
+                limit = self._silence_limit()
+                if notifications or requests or limit is None:
+                    heard = now  # activity, or a parked approval: the clock restarts
+                elif now - heard >= limit:
+                    raise AcpSilenceError(
+                        f"the agent sent nothing for {limit:g}s"
+                        + (" while a tool call was running" if self._calls_in_flight else "")
+                        + "; the turn was cancelled and the agent stopped")
 
     async def _on_agent_request(self, request: dict[str, Any]) -> None:
         """Answer one agent-initiated request, or park it as an approval."""

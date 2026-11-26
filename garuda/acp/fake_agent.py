@@ -33,7 +33,11 @@ session/set_config_option changes; replies name them; it starts in `--initial-mo
 its `fake-mini` model offers no effort and takes `everything` as `edit`, like a model
 without a harness's broadest mode), plan-exit (ends planning with an "Approve Plan"
 `switch_mode` request carrying the plan, like claude-agent-acp; reject ends the turn
-`cancelled`, an allow leaves plan mode), capabilities-<name>.
+`cancelled`, an allow leaves plan mode), silent (alive but silent: one chunk, then nothing;
+with --state-file only its first prompt, later ones answer like `artifacts`), long-tool (one
+tool call in progress for --tool-seconds, then the `artifacts` answer), parked-approval (a
+permission request with no tool call event; once answered, the `artifacts` answer),
+capabilities-<name>.
 """
 
 from __future__ import annotations
@@ -94,6 +98,9 @@ BASE_PROFILES = frozenset(
         "artifacts",
         "edits-unless-read-only",
         "probe-writes",
+        "silent",
+        "long-tool",
+        "parked-approval",
     }
 )
 PROFILES = BASE_PROFILES | frozenset(
@@ -200,6 +207,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="Send a usage_update (cost and model) first in every prompt.")
     parser.add_argument("--artifact-padding", type=int, default=0,
                         help="Lengthen each `artifacts` block body by this many characters.")
+    parser.add_argument("--tool-seconds", type=float, default=2.0,
+                        help="How long the `long-tool` profile's tool call runs.")
     parser.add_argument("--approval-kind",
                         help="Request this ACP tool kind before producing the reply.")
     parser.add_argument("--initial-mode", default=None,
@@ -337,6 +346,7 @@ def main(argv: list[str] | None = None) -> int:
                                         or profile in ("write-anyway", "probe-writes")) else None,
                     state_file=args.state_file, artifact_padding=args.artifact_padding,
                     approval_kind=args.approval_kind, report_usage=args.report_usage,
+                    tool_seconds=args.tool_seconds,
                 )
             elif method == "session/cancel":
                 pass  # a notification; nothing is in flight outside a prompt
@@ -477,10 +487,41 @@ def _edit_allowed(session_id: str) -> bool:
     return allowed
 
 
+def _answer_artifacts(session_id: str, call_id: int, text: str, artifact_padding: int) -> None:
+    """Answer every artifact block the prompt asks for; a review approves."""
+    blocks = []
+    kinds = []
+    marker = '<garuda-artifact type="'
+    for chunk in text.split(marker)[1:]:
+        kind, _, rest = chunk.partition('">')
+        if kind.isalpha() and rest.startswith("\n...your") and kind not in kinds:
+            kinds.append(kind)
+    for kind in kinds:
+        body = "verdict: approve\nfindings:\n- [nit] fine" if kind == "review" else (
+            f"{kind} for: {text.splitlines()[0][:60]}")
+        if artifact_padding:
+            body += "\n" + "." * artifact_padding
+        blocks.append(f'<garuda-artifact type="{kind}">\n{body}\n</garuda-artifact>')
+    _update(session_id, {"sessionUpdate": "agent_message_chunk",
+                         "content": _text("done.\n" + "\n".join(blocks))})
+    _result(call_id, {"stopReason": "end_turn"})
+
+
+def _first_silent_prompt(state_file: str | None) -> bool:
+    """Whether this is the `silent` profile's first prompt (always, without a state file)."""
+    if state_file is None:
+        return True
+    state = _load_state(state_file)
+    count = int(state.get("silent_prompts", 0))
+    _save_state(state_file, {**state, "silent_prompts": count + 1})
+    return count == 0
+
+
 def _handle_prompt(
     profile: str, call_id: int, params: dict, *, cwd: str | None = None,
     state_file: str | None = None, artifact_padding: int = 0,
     approval_kind: str | None = None, report_usage: bool = False,
+    tool_seconds: float = 2.0,
 ) -> None:
     session_id = params.get("sessionId", "")
     text = _prompt_text(params.get("prompt"))
@@ -569,24 +610,44 @@ def _handle_prompt(
         # Told nothing about read-only, it reaches for a patch; refused, it
         # ends the turn like Codex does (#762).
         _result(call_id, {"stopReason": "cancelled"})
-    elif profile in ("artifacts", "edits-unless-read-only"):
-        # Answers every artifact block the prompt asks for; a review approves.
-        blocks = []
-        kinds = []
-        marker = '<garuda-artifact type="'
-        for chunk in text.split(marker)[1:]:
-            kind, _, rest = chunk.partition('">')
-            if kind.isalpha() and rest.startswith("\n...your") and kind not in kinds:
-                kinds.append(kind)
-        for kind in kinds:
-            body = "verdict: approve\nfindings:\n- [nit] fine" if kind == "review" else (
-                f"{kind} for: {text.splitlines()[0][:60]}")
-            if artifact_padding:
-                body += "\n" + "." * artifact_padding
-            blocks.append(f'<garuda-artifact type="{kind}">\n{body}\n</garuda-artifact>')
-        _update(session_id, {"sessionUpdate": "agent_message_chunk",
-                             "content": _text("done.\n" + "\n".join(blocks))})
-        _result(call_id, {"stopReason": "end_turn"})
+    elif profile == "silent" and _first_silent_prompt(state_file):
+        # Alive but silent (#828): says one thing, then nothing, never ending
+        # its turn. With --state-file only the first prompt across processes
+        # is silent; later ones answer like `artifacts`.
+        import time
+
+        _update(session_id, {"sessionUpdate": "agent_message_chunk", "content": _text("thinking")})
+        time.sleep(60)
+    elif profile == "long-tool":
+        # One tool call that stays in progress for --tool-seconds without any
+        # other event (a long build or test run), then the `artifacts` answer.
+        import time
+
+        _update(session_id, {"sessionUpdate": "tool_call", "toolCallId": "c-long",
+                             "title": "run the test suite", "kind": "execute",
+                             "status": "in_progress"})
+        time.sleep(tool_seconds)
+        _update(session_id, {"sessionUpdate": "tool_call_update", "toolCallId": "c-long",
+                             "status": "completed",
+                             "content": [{"type": "content", "content": _text("passed")}]})
+        _answer_artifacts(session_id, call_id, text, artifact_padding)
+    elif profile == "parked-approval":
+        # A permission request with no tool call event around it: only the
+        # parked approval keeps this turn alive while nobody answers (#828).
+        _send({"jsonrpc": "2.0", "id": "perm-p", "method": "session/request_permission",
+               "params": {"sessionId": session_id,
+                          "toolCall": {"toolCallId": "c-p", "title": "deploy"},
+                          "options": [{"optionId": "allow", "name": "Allow",
+                                       "kind": "allow_once"},
+                                      {"optionId": "reject", "name": "Reject",
+                                       "kind": "reject_once"}]}})
+        while True:
+            reply = _read_frame()
+            if reply.get("id") == "perm-p" and "method" not in reply:
+                break
+        _answer_artifacts(session_id, call_id, text, artifact_padding)
+    elif profile in ("artifacts", "edits-unless-read-only", "silent"):
+        _answer_artifacts(session_id, call_id, text, artifact_padding)
     elif profile == "write-anyway":
         # Asks to edit, is refused, and writes anyway: what the no-edits
         # guardrail must catch after the fact.
