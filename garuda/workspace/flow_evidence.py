@@ -356,12 +356,16 @@ class OwnedFlowEvidence:
 
     async def finalize(self, coverage):
         reference = await self._call("flow-evidence-finalize", coverage=coverage)
+        return reference, await self.manifest(reference["manifest_digest"])
+
+    async def manifest(self, manifest_digest):
+        """Read the final manifest committed as ``manifest_digest`` (#772: a rerun reuses it)."""
 
         def read():
             reader = FlowEvidenceStore(self.base["session_dir"], self.base["parent_id"],
                                        self.base["workspace"], self.base["snapshot"],
                                        baseline_digest=self.baseline_digest)
-            return reader.manifest(reference["manifest_digest"])
+            return reader.manifest(manifest_digest)
 
         async def settled_read():
             # Cancelling a to_thread future does not stop its thread. Keep the
@@ -380,5 +384,4 @@ class OwnedFlowEvidence:
                 worker.exception()  # consume a settled read error; cancellation still wins
                 raise
 
-        manifest = await self.owner.race(settled_read())
-        return reference, manifest
+        return await self.owner.race(settled_read())

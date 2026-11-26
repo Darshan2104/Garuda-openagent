@@ -111,6 +111,29 @@ class AcceptanceRunner:
         return {"run": _tail(text)[:512], "authority": check.authority, "cwd": check.cwd,
                 "mode": check.mode, "started_at": time.time()}
 
+    @staticmethod
+    async def _adopt_terminal(data, progress) -> bool:
+        """Keep a terminal receipt whose publication outran a cancellation (#772).
+
+        A cancellation that lands while the terminal record is being written
+        leaves that record durable but unacknowledged; writing a ``cancelled``
+        receipt over it is refused, which used to read as launch uncertainty
+        and quarantine the flow. Returns False when no terminal record exists
+        or it cannot be read; the caller then settles the cancellation.
+        """
+        try:
+            existing = await owned_call("reconcile", data)
+        except Exception:
+            return False
+        if existing.get("classification") != "terminal":
+            return False
+        attempt = data["binding"]["attempt_id"]
+        if all(ref["attempt_id"] != attempt for ref in progress.result.receipt_refs):
+            progress.result.receipts.append(existing["result"])
+            progress.result.receipt_refs.append({"attempt_id": attempt,
+                                                 "digest": existing["receipt_digest"]})
+        return True
+
     async def _one(self, request, context, owner, permissions, check, index, progress):
         before = await self._probe(request, context, owner, permissions, check.cwd)
         if before["fingerprint"] != context.candidate:
@@ -189,6 +212,11 @@ class AcceptanceRunner:
                 raise
             except asyncio.CancelledError:
                 await process.close()
+                if await _settled(self._adopt_terminal(data, progress)):
+                    # The terminal receipt was durable before the cancellation
+                    # reached us (#772): nothing is ambiguous any more.
+                    self.launch_ambiguous = False
+                    raise
                 receipt = {**base, "status": "cancelled", "fingerprint": context.candidate,
                            "reason": "check cancelled after proved cleanup",
                            "output_tail": _tail(process.result.stdout_tail + process.result.stderr_tail)}
