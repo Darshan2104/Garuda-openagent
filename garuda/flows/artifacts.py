@@ -41,6 +41,10 @@ Artifact content is redacted with :func:`garuda.context.redact.redact_text`
 size, and what the next agent reads are the redacted text; the reference
 records how many spans were removed as ``redactions`` (#812). A reference
 written before that has no ``redactions`` and loads as ``None`` (unknown).
+A ``review`` whose content parses as JSON (a structured review) is redacted
+value by value and re-serialized, so a secret next to an escaped quote cannot
+leave invalid JSON behind; when a secret spans the structure itself, or the
+content is not JSON, the whole text is redacted as before.
 
 Each artifact is bounded, stored once (exclusive, owner-only, no symlinks)
 under the flow's own directory, and described by a reference: type, digest,
@@ -57,6 +61,7 @@ workspace as it is now. A forged, escaping, symlinked or stale input refuses.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import stat
@@ -156,11 +161,42 @@ def instructions(outputs: list[str]) -> str:
     return "\n".join(lines)
 
 
+def _redact_json(content: str) -> tuple[str, list]:
+    """Redact a JSON document string by string, or the whole text when it is not JSON."""
+    try:
+        data = json.loads(content)
+    except ValueError:
+        return redact_text(content)
+    findings: list = []
+
+    def walk(value):
+        if isinstance(value, str):
+            text, found = redact_text(value)
+            findings.extend(found)
+            return text
+        if isinstance(value, list):
+            return [walk(item) for item in value]
+        if isinstance(value, dict):
+            return {walk(key): walk(item) for key, item in value.items()}
+        return value
+
+    redacted = walk(data)
+    if not findings:
+        text = content
+    else:
+        text = json.dumps(redacted, ensure_ascii=False)
+    # A secret that only shows across keys and values (``"password": "..."``)
+    # is caught by the whole-text pass; that redaction wins over valid JSON.
+    if redact_text(text)[1]:
+        return redact_text(content)
+    return text, findings
+
+
 def store(flow_dir: Path, *, type: str, content: str, step: str, session_id: str,
           attempt: int, workspace_version: str | None) -> ArtifactRef:
     if type not in ARTIFACTS:
         raise ArtifactError("flow.artifact_type", f"{type!r} is not an artifact type")
-    content, findings = redact_text(content)
+    content, findings = _redact_json(content) if type == "review" else redact_text(content)
     redactions = sum(finding.count for finding in findings)
     if len(content) > MAX_ARTIFACT_CHARS:
         raise ArtifactError("flow.artifact_too_large",

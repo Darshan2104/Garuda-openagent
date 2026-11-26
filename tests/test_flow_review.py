@@ -525,6 +525,48 @@ async def test_a_structured_review_requests_changes_with_its_evidence(repo):
     assert "structured" not in history[1]  # the legacy line review stays legacy
 
 
+@pytest.mark.parametrize("verdict, severity", [("changes", "major"), ("approve", "minor")])
+async def test_a_secret_beside_an_escaped_quote_keeps_a_structured_review_valid(repo, verdict,
+                                                                                severity):
+    """#812 follow-up: redacting the JSON text cut `password=\\"..."` at the escape and
+    left invalid JSON (`flow.review_invalid`); a structured review is redacted per value."""
+    secret = "FAKEhunter2value"
+    review = {"version": 2, "verdict": verdict, "findings": [{
+        "severity": severity, "path": "a.txt", "lines": None,
+        "message": f'a.txt sets password="{secret}" in plain text',
+        "evidence": "line 1", "verification": "grep password a.txt"}]}
+    script = Script([json.dumps(review), APPROVE])
+    runner = _run(repo, script, _config(max_rounds=1))
+    result = await runner.run()
+
+    assert result.completed, result.stopped
+    first = next(r for r in result.receipts if r["step"] == "review" and r["attempt"] == 1)
+    ref = first["outputs"][0]
+    stored = (runner.dir / ref["path"]).read_text()
+    assert ref["redactions"] == 1 and secret not in stored
+    parsed = rv.parse(stored)
+    assert parsed.approved is (verdict == "approve")
+    assert parsed.structured[0]["message"] == "a.txt sets [REDACTED:credential] in plain text"
+    history = SessionStore().load_meta(result.flow_session)["review"]["history"]
+    assert history[0]["verdict"] == verdict
+    assert secret not in json.dumps(history)
+    if verdict == "changes":
+        retry = script.prompts[("build", 2)]
+        assert secret not in retry and "a.txt sets [REDACTED:credential] in plain text" in retry
+    else:
+        assert ("build", 2) not in script.prompts
+
+
+def test_a_secret_spanning_a_json_key_and_value_is_still_redacted(tmp_path):
+    from garuda.flows import artifacts
+
+    content = json.dumps({"version": 2, "password": "FAKEhunter2value"})
+    ref = artifacts.store(tmp_path, type="review", content=content, step="review",
+                          session_id="s", attempt=1, workspace_version=None)
+    stored = (tmp_path / ref.path).read_text()
+    assert "FAKEhunter2value" not in stored and ref.redactions == 1
+
+
 class PacketScript(Script):
     """The coder records its step session's changed files, as a real step session does."""
 
