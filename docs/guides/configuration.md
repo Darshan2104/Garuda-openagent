@@ -645,6 +645,14 @@ launch (`role.mode_exceeds_permissions`).
 | `auto` (the agent's own judgement decides what to ask) | `auto` | `agent` (asks only for actions it judges unsafe) |
 | `yolo` (approves everything) | `bypassPermissions` | `agent-full-access` |
 
+A run in Claude Code's `plan` mode stays in plan mode. Claude ends planning by
+asking to approve the plan ("Approve Plan", which would switch to an editing
+mode). Garuda always answers "No, keep planning" and returns the plan as the
+run's reply, so the run completes with the plan as its output. Claude Code
+plans with Sonnet when the configured model is Haiku (its own "haiku plan
+upgrade"), so a plan-mode run can report and cost a larger model than the
+role's other runs.
+
 A role that names no mode gets one from what its step may do:
 
 | The step may | Claude Code | Codex |

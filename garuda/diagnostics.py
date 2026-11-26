@@ -76,6 +76,7 @@ REGISTRY: dict[str, str] = {
     "harness.login_timeout": "Run `{argv}` yourself; it did not answer within {timeout}s.",
     "harness.login_unrecognized": "Run `{argv}` yourself; its answer was not one Garuda knows.",
     "harness.not_checked": "Check it with `garuda doctor --runtime {runtime}`.",
+    "harness.unknown": "Use a known harness id: {known}.",
     # sessions and workspaces
     "lease.unreadable": "Inspect the leases directory; a corrupt lease blocks its workspace.",
     "lease.held": "Wait for session {session} to finish, or stop it.",
