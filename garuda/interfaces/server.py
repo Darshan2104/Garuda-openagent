@@ -188,9 +188,14 @@ class JsonRpcServer:
             elif method == "jobs":
                 result = self._list_jobs(params)
             elif method == "sessions":
-                result = {
-                    "sessions": SessionStore().list_sessions(limit=int(params.get("limit", 20)))
-                }
+                from garuda.core.sessions import SessionLimitError, validate_session_limit
+
+                try:
+                    limit = validate_session_limit(params.get("limit", 20))
+                except SessionLimitError as exc:
+                    return {"jsonrpc": "2.0", "id": req_id,
+                            "error": {"code": -32602, "message": f"Invalid params: {exc}"}}
+                result = {"sessions": SessionStore().list_sessions(limit=limit)}
             elif method == "list_agents":
                 agents_dir = params.get("agents_dir", self._config.agents_dir)
                 result = {

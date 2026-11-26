@@ -391,7 +391,7 @@ allows up to 32 simultaneous connections, each with a 30-second read timeout.
 | `GET /api/scenario-runs/<id>` | Shared selected-session evidence; `limit` 1–200 and non-negative `offset`, optional workspace index for names |
 | `GET /api/runs`, `GET /api/runs/<id>` | Runs and one run's trace |
 | `GET /api/runs/<id>/tail` | Poll a run for new events |
-| `GET /api/sessions` | Every session's row: the four facts, the derived `crashed` label, queue position, worker, approvals waiting, agent digest, resume provenance |
+| `GET /api/sessions` | `limit` an integer >= 1, capped at 200; every session's row: the four facts, the derived `crashed` label, queue position, worker, approvals waiting, agent digest, resume provenance |
 | `GET /api/sessions/<id>` | One session, with pending approvals and, for a flow, its steps, attempts and review outcome |
 | `GET /api/sessions/<id>/stream` | Live events as server-sent events |
 | `GET /api/sessions/<id>/conversation` | The Models used, links and lanes data |
