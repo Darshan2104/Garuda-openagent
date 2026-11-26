@@ -680,6 +680,15 @@ Replace `JOB_ID` with the `job_id` returned by `submit`.
 | `jobs`, `sessions`, `list_agents` | Lists jobs, saved sessions, and profiles |
 | `runtime_list`, `runtime_inspect`, `runtime_handoff`, `runtime_recover`, `runtime_support` | Runtime operations; see [Level 7](advanced.md) |
 
+`submit` and `run` refuse bad input before any job or session exists, with the
+codes `garuda run` uses: `task.missing` (task absent, not a string, or blank),
+`workspace.missing` / `workspace.not_directory`, `agent.not_found`,
+`session.not_found` (`resume`), `model.invalid`, and `mode.invalid` (a mode
+other than the `--mode` choices). The error is JSON-RPC `-32602` with the code
+in `error.data.code` and as the message prefix. An unknown method is `-32601`.
+A request without an `id` is a notification: it runs, and the reply is an
+empty HTTP 204.
+
 Requests that carry a browser `Origin` header are rejected, so a web page you
 visit can't drive the server. `--max-jobs` limits concurrent jobs (default 4).
 
