@@ -17,6 +17,26 @@ finish now sit in one `try`, so any exception, cancellation or
 killed by a signal still cannot settle itself; that stays the job of session
 recovery.
 
+## 2026-11-26 — SDK ACP runs refuse resume; unknown runtimes are typed (#804, #805)
+
+`SoftwareAgent(runtime="claude").run(task, resume=...)` started a fresh harness
+session and returned `success=True`, dropping `resume`, `resume_all_projects`
+and `events`, while the docs said `resume="latest"` continues the newest
+session. The SDK now refuses them on ACP with `OptionsUnsupportedOnRuntime`
+(`sdk.options_unsupported`), through `refuse_unservable_options`, before the
+harness starts. Resuming was not wired up: the CLI's ACP resume is spread over
+`_plan_resume` (`interfaces/main.py`), `run_acp_task`'s `_resume_or_brief`
+(`session/load` or a brief fallback) and the attachment brief, none of which the
+SDK's `_run_acp` shares, so reusing it would not be a small change. The docs
+now say resume is native-only in the SDK and point to `Conversation` (which has
+no resume or events argument to drop) and `garuda run --resume`. An unknown
+`runtime=` raised a bare `ValueError` from `SoftwareAgent` and `Conversation`;
+`acp_adapter_for_workspace` now resolves the id first and raises
+`UnknownRuntime` (`garuda/runtime/registry.py`, a `ValueError` so existing
+handlers still match) with the CLI's `harness.unknown` code and the configured
+runtime ids on `.known`, as `garuda doctor --runtime` reports them. The message
+is unchanged. It is exported from `garuda.sdk`.
+
 ## 2026-11-26 — SDK refusals carry the CLI's agent and workspace codes (#798)
 
 `AgentSpec.load("nonexist")` and `SoftwareAgent(agent="nonexist").run()` raised
@@ -5070,3 +5090,33 @@ attempt ends the run) and flows under quota recovery (whose continuation is
 built from the recorded stop); the service does not enrol a flow with `retries`
 in quota recovery and records the `unsupported` reason instead. The scenario
 compiler's worst-case invocation count adds each step's retries.
+
+## 2026-11-26: An interrupted `garuda run` settles as a cancel; dead-owner approvals are refused (#807, #808)
+
+`garuda run` now runs under `_interruptible`: the first SIGINT or SIGTERM
+cancels the run task with its reason (the pattern of #760's flow `_terminable`,
+extended to SIGINT so asyncio's own handler no longer turns Ctrl-C into a
+`KeyboardInterrupt` traceback). The ACP run's existing cancel path withdraws
+the parked approval (decision `cancelled`); its settlement now records
+`status: cancelled`, `state` outcome `cancelled`, `error_code: run.cancelled`
+and the reason as `error_detail` instead of `failed` with no error. The exit
+is 130 for Ctrl-C and 143 for SIGTERM, matching `flow run` and background
+workers. Later signals are recorded but do not cancel the cleanup again.
+
+A published approval request now names its owner (`owner`: pid and start
+identity of the process holding the broker), covered by the request digest.
+`write_answer` refuses with `OwnerGone` (`approval.owner_gone`, exit 2; the
+dashboard returns 410 `owner_gone`) when that owner is confirmed dead
+(`owner_liveness` is False); unknown liveness or a legacy request without an
+owner answers as before. This only ever refuses, so a stale answer can never
+become an allow. `approvals list` marks such requests `owner gone` (JSON
+`owner_gone: true`).
+
+`garuda runtime recover` now withdraws (in `cmd_recover`, since `garuda/runtime`
+must not import `garuda.acp`), with an exclusive `cancelled` decision via `recover` and an
+`approval:<id>` audit record, every undecided request whose owner is
+confirmed dead (an owner-less legacy request only when the session's owner is
+confirmed dead); `recovery.recover` (release_dead_owner, non-flow) records a still-`running` session whose owner is
+confirmed dead and that holds no lease or slot as `failed`/interrupted with
+`run.owner_lost`. A live owner's requests and sessions are never touched;
+since decisions are exclusive, a live broker racing the withdrawal fails closed.

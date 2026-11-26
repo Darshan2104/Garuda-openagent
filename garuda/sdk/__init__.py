@@ -6,6 +6,7 @@ from garuda.sdk.errors import (
     AgentNotFound,
     OptionsUnsupportedOnRuntime,
     ToolsUnsupportedOnRuntime,
+    UnknownRuntime,
     WorkspaceMissing,
     WorkspaceNotDirectory,
     WorkspaceUnavailable,
@@ -13,5 +14,6 @@ from garuda.sdk.errors import (
 from garuda.sdk.software_agent import SoftwareAgent
 
 __all__ = ["AgentNotFound", "AgentSpec", "Conversation", "OptionsUnsupportedOnRuntime",
-           "SoftwareAgent", "ToolsUnsupportedOnRuntime", "WorkspaceMissing",
+           "SoftwareAgent", "ToolsUnsupportedOnRuntime", "UnknownRuntime",
+           "WorkspaceMissing",
            "WorkspaceNotDirectory", "WorkspaceUnavailable"]

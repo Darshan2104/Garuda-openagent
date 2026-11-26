@@ -21,6 +21,13 @@ replayed answer, another session's or request's, a modified request, a
 symlink, an expired or partial answer, a ceiling change — is a denial,
 recorded with the reason.
 
+**Owner.** The request names the process that published it (``owner``: pid and
+start identity), the only process that can consume an answer. An answer to a
+request whose owner is confirmed dead is refused (:class:`OwnerGone`, #807):
+nothing would ever act on it. ``garuda runtime recover`` withdraws such a
+request (decision ``cancelled``). A request written before owners were
+recorded carries none and is answered as before.
+
 **One decision.** The outcome is recorded once in ``<id>.decision.json``
 (exclusive creation): a terminal answer and a file answer race to the broker
 and only the first counts.
@@ -135,6 +142,34 @@ def read_owned(path: Path) -> dict:
     return data
 
 
+def _publishing_owner() -> dict:
+    """This process, the one that will consume the answer (#807)."""
+    from garuda.runtime.recovery import _process_identity
+
+    pid = os.getpid()
+    try:
+        identity = _process_identity(pid) or "unknown"
+    except Exception:
+        identity = "unknown"
+    return {"pid": pid, "identity": identity}
+
+
+def owner_gone(request: dict) -> bool:
+    """True only when the request's recorded owner is confirmed dead.
+
+    A request with no recorded owner, or whose owner's liveness cannot be
+    determined, is not called gone: this only ever refuses, it never allows.
+    """
+    owner = request.get("owner")
+    if not isinstance(owner, dict):
+        return False
+    from garuda.runtime.ownership import owner_liveness
+
+    # pid and start identity only: the owner process holds the broker; its
+    # process group or descendants cannot consume an answer.
+    return owner_liveness({"pid": owner.get("pid"), "identity": owner.get("identity")}) is False
+
+
 @dataclass(frozen=True)
 class Published:
     approval_id: str
@@ -177,6 +212,7 @@ class FileApprovalChannel:
             "nonce": secrets.token_hex(16),
             "expires_at": round(expires_at, 3),
             "ceiling": ceiling,
+            "owner": _publishing_owner(),
         }
         if getattr(request, "requester", None) is not None:
             fields.update(requester=request.requester, requester_ceiling=request.requester_ceiling)
@@ -277,6 +313,73 @@ class FileApprovalChannel:
         return out
 
 
+def withdraw_orphaned(directory: str | Path, session_id: str, *, session_owner_dead: bool,
+                      reason: str) -> list[dict]:
+    """Record ``cancelled`` for each undecided request whose owner is confirmed dead.
+
+    A request without a recorded owner is withdrawn only when the session's own
+    owner is confirmed dead (``session_owner_dead``). The decision is created
+    exclusively, so a live broker deciding concurrently still wins, and its own
+    exclusive decision then fails closed (deny). Returns the withdrawn requests.
+    """
+    channel = FileApprovalChannel(directory, session_id)
+    withdrawn = []
+    for request in channel.pending():
+        approval_id = request.get("approval_id")
+        if not isinstance(approval_id, str):
+            continue
+        if not (owner_gone(request)
+                or (session_owner_dead and not isinstance(request.get("owner"), dict))):
+            continue
+        if channel.decide(approval_id, "cancelled", "recover", reason):
+            withdrawn.append(request)
+    return withdrawn
+
+
+WITHDRAWN_REASON = ("the run's process exited before an answer; withdrawn by "
+                    "`garuda runtime recover`")
+
+
+def withdraw_dead_session_approvals(store, session_id: str) -> list[str]:
+    """``garuda runtime recover``: withdraw a dead run's parked approvals (#807).
+
+    Each withdrawal is an exclusive ``cancelled`` decision (via ``recover``) and
+    an ``approval:<id>`` audit record. Returns notes for the recovery report.
+    """
+    from garuda.runtime.ownership import owner_liveness
+
+    try:
+        meta = store.load_meta(session_id)
+    except Exception as exc:
+        return [f"parked approvals were not inspected: session unreadable ({exc})"]
+    state = meta.get("state") if isinstance(meta, dict) else None
+    owner = state.get("owner") if isinstance(state, dict) else None
+    owner_dead = isinstance(owner, dict) and owner_liveness(owner) is False
+    try:
+        withdrawn = withdraw_orphaned(Path(store.session_dir(session_id)) / "approvals",
+                                      session_id, session_owner_dead=owner_dead,
+                                      reason=WITHDRAWN_REASON)
+    except (ChannelError, OSError) as exc:
+        return [f"parked approvals were not withdrawn: {exc}"]
+    notes = []
+    for request in withdrawn:
+        approval_id = request["approval_id"]
+        try:
+            from garuda.acp.broker import ApprovalRecord
+            from garuda.core.approval_outcome import ApprovalOutcome
+
+            record = ApprovalRecord(
+                approval_id=approval_id, outcome=ApprovalOutcome.CANCELLED,
+                action=str(request.get("action", "")), family=str(request.get("family", "")),
+                runtime_id=str(request.get("runtime_id", "")), via="recover",
+                reason=WITHDRAWN_REASON)
+            store.update_meta(session_id, {f"approval:{approval_id}": record.to_dict()})
+        except Exception:
+            notes.append(f"withdrawn approval {approval_id} was not audited in the session record")
+        notes.append(f"withdrew parked approval {approval_id}: its run's process is gone")
+    return notes
+
+
 class AnswerRefused(ValueError):
     """An answer that must not be written; ``code`` says why (stable, for callers)."""
 
@@ -293,6 +396,12 @@ class RequestExpired(AnswerRefused):
     code = "expired"
 
 
+class OwnerGone(AnswerRefused):
+    """The process that parked the request is dead: no one would consume an answer (#807)."""
+
+    code = "owner_gone"
+
+
 def write_answer(directory: str | Path, session_id: str, approval_id: str, allow: bool,
                  *, expect_digest: str | None = None) -> dict:
     """Answer a parked approval from another process (``garuda approvals answer``).
@@ -302,7 +411,8 @@ def write_answer(directory: str | Path, session_id: str, approval_id: str, allow
     the request the answerer was shown (a dashboard page): if the request on
     disk is not that one, the answer is refused as :class:`StaleRequest` rather
     than binding a decision to something its author never saw. A request that
-    already has a decision is not answerable.
+    already has a decision is not answerable, nor is one whose owner process
+    is confirmed dead (:class:`OwnerGone`).
     """
     channel = FileApprovalChannel(directory, session_id)
     request = read_owned(channel._path(approval_id, "request"))
@@ -317,6 +427,10 @@ def write_answer(directory: str | Path, session_id: str, approval_id: str, allow
         raise RequestExpired("the request has expired")
     if channel._path(approval_id, "decision").exists():
         raise FileExistsError(f"approval {approval_id} already has a decision")
+    if owner_gone(request):
+        raise OwnerGone(
+            f"the run that parked it (pid {request['owner'].get('pid')}) has exited, so no one "
+            "would act on an answer; `garuda runtime recover` withdraws it")
     answer = {
         "version": VERSION, "session_id": session_id, "approval_id": approval_id,
         "request_digest": request["digest"], "nonce": request["nonce"], "allow": bool(allow),
