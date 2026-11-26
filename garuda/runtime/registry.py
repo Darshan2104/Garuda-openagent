@@ -391,6 +391,11 @@ class RuntimeRegistry:
         fail closed like `get`."""
         return self._resolve_id(ref) in self._disabled
 
+    def resolve_id(self, ref: str) -> str:
+        """The runtime id behind an id or alias. Unknown refs raise
+        `RegistryError`, the refusal `garuda run --runtime` prints."""
+        return self._resolve_id(ref)
+
     def _resolve_id(self, ref: str) -> str:
         if ref in self._manifests:
             return ref

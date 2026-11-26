@@ -380,3 +380,27 @@ def test_config_show_prints_values_and_their_sources(tmp_path, monkeypatch, caps
     assert code == 0
     assert "# roles.coder: user-config" in out
     assert "# withheld until trusted: checks[0]" in out
+
+
+def test_doctor_refuses_an_unknown_runtime_like_run(two_harnesses):
+    """#777: an unknown `--runtime` is an error, not silently ignored."""
+    report = onboarding.doctor_report(two_harnesses, runtimes=["nosuch", "fakeb"],
+                                      login_run=lambda argv, t: (0, "Logged in"))
+    unknown = [d for d in report if d.code == "harness.unknown"]
+    assert len(unknown) == 1 and unknown[0].level == "error"
+    assert unknown[0].message == "runtime selection refused: unknown runtime 'nosuch'"
+    assert "fakea" in unknown[0].fix and "fakeb" in unknown[0].fix
+    assert "harness.ok" in _codes(report)  # the known one is still checked
+
+
+@pytest.mark.parametrize("json_output", [False, True], ids=["text", "json"])
+def test_doctor_cli_exits_nonzero_for_an_unknown_runtime(two_harnesses, monkeypatch, capsys,
+                                                       json_output):
+    argv = ["doctor", "--workspace", str(two_harnesses), "--runtime", "nosuch"]
+    code, out = _main(monkeypatch, capsys, *argv, *(["--json"] if json_output else []))
+    assert code == 1 and "unknown runtime 'nosuch'" in out
+    if json_output:
+        [item] = [d for d in json.loads(out) if d["code"] == "harness.unknown"]
+        assert item["level"] == "error" and "fakea" in item["fix"]
+    else:
+        assert "harness.unknown" in out
