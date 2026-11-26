@@ -107,10 +107,11 @@ class ArtifactRef:
         return cls(**fields, version=data.get("version"), redactions=data.get("redactions"))
 
 
-def extract(output: str) -> dict[str, str]:
+def extract(output: str, *, types: tuple[str, ...] = ARTIFACTS) -> dict[str, str]:
     """``{type: content}`` from the top-level envelope blocks in ``output``, by
     the rules in the module docstring; ``flow.artifact_malformed`` when the
-    envelope cannot be read unambiguously."""
+    envelope cannot be read unambiguously. ``types`` other than the artifact
+    types read a block that is never an artifact (a long step's ``progress``)."""
     text = output or ""
     found: dict[str, str] = {}
     depth, start, attrs, opened = 0, 0, "", 0
@@ -135,7 +136,7 @@ def extract(output: str) -> dict[str, str]:
         body = text[start:tag.start()]
         body = body.removeprefix("\n").removesuffix("\n")
         match = _TYPE.search(attrs)
-        if match and match.group(1) in ARTIFACTS:
+        if match and match.group(1) in types:
             found[match.group(1)] = body
     if depth:
         raise malformed(opened, "a <garuda-artifact> block, or an opening tag nested in it, "
