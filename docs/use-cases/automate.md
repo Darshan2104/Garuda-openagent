@@ -583,6 +583,10 @@ retain the permission engine's configured root.
 `SoftwareAgent` also accepts `model=`, `workspace_kind=` (for example
 `"docker"`), `docker_image=`, and `runtime=` to run one turn on an
 [external harness](advanced.md#run-a-task-with-claude-code-codex-or-another-harness).
+On a harness, `SoftwareAgent.run` denies every permission request the harness
+sends (shell commands, edits), the same as a headless `garuda run --runtime claude`;
+use `agent.conversation()` with `Conversation(approval_handler=...)` to answer
+them yourself.
 `agent.run(task, resume="latest")` continues this workspace's newest saved
 session; pass `resume_all_projects=True` for the newest one anywhere.
 

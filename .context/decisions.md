@@ -1,5 +1,22 @@
 # Durable decisions
 
+## 2026-11-26 — SDK ACP runs deny unattended approvals (#801)
+
+`SoftwareAgent._run_acp` attached no approval path, so the harness's first
+`session/request_permission` (e.g. an `execute` call) was never answered and
+the run hung with its session `running`. It now passes the same broker-backed
+handler a headless `garuda run --runtime` uses (`run_guard.broker_approval_handler`
+with no answerer): every ask is parked, denied at once and audited as an
+`approval:*` meta record. `acp_adapter_for_workspace` gained an
+`approval_handler` pass-through for this. `SoftwareAgent` exposes no approval
+callback (native runs have none either), so none is added; callers who want to
+answer asks use `Conversation(approval_handler=...)`, which was already
+deny-by-default. The session record, baseline, start, prompt, segment attach and
+finish now sit in one `try`, so any exception, cancellation or
+`asyncio.wait_for` timeout settles the session `failed`/`cancelled`. A process
+killed by a signal still cannot settle itself; that stays the job of session
+recovery.
+
 ## 2026-11-26 — SDK refusals carry the CLI's agent and workspace codes (#798)
 
 `AgentSpec.load("nonexist")` and `SoftwareAgent(agent="nonexist").run()` raised
@@ -5002,3 +5019,23 @@ not IDLE, because a `cancelled` finish terminates the normalizer's session and
 `cancel()` already closes; the next `prompt` raises `RuntimeClosedError`. The
 state moves sit in a `finally` so a cleanup failure still never leaves RUNNING.
 The plan-mode path (#778) is not reached: it only reads a returned stop reason.
+
+## 2026-11-26: Flow stops say their code once and name the step; approval answers are typed (#796, #797)
+
+A role refused while its plan is built (`role.mode_unknown` and the other
+`RoleRefused` codes) stopped the flow at the role name, and its message was
+`str(RoleRefused)`, which already starts with the code, so `flow run` / `flow
+resume` printed the code twice. `FlowStopped` now drops a leading copy of its own
+code from the message, so every stop (including ones rebuilt from a recorded
+message) reads `code: message` once; `flow show` keeps its #749 de-dup.
+`FlowRunner._role_plan` takes the step id and records it as the stop's step; the
+per-role quota recovery admission check, which has no step, names the first step
+of that role. Stop codes and resumability are unchanged.
+
+`garuda approvals answer S ID` on an id with no parked request exits 2 with
+`approval.not_found: no parked approval 'ID' for session S` instead of the raw
+ENOENT text with the session's absolute path. Every other answer refusal is
+typed too: `approval.answered`, `approval.stale_request`, `approval.expired`,
+`approval.refused`, and `approval.unavailable` for an OS error, which prints only
+the OS reason (`strerror`), never the path. The dashboard answer route already
+mapped a missing request to 404; its generic OS-error branch now also drops the path.

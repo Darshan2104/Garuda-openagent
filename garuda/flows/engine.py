@@ -70,6 +70,8 @@ def _settled_refusal(receipt: dict) -> bool:
 class FlowStopped(Exception):
     def __init__(self, code: str, message: str, *, step: str | None = None,
                  cause: dict | None = None):
+        # A refusal re-raised as a stop already says its code; say it once (#796).
+        message = str(message).removeprefix(f"{code}:").strip() if code else message
         super().__init__(f"{code}: {message}")
         self.code = code
         #: Raised from a settled receipt of an owned worker's typed refusal (#738).
@@ -486,12 +488,20 @@ class FlowRunner:
         except DiffError:
             return False
 
-    def _role_plan(self, role: str, *, acp_only: bool = False, no_edits: bool = False):
-        """Resolve the role, using its primary for ACP confinement checks."""
+    def _role_plan(self, role: str, *, step: str | None = None, acp_only: bool = False,
+                   no_edits: bool = False):
+        """Resolve the role, using its primary for ACP confinement checks.
+
+        A refusal stops the flow at ``step``, the step id, never the role name (#796);
+        a per-role check (quota recovery admission) names the first step of that role.
+        """
+        if step is None:
+            step = next((s["id"] for s in self.steps
+                         if role == s.get("role") or role in (s.get("parallel") or ())), None)
         if self.prepared_roles is not None:
             if role not in self.prepared_roles:
                 raise FlowStopped("flow.role_unprepared",
-                                  f"role {role} is absent from the admitted authority", step=role)
+                                  f"role {role} is absent from the admitted authority", step=step)
             return self.prepared_roles[role]
         from garuda.agents.fallbacks import choose
         from garuda.agents.setup import prepare_runtime_catalog
@@ -510,7 +520,7 @@ class FlowRunner:
                 plan = choose(plan, resolved, catalog, no_edits=no_edits)
             return role_agent.bind(plan, self.workspace)
         except RoleRefused as exc:
-            raise FlowStopped(exc.code, str(exc), step=role) from exc
+            raise FlowStopped(exc.code, str(exc), step=step) from exc
 
     def _validate_operation_workspace(self) -> None:
         if self.operation_binding is None:
@@ -555,7 +565,7 @@ class FlowRunner:
                 continue  # owned execution cannot launch parallel groups
             for role in step.get("parallel") or (step["role"],):
                 no_edits = self._no_edits(step, role)
-                plan = self._role_plan(role, acp_only=True)
+                plan = self._role_plan(role, step=step["id"], acp_only=True)
                 self._check_confinement_image(step, plan, no_edits=no_edits)
 
     def _review_plans(self, step: dict, terminal: dict):
@@ -567,8 +577,9 @@ class FlowRunner:
         """
         from garuda.flows import review as rv
 
-        reviewed_plan = self._role_plan(step["role"], no_edits=self._no_edits(step, step["role"]))
-        reviewer_plan = self._role_plan(terminal["role"], no_edits=self._no_edits(terminal, terminal["role"]))
+        reviewed_plan = self._role_plan(step["role"], step=step["id"], no_edits=self._no_edits(step, step["role"]))
+        reviewer_plan = self._role_plan(terminal["role"], step=terminal["id"],
+                                         no_edits=self._no_edits(terminal, terminal["role"]))
         if step["review"].get("independent", True):
             why = rv.check_independent(self.resolved.config, step["role"], reviewed_plan,
                                        terminal["role"], reviewer_plan)
@@ -1333,7 +1344,7 @@ class FlowRunner:
         from garuda.workspace.no_edits import NoEditsGuard
 
         members = step["parallel"]
-        plans = {role: self._role_plan(role) for role in members}
+        plans = {role: self._role_plan(role, step=step["id"]) for role in members}
         for role, plan in plans.items():
             if plan is not None and plan.kind == "acp" and plan.permissions != "readonly":
                 raise FlowStopped("flow.parallel_reviewer_not_readonly",
@@ -1702,7 +1713,7 @@ class FlowRunner:
                 raise FlowStopped("flow.recovery_changed", str(exc), step=step["id"]) from exc
         role = step["role"]
         no_edits = self._no_edits(step, role)
-        plan = self._role_plan(role, no_edits=no_edits)
+        plan = self._role_plan(role, step=step["id"], no_edits=no_edits)
         inputs = await self._inputs(step, done)
         version_before = await self._version_for_flow()
         prompt = self._prompt(step, role, inputs) + (f"\n\n{prompt_extra}" if prompt_extra else "")
