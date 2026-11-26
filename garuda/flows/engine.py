@@ -186,6 +186,16 @@ def _stamp() -> str:
     return _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="milliseconds")
 
 
+def advanced(updates: dict) -> dict:
+    """``updates`` stamped with a fresh ``updated_at`` (#763, #776).
+
+    The store merge only defaults ``updated_at`` and ``begin`` already set it,
+    so every flow-session state publication must carry its own stamp, or the
+    session keeps reporting its creation time as its last activity.
+    """
+    return {"updated_at": _dt.datetime.now(_dt.timezone.utc).isoformat(), **updates}
+
+
 def _timing(started: tuple[str, float] | None) -> dict:
     """When a step attempt launched and settled (#726).
 
@@ -330,7 +340,7 @@ def recover(store, flow_session: str) -> list[str]:
             continue
         quarantined.append(entry["step"])
     if quarantined:
-        store.update_meta(flow_session, {"flow_state": "quarantined"})
+        store.update_meta(flow_session, advanced({"flow_state": "quarantined"}))
     return quarantined
 
 
@@ -866,8 +876,8 @@ class FlowRunner:
                     or not isinstance(policy, dict) or policy.get("kind") not in {"owned-flow", "flow-verification"}
                     or policy.get("session_id") != self.flow_session):
                 raise FlowStopped("flow.background_invalid", "queued parent cannot be adopted")
-            self.store.update_meta(self.flow_session, {
-                "workspace": self.workspace, "status": "running"})
+            self.store.update_meta(self.flow_session, advanced({
+                "workspace": self.workspace, "status": "running"}))
         else:
             try:
                 self.store.session_dir(self.flow_session).mkdir(

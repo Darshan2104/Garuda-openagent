@@ -111,6 +111,20 @@ reconciles on cancellation. A terminal receipt that was durable before the
 cancel arrived (the field race: its acknowledgement was lost) is kept, and the
 flow is no longer treated as launch-ambiguous and quarantined.
 
+## 2026-11-26 — Flow recovery and background writes advance `updated_at` too (#776)
+
+The #776 report (3-step unchecked flow, `updated_at == created_at`) came from
+runs of a stale pre-#763 install: its step sessions lack the `acp_mode` and
+`trace_detail` keys current main writes, and a 3-step flow run on current code
+in the same home advanced `updated_at`. Fake-agent regressions now pin 1-step
+and 3-step flows (checked and unchecked via the CLI, unchecked with typed
+artifacts via `FlowRunner`), resume and recovery. The flow-session writes that
+still bypassed `FlowRunner._publish` now stamp `updated_at` through
+`engine.advanced`: `recover()`'s quarantine, background-parent adoption in
+`_begin`, and the background worker's terminal and cancelled-before-dispatch
+states. The store merge still only defaults `updated_at`; generic session
+writes are unchanged.
+
 ## 2026-11-26 — A SIGTERM'd checked flow settles; a killed flow is recoverable (#760)
 
 `flow run` and `flow resume` cancel the flow on SIGTERM as asyncio does on

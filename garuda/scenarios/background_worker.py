@@ -12,6 +12,7 @@ async def run(session_id, document, *, store, queue=None, poll_max=1.0):
     from dataclasses import asdict
 
     from garuda.agents.role_runs import RoleRunService
+    from garuda.flows.engine import advanced
     from garuda.runtime import session_state
     from garuda.runtime.capacity import CapacityStore
     from garuda.runtime.ownership import current_owner
@@ -115,15 +116,15 @@ async def run(session_id, document, *, store, queue=None, poll_max=1.0):
     except asyncio.CancelledError:
         code = 130
         if store.load_meta(session_id).get("flow_state") != "quarantined":
-            store.update_meta(session_id, {"status": "cancelled", "flow_state": "interrupted",
-                                           "state": session_state.interrupted(cancelled=True)})
+            store.update_meta(session_id, advanced({"status": "cancelled", "flow_state": "interrupted",
+                                                    "state": session_state.interrupted(cancelled=True)}))
     except Exception:
         import traceback
 
         traceback.print_exc()
         if store.load_meta(session_id).get("flow_state") != "quarantined":
-            store.update_meta(session_id, {"status": "failed", "flow_state": "stopped",
-                                           "state": session_state.interrupted()})
+            store.update_meta(session_id, advanced({"status": "failed", "flow_state": "stopped",
+                                                    "state": session_state.interrupted()}))
     finally:
         if heartbeat is not None:
             heartbeat.cancel()
@@ -137,6 +138,6 @@ async def run(session_id, document, *, store, queue=None, poll_max=1.0):
                         "version": 1, "worker": owner.to_dict(),
                         "queue_released": True, "workspace_released": True}})
         elif not claimed and queue.cancel(scope, session_id):
-            store.update_meta(session_id, {"background_cancelled_before_dispatch": True,
-                                           "flow_state": "interrupted"})
+            store.update_meta(session_id, advanced({"background_cancelled_before_dispatch": True,
+                                                    "flow_state": "interrupted"}))
     return code
