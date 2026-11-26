@@ -742,7 +742,8 @@ class SessionStore:
         if not stat.S_ISREG(mode):
             raise FileNotFoundError(session_id)
         try:
-            meta = self.load_meta(session_id, wait=wait)
+            # The keyword only when asked: subclasses with their own read keep working.
+            meta = self.load_meta(session_id) if wait else self.load_meta(session_id, wait=False)
         except MetadataBusy:
             raise
         except (OSError, ValueError, StorageError) as exc:
