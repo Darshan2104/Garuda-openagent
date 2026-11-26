@@ -298,6 +298,12 @@ with sync_playwright() as p:
             problems.append(f"an external run still renders an empty panel: {empty!r}")
     if page.query_selector("#expand-all") or page.query_selector("#raw-card"):
         problems.append("an external run with no native log still has a Trace / Raw events section")
+    # The duration is the Runs list's own figure (`duration_ms`), so the two pages agree.
+    listed = page.evaluate("() => fmt.duration(STATE.run.run.duration_ms)")
+    shown = page.inner_text(".grid.cols-4")
+    print(f"external duration: list says {listed!r}")
+    if listed == "—" or listed not in shown or listed not in summary:
+        problems.append(f"the trace's duration does not match the Runs list's ({listed!r})")
     unknown_notes = page.query_selector_all("#external-unknown")
     if len(unknown_notes) != 1:
         problems.append(f"expected one note for what is not recorded, found {len(unknown_notes)}")

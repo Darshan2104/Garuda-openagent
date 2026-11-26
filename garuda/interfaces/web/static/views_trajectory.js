@@ -801,18 +801,15 @@ function reportedCostTile(ext) {
               "adapter-reported · " + ((rep.models || []).join(", ") || who));
 }
 
-/* How long the run took, from what the session record holds: its creation and its last
- * update. A run that is not live but never recorded a finish has no end, so no duration. */
+/* How long the run took: the server's `duration_ms`, the figure the Runs list shows
+ * (`reads._duration_ms`): recorded start to recorded end, a flow ending at its last step
+ * receipt, and null when no end was recorded. Never recomputed here, so the two pages cannot
+ * disagree, and never a clock reading passed off as a duration. */
 function runDuration(run, ctx) {
-  var start = Date.parse(run.created_at || "");
-  var end = Date.parse(run.updated_at || "");
-  if (ctx && ctx.live) {
-    return { value: isNaN(start) ? "—" : fmt.duration(Date.now() - start),
-             note: "still running" };
-  }
-  if (run.status === "running") return { value: "unknown", note: "no finish was recorded" };
-  if (isNaN(start) || isNaN(end) || end < start) return { value: "unknown", note: "not recorded" };
-  return { value: fmt.duration(end - start), note: "start to last session record" };
+  var ms = typeof run.duration_ms === "number" ? run.duration_ms : null;
+  if (ctx && ctx.live) return { value: "—", note: "still running" };
+  if (ms === null) return { value: "—", note: "no end was recorded" };
+  return { value: fmt.duration(ms), note: "recorded start to end" };
 }
 
 /* An external harness's run, mixed with a native lane: who ran it and the shape Garuda

@@ -253,9 +253,9 @@ history. On top of that:
   **Unattributed historical prompts**, and gaps read **runtime tenure
   unknown** rather than being filled in.
 - **What Garuda recorded** leads the page for a Claude Code, Codex or other
-  ACP run with no native log: the full task, the outcome, the duration (from
-  the session's start to its last record; **unknown** when no finish was
-  recorded), prompts sent, the stored final message, the harness and adapter
+  ACP run with no native log: the full task, the outcome, the duration (the
+  same figure as the run list: recorded start to recorded end, **—** when no
+  end was recorded), prompts sent, the stored final message, the harness and adapter
   version, role, model, effort, harness mode and write policy, a per-turn
   count of message events, tool calls, tool results, approval requests and
   errors, and each approval with its outcome (approval requests with no stored
