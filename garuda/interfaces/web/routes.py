@@ -350,8 +350,20 @@ def _diagnostic_export(request: Request, ctx: DashboardContext, match) -> Respon
 
 @route("GET", r"/api/inbox")
 def _inbox(request: Request, ctx: DashboardContext, _match) -> Response:
-    """Pending approvals across active sessions, with the digest each answer must bind."""
-    return ok({"approvals": read_model.inbox(ctx.store)})
+    """Pending approvals across active sessions, with the digest each answer must bind.
+
+    Every session, not the newest 200: a session parked on an approval stops updating,
+    so a cap by ``updated_at`` would hide exactly the request that is waiting longest."""
+    return ok({"approvals": read_model.inbox(ctx.store, limit=None)})
+
+
+@route("GET", r"/api/overview")
+def _overview(request: Request, ctx: DashboardContext, _match) -> Response:
+    """The landing page: what needs attention, what is running, what finished last.
+    Selected from every session server side; reads only."""
+    from garuda.interfaces.web.overview import overview
+
+    return ok(overview(ctx.store, queue=_queue_or_none()))
 
 
 _APPROVAL_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
