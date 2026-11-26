@@ -131,7 +131,15 @@ def narrow(page, name):
         page.wait_for_timeout(300)
         width = page.evaluate("document.documentElement.scrollWidth")
         if width > 390:
-            problems.append(f"{name} scrolls sideways at 390px in {theme} ({width}px wide)")
+            # Name the culprits: the innermost elements reaching past the viewport.
+            wide = page.evaluate("""() => Array.from(document.querySelectorAll('body *'))
+                .filter(n => !n.closest('.nav') && n.getBoundingClientRect().right > 391
+                             && !Array.from(n.children).some(c => c.getBoundingClientRect().right > 391))
+                .slice(0, 4).map(n => n.tagName.toLowerCase() + (n.id ? '#' + n.id : '')
+                    + (n.className && typeof n.className === 'string' ? '.' + n.className.split(' ')[0] : '')
+                    + ' ' + Math.round(n.getBoundingClientRect().right))""")
+            problems.append(f"{name} scrolls sideways at 390px in {theme} ({width}px wide): "
+                            + ", ".join(wide))
         page.screenshot(path=f"{SHOTS}/{name}-390-{theme}.png", full_page=True)
     page.set_viewport_size({"width": 1400, "height": 1000})
 
