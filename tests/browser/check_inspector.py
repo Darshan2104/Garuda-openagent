@@ -28,7 +28,8 @@ EXPECT = {
     "b2-rejected-then-passed": {"turns": 6, "gates": 2, "approved": 1, "rejected": 1,
                                 "diffs": 2, "lane": True, "denied": 1},
     "c3-context-pressure": {"turns": 7, "gaps": 2, "marks": 2, "lane": False},
-    "d4-killed-midrun": {"turns": 2, "pending": 1, "lane": False},
+    # Not live (its log is an hour old), so the stop alarms are real and must stay.
+    "d4-killed-midrun": {"turns": 2, "pending": 1, "lane": False, "stopped_alarms": True},
     "e5-rigorous-phases": {"turns": 4, "phases": 3, "critics": 2, "lane": True},
     # A legacy log has no budget snapshots at all, so the pressure chart must render its
     # empty note rather than an axis — an empty chart here is the correct output.
@@ -39,13 +40,22 @@ EXPECT = {
                     "families": {"subagent", "write"}},
 }
 
+# Fixtures checked on their own below rather than through the per-trace loop: a model name that
+# needs escaping, an external harness's run (no native turns at all) and a 1,500-turn log.
+EXTRA = ("i9-ampersand-model", "j10-external-acp", "k11-long-log")
+LONG = "k11-long-log"
+NEEDLE = "needle-7f3a"
+
 problems: list[str] = []
+# Set while a check deliberately provokes an error response (a 404), whose console line is the
+# browser reporting the expected status, not a fault in the page.
+EXPECTED_ERRORS = [False]
 
 with sync_playwright() as p:
     browser = p.chromium.launch(channel="chrome")
     page = browser.new_page(viewport={"width": 1500, "height": 1100})
     page.on("console", lambda m: problems.append(f"[{page.url[-28:]}] console.{m.type}: {m.text}")
-            if m.type in ("error", "warning") else None)
+            if m.type in ("error", "warning") and not EXPECTED_ERRORS[0] else None)
     page.on("pageerror", lambda e: problems.append(f"[{page.url[-28:]}] pageerror: {e}"))
     page.on("requestfailed",
             lambda r: problems.append(f"requestfailed: {r.url} {r.failure}"))
@@ -54,8 +64,8 @@ with sync_playwright() as p:
     page.wait_for_timeout(600)
     rows = page.query_selector_all("#table-card tbody tr")
     print(f"runs list: {len(rows)} rows")
-    if len(rows) != len(EXPECT):
-        problems.append(f"expected {len(EXPECT)} runs in the list, found {len(rows)}")
+    if len(rows) != len(EXPECT) + len(EXTRA):
+        problems.append(f"expected {len(EXPECT) + len(EXTRA)} runs in the list, found {len(rows)}")
 
     for sid, want in EXPECT.items():
         page.goto(f"{BASE}#/runs/{sid}", wait_until="networkidle")
@@ -130,6 +140,10 @@ with sync_playwright() as p:
         collapsed = page.inner_text("#view")
         if want.get("no_never_finished") and "TURN NEVER FINISHED" in collapsed:
             problems.append(f"{sid}: raised TURN NEVER FINISHED on a log that cannot record it")
+        if want.get("stopped_alarms"):
+            for alarm in ("No session_end in the log", "TURN NEVER FINISHED"):
+                if alarm not in collapsed:
+                    problems.append(f"{sid}: a run that stopped (not live) lost its {alarm!r} notice")
 
         # Collapse-all then expand-all: both buttons, and the round trip proves the toggle
         # is not one-way. `inner_text` skips hidden nodes, so anything inside a body must be
@@ -169,6 +183,16 @@ with sync_playwright() as p:
     # The raw-event escape hatch, and the buffer link that expands a [buffer:…] stub.
     page.goto(f"{BASE}#/runs/b2-rejected-then-passed", wait_until="networkidle")
     page.wait_for_timeout(400)
+    # Filtering before anything is loaded searches the first window instead of answering
+    # "nothing matches" about zero events.
+    page.fill("#raw-filter", "permission_ask")
+    page.wait_for_timeout(600)
+    early = page.query_selector_all("#raw-body .raw-row")
+    print(f"filter typed before loading: {len(early)} rows")
+    if len(early) != 1:
+        problems.append(f"a filter typed before loading matched {len(early)} rows, expected 1 "
+                        f"(raw pane said: {page.inner_text('#raw-body')[:120]!r})")
+    page.fill("#raw-filter", "")
     page.click("#raw-load")
     page.wait_for_timeout(600)
     raw_rows = page.query_selector_all(".raw-row")
@@ -228,6 +252,90 @@ with sync_playwright() as p:
         page.wait_for_timeout(300)
         if page.query_selector_all(".sub-turn"):
             problems.append("clicking again did not close the nested trace")
+
+    # --- a run that does not exist: a way back, not a dead end ------------------------------
+    EXPECTED_ERRORS[0] = True
+    page.goto(f"{BASE}#/runs/no-such-run", wait_until="networkidle")
+    page.wait_for_timeout(400)
+    EXPECTED_ERRORS[0] = False
+    hrefs = page.eval_on_selector_all("#view a", "links => links.map(a => a.getAttribute('href'))")
+    print(f"\nmissing run: links {hrefs}")
+    for target in ("#/runs", "#/sessions"):
+        if target not in hrefs:
+            problems.append(f"the page for a missing run has no link to {target}")
+
+    # --- escaping: every value from data escaped exactly once ------------------------------
+    page.goto(f"{BASE}#/runs/i9-ampersand-model", wait_until="networkidle")
+    page.wait_for_timeout(400)
+    tiles = page.inner_text(".grid.cols-4")
+    print(f"ampersand model tile: {' '.join(tiles.split())[:120]}")
+    if "acme/R&D-mini <beta>" not in tiles or "&amp;" in tiles or "&lt;" in tiles:
+        problems.append(f"the model name was not escaped exactly once: {tiles!r}")
+
+    # --- an external harness's run leads with what is known ----------------------------------
+    page.goto(f"{BASE}#/runs/j10-external-acp", wait_until="networkidle")
+    page.wait_for_timeout(600)
+    view_text = page.inner_text("#view")
+    summary_node = page.query_selector("#external-summary")
+    summary = summary_node.inner_text() if summary_node else ""
+    print(f"external run: summary={bool(summary_node)}")
+    if not summary_node:
+        problems.append("an external run has no summary of what Garuda recorded")
+    for fact, label in (("so a 2 GB export no longer holds every row", "the full task"),
+                        ("The exporter now streams rows", "the stored final message"),
+                        ("Run pytest -q", "the approval"), ("allow", "the approval's outcome"),
+                        ("Prompts sent", "the prompts sent"), ("Duration", "the duration")):
+        if fact not in summary:
+            problems.append(f"the external summary does not show {label} ({fact!r})")
+    for empty in ("No budget snapshots in this log", "This run was on an external harness",
+                  "0 events in the log"):
+        if empty in view_text:
+            problems.append(f"an external run still renders an empty panel: {empty!r}")
+    if page.query_selector("#expand-all") or page.query_selector("#raw-card"):
+        problems.append("an external run with no native log still has a Trace / Raw events section")
+    unknown_notes = page.query_selector_all("#external-unknown")
+    if len(unknown_notes) != 1:
+        problems.append(f"expected one note for what is not recorded, found {len(unknown_notes)}")
+    page.screenshot(path=f"{SHOTS}/insp-external.png", full_page=True)
+
+    # --- a 1,500-turn trace: still fast, and the raw filter says what it searched ------------
+    page.goto(f"{BASE}#/runs/{LONG}", wait_until="networkidle")
+    page.wait_for_function("() => document.querySelectorAll('.turn').length === 1500", timeout=20000)
+    render_ms = page.evaluate("""(sid) => {
+        const base = "/api/runs/" + sid;
+        const t0 = performance.now();
+        renderTrajectory(STATE.run, {detail: base, events: base + "/events", tail: base + "/tail",
+                                     buffers: base + "/buffers/", subagents: base + "/subagents/"});
+        return performance.now() - t0;
+    }""", LONG)
+    print(f"\nlong trace: 1500 turns rendered in {render_ms:.0f} ms")
+    if render_ms > 1500:
+        problems.append(f"a 1,500-turn trace took {render_ms:.0f} ms to render")
+    page.wait_for_timeout(500)
+    page.click("#raw-load")
+    page.wait_for_timeout(800)
+    page.fill("#raw-filter", NEEDLE)
+    page.wait_for_timeout(400)
+    raw_text = page.inner_text("#raw-body")
+    print(f"filter over the first window: {' '.join(raw_text.split())[:160]}")
+    if "1–500" not in raw_text or "7502" not in raw_text:
+        problems.append(f"a filter with no match in the loaded window did not say which events it "
+                        f"searched: {raw_text[:160]!r}")
+    later = page.query_selector('#raw-body [data-search="later"]')
+    if not later:
+        problems.append("no way to search the rest of the log from an empty filter result")
+    else:
+        later.click()
+        try:
+            page.wait_for_function(
+                "() => document.querySelectorAll('#raw-body .raw-row').length > 0", timeout=15000)
+        except Exception:
+            problems.append("searching later events never found the marker deep in the log")
+        found = page.inner_text("#raw-body")
+        print(f"after searching later events: {' '.join(found.split())[:160]}")
+        if NEEDLE not in found:
+            problems.append("the search through later events did not show the matching event")
+    page.screenshot(path=f"{SHOTS}/insp-long.png")
 
     page.click("#theme-toggle")
     page.wait_for_timeout(250)

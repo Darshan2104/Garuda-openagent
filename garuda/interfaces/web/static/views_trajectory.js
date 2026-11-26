@@ -71,25 +71,60 @@ function loadTrajectory(detailUrl, sources) {
   // indices, and reapplying them here would expand arbitrary turns of this one.
   STATE.openTurns = null;
   STATE.subagentRuns = {};
-  render('<div class="loading">Loading run…</div>');
-  return api(detailUrl)
-    .then(function (payload) {
+  render('<div class="loading" id="trace-loading">Loading run…</div>');
+  // The response is wanted only while this placeholder is still on screen. Navigating away
+  // before it arrived used to draw the trace over the next view — and, for a live run, start
+  // a tail poller nothing would ever stop.
+  var marker = el("trace-loading");
+  // Two-argument then, not then().catch(): a bug while drawing the trace must surface as an
+  // error, not be reported to the reader as "could not load run".
+  return api(detailUrl).then(
+    function (payload) {
+      if (!marker.isConnected) return;
       STATE.run = payload;
       renderTrajectory(payload, sources);
-    })
-    .catch(function (err) {
+    },
+    function (err) {
+      if (!marker.isConnected) return;
       if (err.status === 401) { render(tokenRequiredPanel()); return; }
-      render('<div class="notice err"><div class="notice-title">Could not load run</div>' +
-             '<div class="notice-body">' + esc(err.message) + "</div></div>");
+      render(loadErrorHtml(err));
     });
 }
 
+/* A missing run is a dead end without a way out, so both lists are linked. */
+function loadErrorHtml(err) {
+  var missing = err.status === 404;
+  return (
+    '<div class="notice err" id="trace-error"><div class="notice-title">' +
+    (missing ? "No such run" : "Could not load run") + "</div>" +
+    '<div class="notice-body">' + esc(err.message) + "</div>" +
+    '<div class="notice-body">' +
+    (missing ? "It may have been deleted, or the link came from another session store. " : "") +
+    '<a href="#/runs">Back to Runs</a> · <a href="#/sessions">Sessions</a></div></div>'
+  );
+}
+
+/* --- mounting and updating -------------------------------------------------
+ *
+ * The page is a fixed shell of regions, drawn once per navigation. A live run's structure
+ * refresh then *patches* the regions whose HTML changed and leaves the rest alone — the old
+ * full re-render reset everything a reader had done every three seconds: a loaded raw-events
+ * window, its filter and the focus in it, an opened subagent trace, the Models used panel,
+ * the scroll position and any text selection.
+ *
+ * The rules each patch follows:
+ *   - a region (or turn card) whose HTML is unchanged is not touched at all;
+ *   - one that holds the reader's text selection is left as it is until the selection is
+ *     gone, so copying from a live trace never loses what was selected;
+ *   - focus inside a replaced region moves to the equivalent control;
+ *   - the element at the top of the viewport stays where it was (manual scroll anchoring;
+ *     the CSS turns the browser's own off so the two cannot both adjust).
+ * Regions with state of their own — the raw events pane, the starter result, the Models
+ * used panel — are outside the patched set entirely. */
+
 function renderTrajectory(payload, sources) {
   var run = payload.run;
-  var traj = payload.trajectory;
-  var turns = traj.turns || [];
-  var hasGates = turns.some(function (t) { return (t.gates || []).length; }) ||
-                 (traj.phases || []).some(function (p) { return p.critic; });
+  var external = externalOnly(payload);
 
   // Set before rendering, not after: `outputHtml` asks whether buffers exist while building
   // the step bodies, and reading it later would answer with the previous view's source.
@@ -97,56 +132,307 @@ function renderTrajectory(payload, sources) {
     url: sources.events,
     buffers: sources.buffers || null,
     subagents: sources.subagents || null,
-    total: payload.event_count, start: 0, count: 0, events: []
+    total: payload.event_count, start: 0, count: 0, events: [], loaded: false
   };
 
-  var live = isRunLive(payload);
-
+  var region = function (id) { return '<div id="' + id + '"></div>'; };
+  var hosts = '<div id="starter-result-host"></div><div id="conversation-host"></div>';
   render(
+    '<div class="trace-page' + (external ? " trace-external" : "") + '" id="trace-root">' +
     '<div class="page-head">' +
     '<a href="#/runs">← Runs</a>' +
     "<h1>" + esc(fmt.truncate(run.task, 90)) + "</h1>" +
-    statusPill(run.status) +
-    (live ? '<span class="pill live" id="live-badge">live</span>' : "") +
+    '<span class="trace-status" id="trace-status"></span>' +
     '<span class="meta">' + esc(run.session_id) + "</span>" +
     "</div>" +
-    (live ? liveStreamHtml() : "") +
-    '<div class="grid cols-4">' + detailTilesHtml(payload) + "</div>" +
-    runFlagsHtml(payload) +
-    '<div id="starter-result-host"></div>' +
-    '<div id="conversation-host"></div>' +
-    externalTrailHtml(payload.external) +
-    overviewHtml(traj) +
-    '<div class="card">' + pressureChartHtml(payload) + "</div>" +
-    (hasGates || traj.gate_stack ? '<div class="card">' + gateStackHtml(traj) + "</div>" : "") +
-    timelineHeadHtml(turns) +
-    '<div class="trajectory' + (hasGates ? " with-lane" : "") + '" id="traj">' +
-    (externalOnly(payload)
-      ? '<div class="empty span-all"><p>This run was on an external harness.</p>' +
-        "<p>Its turns are summarised in the External harness card above; Garuda does not " +
-        "store the harness's own messages or tool calls.</p></div>"
-      : timelineHtml(traj, hasGates)) +
-    "</div>" +
-    rawEventsHtml(payload)
+    region("trace-live") +
+    '<div class="grid cols-4" id="trace-tiles"></div>' +
+    region("trace-flags") +
+    // An external harness's run leads with what Garuda did record about it.
+    (external
+      ? region("trace-external") + hosts
+      : hosts + region("trace-external") + region("trace-overview") +
+        region("trace-pressure") + region("trace-gates") + timelineHeadHtml() +
+        '<div class="trajectory" id="traj"></div>') +
+    // An external run with no native log has no raw events to check anything against.
+    (external && !payload.event_count ? "" : rawEventsHtml(payload)) +
+    "</div>"
   );
 
-  el("traj").addEventListener("click", onTurnClick);
+  var root = el("trace-root");
+  root._external = external;
+  root._sources = sources;
+  root.addEventListener("click", onTraceClick);
+  var traj = el("traj");
+  if (traj) traj.addEventListener("click", onTurnClick);
+  var filter = el("raw-filter");
+  if (filter) filter.addEventListener("input", function () { renderRawEvents(); });
+
+  updateTrajectory(payload, sources, true);
   if (typeof loadConversationPanel === "function") loadConversationPanel(run.session_id);
   loadStarterResult(run.session_id);
-  wireRawEvents();
-  wireTimelineHead();
-  restoreOpenTurns(turns);
-  // The invariant: a poller exists exactly when the rendered view is live. Deciding it here
-  // rather than from the tail response means a run that finished between two polls stops
-  // being polled as soon as it is drawn as finished.
-  if (live && sources.tail) startLive(sources, payload);
-  else stopLive();
+  restoreOpenTurns(payload.trajectory.turns || []);
+  syncLive(payload, sources);
+}
+
+/* Fill or patch every derived region from `payload`. `first` is the mount's own fill. */
+function updateTrajectory(payload, sources, first) {
+  var root = el("trace-root");
+  if (!root) return;
+  if (root._external !== externalOnly(payload)) {
+    // The run changed shape (a native lane appeared under an external one, or the reverse):
+    // a different set of regions, so mount again rather than patch.
+    renderTrajectory(payload, sources);
+    return;
+  }
+  var traj = payload.trajectory;
+  var turns = traj.turns || [];
+  var ctx = traceContext(payload);
+  var hasGates = turns.some(function (t) { return (t.gates || []).length; }) ||
+                 (traj.phases || []).some(function (p) { return p.critic; });
+  if (STATE.raw) STATE.raw.total = payload.event_count;
+
+  TRACE_DEFERRED = false;
+  keepScrollPosition(function () {
+    patchRegion(el("trace-status"), statusPill(payload.run.status) +
+      (ctx.live ? '<span class="pill live" id="live-badge">live</span>' : ""), first);
+    patchRegion(el("trace-live"), ctx.live && sources.tail ? liveStreamHtml() : "", first);
+    patchRegion(el("trace-tiles"), detailTilesHtml(payload, ctx), first);
+    patchRegion(el("trace-flags"), runFlagsHtml(payload, ctx), first);
+    patchRegion(el("trace-external"), root._external
+      ? externalSummaryHtml(payload, ctx) : externalTrailHtml(payload.external), first);
+    if (!root._external) {
+      patchRegion(el("trace-overview"), overviewHtml(traj), first);
+      patchRegion(el("trace-pressure"), '<div class="card">' + pressureChartHtml(payload) +
+                  "</div>", first);
+      patchRegion(el("trace-gates"), hasGates || traj.gate_stack
+        ? '<div class="card">' + gateStackHtml(traj) + "</div>" : "", first);
+      setText("trace-turn-count", turns.length + (turns.length === 1 ? " turn" : " turns"));
+      patchTimeline(el("traj"), timelinePieces(traj, hasGates, ctx), hasGates, first);
+    }
+    setText("raw-total", String(payload.event_count));
+  });
+  if (TRACE_DEFERRED) retryWhenSelectionClears(root);
 }
 
 /* `live`, not `status === "running"`: the status is a permanent lie for a killed run, and
  * trusting it started a tail poller on month-old sessions that never stopped. */
 function isRunLive(payload) {
   return !!(payload.run && payload.run.live);
+}
+
+/* What every renderer below needs to know about the run as a whole. `lastIndex` is the turn
+ * that may still be in progress while the run is live. */
+function traceContext(payload) {
+  var turns = payload.trajectory.turns || [];
+  return {
+    live: isRunLive(payload),
+    legacy: isLegacyLog(payload.trajectory),
+    lastIndex: turns.length ? turns[turns.length - 1].index : null
+  };
+}
+
+/* An unfinished turn is "in progress" only while the run is live and only if it is the last
+ * one; anywhere else, no turn_metrics means it stopped there. */
+function turnInProgress(turn, ctx) {
+  return !!(ctx && ctx.live && !turn.finished && turn.index === ctx.lastIndex);
+}
+
+/* --- patching primitives --------------------------------------------------- */
+
+/* Set when a patch was held back because the reader had text selected inside it. */
+var TRACE_DEFERRED = false;
+
+function setText(id, text) {
+  var node = el(id);
+  if (node && node.textContent !== text) node.textContent = text;
+}
+
+function holdsSelection(node) {
+  var selection = window.getSelection ? window.getSelection() : null;
+  if (!node || !selection || selection.isCollapsed || !selection.rangeCount) return false;
+  return selection.containsNode(node, true);
+}
+
+/* A selector for the focused control inside `node`, so the same control can take focus back
+ * after its region is redrawn. */
+function focusKey(node) {
+  var active = document.activeElement;
+  if (!active || active === document.body || !node.contains(active)) return null;
+  if (active.id) return "#" + CSS.escape(active.id);
+  var attrs = ["data-toggle", "data-scroll", "data-subagent", "data-buffer", "data-jump",
+               "data-page", "data-search"];
+  for (var i = 0; i < attrs.length; i++) {
+    if (active.hasAttribute(attrs[i])) {
+      return "[" + attrs[i] + '="' + CSS.escape(active.getAttribute(attrs[i])) + '"]';
+    }
+  }
+  return null;
+}
+
+function refocus(node, key) {
+  if (!key) return;
+  var target = node.querySelector(key);
+  if (target) target.focus({ preventScroll: true });
+}
+
+/* Replace `host`'s content with `html` when it differs. `force` is the first fill. */
+function patchRegion(host, html, force) {
+  if (!host || host._html === html) return;
+  if (!force && holdsSelection(host)) { TRACE_DEFERRED = true; return; }
+  var key = focusKey(host);
+  host.innerHTML = html;
+  host._html = html;
+  refocus(host, key);
+}
+
+function nodeFromHtml(html) {
+  var template = document.createElement("template");
+  template.innerHTML = html;
+  return template.content.firstElementChild;
+}
+
+/* Keyed reconciliation of the timeline grid: one element per piece (phase header, turn card,
+ * gate cell, critic strip). A turn whose HTML is unchanged keeps its node — and with it the
+ * open state, a loaded subagent trace, the focus and any selection. A changed turn is
+ * replaced with its open state and loaded subagent traces carried over. */
+function patchTimeline(traj, pieces, hasGates, first) {
+  if (!traj) return;
+  traj.classList.toggle("with-lane", !!hasGates);
+  if (first) {
+    // The fast path for the mount: one innerHTML for the whole grid (a 1,500-turn trace is
+    // one string), then each child is tagged with the piece it came from.
+    traj.innerHTML = pieces.map(function (p) { return p.html; }).join("");
+    var byKey = {};
+    var child = traj.firstElementChild;
+    for (var i = 0; i < pieces.length && child; i++, child = child.nextElementSibling) {
+      child._key = pieces[i].key;
+      child._html = pieces[i].html;
+      byKey[pieces[i].key] = child;
+    }
+    traj._byKey = byKey;
+    return;
+  }
+  var existing = traj._byKey || {};
+  var next = {};
+  for (var j = 0; j < pieces.length; j++) {
+    var piece = pieces[j];
+    var node = existing[piece.key];
+    if (node && node._html !== piece.html) {
+      if (holdsSelection(node)) {
+        TRACE_DEFERRED = true;
+      } else {
+        var fresh = nodeFromHtml(piece.html);
+        var key = focusKey(node);
+        carryTurnState(node, fresh);
+        node.replaceWith(fresh);
+        fresh._key = piece.key;
+        fresh._html = piece.html;
+        refocus(fresh, key);
+        node = fresh;
+      }
+    } else if (!node) {
+      node = nodeFromHtml(piece.html);
+      node._key = piece.key;
+      node._html = piece.html;
+    }
+    if (traj.children[j] !== node) traj.insertBefore(node, traj.children[j] || null);
+    next[piece.key] = node;
+    delete existing[piece.key];
+  }
+  Object.keys(existing).forEach(function (key) {
+    if (existing[key].parentNode === traj) traj.removeChild(existing[key]);
+  });
+  traj._byKey = next;
+}
+
+function carryTurnState(old, fresh) {
+  if (!fresh || !old.classList.contains("turn")) return;
+  if (old.classList.contains("open")) {
+    fresh.classList.add("open");
+    var body = fresh.querySelector(".turn-body");
+    if (body) body.hidden = false;
+  }
+  var loaded = old.querySelectorAll(".sub-body");
+  for (var i = 0; i < loaded.length; i++) {
+    if (!loaded[i].firstChild) continue;
+    var targets = fresh.querySelectorAll(".sub-body");
+    for (var k = 0; k < targets.length; k++) {
+      if (targets[k].id !== loaded[i].id) continue;
+      while (loaded[i].firstChild) targets[k].appendChild(loaded[i].firstChild);
+      break;
+    }
+  }
+}
+
+/* Keep the element at the top of the viewport where it is while `fn` changes the page. */
+function keepScrollPosition(fn) {
+  var anchor = window.scrollY > 0 ? scrollAnchor() : null;
+  fn();
+  if (!anchor) return;
+  var byKey = (el("traj") || {})._byKey || {};
+  var node = anchor.key !== null ? byKey[anchor.key] : anchor.node;
+  if (!node || !node.isConnected) return;
+  var delta = node.getBoundingClientRect().top - anchor.top;
+  if (Math.abs(delta) >= 1) window.scrollBy(0, delta);
+}
+
+function scrollAnchor() {
+  var root = el("trace-root");
+  if (!root) return null;
+  for (var child = root.firstElementChild; child; child = child.nextElementSibling) {
+    var box = child.getBoundingClientRect();
+    if (box.bottom <= 0 || box.height === 0) continue;
+    if (child.id === "traj") {
+      for (var row = child.firstElementChild; row; row = row.nextElementSibling) {
+        var rowBox = row.getBoundingClientRect();
+        if (rowBox.bottom > 0) return { key: row._key, node: null, top: rowBox.top };
+      }
+    }
+    return { key: null, node: child, top: box.top };
+  }
+  return null;
+}
+
+/* A patch held back for a selection is applied once the selection is gone — even after the
+ * run finished and nothing else would ever refresh it. One listener at a time, and it removes
+ * itself once the view it belongs to is gone. */
+function retryWhenSelectionClears(root) {
+  if (root._selectionRetry) return;
+  var onChange = function () {
+    if (!root.isConnected) {
+      document.removeEventListener("selectionchange", onChange);
+      return;
+    }
+    var selection = window.getSelection();
+    if (selection && !selection.isCollapsed) return;
+    document.removeEventListener("selectionchange", onChange);
+    root._selectionRetry = null;
+    if (STATE.run) updateTrajectory(STATE.run, root._sources);
+  };
+  root._selectionRetry = onChange;
+  document.addEventListener("selectionchange", onChange);
+}
+
+/* One click handler for the page's controls outside the timeline. Delegated, so a region
+ * that is redrawn keeps working without re-wiring anything. */
+function onTraceClick(event) {
+  var target = event.target;
+  if (target.closest("#expand-all")) { setAllTurns(true); return; }
+  if (target.closest("#collapse-all")) { setAllTurns(false); return; }
+  if (target.closest("#raw-load")) { loadRawEvents(STATE.raw ? STATE.raw.start : 0); return; }
+  var page = target.closest("#raw-body [data-page]");
+  if (page) { loadRawEvents(Number(page.getAttribute("data-page"))); return; }
+  var search = target.closest("#raw-body [data-search]");
+  if (search) { searchRawEvents(search.getAttribute("data-search") === "earlier" ? -1 : 1); return; }
+  var row = target.closest("#trace-overview [data-scroll]");
+  if (row) {
+    event.preventDefault();
+    var index = row.getAttribute("data-scroll");
+    setTurnOpen(index, true);
+    var card = document.querySelector('.turn[data-turn="' + CSS.escape(index) + '"]');
+    if (card) card.scrollIntoView({ block: "center" });
+  }
 }
 
 /* --- the overview strip ---------------------------------------------------
@@ -248,6 +534,9 @@ var LIVE_BACKOFF = 1.5;
 var LIVE_EMPTY_BEFORE_BACKOFF = 10;
 var LIVE_STRUCTURE_MS = 3000;
 var LIVE_MAX_ROWS = 60;
+/* When the dashboard cannot be reached: double the wait per failed poll, up to this. The
+ * old loop retried every 750 ms forever and printed a new error each time. */
+var LIVE_OFFLINE_MAX_MS = 30000;
 
 function liveStreamHtml() {
   return (
@@ -258,20 +547,31 @@ function liveStreamHtml() {
   );
 }
 
+/* The invariant: a poller exists exactly when the rendered view is live. Called after every
+ * fill, so a run that finished between two polls stops being polled as soon as it is drawn as
+ * finished — and a refresh of a still-live run keeps the poller it has rather than starting
+ * a second one. */
+function syncLive(payload, sources) {
+  if (!(isRunLive(payload) && sources.tail)) { stopLive(); return; }
+  if (STATE.live && STATE.live.sources === sources && STATE.poller) {
+    STATE.live.eventCount = payload.event_count;
+    return;
+  }
+  startLive(sources, payload);
+}
+
 function startLive(sources, payload) {
-  // Stop whatever was polling first. A structure refresh re-renders, which lands back here —
-  // and without this the new poller overwrote STATE.poller while the old one kept ticking,
-  // unreachable and therefore unstoppable by stopLive(). One leaked poller per refresh.
+  // Stop whatever was polling first: two pollers on one view would each believe they own it.
   var previous = STATE.live;
   stopLive();
   var state = {
     sources: sources,
     offset: payload.run && typeof payload.run.events_bytes === "number"
       ? payload.run.events_bytes : 0,
-    // Carried across the refresh: a stream pane that empties every three seconds is worse
-    // than no stream pane.
+    // Carried across a remount: a stream pane that empties is worse than no stream pane.
     rows: previous ? previous.rows : [],
     empty: 0,
+    failures: 0,
     eventCount: payload.event_count,
     sinceStructure: 0
   };
@@ -281,11 +581,26 @@ function startLive(sources, payload) {
   if (state.rows.length) renderLiveRows(state);
 }
 
+/* Mark a rejection as the network's (or the server's), as opposed to a bug in the code that
+ * handles the response — only the first kind is "can't reach the dashboard". */
+function tagFetchError(err) {
+  if (err && typeof err === "object") err.fromApi = true;
+  throw err;
+}
+
+/* A bug must not be swallowed by the Poller (which ignores rejections by design); rethrown
+ * outside the promise chain, it reaches the console and the browser checks. */
+function surface(err) {
+  setTimeout(function () { throw err; }, 0);
+}
+
 function livePoll(state) {
   var join = state.sources.tail.indexOf("?") === -1 ? "?" : "&";
   return api(state.sources.tail + join + "offset=" + state.offset)
+    .catch(tagFetchError)
     .then(function (payload) {
       if (STATE.live !== state) return;   // the view changed under us
+      state.failures = 0;
       if (payload.truncated) {
         state.offset = 0;
         state.rows = [];
@@ -317,9 +632,24 @@ function livePoll(state) {
       setLiveMeta(liveMetaText(state, payload));
     })
     .catch(function (err) {
+      if (STATE.live !== state) return;
+      if (!err || !err.fromApi) { surface(err); return; }
       if (err.status === 401) { stopLive(); render(tokenRequiredPanel()); return; }
-      setLiveMeta("poll failed: " + err.message);
+      liveOffline(state, err);
     });
+}
+
+/* One calm line, the same one on every failed poll, and a wait that doubles each time. The
+ * next successful poll puts the normal status back by itself. */
+function liveOffline(state, err) {
+  state.failures += 1;
+  if (STATE.poller) {
+    STATE.poller.interval = Math.min(LIVE_OFFLINE_MAX_MS,
+                                     LIVE_INTERVAL_MS * Math.pow(2, state.failures));
+  }
+  setLiveMeta(err.status
+    ? "the dashboard answered " + err.status + " — retrying"
+    : "can't reach the dashboard — retrying");
 }
 
 function liveMetaText(state, payload) {
@@ -331,13 +661,16 @@ function liveMetaText(state, payload) {
 }
 
 function setLiveMeta(text) {
-  var node = el("live-meta");
-  if (node) node.textContent = text;
+  setText("live-meta", text);
 }
 
+/* Newest first. Held back while the reader has text selected in the pane, and a pane the
+ * reader scrolled into keeps the rows they were looking at in place as new ones land on top. */
 function renderLiveRows(state) {
   var node = el("live-body");
-  if (!node) return;
+  if (!node || holdsSelection(node)) return;
+  var top = node.scrollTop;
+  var height = node.scrollHeight;
   node.innerHTML = state.rows.slice().reverse().map(function (event) {
     var payload = event.payload === undefined ? event : event.payload;
     return '<div class="raw-row"><span class="raw-idx">' +
@@ -346,14 +679,15 @@ function renderLiveRows(state) {
            '<span class="raw-payload mono">' +
            esc(fmt.truncate(JSON.stringify(payload), 220)) + "</span></div>";
   }).join("");
+  if (top > 0) node.scrollTop = top + (node.scrollHeight - height);
 }
 
-/* Refetch the turn structure and re-render. Turn grouping stays server-side in exactly one
- * place, so this is a full re-render — which is why which turns were expanded is recorded
- * first and reapplied after. A live view that keeps closing the turn you are reading is worse
- * than one that does not update. */
+/* Refetch the turn structure and patch the page with it. Turn grouping stays server-side in
+ * exactly one place; what changed on screen is decided by comparing HTML, region by region
+ * and turn by turn (see `updateTrajectory`). */
 function refreshStructure(state, finished) {
   return api(state.sources.detail)
+    .catch(tagFetchError)
     .then(function (payload) {
       if (STATE.live !== state) return;
       if (!finished && payload.event_count === state.eventCount) {
@@ -361,17 +695,19 @@ function refreshStructure(state, finished) {
         return;
       }
       state.eventCount = payload.event_count;
-      rememberOpenTurns();
-      var scroll = window.scrollY;
       STATE.run = payload;
-      // renderTrajectory owns the poller either way: it starts one if the re-rendered view
-      // is live and stops one if it is not, so "a poller exists" and "the view shows a live
-      // badge" cannot disagree.
-      renderTrajectory(payload, state.sources);
-      window.scrollTo(0, scroll);
-      if (finished) toast("Run finished — " + (payload.run.status || "done"));
-    })
-    .catch(function () { /* the tail keeps going; the structure catches up next time */ });
+      updateTrajectory(payload, state.sources);
+      syncLive(payload, state.sources);
+      if (STATE.live !== state) {
+        // It stopped being live: the Models used panel is loaded once per view, so it is
+        // brought up to date now, unless the reader is selecting text in it.
+        var host = el("conversation-host");
+        if (host && !holdsSelection(host) && typeof loadConversationPanel === "function") {
+          loadConversationPanel(payload.run.session_id);
+        }
+        if (finished) toast("Run finished — " + (payload.run.status || "done"));
+      }
+    });
 }
 
 function stopLive() {
@@ -379,14 +715,10 @@ function stopLive() {
   STATE.live = null;
 }
 
-/* --- expansion state across re-renders ---------------------------------- */
-
-function rememberOpenTurns() {
-  var open = {};
-  var nodes = document.querySelectorAll(".turn.open");
-  for (var i = 0; i < nodes.length; i++) open[nodes[i].getAttribute("data-turn")] = 1;
-  STATE.openTurns = open;
-}
+/* --- expansion state ---------------------------------------------------------
+ *
+ * Turn cards survive a live refresh (see `patchTimeline`), so their open state needs no
+ * bookkeeping between refreshes; this is only the first paint. */
 
 /* First render of a short run opens every turn: a trace you have to click fifteen times to
  * read is not a trace. Long runs stay closed, with the overview strip above carrying the
@@ -414,44 +746,29 @@ function setAllTurns(on) {
   }
 }
 
-function timelineHeadHtml(turns) {
+/* Static: only the count changes, so the buttons keep focus across a live refresh. */
+function timelineHeadHtml() {
   return (
     '<div class="page-head sub-head"><h2>Trace</h2>' +
-    '<span class="meta">' + turns.length + (turns.length === 1 ? " turn" : " turns") + "</span>" +
+    '<span class="meta" id="trace-turn-count"></span>' +
     '<button type="button" class="btn" id="expand-all">Expand all</button>' +
     '<button type="button" class="btn" id="collapse-all">Collapse all</button></div>'
   );
 }
 
-function wireTimelineHead() {
-  var expand = el("expand-all");
-  var collapse = el("collapse-all");
-  if (expand) expand.addEventListener("click", function () { setAllTurns(true); });
-  if (collapse) collapse.addEventListener("click", function () { setAllTurns(false); });
-  var flow = el("flow");
-  if (flow) {
-    flow.addEventListener("click", function (event) {
-      var row = event.target.closest("[data-scroll]");
-      if (!row) return;
-      event.preventDefault();
-      var index = row.getAttribute("data-scroll");
-      setTurnOpen(index, true);
-      var card = document.querySelector('.turn[data-turn="' + index + '"]');
-      if (card) card.scrollIntoView({ block: "center" });
-    });
-  }
-}
-
 /* --- tiles and run-level flags -------------------------------------------- */
 
-function detailTilesHtml(payload) {
+/* `tile()` escapes all three of its arguments, so nothing passed to it is escaped here:
+ * escaping twice drew a model called `R&D` as `R&amp;D`. */
+function detailTilesHtml(payload, ctx) {
   if (externalOnly(payload)) {
     var ext = payload.external;
     var calls = (ext.turns || []).reduce(function (n, t) { return n + (t.tool_call || 0); }, 0);
     var errored = (ext.turns || []).reduce(function (n, t) { return n + (t.error || 0); }, 0);
+    var took = runDuration(payload.run, ctx);
     return [
       tile("Turns", fmt.num((ext.turns || []).length), "external harness"),
-      tile("Tokens", "—", "not reported per call"),
+      tile("Duration", took.value, took.note),
       reportedCostTile(ext),
       tile("Tool calls", fmt.num(calls), errored ? errored + " errors" : "no errors reported")
     ].join("");
@@ -469,7 +786,7 @@ function detailTilesHtml(payload) {
          extras ? extras + " extra band" + (extras === 1 ? "" : "s") : "no extra bands"),
     tile("Tokens", fmt.tokens((usage.prompt_tokens || 0) + (usage.completion_tokens || 0)),
          fmt.tokens(usage.prompt_tokens) + " in / " + fmt.tokens(usage.completion_tokens) + " out"),
-    tile("Cost", fmt.cost(traj.cost_usd), esc(traj.model || run.model || "—")),
+    tile("Cost", fmt.cost(traj.cost_usd), traj.model || run.model || "—"),
     tile("Tool calls", fmt.num(toolCount), errors ? errors + " errored" : "none errored")
   ].join("");
 }
@@ -478,43 +795,122 @@ function detailTilesHtml(payload) {
  * Garuda-metered figure. */
 function reportedCostTile(ext) {
   var rep = ext.reported_usage;
-  var who = esc((ext.identity || {}).model_id || ext.runtime || "—");
-  if (!rep || typeof rep.cost_usd !== "number") return tile("Cost", "—", who);
+  if (!rep || typeof rep.cost_usd !== "number") return tile("Cost", "—", "not reported by the adapter");
+  var who = (ext.identity || {}).model_id || ext.runtime || "—";
   return tile("Cost", fmt.cost(rep.cost_usd),
-              "adapter-reported · " + esc((rep.models || []).join(", ") || who));
+              "adapter-reported · " + ((rep.models || []).join(", ") || who));
 }
 
-/* An external harness's run: who ran it and the shape Garuda recorded. Its own messages and
- * tool calls are not stored, so the counts are the whole trail, and the card says so. */
+/* How long the run took, from what the session record holds: its creation and its last
+ * update. A run that is not live but never recorded a finish has no end, so no duration. */
+function runDuration(run, ctx) {
+  var start = Date.parse(run.created_at || "");
+  var end = Date.parse(run.updated_at || "");
+  if (ctx && ctx.live) {
+    return { value: isNaN(start) ? "—" : fmt.duration(Date.now() - start),
+             note: "still running" };
+  }
+  if (run.status === "running") return { value: "unknown", note: "no finish was recorded" };
+  if (isNaN(start) || isNaN(end) || end < start) return { value: "unknown", note: "not recorded" };
+  return { value: fmt.duration(end - start), note: "start to last session record" };
+}
+
+/* An external harness's run, mixed with a native lane: who ran it and the shape Garuda
+ * recorded. Its own messages and tool calls are not stored, so the counts are the whole
+ * trail, and the card says so. */
 function externalTrailHtml(ext) {
   if (!ext) return "";
-  var who = ext.identity || {};
+  return '<div class="card" id="external-trail"><h2>External harness</h2>' +
+    externalFactsHtml(ext) + externalTurnsHtml(ext) +
+    '<div class="stat-sub">Prompts sent: ' + esc(ext.prompts_sent) + "</div>" +
+    externalApprovalsHtml(ext) +
+    '<p class="stat-sub">' + esc(ext.note) + "</p></div>";
+}
+
+function externalFactsHtml(ext) {
+  var who = ext.identity;
   var adapter = ext.adapter || {};
+  // No identity record at all means none of these were recorded — not that each was the
+  // harness default.
+  var unknown = "not recorded";
   var facts = [
     ["Harness", (ext.runtime || "—") + (adapter.version ? " " + adapter.version : "")],
-    ["Role", who.name || "—"],
-    ["Model", who.model_id || "harness default"],
-    ["Effort", who.effort || "—"],
-    ["Harness mode", (ext.options || {}).mode || who.harness_mode || "harness default"],
-    ["Write policy", who.write_policy || "—"]
-  ].map(function (f) {
-    return '<div class="stat-sub"><b>' + esc(f[0]) + ":</b> " + esc(f[1]) + "</div>";
-  }).join("");
+    ["Role", who ? who.name || "—" : unknown],
+    ["Model", who ? who.model_id || "harness default" : unknown],
+    ["Effort", who ? who.effort || "—" : unknown],
+    ["Harness mode", (ext.options || {}).mode || (who ? who.harness_mode || "harness default" : unknown)],
+    ["Write policy", who ? who.write_policy || "—" : unknown]
+  ];
+  return '<dl class="trace-facts">' + facts.map(function (f) {
+    return "<dt>" + esc(f[0]) + "</dt><dd>" + esc(f[1]) + "</dd>";
+  }).join("") + "</dl>";
+}
+
+function externalTurnsHtml(ext) {
   var rows = (ext.turns || []).map(function (t) {
-    return "<tr><td>" + esc(t.turn) + "</td><td>" + esc(t.message) + "</td><td>" + esc(t.tool_call) +
-      "</td><td>" + esc(t.tool_result) + "</td><td>" + esc(t.approval_request) + "</td><td>" + esc(t.error) + "</td></tr>";
+    return "<tr><td>" + esc(t.turn) + '</td><td class="num">' + esc(t.message) +
+      '</td><td class="num">' + esc(t.tool_call) + '</td><td class="num">' + esc(t.tool_result) +
+      '</td><td class="num">' + esc(t.approval_request) + '</td><td class="num">' + esc(t.error) +
+      "</td></tr>";
   }).join("");
+  return '<div class="table-wrap"><table class="table" id="external-turns"><thead><tr>' +
+    '<th>Turn</th><th class="num">Message events</th><th class="num">Tool calls</th>' +
+    '<th class="num">Tool results</th><th class="num">Approval requests</th>' +
+    '<th class="num">Errors</th></tr></thead><tbody>' +
+    (rows || '<tr><td colspan="6">No turns recorded</td></tr>') + "</tbody></table></div>";
+}
+
+function externalApprovalsHtml(ext) {
   var approvals = (ext.approvals || []).map(function (a) {
     var detail = a.tool_kind && a.reason ? " (" + esc(a.tool_kind) + ", " + esc(a.reason) + ")" : "";
-    return "<li>" + esc(a.action || "permission") + " — " + esc(a.outcome || "unknown") + detail + "</li>";
+    return '<li class="external-approval"><span class="mono">' + esc(a.action || "permission") +
+      "</span> — " + esc(a.outcome || "unknown") + detail + "</li>";
   }).join("");
-  return '<div class="card" id="external-trail"><h2>External harness</h2>' + facts +
-    '<div class="table-wrap"><table class="table"><thead><tr><th>Turn</th><th>Message events</th><th>Tool calls</th>' +
-    "<th>Tool results</th><th>Approval requests</th><th>Errors</th></tr></thead><tbody>" +
-    (rows || '<tr><td colspan="6">No turns recorded</td></tr>') + "</tbody></table></div>" +
-    '<div class="stat-sub">Prompts sent: ' + esc(ext.prompts_sent) + "</div>" +
-    (approvals ? "<h3>Approvals</h3><ul>" + approvals + "</ul>" : "") +
-    '<p class="stat-sub">' + esc(ext.note) + "</p></div>";
+  var requested = (ext.turns || []).reduce(function (n, t) { return n + (t.approval_request || 0); }, 0);
+  if (approvals) return "<h3>Approvals</h3><ul id=\"external-approvals\">" + approvals + "</ul>";
+  // Requests seen in the trail with no decision stored: say exactly that, without
+  // guessing what the decision was.
+  if (requested) {
+    return '<p class="stat-sub" id="external-approvals">' + esc(requested) + " approval request" +
+      (requested === 1 ? "" : "s") + " in the harness trail; no decision record was stored.</p>";
+  }
+  return '<p class="stat-sub" id="external-approvals">No approvals requested.</p>';
+}
+
+/* The page an external-only run leads with: what Garuda did record — the task, the outcome
+ * and how long it took, the prompts it sent, per-turn counts, approvals and the final
+ * message — and one short note for everything it does not store, in place of a column of
+ * empty panels each explaining its own absence. */
+function externalSummaryHtml(payload, ctx) {
+  var run = payload.run;
+  var ext = payload.external;
+  var took = runDuration(run, ctx);
+  var outcome = ctx.live ? "in progress"
+    : run.status === "running" ? "unknown — no outcome was recorded"
+    : (run.state_label || run.status || "unknown");
+  var final = run.final_message
+    ? "<pre>" + esc(run.final_message) + "</pre>"
+    : '<div class="block-note">' + (ctx.live ? "None yet — the run is still going."
+                                             : "No final message was stored.") + "</div>";
+  return (
+    '<div class="card" id="external-summary"><h2>What Garuda recorded</h2>' +
+    '<dl class="trace-facts">' +
+    "<dt>Outcome</dt><dd>" + statusPill(run.status) + " " + esc(outcome) + "</dd>" +
+    "<dt>Duration</dt><dd>" + esc(took.value) + ' <span class="stat-sub">' + esc(took.note) +
+    "</span></dd>" +
+    "<dt>Prompts sent</dt><dd>" + esc(fmt.num(ext.prompts_sent)) + "</dd>" +
+    "</dl>" +
+    '<div class="block block-input"><div class="block-label">task</div><pre>' +
+    esc(run.task || "") + "</pre></div>" +
+    '<div class="block block-output" id="external-final"><div class="block-label">' +
+    "final message</div>" + final + "</div>" +
+    "<h3>Who ran it</h3>" + externalFactsHtml(ext) +
+    "<h3>Per turn</h3>" + externalTurnsHtml(ext) +
+    externalApprovalsHtml(ext) +
+    '<p class="stat-sub" id="external-unknown"><b>Not recorded:</b> ' + esc(ext.note) +
+    " So there is no turn-by-turn trace, per-call token count or context-pressure chart for " +
+    "this run.</p></div>"
+  );
 }
 
 /* A log with no turn structure at all — the 1.1.0 vintage most archived runs are written in.
@@ -525,26 +921,48 @@ function isLegacyLog(traj) {
   return (traj.warning_codes || []).indexOf("legacy_log_format") !== -1;
 }
 
-/* Everything that says "look here first". A killed run, a rejected gate and an unpriceable
- * cost are all things you want to see before scrolling. */
-/* An external harness's run with no native log: its trail is the External harness card, so
+/* An external harness's run with no native log: its trail is the summary card, so
  * native-log alarms (no session_end, empty log, no turns) would be false here. */
 function externalOnly(payload) {
   return !!payload.external && !(payload.trajectory.turns || []).length;
 }
 
-function runFlagsHtml(payload) {
+/* The reader's warnings that only say a run is still being written. While it is live, the log
+ * has no session_end and its tail may be torn mid-write; the turn in progress has no
+ * turn_metrics, may not have its model call or tool results yet. The same warnings on a run
+ * that is not live — or on any earlier turn — are findings, and are kept. */
+var LIVE_RUN_EXPECTED = { no_session_end: 1, torn_tail: 1 };
+var LIVE_TURN_EXPECTED = {
+  turn_never_finished: 1, tool_call_unanswered: 1, tool_step_unexecuted: 1, no_model_call: 1,
+  missing_budget_snapshot: 1
+};
+
+function expectedWhileLive(anomaly, ctx) {
+  if (!ctx.live) return false;
+  if (LIVE_RUN_EXPECTED[anomaly.code]) return true;
+  return !!LIVE_TURN_EXPECTED[anomaly.code] && anomaly.turn_index === ctx.lastIndex;
+}
+
+/* Everything that says "look here first". A killed run, a rejected gate and an unpriceable
+ * cost are all things you want to see before scrolling.
+ *
+ * A live run has no session_end and an unfinished last turn *because it is running*: neither
+ * is an alarm then. Both are kept for a run that is not live, where they mean it stopped. */
+function runFlagsHtml(payload, ctx) {
   if (externalOnly(payload)) return "";
+  ctx = ctx || traceContext(payload);
   var traj = payload.trajectory;
-  var legacy = isLegacyLog(traj);
+  var legacy = ctx.legacy;
   var notes = [];
 
-  if (!legacy && (traj.success === null || traj.success === undefined)) {
+  if (!legacy && !ctx.live && (traj.success === null || traj.success === undefined)) {
     notes.push(["err", "No session_end in the log",
-                "The run was killed, or is still in flight. This is not a failure — " +
-                "the harness never got to record one."]);
+                "The run stopped without recording an outcome — it was killed, or its process " +
+                "died. This is not a failure verdict: the harness never got to record one."]);
   }
-  var unfinished = legacy ? [] : (traj.turns || []).filter(function (t) { return !t.finished; });
+  var unfinished = legacy ? [] : (traj.turns || []).filter(function (t) {
+    return !t.finished && !turnInProgress(t, ctx);
+  });
   if (unfinished.length) {
     notes.push(["err", "TURN NEVER FINISHED",
                 "Turn " + unfinished.map(turnNumber).join(", ") +
@@ -560,17 +978,19 @@ function runFlagsHtml(payload) {
   // and one anomaly per code is enough to say it.
   var seen = {};
   (traj.warnings || []).forEach(function (anomaly) {
+    if (expectedWhileLive(anomaly, ctx)) return;
     if (seen[anomaly.code]) return;
     seen[anomaly.code] = 1;
     var where = anomaly.turn_index !== null && anomaly.turn_index !== undefined
       ? " (turn band " + (anomaly.turn_index + 1) + ")" : "";
-    notes.push(["", "Reader note · " + anomaly.code, esc(anomaly.message) + esc(where)]);
+    notes.push(["", "Reader note · " + anomaly.code, anomaly.message + where]);
   });
 
+  // Every part is plain text, escaped exactly once here.
   return notes.map(function (note) {
     return '<div class="notice' + (note[0] ? " " + note[0] : "") + '">' +
            '<div class="notice-title">' + esc(note[1]) + "</div>" +
-           '<div class="notice-body">' + note[2] + "</div></div>";
+           '<div class="notice-body">' + esc(note[2]) + "</div></div>";
   }).join("");
 }
 
@@ -643,33 +1063,44 @@ function compactionLabel(c) {
 
 /* --- the timeline (with the gate lane interleaved as grid cells) ---------- */
 
-function timelineHtml(traj, hasGates) {
+/* The timeline as keyed pieces, one grid child each, in display order — what `patchTimeline`
+ * reconciles. Keys are stable across refreshes: a turn's index, a phase's position. */
+function timelinePieces(traj, hasGates, ctx) {
   var turns = traj.turns || [];
   if (!turns.length) {
-    return '<div class="empty span-all"><p>No turns in this log.</p>' +
-           "<p>Either the run failed before its first model call, or the log is from a " +
-           "build that did not record enough to segment.</p></div>";
+    return [{ key: "empty", html:
+      '<div class="empty span-all"><p>No turns in this log' + (ctx.live ? " yet" : "") + ".</p>" +
+      (ctx.live
+        ? "<p>The run has not finished its first turn; turns appear here as they complete.</p>"
+        : "<p>Either the run failed before its first model call, or the log is from a " +
+          "build that did not record enough to segment.</p>") + "</div>" }];
   }
   var phases = traj.phases || [];
   var showPhases = phases.length > 1;
-  var legacy = isLegacyLog(traj);
-  var out = "";
+  var pieces = [];
   for (var i = 0; i < turns.length; i++) {
     if (showPhases) {
-      out += phases.filter(function (p) { return p.turn_start === i; })
-                   .map(phaseHeaderHtml).join("");
+      for (var a = 0; a < phases.length; a++) {
+        if (phases[a].turn_start === i) {
+          pieces.push({ key: "phase-" + a, html: phaseHeaderHtml(phases[a]) });
+        }
+      }
     }
-    out += turnCardHtml(turns[i], turns[i - 1], traj, legacy);
-    if (hasGates) out += gateCellHtml(turns[i]);
+    pieces.push({ key: "turn-" + turns[i].index,
+                  html: turnCardHtml(turns[i], turns[i - 1], traj, ctx) });
+    if (hasGates) pieces.push({ key: "gate-" + turns[i].index, html: gateCellHtml(turns[i]) });
     if (showPhases) {
       // `turn_end` is EXCLUSIVE — Phase(0, 3) covers bands 0..2 — so the critic strip belongs
       // after band turn_end-1. Comparing it to `i` directly would render the critic one row
       // into the *next* phase.
-      out += phases.filter(function (p) { return p.critic && p.turn_end === i + 1; })
-                   .map(phaseCriticHtml).join("");
+      for (var b = 0; b < phases.length; b++) {
+        if (phases[b].critic && phases[b].turn_end === i + 1) {
+          pieces.push({ key: "critic-" + b, html: phaseCriticHtml(phases[b]) });
+        }
+      }
     }
   }
-  return out;
+  return pieces;
 }
 
 function phaseHeaderHtml(phase) {
@@ -680,7 +1111,7 @@ function phaseHeaderHtml(phase) {
     (phase.attempt !== null && phase.attempt !== undefined
       ? '<span class="meta">round ' + esc(phase.attempt) + "</span>" : "") +
     '<span class="meta">' +
-    (count === 1 ? "1 band" : "bands " + (phase.turn_start + 1) + "–" + phase.turn_end) +
+    (count === 1 ? "1 band" : "bands " + esc(phase.turn_start + 1) + "–" + esc(phase.turn_end)) +
     "</span>" +
     (phase.summary
       ? '<span class="stat-sub">' + esc(fmt.truncate(phase.summary, 140)) + "</span>" : "") +
@@ -700,7 +1131,7 @@ function phaseCriticHtml(phase) {
   );
 }
 
-function turnCardHtml(turn, previous, traj, legacy) {
+function turnCardHtml(turn, previous, traj, ctx) {
   var steps = turnSteps(turn);
   var fraction = turn.budget && typeof turn.budget.fraction === "number"
     ? Math.round(turn.budget.fraction * 100) + "%" : "—";
@@ -709,7 +1140,7 @@ function turnCardHtml(turn, previous, traj, legacy) {
     '<div class="turn" data-turn="' + turn.index + '" id="turn-' + turn.index + '">' +
     '<button type="button" class="turn-head" data-toggle="' + turn.index + '">' +
     '<span class="turn-no">' + esc(turnNumber(turn)) + "</span>" +
-    '<span class="turn-flags">' + turnFlagsHtml(turn, steps, legacy) + "</span>" +
+    '<span class="turn-flags">' + turnFlagsHtml(turn, steps, ctx) + "</span>" +
     '<span class="turn-stats">' +
     turnStat("model", fmt.duration(turn.model_ms)) +
     turnStat("tools", String(steps.length)) +
@@ -720,7 +1151,7 @@ function turnCardHtml(turn, previous, traj, legacy) {
     '<span class="turn-caret">▸</span>' +
     "</button>" +
     '<div class="turn-body" id="turn-body-' + turn.index + '" hidden>' +
-    turnBodyHtml(turn, previous, traj, steps) +
+    turnBodyHtml(turn, previous, traj, steps, ctx) +
     "</div></div>"
   );
 }
@@ -730,12 +1161,16 @@ function turnStat(label, value) {
          '<span class="turn-stat-v">' + esc(value) + "</span></span>";
 }
 
-function turnFlagsHtml(turn, steps, legacy) {
+function turnFlagsHtml(turn, steps, ctx) {
   var flags = [];
+  var running = turnInProgress(turn, ctx);
   if (turn.label) flags.push(["accent", turn.label]);
-  if (!turn.finished && !legacy) flags.push(["err", "never finished"]);
+  if (!turn.finished && !ctx.legacy) {
+    flags.push(running ? ["accent", "in progress"] : ["err", "never finished"]);
+  }
   var pending = steps.filter(function (s) { return s.status === "pending"; }).length;
-  if (pending) flags.push(["err", pending + " pending"]);
+  // A dispatched call with no result yet is the normal state of a turn in progress.
+  if (pending) flags.push(running ? ["", pending + " running"] : ["err", pending + " pending"]);
   var errors = turnErrors(turn);
   if (errors) flags.push(["err", errors + " tool error" + (errors === 1 ? "" : "s")]);
   if ((turn.permission_denials || []).length) {
@@ -757,7 +1192,7 @@ function turnFlagsHtml(turn, steps, legacy) {
 }
 
 /* The four parts of a turn, in the order they happened. */
-function turnBodyHtml(turn, previous, traj, steps) {
+function turnBodyHtml(turn, previous, traj, steps, ctx) {
   var out = inputHtml(turn, previous, traj);
 
   (turn.model_calls || []).forEach(function (call, index) {
@@ -806,13 +1241,13 @@ function turnBodyHtml(turn, previous, traj, steps) {
 
   if (steps.length) {
     out += '<div class="section-label">does</div>' +
-           steps.map(function (step) { return stepHtml(step, turn); }).join("");
+           steps.map(function (step) { return stepHtml(step, turn, ctx); }).join("");
   }
 
   if ((turn.events || []).length) {
-    out += '<div class="stat-sub">events ' + turn.events[0] + "–" +
-           turn.events[turn.events.length - 1] + " of the log · " +
-           '<a href="#" data-jump="' + turn.events[0] + '">show raw</a></div>';
+    out += '<div class="stat-sub">events ' + esc(turn.events[0]) + "–" +
+           esc(turn.events[turn.events.length - 1]) + " of the log · " +
+           '<a href="#" data-jump="' + esc(turn.events[0]) + '">show raw</a></div>';
   }
   return out || '<div class="stat-sub">Nothing but the turn boundary was recorded here.</div>';
 }
@@ -885,10 +1320,13 @@ var STEP_WHY = {
   gate_unknown: "task_complete ran but no verdict was recorded"
 };
 
-function stepHtml(step, turn) {
+function stepHtml(step, turn, ctx) {
   var cls = STEP_CLASS[step.status] || "unknown";
   var family = toolFamily(step.name);
   var why = STEP_WHY[step.status];
+  if (step.status === "pending" && turnInProgress(turn, ctx)) {
+    why = "dispatched; its result has not been written yet";
+  }
   return (
     '<div class="step step-' + family + '">' +
     '<div class="step-head">' +
@@ -933,7 +1371,7 @@ function subagentHtml(step, turn) {
     '<span class="pill ' + (handoff.success ? "success" : "failed") + '">' +
     esc(handoff.subagent || "subagent") + "</span>" +
     (typeof handoff.turns === "number"
-      ? '<span class="meta">' + handoff.turns + " turns inside</span>" : "") +
+      ? '<span class="meta">' + esc(handoff.turns) + " turns inside</span>" : "") +
     (id
       ? '<button type="button" class="btn btn-small" data-subagent="' + esc(id) + '">' +
         "Open its trace</button>"
@@ -953,16 +1391,21 @@ function openSubagent(subSessionId) {
     return;
   }
   node.innerHTML = '<div class="loading">Loading subagent trace…</div>';
+  // Looked up again when the answer arrives: a live refresh may have replaced the turn card
+  // (carrying this placeholder into the new one), and the view may be gone altogether.
+  var fill = function (html) {
+    var target = el("sub-" + subSessionId);
+    if (target) target.innerHTML = html;
+  };
   api(STATE.raw.subagents + encodeURIComponent(subSessionId))
     .then(function (payload) {
-      node.innerHTML = subTraceHtml(payload);
-    })
-    .catch(function (err) {
-      node.innerHTML = '<div class="notice"><div class="notice-body">' +
-                       esc(err.status === 404
-                         ? "No trace was kept for this subagent. Runs from before subagent " +
-                           "logs were persisted only recorded the handoff."
-                         : err.message) + "</div></div>";
+      fill(subTraceHtml(payload));
+    }, function (err) {
+      fill('<div class="notice"><div class="notice-body">' +
+           esc(err.status === 404
+             ? "No trace was kept for this subagent. Runs from before subagent " +
+               "logs were persisted only recorded the handoff."
+             : err.message) + "</div></div>");
     });
 }
 
@@ -978,8 +1421,8 @@ function subTraceHtml(payload) {
   }
   return (
     '<div class="stat-sub">' + turns.length + " turns · " +
-    fmt.tokens((traj.usage || {}).prompt_tokens) + " prompt tokens · " +
-    fmt.cost(traj.cost_usd) + " · " + esc(traj.model || "?") + "</div>" +
+    esc(fmt.tokens((traj.usage || {}).prompt_tokens)) + " prompt tokens · " +
+    esc(fmt.cost(traj.cost_usd)) + " · " + esc(traj.model || "?") + "</div>" +
     turns.map(function (turn) {
       var steps = turnSteps(turn);
       var text = (turn.model_calls || [])
@@ -1248,19 +1691,24 @@ function onTurnClick(event) {
 }
 
 function showBuffer(bufferId) {
-  if (!STATE.raw || !STATE.raw.buffers) {
+  var raw = STATE.raw;
+  if (!raw || !raw.buffers) {
     toast("Buffers are only stored beside a local session.");
     return;
   }
-  api(STATE.raw.buffers + encodeURIComponent(bufferId))
+  api(raw.buffers + encodeURIComponent(bufferId))
     .then(function (payload) {
       var node = el("raw-body");
+      if (STATE.raw !== raw || !node) return;   // the view is gone
+      raw.search = null;
       node.innerHTML =
-        '<div class="block-label">buffer ' + esc(bufferId) + " · " + payload.bytes + " bytes" +
-        (payload.truncated ? " (clipped)" : "") + "</div><pre>" + esc(payload.content) + "</pre>";
+        '<div class="block-label">buffer ' + esc(bufferId) + " · " + esc(payload.bytes) +
+        " bytes" + (payload.truncated ? " (clipped)" : "") + "</div><pre>" +
+        esc(payload.content) + "</pre>";
       el("raw-card").scrollIntoView({ block: "start" });
-    })
-    .catch(function (err) { toast(err.message); });
+    }, function (err) {
+      if (STATE.raw === raw) toast(err.message);
+    });
 }
 
 /* --- the raw-event escape hatch ------------------------------------------ */
@@ -1269,58 +1717,116 @@ function rawEventsHtml(payload) {
   return (
     '<div class="card" id="raw-card">' +
     "<h2>Raw events</h2>" +
-    '<div class="stat-sub">' + payload.event_count + " events in the log. Everything above " +
-    "is derived from these; this is the check on the derivation.</div>" +
+    '<div class="stat-sub"><span id="raw-total">' + esc(payload.event_count) + "</span>" +
+    " events in the log. Everything above is derived from these; this is the check on the " +
+    "derivation. The filter searches the loaded window of up to 500 events.</div>" +
     '<div class="filters">' +
-    '<input type="search" id="raw-filter" placeholder="Filter by type or text…">' +
+    '<input type="search" id="raw-filter" placeholder="Filter loaded events by type or text…"' +
+    ' aria-label="Filter loaded raw events">' +
     '<button type="button" class="btn" id="raw-load">Load events</button>' +
     "</div>" +
     '<div id="raw-body"></div></div>'
   );
 }
 
-function wireRawEvents() {
-  el("raw-load").addEventListener("click", function () { loadRawEvents(STATE.raw.start); });
-  el("raw-filter").addEventListener("input", function () { renderRawEvents(); });
-}
-
-function loadRawEvents(start) {
+/* Load the window that starts at `start`. `quiet` skips scrolling the pane into view, for a
+ * load the reader started from inside it. */
+function loadRawEvents(start, quiet) {
   var raw = STATE.raw;
-  el("raw-body").innerHTML = '<div class="loading">Loading events…</div>';
+  var body = el("raw-body");
+  if (!raw || !body) return;
+  raw.search = null;
+  body.innerHTML = '<div class="loading">Loading events…</div>';
   var join = raw.url.indexOf("?") === -1 ? "?" : "&";
-  return api(raw.url + join + "start=" + Math.max(0, start | 0))
-    .then(function (payload) {
+  return api(raw.url + join + "start=" + Math.max(0, start | 0)).then(
+    function (payload) {
+      if (STATE.raw !== raw || !body.isConnected) return;   // the view is gone
+      raw.loaded = true;
       raw.start = payload.start;
       raw.count = payload.count;
       raw.total = payload.total;
       raw.events = payload.events;
+      raw.note = null;
       renderRawEvents();
-      el("raw-card").scrollIntoView({ block: "start" });
-    })
-    .catch(function (err) {
-      el("raw-body").innerHTML = '<div class="notice err"><div class="notice-body">' +
-                                 esc(err.message) + "</div></div>";
+      if (!quiet) el("raw-card").scrollIntoView({ block: "start" });
+    },
+    function (err) {
+      if (STATE.raw !== raw || !body.isConnected) return;
+      body.innerHTML = '<div class="notice err"><div class="notice-body">' +
+                       esc(err.message) + "</div></div>";
     });
 }
 
+function rawText(event) {
+  return JSON.stringify(event.payload === undefined ? event : event.payload);
+}
+
+function rawMatches(event, needle) {
+  return !needle || (event.type || "").toLowerCase().indexOf(needle) !== -1 ||
+         rawText(event).toLowerCase().indexOf(needle) !== -1;
+}
+
+function rawFilterValue() {
+  var input = el("raw-filter");
+  return input ? (input.value || "").toLowerCase() : "";
+}
+
+/* Which events a filter result covers, in words: "events 1–500 of 7,512". */
+function rawRange(start, count, total) {
+  return count ? "events " + (start + 1) + "–" + (start + count) + " of " + total
+               : "no events of " + total;
+}
+
+/* The filter runs over the loaded window only, and the pane says so: "Nothing matches" over
+ * 500 of 7,500 events read as "nothing in this run matches", which was not what it checked.
+ * When the window has no match the reader is offered the rest of the log, searched a window
+ * at a time. */
 function renderRawEvents() {
   var raw = STATE.raw;
-  var needle = (el("raw-filter").value || "").toLowerCase();
+  var body = el("raw-body");
+  if (!raw || !body) return;
+  var needle = rawFilterValue();
+  if (!raw.loaded) {
+    // Typing a filter before loading anything: there is nothing to search yet, so load the
+    // first window rather than answer "nothing matches" about zero events.
+    if (needle && !raw.loading) {
+      raw.loading = true;
+      Promise.resolve(loadRawEvents(raw.start, true)).then(function () { raw.loading = false; });
+    }
+    return;
+  }
   var rows = [];
   for (var i = 0; i < raw.events.length; i++) {
     var event = raw.events[i];
-    var text = JSON.stringify(event.payload === undefined ? event : event.payload);
-    if (needle && (event.type || "").toLowerCase().indexOf(needle) === -1 &&
-        text.toLowerCase().indexOf(needle) === -1) {
-      continue;
-    }
+    if (!rawMatches(event, needle)) continue;
     rows.push(
-      '<div class="raw-row"><span class="raw-idx">' + (raw.start + i) + "</span>" +
+      '<div class="raw-row"><span class="raw-idx">' + esc(raw.start + i) + "</span>" +
       '<span class="raw-type">' + esc(event.type) + "</span>" +
-      '<span class="raw-payload mono">' + esc(fmt.truncate(text, 400)) + "</span></div>"
+      '<span class="raw-payload mono">' + esc(fmt.truncate(rawText(event), 400)) + "</span></div>"
     );
   }
   var end = raw.start + raw.count;
+  var range = rawRange(raw.start, raw.count, raw.total);
+  var summary;
+  if (!needle) {
+    summary = "";
+  } else if (rows.length) {
+    summary = '<div class="stat-sub" id="raw-summary">' + esc(rows.length) + " of the " +
+              esc(raw.count) + " loaded events match (" + esc(range) + ")." +
+              (raw.count < raw.total ? " Events outside this window were not searched." : "") +
+              "</div>";
+  } else {
+    summary = '<div class="stat-sub" id="raw-summary">No match in the loaded window (' +
+              esc(range) + ")." +
+              (raw.count < raw.total ? " The rest of the log was not searched." : "") + "</div>" +
+              '<div class="filters" id="raw-search">' +
+              (end < raw.total ? '<button type="button" class="btn" data-search="later">' +
+                                 "Search later events</button>" : "") +
+              (raw.start > 0 ? '<button type="button" class="btn" data-search="earlier">' +
+                               "Search earlier events</button>" : "") +
+              "</div>";
+  }
+  if (raw.note) summary += '<div class="stat-sub" id="raw-search-note">' + esc(raw.note) + "</div>";
   var pager =
     '<div class="filters">' +
     (raw.start > 0
@@ -1328,14 +1834,63 @@ function renderRawEvents() {
         Math.max(0, raw.start - 500) + '">← previous</button>' : "") +
     (end < raw.total
       ? '<button type="button" class="btn" data-page="' + end + '">next →</button>' : "") +
-    '<span class="meta">' + (raw.start + 1) + "–" + end + " of " + raw.total + "</span></div>";
+    '<span class="meta">' + esc(range) + "</span></div>";
+  body.innerHTML = summary + rows.join("") +
+    (!rows.length && !needle ? '<div class="stat-sub">No events in this window.</div>' : "") + pager;
+}
+
+/* Walk the log a window at a time, forwards or backwards from the loaded one, and stop at the
+ * first window with a match. Abandoned when the filter changes, another load starts or the
+ * view goes away. */
+function searchRawEvents(direction) {
+  var raw = STATE.raw;
   var body = el("raw-body");
-  body.innerHTML =
-    (rows.length ? rows.join("") : '<div class="stat-sub">Nothing matches.</div>') + pager;
-  var buttons = body.querySelectorAll("[data-page]");
-  for (var b = 0; b < buttons.length; b++) {
-    buttons[b].addEventListener("click", function () {
-      loadRawEvents(Number(this.getAttribute("data-page")));
+  var needle = rawFilterValue();
+  if (!raw || !body || !needle) return;
+  var token = {};
+  raw.search = token;
+  var origin = direction > 0 ? raw.start + raw.count : raw.start;
+  var join = raw.url.indexOf("?") === -1 ? "?" : "&";
+  var status = function (text) {
+    var node = el("raw-search");
+    if (node) node.innerHTML = '<span class="meta">' + esc(text) + "</span>";
+  };
+  var done = function (searchedFrom, searchedTo) {
+    raw.search = null;
+    raw.note = "Searched events " + (searchedFrom + 1) + "–" + searchedTo + " as well: no match. " +
+               "Nothing " + (direction > 0 ? "after" : "before") + " the loaded window matches.";
+    renderRawEvents();
+  };
+  var step = function (start) {
+    if (raw.search !== token || STATE.raw !== raw || !body.isConnected ||
+        rawFilterValue() !== needle) return null;
+    if (direction > 0 && start >= raw.total) return done(origin, raw.total);
+    if (direction < 0 && start <= 0) return done(0, origin);
+    var from = direction > 0 ? start : Math.max(0, start - 500);
+    status("Searching events " + (from + 1) + "–" + Math.min(from + 500, raw.total) + " of " +
+           raw.total + "…");
+    return api(raw.url + join + "start=" + from).then(function (payload) {
+      if (raw.search !== token || STATE.raw !== raw || !body.isConnected ||
+          rawFilterValue() !== needle) return null;
+      raw.total = payload.total;
+      var hit = payload.events.some(function (event) { return rawMatches(event, needle); });
+      if (hit) {
+        raw.search = null;
+        raw.start = payload.start;
+        raw.count = payload.count;
+        raw.events = payload.events;
+        raw.note = null;
+        renderRawEvents();
+        return null;
+      }
+      if (!payload.count) return done(direction > 0 ? origin : from, direction > 0 ? raw.total : origin);
+      return step(direction > 0 ? from + payload.count : from);
+    }, function (err) {
+      if (raw.search !== token) return;
+      raw.search = null;
+      raw.note = "The search stopped: " + err.message;
+      renderRawEvents();
     });
-  }
+  };
+  step(origin);
 }

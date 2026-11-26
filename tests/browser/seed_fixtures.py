@@ -8,8 +8,11 @@ truncated response, a final_submission band, and a log old enough to have no con
 """
 
 import json
+import os
 import shutil
 import sys
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from garuda.core.modes import GATE_FIELDS, MODE_PRESETS
@@ -450,5 +453,103 @@ SUB_RECORDS = [
     "\n".join(json.dumps(r) for r in SUB_RECORDS) + "\n", encoding="utf-8"
 )
 print(f"  h8-subagent/subagents/{SUB_ID[:8]}…  {len(SUB_RECORDS)} events  nested trace")
+
+# The killed run is old: its log stopped being written long ago, so it is not live, and its
+# "no session_end" / "turn never finished" notices are real alarms rather than a run in flight.
+HOUR_AGO = time.time() - 3600
+os.utime(store.events_path("d4-killed-midrun"), (HOUR_AGO, HOUR_AGO))
+
+# 9. A model whose name carries an `&`: escaped exactly once, so it reads `R&D`, never `R&amp;D`.
+AMP_MODEL = "acme/R&D-mini <beta>"
+CLOCK[0] = 0
+amp_start = start()
+amp_start["payload"]["model"] = AMP_MODEL
+write("i9-ampersand-model", "Rename the R&D flag", [
+    amp_start,
+    budget(1, 0.1),
+    response(1, "Renamed it.", []),
+    metrics(1),
+    end(True, 1),
+], turns=1, model=AMP_MODEL)
+
+# 10. An external harness's run (ACP), written by the production writers: the session store,
+#     the ACP adapter's own trail (driven against the repo's fake ACP agent), the role record
+#     and an approval record. Garuda stores no harness messages, so this is all there is.
+os.environ.setdefault("GARUDA_GLOBAL_SETTINGS", str(ROOT.parent / f"{ROOT.name}-settings.yaml"))
+EXT_ID = "j10-external-acp"
+EXT_TASK = ("Port the CSV exporter to streaming writes so a 2 GB export no longer holds every "
+            "row in memory, and keep the header order stable")
+
+
+def seed_external() -> None:
+    import asyncio
+
+    from garuda.acp.adapter import AcpRuntime
+    from garuda.acp.broker import ApprovalRecord
+    from garuda.core.approval_outcome import ApprovalOutcome
+
+    workspace = ROOT.parent / f"{ROOT.name}-acp-workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    store.begin(session_id=EXT_ID, task=EXT_TASK, model="acp:fake-harness",
+                agent="fake-harness", workspace=str(workspace))
+    store.ensure_unified(EXT_ID)
+
+    async def drive(profile: str) -> None:
+        async def allow(_text: str) -> bool:
+            return True
+
+        runtime = AcpRuntime(
+            [sys.executable, "-m", "garuda.acp.fake_agent", "--profile", profile],
+            runtime_id="fake-harness", cwd=str(workspace), store=store,
+            persist_dir=str(store.session_dir(EXT_ID)), approval_handler=allow,
+            permission="yolo",
+        )
+        try:
+            await runtime.start(task=EXT_TASK, session_id=EXT_ID)
+            await runtime.prompt("Port the exporter.")
+        finally:
+            await runtime.close()
+
+    asyncio.run(drive("approval"))
+    asyncio.run(drive("streaming"))
+    store.update_meta(EXT_ID, {
+        "role": {"name": "coder", "runtime_id": "fake-harness", "model_id": "fake-model-1",
+                 "effort": "high", "harness_mode": None, "write_policy": "edits",
+                 "permissions": "yolo", "adapter": {"runtime_id": "fake-harness",
+                                                    "version": "1"}},
+        "approval:apr-1": ApprovalRecord(
+            approval_id="apr-1", outcome=ApprovalOutcome.ALLOW, action="Run pytest -q",
+            family="execute", runtime_id="fake-harness").to_dict(),
+    })
+    store.finish(EXT_ID, AgentResult(
+        success=True, final_message="The exporter now streams rows; header order is pinned "
+                                    "by a test.", messages=[], turns=2, metadata={}))
+    print(f"  {EXT_ID}  external harness trail  {EXT_TASK[:40]}")
+
+
+seed_external()
+
+# 11. A long run: 1,500 turns and ~7,500 events, past the raw-events window (500) many times
+#     over. One event deep in the log carries a marker, so a filter over the first window
+#     finds nothing and has to say which events it searched.
+LONG_ID = "k11-long-log"
+LONG_TURNS = 1500
+NEEDLE = "needle-7f3a"
+base = datetime(2026, 8, 6, 9, 0, tzinfo=timezone.utc)
+long_records = [start()]
+for number in range(1, LONG_TURNS + 1):
+    command = f"echo {NEEDLE}" if number == 1400 else f"pytest tests/test_part_{number}.py -q"
+    long_records += [
+        budget(number, round(0.05 + 0.6 * number / LONG_TURNS, 4)),
+        response(number, f"Step {number}.", [spec(f"L{number}", "bash", {"command": command})]),
+        tool(number, f"L{number}"),
+        result(number, f"L{number}", f"{number} passed"),
+        metrics(number),
+    ]
+long_records.append(end(True, LONG_TURNS))
+for offset, record in enumerate(long_records):
+    record["timestamp"] = (base + timedelta(seconds=2 * offset)).isoformat()
+write(LONG_ID, "A very long run, to keep the trace fast and the raw filter honest",
+      long_records, turns=LONG_TURNS)
 
 print(f"\nSeeded {len(list(ROOT.iterdir()))} sessions at {ROOT}")

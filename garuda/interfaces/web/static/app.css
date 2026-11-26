@@ -323,6 +323,27 @@ svg { display: block; width: 100%; height: auto; }
   .trajectory.with-lane { grid-template-columns: 1fr; }
 }
 
+/* The trace page is a column of regions that a live refresh patches in place. Spacing is the
+ * column gap, so an empty region takes no room and a redrawn one cannot change its margins.
+ * The browser's own scroll anchoring is off here because the view anchors the scroll itself
+ * on every patch; both doing it would move the page twice. */
+.trace-page { display: flex; flex-direction: column; gap: 14px; overflow-anchor: none; }
+.trace-page > :empty { display: none; }
+.trace-page > .page-head { margin-bottom: 0; }
+.trace-page .live-card { margin-bottom: 0; }
+.trace-page > div > .notice { margin-bottom: 0; }
+.trace-page > div > .notice + .notice { margin-top: 10px; }
+.trace-status { display: inline-flex; gap: 8px; align-items: baseline; }
+.trace-facts {
+  display: grid; grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 14px; margin: 0 0 10px; font-size: 13px;
+}
+.trace-facts dt { color: var(--muted); }
+.trace-facts dd { margin: 0; overflow-wrap: anywhere; }
+#external-summary h3 { font-size: 13px; margin: 14px 0 6px; }
+#external-summary .block { margin-top: 10px; }
+#external-summary .block pre { max-height: 320px; overflow: auto; }
+
 .phase-head {
   display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
   padding: 8px 12px; margin-top: 6px;
