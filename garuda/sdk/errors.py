@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from garuda.agents.resolve import AgentNotFound
+from garuda.runtime.registry import UnknownRuntime
 from garuda.workspace.paths import (
     WorkspaceMissing,
     WorkspaceNotDirectory,
@@ -11,7 +12,7 @@ from garuda.workspace.paths import (
 )
 
 __all__ = ["AgentNotFound", "OptionsUnsupportedOnRuntime", "ToolsUnsupportedOnRuntime",
-           "WorkspaceMissing", "WorkspaceNotDirectory", "WorkspaceUnavailable",
+           "UnknownRuntime", "WorkspaceMissing", "WorkspaceNotDirectory", "WorkspaceUnavailable",
            "refuse_unservable_options", "refuse_unservable_tools", "require_local_workspace"]
 
 
@@ -56,8 +57,9 @@ class OptionsUnsupportedOnRuntime(ValueError):
     and Garuda's run modes are native loop postures, so a ``model=``,
     ``reasoning_model=``, ``collection_model=``, ``model_binding=``,
     non-default ``agent=``, ``mcp_config=`` or non-default ``mode=`` would be
-    ignored while the run still reported success. The run is refused before
-    the harness starts.
+    ignored while the run still reported success. So would ``run(resume=...)``,
+    ``resume_all_projects=`` and ``events=`` (#804): the SDK starts each ACP run
+    as a fresh harness session. The run is refused before the harness starts.
     """
 
     code = "sdk.options_unsupported"
@@ -71,7 +73,8 @@ DEFAULT_RUN_MODES = (None, "standard", "interactive")
 
 def refuse_unservable_options(runtime: str, *, model, agent, reasoning_model=None,
                               collection_model=None, model_binding=None, mode=None,
-                              mcp_config=None) -> None:
+                              mcp_config=None, resume=None, resume_all_projects=False,
+                              events=None) -> None:
     """Refuse native-only options on a runtime that would ignore them."""
     if runtime == "native":
         return
@@ -107,3 +110,15 @@ def refuse_unservable_options(runtime: str, *, model, agent, reasoning_model=Non
             "harness in the mode its default permission allows, and run-mode gates exist only "
             "in the native loop. Use runtime='native', the CLI (`garuda run --runtime "
             f"{runtime} --mode readonly` runs a confined readonly harness), or leave it unset")
+    run_options = [name for name, value in (("resume", resume),
+                                            ("resume_all_projects", resume_all_projects),
+                                            ("events", events)) if value not in (None, False)]
+    if run_options:
+        # Each SDK ACP run is a fresh harness session with its own event store
+        # (#804); a resume would silently start over. Refuse rather than drop it.
+        raise OptionsUnsupportedOnRuntime(
+            f"{', '.join(run_options)} cannot be applied on the ACP runtime {runtime!r}: "
+            "SoftwareAgent.run starts a fresh harness session each time. Use "
+            "SoftwareAgent.conversation() for several turns in one harness session, "
+            f"`garuda run --runtime {runtime} --resume SESSION -t ...` to continue a saved "
+            "session, or runtime='native'")

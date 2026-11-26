@@ -941,6 +941,48 @@ def _release_dead_owner_holdings(store, session_id: str, holders: list, leases, 
     return reaped, notes
 
 
+def _settle_dead_run(store, session_id: str, leases, capacity) -> list[str]:
+    """A plain run whose owner died ``running``: record it interrupted (#807).
+
+    Only when it is still ``running``, its owner is confirmed dead and it holds
+    no lease or slot. (Its parked approvals are withdrawn by the CLI's
+    ``runtime recover``: the approval channel is not part of this contract.)
+    """
+    from garuda.runtime.capacity import CapacityError, CapacityStore
+    from garuda.runtime.ownership import owner_liveness
+    from garuda.runtime.session_state import interrupted
+    from garuda.workspace.lease import LeaseError, LeaseStore
+
+    try:
+        meta = store.load_meta(session_id)
+    except Exception as exc:
+        return [f"session {session_id} unreadable; its status was left ({exc})"]
+    state = meta.get("state") if isinstance(meta, dict) else None
+    owner = state.get("owner") if isinstance(state, dict) else None
+    owner_dead = isinstance(owner, dict) and owner_liveness(owner) is False
+    notes: list[str] = []
+    if meta.get("status") != "running" or not owner_dead:
+        return notes
+    try:
+        if (leases if leases is not None else LeaseStore()).live_holders_for_session(session_id):
+            return [*notes, f"session {session_id} is still recorded running: a workspace lease remains"]
+        if (capacity if capacity is not None else CapacityStore()).slots_for_session(session_id):
+            return [*notes, f"session {session_id} is still recorded running: a capacity slot remains"]
+    except (LeaseError, CapacityError, OSError) as exc:
+        return [*notes, f"session {session_id} is still recorded running: holdings unreadable ({exc})"]
+
+    def _settle(current: dict) -> dict:
+        if current.get("status") != "running" or current.get("state") != state:
+            raise RecoveryError(f"session {session_id} changed while recovering; refusing")
+        return {"status": "failed", "state": interrupted(), "stop_reason": "owner_lost",
+                "error_code": "run.owner_lost",
+                "error_detail": "the run's process exited without settling; `garuda runtime "
+                                "recover` proved it gone and recorded it interrupted"}
+
+    store.mutate_meta(session_id, _settle)
+    return [*notes, f"session {session_id} recorded interrupted: its process is gone"]
+
+
 def _flow_parent_meta(source, session_id: str) -> dict | None:
     """The meta of a flow parent session (``kind: flow``), else None."""
     try:
@@ -1325,6 +1367,8 @@ def recover(
         if flow_meta is not None:
             notes += _settle_dead_flow(store, session_id, flow_meta, leases, capacity,
                                        settled_owner)
+        else:
+            notes += _settle_dead_run(store, session_id, leases, capacity)
     if report.state is RestartState.ROLLED_BACK:
         # Keep the target id so a prepared child left by a crash in a later
         # recovery attempt still binds to this handoff attempt.
