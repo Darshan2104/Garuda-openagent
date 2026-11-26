@@ -4899,3 +4899,23 @@ exits 2 with its config error, like `config show`.
 resolved config, per-key sources and withheld project keys the text view prints
 as YAML and comments. With no `garuda.yaml` it prints `config: null` and exits 0,
 matching the text view's notice rather than failing.
+
+## 2026-11-26: `garuda serve` validates `submit` before queuing (#790, #791)
+
+`submit` and `run` share `JsonRpcServer._vet`, run synchronously before a job is
+queued (and again inside `_execute`). It reuses the CLI's checks: `task_text`
+and `workspace_refusal` from #780, `MODE_CHOICES`, the agent lookup in
+`check_named` (a `FileNotFoundError` becomes `agent.not_found`), the
+`SessionStore.resolve` that `plan_resume` uses for `resume` (`session.not_found`), and
+non-empty strings for the model params (`model.invalid`). Refusals are
+JSON-RPC -32602 with the typed code as the message prefix and in
+`error.data.code`; `SelectionRefused` (allowlist, inline definitions,
+restricted launch settings) now uses -32602 too. Unknown methods are -32601, a
+non-object `params` or a non-integer `sessions` `limit` is -32602
+`params.invalid`; every other failure stays -32000. `jobs` stringifies the
+stored task, so a record from before this fix cannot break the listing.
+
+A request without an `id` is a JSON-RPC notification and gets no response
+object; over HTTP the reply is `204 No Content`. No repo client or test sent
+id-less requests to this server. Auth is unchanged: an unauthorized request,
+notification or not, is still refused with -32001 (HTTP 401).
