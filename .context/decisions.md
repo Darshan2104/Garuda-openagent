@@ -4987,3 +4987,18 @@ A request without an `id` is a JSON-RPC notification and gets no response
 object; over HTTP the reply is `204 No Content`. No repo client or test sent
 id-less requests to this server. Auth is unchanged: an unauthorized request,
 notification or not, is still refused with -32001 (HTTP 401).
+
+## 2026-11-26: Cancelling an ACP prompt task closes the runtime (#803)
+
+`AcpRuntime.prompt`'s `CancelledError` branch only cancelled its local
+`session/prompt` future, so a cancelled `Conversation.run` left the adapter
+RUNNING with the harness still generating, and the next turn failed with
+`prompt needs IDLE`. The branch now ends the turn the way an explicit
+`cancel()` during a turn does: answer pending approvals `cancelled`, send
+`session/cancel` through `_notify_cancel` (bounded to 2 s, so an agent that
+never reads it cannot hang the caller), close the normalizer turn as
+`cancelled`, reap the process, move CANCELLING -> CLOSED and re-raise. CLOSED,
+not IDLE, because a `cancelled` finish terminates the normalizer's session and
+`cancel()` already closes; the next `prompt` raises `RuntimeClosedError`. The
+state moves sit in a `finally` so a cleanup failure still never leaves RUNNING.
+The plan-mode path (#778) is not reached: it only reads a returned stop reason.

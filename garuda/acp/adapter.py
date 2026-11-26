@@ -838,8 +838,21 @@ class AcpRuntime:
                 else:
                     result = await self._drain_until_done(prompt_task)
         except asyncio.CancelledError:
+            # The awaiting task was cancelled mid-turn (#803): end the turn as
+            # an explicit cancel() would, so the harness stops generating and
+            # the runtime is CLOSED, never left RUNNING with a live child.
+            # `_notify_cancel` bounds the wait on an agent that never reads it.
+            await self._cancel_pending_approvals()
+            await self._notify_cancel()
             prompt_task.cancel()
             await asyncio.gather(prompt_task, return_exceptions=True)
+            self._finish_turn("cancelled")
+            try:
+                await self._close_process()
+            finally:
+                self._move(LifecycleState.CANCELLING)
+                self._emit(RuntimeEventKind.LIFECYCLE, {"state": "cancelled", "reason": "task cancelled"})
+                self._move(LifecycleState.CLOSED)
             raise
         except TimeoutError as exc:
             prompt_task.cancel()

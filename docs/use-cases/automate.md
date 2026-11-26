@@ -498,6 +498,11 @@ and final message. The ACP result has no independent verification by default:
 `success` is `True` when the harness ended its turn, whatever it answered.
 The session saves the harness as `model: acp:<runtime>` and `agent: <runtime>`,
 as `garuda run` does, and each turn's usage report goes to the usage ledger.
+Cancelling the task awaiting an ACP `run()` cancels the turn as
+`close()` would: Garuda sends the harness `session/cancel` (waiting at most two
+seconds), reaps it, records the turn cancelled and re-raises `CancelledError`.
+The conversation's runtime is then closed: a later `run()` raises
+`RuntimeClosedError`, so start a new conversation for the next task.
 An unknown agent name or a missing agent file raises
 `garuda.sdk.AgentNotFound` (a `FileNotFoundError`, code `agent.not_found`) from
 `AgentSpec.load`, `AgentSpec.from_file` and `run()`. A local `workspace=` that
