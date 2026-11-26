@@ -243,7 +243,10 @@ export never launch a harness or query its login/quota state.
   `resume_all_projects=` and `events=` are native-only and raise
   `OptionsUnsupportedOnRuntime` (`sdk.options_unsupported`), so use
   `Conversation` for several turns or `garuda run --resume latest -t "..."` to continue a saved
-  session. An unknown runtime id raises `UnknownRuntime` (`harness.unknown`). SDK ACP runs may do at most what `smart` allows, so OpenCode and
+  session. The SDK starts the harness on this host in the local workspace, so
+  `workspace_kind="docker"` (or any kind but `"local"`), `docker_image=` and
+  `docker_host=` raise the same error on `SoftwareAgent` and `Conversation`; use
+  `garuda run --runtime <id> --mode readonly` for a harness confined in Docker. An unknown runtime id raises `UnknownRuntime` (`harness.unknown`). SDK ACP runs may do at most what `smart` allows, so OpenCode and
   harnesses whose modes Garuda does not classify refuse with
   `role.mode_unenforced`. `SoftwareAgent.run` takes no approval callback: like a
   headless `garuda run --runtime claude`, it denies every harness permission request
