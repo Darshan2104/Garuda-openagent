@@ -5311,3 +5311,54 @@ version 2 JSON review indefinitely; `STRUCTURED_FORMAT` stays defined.
 A review continuation checkpoint now saves pending findings as `findings`
 (raw, redacted) beside an empty `extra`; a checkpoint from before this change
 holds the rendered findings in `extra` and is delivered as saved.
+
+## 2026-11-27: Long flow steps have a deadline and a silence watchdog; checked steps stop cleanly at theirs (#828)
+
+An approved plan can make one flow step run 10-12 hours, and nothing bounded it:
+an ACP step had no deadline (`launch.py` passed none to `run_acp_task`) and
+`_drain_until_done` polled forever, so a harness that was alive but silent held
+the flow and its workspace lease. A checked step's worker had a fixed 3,600 s
+process timeout whose kill closed as `timeout`, which `_closed_step` refuses, so
+the step was quarantined rather than stopped.
+
+A step, or a flow as the default for its steps, may now set
+`limits: {deadline_min, silence_min, tool_silence_min}` (whole minutes; deadline
+up to 7 days, silences up to a day; `tool_silence_min` defaults to 120 when
+`silence_min` is set and may not be shorter). A step's keys override the flow's
+key by key. The parser emits the key only when present, so a flow without it
+keeps its definition digest (pinned by a test). The engine converts minutes to
+seconds in `StepLimits` and accepts any positive number of minutes, so tests use
+fractions without a public seconds key.
+
+The deadline is `run_acp_task(deadline_sec=...)` (its error now carries
+`liveness = "deadline"`) and, for a native step, the loop's own
+`config.deadline_sec` (a turn-boundary deadline; the step names it when the
+failed run used its whole budget). The silence watchdog is opt-in on the adapter
+(`AcpRuntime.watch_silence`, `run_acp_task(silence_watchdog=...)`): silence is
+time since the last notification or agent request; a parked permission request
+restarts the clock; while a tool call is in flight (from `tool_call` /
+`tool_call_update` status) `tool_silence_sec` applies. When it fires the adapter
+ends the turn as the deadline path does (`session/cancel`, reap, `failed`) and
+raises `AcpSilenceError(AcpTimeoutError)`; the session settles
+`stop_reason: silence`, `error_code: run.silence_exceeded`. `garuda run`, the
+SDK, the ACP server and the conformance contract never ask for it, so nothing
+there changed.
+
+A step ended by either limit stops with `flow.step_deadline` or
+`flow.step_silent`: a normal stopped receipt (with `limits` and `stop.cause`),
+two journal entries per attempt, in `RESUMABLE_CHECKED_STOPS`, never in
+`RETRYABLE_STOPS` (an automatic rerun of a 12-hour step is not what `retries`
+means); `flow resume` reruns it as a new attempt. A launcher's liveness claim
+counts only when the step had limits.
+
+Checked steps: the owned request carries `limits` only when set (an unlimited
+step's request and digest are unchanged), the worker passes the deadline and
+watchdog to `run_acp_task` (or the native config) and exits cleanly, and the
+supervisor's timeout is a backstop of deadline + 600 s (3,600 s unchanged
+without a deadline). The worker no longer collapses an `AgentRuntimeError` to
+`success: False`: its result carries a bounded `failure` (`code`, `detail`,
+the raw `stop_reason` from #824, `liveness`), validated by `RoleControl`, which
+becomes the step's error, `stop.cause.code` fallback and `stop.cause.stop_reason`.
+`run_acp_task` attaches the last turn's raw stop reason to a raised error
+(`acp_stop_reason`) for that purpose. A checked step without a deadline still
+has the one-hour worker limit; long checked steps need `deadline_min`.

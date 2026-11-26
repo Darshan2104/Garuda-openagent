@@ -464,6 +464,17 @@ Click a problem to see the fix.
     `flow.artifact_too_large`, resumes with `garuda flow resume FLOW_ID`,
     which runs that step again.
 
+??? question "A flow stops with `flow.step_deadline` or `flow.step_silent`"
+
+    The step ran past its `limits.deadline_min`, or its external harness sent
+    nothing for `limits.silence_min` (`tool_silence_min` while a tool call was
+    running). Garuda cancelled the turn and stopped the agent; the step's
+    receipt has the stop and its `cause`. Check the step session
+    (`garuda sessions show ID`) for what it was doing, raise the limit in
+    `garuda.yaml` if the work needs longer, then `garuda flow resume FLOW_ID`
+    to run the step again. See
+    [Step limits](../guides/sessions-and-flows.md#step-limits).
+
 ??? question "A read-only flow step runs until it hits its turn limit"
 
     The native completion checker can ask a read-only step for evidence it

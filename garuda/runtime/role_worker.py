@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 
 from garuda.runtime.role_control import RoleControlClient, bounded_output
 from garuda.runtime.role_request import catalog_from_document, native_from_document, role_from_document
@@ -46,6 +47,8 @@ async def _execute(payload, control):
     from garuda.core.sessions import SessionStore
 
     request = payload["request"]
+    #: The step's liveness limits in seconds (#828); absent for a step without ``limits``.
+    limits = request.get("limits") or {}
     role = role_from_document(request["role"])
     store = SessionStore(request["sessions_root"])
     session_id = request["session_id"]
@@ -58,7 +61,11 @@ async def _execute(payload, control):
 
         prepared = await activate_agent_plan(native_from_document(request["native"]),
                                              approval_handler=control.approve, load_project_tools=False)
+        deadline = limits.get("deadline_sec")
+        if deadline:  # the step's own deadline (#828), within any the agent sets
+            prepared.config.deadline_sec = min(prepared.config.deadline_sec or deadline, deadline)
         events = EventStore(session_id)
+        started = time.monotonic()
         result = await run_agent_task(
             task=request["prompt"], model=prepared.reasoning, agent=prepared.agent,
             tools=prepared.tools, config=prepared.config, permissions=prepared.permissions,
@@ -67,13 +74,17 @@ async def _execute(payload, control):
             session_record={**workspace_record, "flow_step": request["flow"],
                             **({"role": role.record()} if role else {})},
             collection_model=prepared.collection, collection_policy=prepared.collection_policy)
+        timed_out = bool(deadline and not result.success and time.monotonic() - started >= deadline)
         return {"session_id": session_id, "success": bool(result.success),
-                "output": bounded_output(result.final_message or "")}
+                "output": bounded_output(result.final_message or ""),
+                **({"failure": {"code": "run.deadline_exceeded", "liveness": "deadline"}}
+                   if timed_out else {})}
     if request["kind"] == "acp":
         from garuda.interfaces.runtime_cli import run_acp_task
         from garuda.runtime.protocol import AgentRuntimeError, RuntimeStartError
         from garuda.workspace.no_edits import deny_all
 
+        watchdog = {key: limits.get(key) for key in ("silence_sec", "tool_silence_sec")}
         try:
             summary = await run_acp_task(
                 request["prompt"], runtime_id=request["manifest"]["runtime_id"],
@@ -86,23 +97,52 @@ async def _execute(payload, control):
                 session_record={**workspace_record, "flow_step": request["flow"]},
                 external_approvals=request.get("external_approvals", False),
                 approval=deny_all if request["no_edits"] else control.approve,
-                emit=lambda *_a: None, no_edits=request["no_edits"])
+                emit=lambda *_a: None, no_edits=request["no_edits"],
+                **({"deadline_sec": limits["deadline_sec"]} if limits.get("deadline_sec") else {}),
+                **({"silence_watchdog": watchdog} if any(watchdog.values()) else {}))
         except RuntimeStartError:
             raise  # a refusal before launch keeps its own code
-        except AgentRuntimeError:
-            # The agent stopped on its own (ended its turn, exited, timed out): a failed
-            # step with a complete result, as in-process launch reports it.
+        except AgentRuntimeError as exc:
+            # The agent stopped on its own (ended its turn, exited, timed out, or the
+            # step's own deadline or silence limit stopped it): a failed step with a
+            # complete result and its typed cause, as in-process launch reports it.
             if workspace_record:
                 try:
                     store.update_meta(session_id, workspace_record)
                 except (OSError, ValueError):
                     pass  # the session may not have begun; the result still closes the step
-            return {"session_id": session_id, "success": False, "output": ""}
+            return {"session_id": session_id, "success": False, "output": "",
+                    "failure": failure_of(exc, limited=bool(limits))}
         if workspace_record:
             store.update_meta(session_id, workspace_record)
-        return {"session_id": session_id, "success": summary.get("status") == "completed",
-                "output": bounded_output(str(summary.get("reply") or ""))}
+        success = summary.get("status") == "completed"
+        stop_reason = summary.get("stop_reason")
+        return {"session_id": session_id, "success": success,
+                "output": bounded_output(str(summary.get("reply") or "")),
+                **({"failure": {"stop_reason": stop_reason[:64]}}
+                   if not success and isinstance(stop_reason, str) else {})}
     raise ValueError("unsupported role kind")
+
+
+def failure_of(exc: BaseException, *, limited: bool) -> dict:
+    """Why the agent stopped (#828): its stable code, a redacted bounded detail, the
+    harness's raw ``stopReason`` (#824) and which of the step's limits fired."""
+    from garuda.context.redact import redact_text
+    from garuda.core.failure_evidence import classify_exception
+    from garuda.runtime.role_control import MAX_REFUSAL_MESSAGE
+
+    code = getattr(exc, "code", None)
+    if not isinstance(code, str) or not code:
+        code = classify_exception(exc)[0]
+    failure = {"code": code[:120],
+               "detail": " ".join(redact_text(str(exc))[0].split())[:MAX_REFUSAL_MESSAGE]}
+    stop_reason = getattr(exc, "acp_stop_reason", None)
+    if isinstance(stop_reason, str):
+        failure["stop_reason"] = stop_reason[:64]
+    liveness = getattr(exc, "liveness", None)
+    if limited and liveness in ("deadline", "silence"):
+        failure["liveness"] = liveness
+    return failure
 
 
 def main():

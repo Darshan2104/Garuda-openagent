@@ -5,9 +5,16 @@ model, effort and permissions; an ACP step through ``run_acp_task`` with the
 role's proven options. Both borrow the flow's lease through the step's
 capability, so neither takes or keeps the workspace itself. A ``no-edits``
 step runs native ``readonly`` or in ACP Docker confinement.
+
+A step with ``limits`` (#828) passes its deadline to the launcher's own
+deadline and, for ACP, asks the adapter's silence watchdog to watch the turn;
+the step's result names which one stopped it (``liveness``). A step without
+``limits`` launches exactly as before.
 """
 
 from __future__ import annotations
+
+import time
 
 from garuda.flows.engine import StepLaunch, StepResult
 
@@ -44,6 +51,7 @@ async def _acp(launch: StepLaunch) -> StepResult:
             require_cleanup=launch.quota_recovery,
             codex_executable=launch.codex_executable,
             before_prompt=launch.quota_guard,
+            **acp_limits(launch.limits),
         )
     except RecoveryWaiting as exc:
         return StepResult(session_id, False, "", error=_redacted(exc), quota_wait=True,
@@ -54,10 +62,27 @@ async def _acp(launch: StepLaunch) -> StepResult:
         # data, stderr tail) is agent-supplied and lands in the step receipt,
         # so it is redacted here too (#729).
         return StepResult(session_id, False, "", error=_redacted(exc),
-                          closure={"status": "closed"} if launch.quota_recovery else None)
+                          closure={"status": "closed"} if launch.quota_recovery else None,
+                          liveness=liveness_of(exc, launch.limits),
+                          stop_reason=getattr(exc, "acp_stop_reason", None))
     return StepResult(summary["session_id"], summary.get("status") == "completed",
                       str(summary.get("reply") or ""),
-                      closure={"status": "closed"} if launch.quota_recovery else None)
+                      closure={"status": "closed"} if launch.quota_recovery else None,
+                      stop_reason=summary.get("stop_reason"))
+
+
+def acp_limits(limits) -> dict:
+    """``run_acp_task`` keywords for a step's limits (#828); none without limits."""
+    if limits is None:
+        return {}
+    return {**({"deadline_sec": limits.deadline_sec} if limits.deadline_sec else {}),
+            **({"silence_watchdog": limits.watchdog} if limits.watchdog else {})}
+
+
+def liveness_of(exc: BaseException, limits) -> str | None:
+    """``"deadline"`` or ``"silence"`` when the step's own limit ended its run (#828)."""
+    kind = getattr(exc, "liveness", None)
+    return kind if limits is not None and kind in ("deadline", "silence") else None
 
 
 def _redacted(exc: BaseException) -> str:
@@ -81,7 +106,11 @@ async def _native(launch: StepLaunch) -> StepResult:
         permission_mode=permissions,
         reasoning_effort=plan.effort if plan else None,
     )
+    deadline = launch.limits.deadline_sec if launch.limits is not None else None
+    if deadline:
+        prepared.config.deadline_sec = min(prepared.config.deadline_sec or deadline, deadline)
     events = EventStore()
+    started = time.monotonic()
     result = await run_agent_task(
         task=launch.prompt, model=prepared.reasoning, agent=prepared.agent,
         tools=prepared.tools, config=prepared.config, permissions=prepared.permissions,
@@ -90,4 +119,10 @@ async def _native(launch: StepLaunch) -> StepResult:
         session_record={"role": plan.record()} if plan else None,
         collection_model=prepared.collection, collection_policy=prepared.collection_policy,
     )
-    return StepResult(events.session_id, bool(result.success), result.final_message or "")
+    return StepResult(events.session_id, bool(result.success), result.final_message or "",
+                      liveness=native_liveness(result.success, started, deadline))
+
+
+def native_liveness(success, started: float, deadline: float | None) -> str | None:
+    """The native loop stops at its deadline with a failed result; name it (#828)."""
+    return "deadline" if deadline and not success and time.monotonic() - started >= deadline else None
