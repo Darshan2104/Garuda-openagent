@@ -428,9 +428,12 @@ whenever you choose.
 
 Claude recovery cannot check which account is logged in. The same admission,
 configuration, source, workspace and receipt checks as for Codex still apply,
-and so do the refusals below. `garuda recovery enable` still needs a Codex
-executable on `PATH`. The schedule also keeps the `PATH` it was installed with,
-which is how the resumed step finds `claude-agent-acp`. A checked flow keeps
+and so do the refusals below. `garuda recovery enable` needs a Codex
+executable on `PATH` unless your `~/.agent/garuda.yaml` defines roles and none
+of them (fallbacks included) uses Codex. A Codex flow enrolled without a
+recorded Codex executable is blocked, not resumed. The schedule keeps the
+`PATH` it was installed with, which is how the resumed step finds
+`claude-agent-acp`. A checked flow keeps
 `flow.step_failed` for a Claude limit, so its own resume contract applies. A
 step's `retries` never rerun a quota wait.
 

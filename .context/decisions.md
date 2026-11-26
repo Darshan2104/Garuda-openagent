@@ -5351,8 +5351,11 @@ before the reported reset (`RecoveryWaiting`, so manual `flow resume` gets
 Claude-only flow is admitted without probing Codex. No account identity is bound
 for Claude. The refusals for checked, dashboard-owned, parallel and retrying
 flows are unchanged: they concern continuation contracts, not the quota source.
-`recovery enable` still requires a Codex executable. Codex rows project exactly as
-before; only Claude rows add `quota_source` and `rate_limit_type`. `flow show`
+`recovery enable` requires the Codex executable only when the user garuda.yaml
+has no roles or a role (or fallback) on Codex; with Claude-only roles it installs
+without one and records `codex_executable: null`, and the wrapper's `PATH` is the
+installing one. A Codex flow without a recorded executable has no probe and blocks
+(fail closed). Codex rows project exactly as before; only Claude rows add `quota_source` and `rate_limit_type`. `flow show`
 prints `limit: <window>; resets at <UTC>` from the stop cause, plus the
 recovery record's reset.
 
