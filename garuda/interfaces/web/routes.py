@@ -841,6 +841,9 @@ def _approvals(request: Request, ctx: DashboardContext, _match) -> Response:
     # sets its poll interval from these.
     return ok({
         "approvals": ctx.live.approvals.pending(owner),
+        # Who settled each recent ask. The engine words every falsy answer as "User denied",
+        # so this is the only place a reaper's or a timeout's denial can be told apart.
+        "settled": ctx.live.approvals.settled(owner),
         "timeout_seconds": ctx.live.approvals.timeout_seconds,
         "grace_seconds": ctx.live.approvals.grace_seconds,
     })
@@ -860,6 +863,14 @@ def _resolve_approval(request: Request, ctx: DashboardContext, match) -> Respons
         match["ask_id"], body["approved"], loop=ctx.loop,
         owner=body["owner"], digest=body["digest"],
     )
+    if outcome in ("unknown", "already_resolved"):
+        # A settled ask is unparked, so a late second answer finds nothing pending. Say what
+        # actually happened to it rather than "no such approval".
+        record = ctx.live.approvals.settled_ask(match["ask_id"])
+        if record is not None and record["owner"] == body["owner"]:
+            return error("already_resolved",
+                         f"That approval was already settled: {record['summary']}.",
+                         status=409)
     if outcome == "unknown":
         return not_found(f"No pending approval {match['ask_id']!r}.")
     if outcome == "mismatch":

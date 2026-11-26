@@ -366,3 +366,91 @@ async def test_the_approvals_route_publishes_its_own_timings(wired):
     # what the window is rather than hardcoding a matching number.
     assert payload["grace_seconds"] > 0
     assert payload["timeout_seconds"] > payload["grace_seconds"]
+
+
+# --- who settled an ask is recorded, not inferred ------------------------------
+
+
+async def _settled_for(ctx, owner="chat-1"):
+    return payload_of(await call(ctx, "/api/approvals", query=f"owner={owner}"))["settled"]
+
+
+async def test_a_reaped_ask_is_recorded_as_the_dashboard_stopping_watching(wired):
+    """The engine words every falsy answer as "User denied", so the transcript alone made a
+    reaper denial look like the user's own decision. The broker's record says what happened."""
+    engine, events, broker, ctx = wired
+    broker._timeout = 60.0
+    screening = asyncio.ensure_future(
+        engine.evaluate_tool_call("bash", {"command": ASK_COMMAND})
+    )
+    ask = await _wait_for_ask(broker)
+    await asyncio.sleep(0.25)
+    assert broker.reap() == 1
+    await asyncio.wait_for(screening, timeout=2)
+
+    settled = await _settled_for(ctx)
+    assert [item["ask_id"] for item in settled] == [ask["ask_id"]]
+    record = settled[0]
+    assert record["approved"] is False
+    assert record["decided_by"] == "stopped_watching"
+    assert "stopped watching" in record["summary"]
+    assert "you" not in record["summary"]
+    assert record["action"] == ask["action"]
+
+
+@pytest.mark.parametrize(("approved", "summary"), [(True, "approved by you"),
+                                                   (False, "denied by you")])
+async def test_a_person_s_answer_is_recorded_as_theirs(wired, approved, summary):
+    engine, events, broker, ctx = wired
+    broker._timeout = 60.0
+    screening = asyncio.ensure_future(
+        engine.evaluate_tool_call("bash", {"command": ASK_COMMAND})
+    )
+    ask = await _wait_for_ask(broker)
+    await call(ctx, f"/api/approvals/{ask['ask_id']}", method="POST", body=_answer(ask, approved))
+    await asyncio.wait_for(screening, timeout=2)
+    (record,) = await _settled_for(ctx)
+    assert record["decided_by"] == "you"
+    assert record["summary"] == summary
+
+
+async def test_timeouts_and_closes_are_recorded_apart(wired):
+    engine, events, broker, ctx = wired
+    await asyncio.wait_for(engine.evaluate_tool_call("bash", {"command": ASK_COMMAND}), 3)
+    broker._timeout = 60.0
+    screening = asyncio.ensure_future(
+        engine.evaluate_tool_call("bash", {"command": ASK_COMMAND})
+    )
+    await _wait_for_ask(broker)
+    broker.forget("chat-1")
+    await asyncio.wait_for(screening, timeout=2)
+    assert [item["decided_by"] for item in await _settled_for(ctx)] == ["timeout", "chat_closed"]
+
+
+async def test_a_late_second_answer_says_who_settled_it(wired):
+    """A double-click sent the second POST after the first had unparked the ask, so the
+    client got a bare 404 and could only guess. The 409 now names the actual outcome."""
+    engine, events, broker, ctx = wired
+    broker._timeout = 60.0
+    screening = asyncio.ensure_future(
+        engine.evaluate_tool_call("bash", {"command": ASK_COMMAND})
+    )
+    ask = await _wait_for_ask(broker)
+    await call(ctx, f"/api/approvals/{ask['ask_id']}", method="POST", body=_answer(ask, False))
+    await asyncio.wait_for(screening, timeout=2)
+    second = await call(ctx, f"/api/approvals/{ask['ask_id']}", method="POST",
+                        body=_answer(ask, True))
+    assert second.status == 409
+    error = payload_of(second)["error"]
+    assert error["code"] == "already_resolved"
+    assert "denied by you" in error["message"]
+
+
+def test_the_grace_window_outlasts_background_tab_throttling():
+    """Chrome wakes a page hidden for 5 minutes at most once a minute, and that page is still
+    watching. A grace window shorter than that reaps the approvals of people who only switched
+    tabs; one longer than the timeout would make the reaper pointless."""
+    from garuda.interfaces.web.approvals import APPROVAL_TIMEOUT_SECONDS, HEARTBEAT_GRACE_SECONDS
+
+    assert HEARTBEAT_GRACE_SECONDS >= 75
+    assert HEARTBEAT_GRACE_SECONDS * 2 < APPROVAL_TIMEOUT_SECONDS
