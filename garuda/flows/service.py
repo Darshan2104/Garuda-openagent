@@ -468,9 +468,11 @@ class FlowExecutionService:
         elif flow_session is None:
             candidate = FlowRecovery(self.store)
             if candidate.records.settings().get("enabled") is True:
-                if request is not None or any("parallel" in step for step in flow["steps"]):
+                if request is not None or any("parallel" in step or step.get("retries")
+                                              for step in flow["steps"]):
                     runner.quota_recovery_status = {"state": "unsupported", "reason":
-                        "quota recovery does not support protected/check-enabled or parallel flows"}
+                        "quota recovery does not support protected/check-enabled, parallel "
+                        "or retrying flows"}
                 else:
                     runner.quota_recovery = candidate
         if rerun_checks:
