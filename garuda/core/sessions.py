@@ -246,6 +246,38 @@ def _finished_state(result: AgentResult) -> dict:
     )
 
 
+class SessionLimitError(ValueError):
+    """A session list ``limit`` that is not an integer >= 1."""
+
+
+def validate_session_limit(value) -> int:
+    """Return ``value`` as a session list limit, or raise ``SessionLimitError``.
+
+    Only a real integer >= 1 is accepted: booleans, strings, floats, zero and
+    negative numbers are refused rather than coerced, so the CLI, JSON-RPC and
+    the store agree on one rule. ``None`` ("no limit") is handled by callers.
+    """
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise SessionLimitError(f"limit must be an integer >= 1, got {value!r}")
+    if value < 1:
+        raise SessionLimitError(f"limit must be an integer >= 1, got {value}")
+    return value
+
+
+def session_limit_arg(text: str) -> int:
+    """argparse ``type`` for a session ``--limit``: an integer >= 1, else usage exit 2."""
+    import argparse
+
+    try:
+        value = int(text, 10)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"must be an integer >= 1, got {text!r}") from None
+    try:
+        return validate_session_limit(value)
+    except SessionLimitError as exc:
+        raise argparse.ArgumentTypeError(str(exc).removeprefix("limit ")) from None
+
+
 class SessionStore:
     def __init__(self, root: str | Path | None = None):
         self.root = Path(root) if root else default_sessions_root()
@@ -641,8 +673,16 @@ class SessionStore:
         raise FileNotFoundError("No saved sessions to resume.")
 
     def list_sessions(self, limit: int | None = 20) -> list[dict]:
+        """Saved sessions, newest first; ``limit=None`` returns every session.
+
+        A numeric ``limit`` must be an integer >= 1 (see ``validate_session_limit``):
+        a negative slice would silently drop the oldest sessions and ``0`` would
+        report that none exist.
+        """
         from garuda.runtime.strict_store import StorageError
 
+        if limit is not None:
+            limit = validate_session_limit(limit)
         if not self.root.exists():
             return []
         metas: list[dict] = []

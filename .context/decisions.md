@@ -1,5 +1,20 @@
 # Durable decisions
 
+## 2026-11-26 — A session list limit is an integer >= 1 everywhere (#792)
+
+`garuda sessions --limit -1` sliced away the oldest session, `--limit 0` printed
+"No saved sessions." while sessions existed, and JSON-RPC `sessions` did the same
+and surfaced `int()`'s message for `"abc"`. `0` is refused, not read as "no
+limit": no doc ever promised that meaning, and an unbounded list is already
+spelled `limit=None` in code. One rule, `validate_session_limit` in
+`garuda/core/sessions.py`, now guards `SessionStore.list_sessions` (raising
+`SessionLimitError`, a `ValueError`), and every caller applies it before reading:
+`garuda sessions --limit` and the eval dashboard's `--limit` use the argparse
+type `session_limit_arg` (usage error, exit 2); RPC `sessions` answers
+`-32602 Invalid params` for anything but a JSON integer >= 1 (strings such as
+`"5"` are no longer coerced); `GET /api/sessions` answers 400 for `limit=0` as
+it already did for a negative or malformed limit.
+
 ## 2026-11-26 — A plan-mode run returns its plan and never leaves plan mode (#771)
 
 claude-agent-acp 0.110.1 ends planning with ExitPlanMode, sent as an

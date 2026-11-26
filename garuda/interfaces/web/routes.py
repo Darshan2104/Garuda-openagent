@@ -290,8 +290,8 @@ def _queue_or_none():
 def _sessions(request: Request, ctx: DashboardContext, _match) -> Response:
     """The shared read model (D.3): the same rows ``garuda sessions --json`` prints."""
     limit = request.int_param("limit", reads.DEFAULT_LIMIT)
-    if limit is None:
-        return invalid("`limit` must be a non-negative integer.")
+    if limit is None or limit < 1:
+        return invalid("`limit` must be an integer >= 1.")
     return ok({"sessions": read_model.sessions(ctx.store, limit=min(limit, reads.MAX_LIMIT),
                                                queue=_queue_or_none())})
 

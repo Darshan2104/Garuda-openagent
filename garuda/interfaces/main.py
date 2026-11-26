@@ -536,8 +536,11 @@ def build_parser():
         help="Rebuild session project ids after the project key was lost",
     )
 
+    from garuda.core.sessions import session_limit_arg
+
     sessions_parser = subparsers.add_parser("sessions", help="List recent saved sessions")
-    sessions_parser.add_argument("--limit", type=int, default=20)
+    sessions_parser.add_argument("--limit", type=session_limit_arg, default=20,
+                                 help="Most recent sessions to list; an integer >= 1 (default 20)")
     sessions_parser.add_argument("--json", action="store_true",
                                  help="The shared read model the dashboard serves, as JSON")
     sessions_sub = sessions_parser.add_subparsers(dest="sessions_command")

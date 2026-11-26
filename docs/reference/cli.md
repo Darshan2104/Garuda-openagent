@@ -191,7 +191,10 @@ isolation boundary.
 
     `garuda sessions [--limit N] [--json]` lists this project's recent
     sessions with ID prefix, name, state, queue position, update time, and
-    task. `--json` prints the same model the dashboard serves. The
+    task. `--limit` must be an integer >= 1 (default 20); `0`, a negative or a
+    non-integer value is a usage error (exit 2). The JSON-RPC `sessions`
+    method applies the same rule and answers `-32602` (invalid params).
+    `--json` prints the same model the dashboard serves. The
     subcommands (`show`, `cancel`, `merge`, `remove-worktree`, `cleanup-workers`, `discard-worker`) take
     `--workspace DIR` to pick the project.
 

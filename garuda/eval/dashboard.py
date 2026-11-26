@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from garuda.core.sessions import SessionStore
+from garuda.core.sessions import SessionStore, session_limit_arg
 from garuda.eval.costs import duration_ms, estimate_cost
 
 
@@ -161,7 +161,8 @@ def render_dashboard(rows: list[RunRow]) -> str:
 def main() -> None:
     parser = argparse.ArgumentParser(prog="garuda-dashboard", description="Cost/latency dashboard")
     parser.add_argument("atif_files", nargs="*", help="Optional ATIF trajectory JSON files")
-    parser.add_argument("--limit", type=int, default=50, help="Max sessions to show")
+    parser.add_argument("--limit", type=session_limit_arg, default=50,
+                        help="Max sessions to show (an integer >= 1)")
     parser.add_argument("--sessions-dir", help="Override the session store root")
     args = parser.parse_args()
 
