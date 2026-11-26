@@ -221,6 +221,22 @@ function toggleTheme() {
   localStorage.setItem("garuda_theme", next);
 }
 
+/* --- sessions a list could not read -------------------------------------------------
+ * A list route skips a session whose record is damaged instead of failing (and says so
+ * in `unreadable_sessions`), so one bad directory cannot hide every other run. The page
+ * says how many were left out rather than silently showing fewer; the ids are in the
+ * tooltip and the server log has the reason. */
+
+function unreadableNote(payload) {
+  var info = payload && payload.unreadable_sessions;
+  var count = info && typeof info.count === "number" ? info.count : 0;
+  if (count < 1) return "";
+  var ids = Array.isArray(info.ids) ? info.ids.join(", ") : "";
+  return '<div class="notice unreadable-note" role="status" title="' + esc(ids) + '">' +
+    esc(count + (count === 1 ? " session" : " sessions") + " could not be read") +
+    '<span class="notice-body"> — left out of this list; the dashboard’s server log says why.</span></div>';
+}
+
 function tokenRequiredPanel() {
   return (
     '<div class="empty">' +
