@@ -136,6 +136,9 @@ class Conversation:
             raise ValueError("subagent_deltas requires on_delta")
         if on_delta is not None and self._runtime_name != "native":
             raise ValueError("live deltas are only available for the native runtime")
+        from garuda.sdk.errors import require_local_workspace
+
+        require_local_workspace(self._workspace, self._workspace_kind)
         if self._runtime_name != "native":
             from garuda.sdk.errors import refuse_unservable_options, refuse_unservable_tools
 
