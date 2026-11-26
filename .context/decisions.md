@@ -1,5 +1,20 @@
 # Durable decisions
 
+## 2026-11-26 — A session list limit is an integer >= 1 everywhere (#792)
+
+`garuda sessions --limit -1` sliced away the oldest session, `--limit 0` printed
+"No saved sessions." while sessions existed, and JSON-RPC `sessions` did the same
+and surfaced `int()`'s message for `"abc"`. `0` is refused, not read as "no
+limit": no doc ever promised that meaning, and an unbounded list is already
+spelled `limit=None` in code. One rule, `validate_session_limit` in
+`garuda/core/sessions.py`, now guards `SessionStore.list_sessions` (raising
+`SessionLimitError`, a `ValueError`), and every caller applies it before reading:
+`garuda sessions --limit` and the eval dashboard's `--limit` use the argparse
+type `session_limit_arg` (usage error, exit 2); RPC `sessions` answers
+`-32602 Invalid params` for anything but a JSON integer >= 1 (strings such as
+`"5"` are no longer coerced); `GET /api/sessions` answers 400 for `limit=0` as
+it already did for a negative or malformed limit.
+
 ## 2026-11-26 — A plan-mode run returns its plan and never leaves plan mode (#771)
 
 claude-agent-acp 0.110.1 ends planning with ExitPlanMode, sent as an
@@ -4883,6 +4898,26 @@ fix lists the known harness ids. Doctor keeps its existing exit code contract:
 any error diagnostic exits 1, in text and `--json` output. Known runtimes passed
 in the same call are still checked.
 
+## 2026-11-26: Flow inputs checked at load, file-named reference errors, init exit code (#786, #787, #788)
+
+- Every flow step input must be an output of an earlier step in the same flow.
+  Parsing refuses a flow that breaks this rule with `config.invalid` at
+  `flows.NAME.steps[i].inputs[j]`, before any agent starts. A step's own
+  outputs do not count. Earlier, such a flow stopped mid-run with
+  `flow.input_missing`. The engine keeps that runtime code for an artifact that
+  disappears or that a step does not produce. The packaged flows and starters
+  satisfy the rule.
+- Cross-reference errors checked after layering name the `garuda.yaml` that
+  defined the failing flow or role, the same way per-file parse errors do. The
+  errors covered are unknown flow roles, unknown consult roles and models
+  outside `allowed_models`. `resolve(files=...)` maps each layer to its file.
+  The key path is unchanged.
+- `garuda init` with no terminal and no `--yes` exits 2 with
+  `init.requires_confirmation`, which tells the user to pass `--yes`.
+  `init --project` with no terminal exits 2 with
+  `config.trust_requires_terminal`, whether or not `--yes` is given. A "no"
+  typed at the prompt in a terminal is a decline and still exits 0.
+
 ## 2026-11-26: `garuda flow list` and `garuda config show --json` (#782)
 
 `garuda flow list [--json] [--workspace DIR]` lists every flow `garuda flow run`
@@ -4911,8 +4946,9 @@ non-empty strings for the model params (`model.invalid`). Refusals are
 JSON-RPC -32602 with the typed code as the message prefix and in
 `error.data.code`; `SelectionRefused` (allowlist, inline definitions,
 restricted launch settings) now uses -32602 too. Unknown methods are -32601, a
-non-object `params` or a non-integer `sessions` `limit` is -32602
-`params.invalid`; every other failure stays -32000. `jobs` stringifies the
+non-object `params` is -32602 `params.invalid`, and so is a `sessions`
+`limit` refused by #792's `validate_session_limit`; every other failure stays
+-32000. `jobs` stringifies the
 stored task, so a record from before this fix cannot break the listing.
 
 A request without an `id` is a JSON-RPC notification and gets no response

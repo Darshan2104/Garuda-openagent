@@ -322,7 +322,9 @@ def test_invalid_global_settings_prevent_harness_probes(tmp_path, monkeypatch, c
 def test_init_proposes_roles_and_writes_only_when_confirmed(two_harnesses, monkeypatch, capsys):
     code, out = _main(monkeypatch, capsys, "init", "--workspace", str(two_harnesses),
                       "--model", "fakea=m-exact")
-    assert code == 0 and "not written" in out and not gy.user_path().exists()
+    # No terminal and no --yes: nothing written is a failure, not a success.
+    assert code == 2 and "not written" in out and not gy.user_path().exists()
+    assert "init.requires_confirmation" in out and "--yes" in out
     assert "flow plan-build-review: at most 7 invocations" in out and "cost unknown" in out
 
     code, out = _main(monkeypatch, capsys, "init", "--workspace", str(two_harnesses),
@@ -357,7 +359,8 @@ def test_init_project_writes_the_file_and_its_trust_together(tmp_path, monkeypat
     ws = _repo(tmp_path / "ws")
     (ws / "pyproject.toml").write_text("")
     code, out = _main(monkeypatch, capsys, "init", "--project", "--workspace", str(ws))
-    assert code == 0 and "not written" in out and not (ws / "garuda.yaml").exists()
+    assert code == 2 and "not written" in out and not (ws / "garuda.yaml").exists()
+    assert "config.trust_requires_terminal" in out
     code, out = _main(monkeypatch, capsys, "init", "--project", "--yes", "--workspace", str(ws))
     assert code == 2 and not (ws / "garuda.yaml").exists()  # --yes cannot create trust
 
@@ -404,3 +407,14 @@ def test_doctor_cli_exits_nonzero_for_an_unknown_runtime(two_harnesses, monkeypa
         assert item["level"] == "error" and "fakea" in item["fix"]
     else:
         assert "harness.unknown" in out
+
+
+def test_init_declined_in_a_terminal_still_exits_zero(two_harnesses, monkeypatch, capsys):
+    import sys
+
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr(sys.stderr, "isatty", lambda: True, raising=False)
+    monkeypatch.setattr("builtins.input", lambda *_a: "n")
+    code, out = _main(monkeypatch, capsys, "init", "--workspace", str(two_harnesses),
+                      "--model", "fakea=m-exact")
+    assert code == 0 and "not written" in out and not gy.user_path().exists()

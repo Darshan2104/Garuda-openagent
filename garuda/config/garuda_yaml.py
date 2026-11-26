@@ -276,6 +276,24 @@ def effective_flow_steps(flow: dict, *, path: str = "flow.steps") -> list[dict]:
     return steps
 
 
+def validate_flow_inputs(steps: list[dict], *, path: str) -> None:
+    """Every step input must be an output of an earlier step.
+
+    The engine hands a step the latest earlier artifact of each input kind; a
+    kind no earlier step declares can never exist, so the flow is refused at
+    load time instead of stopping with ``flow.input_missing`` mid-run.
+    """
+    available: set[str] = set()
+    for i, step in enumerate(steps):
+        for j, kind in enumerate(step.get("inputs", [])):
+            if kind not in available:
+                _fail(f"{path}[{i}].inputs[{j}]",
+                      f"no earlier step outputs a {kind}"
+                      + (f" (earlier steps output {', '.join(sorted(available))})"
+                         if available else " (it is the first step)"))
+        available.update(step.get("outputs", []))
+
+
 def validate_flow_reviews(steps: list[dict], *, path: str) -> None:
     """Validate the terminal review at each point the engine invokes it."""
     available: set[str] = set()
@@ -313,6 +331,7 @@ def _flow(value, path) -> dict:
     out: dict[str, Any] = {"steps": [_step(s, f"{path}.steps[{i}]") for i, s in enumerate(steps)]}
     steps_path = f"{path}.steps"
     steps = effective_flow_steps(out, path=steps_path)
+    validate_flow_inputs(steps, path=steps_path)
     validate_flow_reviews(steps, path=steps_path)
     if "description" in data:
         out["description"] = _str(data["description"], f"{path}.description")
@@ -574,8 +593,13 @@ def resolve(
     package: dict | None = None,
     legacy_capacity: dict | None = None,
     project_ceiling: str = "smart",
+    files: dict[str, str] | None = None,
 ) -> Resolved:
-    """Layer package < user < project < CLI. See the module docstring."""
+    """Layer package < user < project < CLI. See the module docstring.
+
+    ``files`` maps a layer (``USER``, ``PROJECT``) to the file it was read
+    from, so a cross-reference error names the file like a parse error does.
+    """
     layers = [(PACKAGE, package or {}), (USER, user or {}), (PROJECT, project or {})]
     config: dict[str, Any] = {"version": VERSION}
     prov: dict[str, str] = {}
@@ -670,11 +694,16 @@ def resolve(
         if cli_model and spec.get("model_id") and cli_model != spec["model_id"]:
             _fail("--model", f"{cli_model} contradicts role {role} ({spec['model_id']})",
                   code="config.conflict")
-    _check_resolved(config)
+    _check_resolved(config, prov, files or {})
     return Resolved(config=config, provenance=prov, role=role)
 
 
-def _check_resolved(config: dict) -> None:
+def _check_resolved(config: dict, prov: dict[str, str], files: dict[str, str]) -> None:
+    def fail(path: str, owner: str, message: str) -> None:
+        # Name the file that defined the failing value, as load_file does.
+        file = files.get(prov.get(owner, ""))
+        _fail(path, f"{file}: {message}" if file else message)
+
     roles = config.get("roles", {})
     harnesses = config.get("harnesses", {})
     for name, role in roles.items():
@@ -685,18 +714,18 @@ def _check_resolved(config: dict) -> None:
             allowed = harnesses.get(candidate["harness"], {}).get("allowed_models")
             if (allowed is not None and candidate.get("model_id")
                     and candidate["model_id"] not in allowed):
-                _fail(f"{path}.model_id",
-                      f"{candidate['model_id']} is not in "
-                      f"harnesses.{candidate['harness']}.allowed_models")
+                fail(f"{path}.model_id", f"roles.{name}",
+                     f"{candidate['model_id']} is not in "
+                     f"harnesses.{candidate['harness']}.allowed_models")
         for consulted in role.get("consult", []):
             if consulted not in roles:
-                _fail(f"roles.{name}.consult", f"names no role {consulted!r}")
+                fail(f"roles.{name}.consult", f"roles.{name}", f"names no role {consulted!r}")
     for name, flow in config.get("flows", {}).items():
         for i, step in enumerate(flow["steps"]):
             for ref in [step.get("role"), *step.get("parallel", []),
                         step.get("review", {}).get("by")]:
                 if ref and ref not in roles:
-                    _fail(f"flows.{name}.steps[{i}]", f"names no role {ref!r}")
+                    fail(f"flows.{name}.steps[{i}]", f"flows.{name}", f"names no role {ref!r}")
 
 
 def load_effective(workspace, *, cli_role=None, cli_runtime=None, cli_model=None,
@@ -725,7 +754,9 @@ def load_effective(workspace, *, cli_role=None, cli_runtime=None, cli_model=None
     resolved = resolve(user, project, cli_role=cli_role, cli_runtime=cli_runtime,
                        cli_model=cli_model, cli_checks=list(cli_checks),
                        legacy_capacity=capacity if isinstance(capacity, dict) else None,
-                       project_ceiling=ceiling)
+                       project_ceiling=ceiling,
+                       files={USER: str(user_path()),
+                              **({PROJECT: str(loaded.file.path)} if loaded.file else {})})
     resolved.withheld = loaded.withheld
     if not loaded.trusted:
         resolved.external_project_models = frozenset(

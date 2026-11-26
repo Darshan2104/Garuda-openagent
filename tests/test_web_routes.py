@@ -348,3 +348,13 @@ def test_session_api_transports_spend_snapshot(ctx, store, path):
     assert spend["scope"] == "native_run_tree" and spend["cost_usd"] == "unknown"
     assert spend["cost_unknown_calls"] == 1 and spend["prior_spend_unknown"] is True
     assert spend["inherited"]["source"] == "unavailable"
+
+
+@pytest.mark.parametrize("query", ["limit=0", "limit=-1", "limit=abc"])
+def test_sessions_api_refuses_a_limit_below_one(ctx, store, query):
+    """#792: ``limit=0`` is refused, not answered with an empty list."""
+    store.begin("lim1", task="t", model="m", agent="build", workspace="/tmp")
+    response = call(ctx, "/api/sessions", query=query)
+    assert response.status == 400
+    assert "integer >= 1" in body(response)["error"]["message"]
+    assert len(body(call(ctx, "/api/sessions", query="limit=1"))["sessions"]) == 1

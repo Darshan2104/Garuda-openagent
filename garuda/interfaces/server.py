@@ -215,14 +215,14 @@ class JsonRpcServer:
             elif method == "jobs":
                 result = self._list_jobs(params)
             elif method == "sessions":
-                limit = params.get("limit", 20)
-                if isinstance(limit, bool) or not isinstance(limit, (int, str)):
-                    raise InvalidParams("params.invalid", "params.limit must be an integer")
+                from garuda.core.sessions import SessionLimitError, validate_session_limit
+
+                # The #792 rule (a real integer >= 1, never coerced), in this
+                # server's -32602 shape with a typed `data.code`.
                 try:
-                    limit = int(limit)
-                except ValueError:
-                    raise InvalidParams("params.invalid",
-                                        "params.limit must be an integer") from None
+                    limit = validate_session_limit(params.get("limit", 20))
+                except SessionLimitError as exc:
+                    raise InvalidParams("params.invalid", str(exc)) from None
                 result = {"sessions": SessionStore().list_sessions(limit=limit)}
             elif method == "list_agents":
                 agents_dir = params.get("agents_dir", self._config.agents_dir)
