@@ -697,7 +697,8 @@ def build_parser():
     flow_list.add_argument("--json", action="store_true")
     flow_run = flow_sub.add_parser("run", help="Run a flow by name")
     flow_run.add_argument("name")
-    flow_run.add_argument("-t", "--task", required=True)
+    flow_run.add_argument("-t", "--task", help="Task description")
+    flow_run.add_argument("-f", "--file", help="Read task from file")
     flow_run.add_argument("--workspace", default=".")
     flow_run.add_argument(
         "--check", dest="checks", action="append", default=[], metavar="COMMAND",
@@ -1295,6 +1296,29 @@ def run_config(args) -> int:
     return 0
 
 
+def task_text(args) -> str | None:
+    """The task from ``-t`` or ``-f`` (the file wins), or ``None`` when it is
+    empty or only whitespace: such a task is refused before any agent starts."""
+    task = getattr(args, "task", None)
+    if getattr(args, "file", None):
+        task = Path(args.file).read_text(encoding="utf-8")
+    return task if task and task.strip() else None
+
+
+TASK_REQUIRED = "task.missing: provide -t/--task or -f/--file"
+
+
+def workspace_refusal(workspace) -> str | None:
+    """A typed refusal for a ``--workspace`` that is not an existing directory,
+    checked before any config, session or lease touches it (#774)."""
+    path = Path(workspace).expanduser()
+    if not path.exists():
+        return f"workspace.missing: {workspace} does not exist"
+    if not path.is_dir():
+        return f"workspace.not_directory: {workspace} is not a directory"
+    return None
+
+
 def check_garuda_config(args):
     """Validate garuda.yaml layering before anything starts (C.1); raises on
     refusal. Returns the effective configuration, or ``None`` without one."""
@@ -1749,6 +1773,20 @@ def run_flow(args) -> int:
     from garuda.runtime.strict_store import StorageError
     from garuda.workspace.lease import LeaseError
 
+    if args.flow_command == "run":
+        # Inputs are refused before any session, lease or agent exists (#774, #775).
+        try:
+            args.task = task_text(args)
+        except OSError as exc:
+            print(f"Error: task.file_unreadable: {exc}", file=sys.stderr)
+            return 2
+        if args.task is None:
+            print(f"Error: {TASK_REQUIRED}", file=sys.stderr)
+            return 1
+        refusal = workspace_refusal(args.workspace)
+        if refusal:
+            print(f"Error: {refusal}", file=sys.stderr)
+            return 2
     store = SessionStore()
     if args.flow_command in ("show", "resume", "export"):
         flow_session, meta = _resolve_flow_session(
