@@ -17,6 +17,42 @@ from garuda.scenarios.compile import compile_scenario
 from garuda.scenarios.service import StarterService
 from tests.test_runtime_cli import _git_workspace, _install_shim
 
+FAKE_IMAGE = "fake-acp-image"
+
+
+def simulate_confinement():
+    """Stand in for Docker around the fake ACP adapter, as ``tests/conftest.py``'s
+    ``fake_acp_confinement`` does for pytest.
+
+    A readonly ACP role runs only inside a proven Docker confinement (#663, c8db55de), and
+    the plan-change scout is readonly. Garuda still builds the confined launch: this checks
+    that argv mounts the workspace read-only with the configured image and command, then
+    runs that command on the host. Process-wide: the seeder and its CLI child are throwaway.
+    """
+    from garuda.acp import catalog
+    from garuda.workspace import confined_acp as ca
+
+    which, make_adapter, checked = ca.shutil.which, catalog.adapter_for_manifest, {}
+
+    def preflight(workspace, confinement, **_):
+        assert confinement.image == FAKE_IMAGE, confinement
+        checked[workspace] = confinement
+
+    def adapter(manifest, *, argv_override=None, cwd=None, **kwargs):
+        if argv_override is None:
+            return make_adapter(manifest, cwd=cwd, **kwargs)
+        assert cwd == ca.CONTAINER_WORKSPACE and "--read-only" in argv_override, argv_override
+        mount = next(arg for arg in argv_override if arg.endswith(f":{cwd}:ro"))
+        workspace = mount.removesuffix(f":{cwd}:ro")
+        image = checked[workspace].image
+        command = argv_override[argv_override.index(image) + 1:]
+        assert tuple(command) == checked[workspace].command, command
+        return make_adapter(manifest, argv_override=command, cwd=workspace, **kwargs)
+
+    ca.shutil.which = lambda cmd: "/fake/docker" if cmd == "docker" else which(cmd)
+    ca.preflight = preflight
+    catalog.adapter_for_manifest = adapter
+
 
 def seed(workdir):
     workdir = workdir.resolve()
@@ -37,7 +73,10 @@ def seed(workdir):
                                                "command": [str(bin_dir / "fake-acp-shim")],
                                                "modes": MODE_AUTHORITY}]}))
     gy.user_path().write_text(gy.dump({"version": 1, "roles": {
-        role: {"harness": "producer"} for role in ("scout", "planner", "coder", "reviewer")}}))
+        role: {"harness": "producer"} for role in ("scout", "planner", "coder", "reviewer")},
+        "harnesses": {"producer": {"confinement": {"image": FAKE_IMAGE,
+                                                   "command": ["fake-acp-shim"]}}}}))
+    simulate_confinement()
     service = StarterService(SessionStore())
     inputs = {"goal": "Status 'client' <handoff>", "requirements": "All status transitions",
               "exclude": "Do not rewrite transport", "constraints": "Keep retry delay and protocol"}
@@ -47,7 +86,7 @@ def seed(workdir):
     assert result["coverage"]["complete"] and result["next_action"]["id"] == "implement-plan", result
     # Execute the exact equivalent's arguments through the ordinary public CLI.
     # Its record intentionally has no structured starter metadata.
-    copied = subprocess.run([sys.executable, "-m", "garuda.interfaces.main",
+    copied = subprocess.run([sys.executable, str(Path(__file__).resolve()), "--cli",
                              *shlex.split(plan.equivalent_command)[1:]], cwd=workspace,
                             env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[2])},
                             capture_output=True, text=True, check=True)
@@ -103,4 +142,12 @@ def seed(workdir):
 
 
 if __name__ == "__main__":
-    seed(Path(sys.argv[1]))
+    if sys.argv[1:2] == ["--cli"]:
+        # `garuda <args>` exactly as typed, inside the same simulated confinement.
+        from garuda.interfaces.main import main
+
+        simulate_confinement()
+        sys.argv = ["garuda", *sys.argv[2:]]
+        main()
+    else:
+        seed(Path(sys.argv[1]))
