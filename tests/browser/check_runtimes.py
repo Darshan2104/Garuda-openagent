@@ -16,6 +16,7 @@ import os
 import tempfile
 from pathlib import Path
 
+from browser_support import launch
 from playwright.sync_api import expect, sync_playwright
 
 BASE = os.environ.get("GARUDA_CHECK_BASE", "http://127.0.0.1:8895/")
@@ -35,8 +36,7 @@ def check(label, cond, detail=""):
 
 
 with sync_playwright() as p:
-    channel = os.environ.get("GARUDA_CHECK_CHANNEL")
-    browser = p.chromium.launch(channel=channel) if channel else p.chromium.launch()
+    browser = launch(p)
     page = browser.new_page(viewport={"width": 1500, "height": 1100})
     def on_console(message):
         global expected_not_found_errors
@@ -82,6 +82,11 @@ with sync_playwright() as p:
             if (page.text_content(selector) or "") != before:
                 page.wait_for_timeout(200)  # let the view finish re-rendering
                 return
+
+    def cleared(selector):
+        """Empty a result pane before a request that may render the text it already holds."""
+        page.eval_on_selector(selector, "node => { node.innerHTML = ''; }")
+        return ""
 
     # --- select swaps the detail pane --------------------------------------
     before = page.text_content("#rt-detail") or ""
@@ -148,8 +153,9 @@ with sync_playwright() as p:
 
     # --- diff separates session work from pre-existing dirt ------------------
     page.fill("#rt-diff-session", SID)
+    before = cleared("#rt-diff-result")
     page.click("#rt-diff-load")
-    page.wait_for_timeout(800)
+    answered("#rt-diff-result", before)
     diff = page.text_content("#rt-diff-result") or ""
     check("diff shows session file", "work.txt" in diff, diff[:120])
     check("diff flags pre-existing dirt", "dirt.txt" in diff and "pre-existing" in diff,
@@ -157,13 +163,17 @@ with sync_playwright() as p:
 
     # --- recovery classify then run ------------------------------------------
     page.fill("#rt-recover-session", SID)
+    before = cleared("#rt-recover-result")
     page.click("#rt-recover-classify")
-    page.wait_for_timeout(800)
+    answered("#rt-recover-result", before)
     classified = page.text_content("#rt-recover-result") or ""
     check("classify reports state", "resumable" in classified or "state" in classified,
           classified[:100])
+    # Classify and run can render the same text, so clear it: a wait for "changed" would
+    # otherwise time out and read the classify result.
+    before = cleared("#rt-recover-result")
     page.click("#rt-recover-run")
-    page.wait_for_timeout(800)
+    answered("#rt-recover-result", before)
     recovered = page.text_content("#rt-recover-result") or ""
     check("recover run reports", "resume" in recovered, recovered[:100])
 
@@ -204,7 +214,7 @@ with sync_playwright() as p:
     if RO_BASE:
         page.goto(f"{RO_BASE}#t={TOKEN}", wait_until="networkidle")
         page.goto(f"{RO_BASE}#/runtimes", wait_until="networkidle")
-        page.wait_for_timeout(1200)
+        page.wait_for_selector("#rt-recover-run", timeout=15000)
         prepare_disabled = page.is_disabled("#rt-handoff-prepare")
         recover_disabled = page.is_disabled("#rt-recover-run")
         ro_text = page.text_content("#view") or ""

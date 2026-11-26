@@ -18,6 +18,7 @@ import os
 import tempfile
 from pathlib import Path
 
+from browser_support import launch
 from playwright.sync_api import expect, sync_playwright
 
 BASE = os.environ.get("GARUDA_CHECK_BASE", "http://127.0.0.1:8897/")
@@ -76,8 +77,7 @@ def tile_text(page, label):
 
 
 with sync_playwright() as p:
-    channel = os.environ.get("GARUDA_CHECK_CHANNEL")
-    browser = p.chromium.launch(channel=channel) if channel else p.chromium.launch()
+    browser = launch(p)
     page = browser.new_page(viewport={"width": 1600, "height": 1000})
     page.on("console", lambda m: problems.append(f"console.{m.type}: {m.text}")
             if m.type in ("error", "warning") else None)
