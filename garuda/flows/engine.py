@@ -843,11 +843,12 @@ class FlowRunner:
             await lease.stop_heartbeat()
             raise
 
-    async def _inputs(self, step: dict, done: list[dict], *,
-                      moved_on_ok: bool = False) -> list[tuple[art.ArtifactRef, str]]:
-        """``step``'s checked inputs; ``moved_on_ok`` admits a ``patch`` past later edits (#820)."""
+    async def _inputs(self, step: dict, done: list[dict]) -> list[tuple[art.ArtifactRef, str]]:
+        """``step``'s checked inputs; a later writer or planner may read a ``patch``
+        past later edits (:meth:`_reads_moved_on`, #820)."""
         from garuda.config.garuda_yaml import input_source
 
+        moved_on_ok = self._reads_moved_on(step, step.get("role"))
         version = await self._version_for_flow()
         resolved = []
         for entry in step.get("inputs", []):
@@ -865,13 +866,14 @@ class FlowRunner:
                     raise FlowStopped(exc.code, str(exc), step=step["id"]) from exc
         return resolved
 
-    def _reads_moved_on(self, step: dict, role: str) -> bool:
+    def _reads_moved_on(self, step: dict, role: str | None) -> bool:
         """A writing or planning step that reviews nothing: it may read an earlier
-        ``patch`` after the workspace moved on (#820). The terminal reviewer is
-        excluded by its caller; a read-only step that does not plan, and any
-        step that outputs a ``review`` or ``findings``, keep the stale refusal."""
+        ``patch`` after the workspace moved on (#820). A parallel group, a
+        read-only step that does not plan, and any step that outputs a
+        ``review`` or ``findings`` (the terminal reviewer always does) keep the
+        stale refusal."""
         outputs = step.get("outputs", [])
-        if "review" in outputs or "findings" in outputs:
+        if "parallel" in step or not role or "review" in outputs or "findings" in outputs:
             return False
         return not self._read_only(step, role) or "plan" in outputs
 
@@ -1938,11 +1940,9 @@ class FlowRunner:
         no_edits = self._no_edits(step, role)
         limits = step_limits(self.flow, step)
         plan = self._role_plan(role, step=step["id"], no_edits=no_edits)
-        # The terminal reviewer is bound to its candidate: no stale patch, and
-        # its packet carries the diff (#820).
+        # The terminal reviewer's packet carries the reviewed step's diff (#820).
         reviewer = isinstance(prompt_extra, prompting.Packet)
-        inputs = await self._inputs(
-            step, done, moved_on_ok=not reviewer and self._reads_moved_on(step, role))
+        inputs = await self._inputs(step, done)
         attached = await self._attachments(
             inputs, done,
             reviewed=prompt_extra.packet.get("candidate", {}).get("step") if reviewer else None)

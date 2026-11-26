@@ -5371,7 +5371,10 @@ and says "Do not paste a diff; Garuda attaches the real diff it computes from
 the workspace" (`artifacts.PATCH_SUMMARY`). Agents had pasted full diffs (one
 large enough to stop a flow with `flow.artifact_too_large`) or hand-written
 ones with wrong hunk headers. Parsing is unchanged: any text in the block is
-the patch, so an old prompt's answer still passes.
+the patch, so an old prompt's answer still passes. The placeholder still
+starts with `...your patch` (`...your patch: a short summary of your change,
+not a diff...`): `garuda/acp/fake_agent.py` and other tooling find the blocks a
+prompt asks for by that prefix.
 
 A consumer of a `patch` gets Garuda's own diff of the producing step
 (`FlowRunner._attachments`, rendered by `prompting.diff_body` / `render_diff`
@@ -5392,8 +5395,9 @@ workspace moved on: `artifacts.validate_content(..., moved_on_ok=True)` (and
 carries a `[garuda]` note that the workspace has changed since, with Garuda's
 diff then including the later changes. The engine decides per consuming step
 (`_reads_moved_on`): a step that may edit or that outputs `plan`, and outputs
-no `review` or `findings`; never the terminal reviewer (a `_run_step` with a
-`prompting.Packet`) nor a parallel group. Everyone else keeps
+no `review` or `findings`; never the terminal reviewer (it always outputs
+`review`) nor a parallel group. `_inputs` decides this from the step itself,
+so its signature is unchanged. Everyone else keeps
 `flow.input_stale`, the terminal review keeps `flow.review_stale_candidate`,
 and `review` / `findings` stay workspace-bound for every reader. Other callers
 of `load` / `validate_content` (starter evidence, the handoff scenario) keep the

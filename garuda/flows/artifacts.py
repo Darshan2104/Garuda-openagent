@@ -171,8 +171,10 @@ def instructions(outputs: list[str]) -> str:
     if not outputs:
         return ""
     lines = ["End your answer with one block per output, exactly like this:"]
-    what = {"patch": "a short summary of your change"}
-    lines += [f'<garuda-artifact type="{t}">\n...{what.get(t, "your " + t)}...\n</garuda-artifact>'
+    # Every placeholder starts with "...your <type>": fake runtimes and existing
+    # tooling key on it to find the blocks a prompt asks for.
+    what = {"patch": ": a short summary of your change, not a diff"}
+    lines += [f'<garuda-artifact type="{t}">\n...your {t}{what.get(t, "")}...\n</garuda-artifact>'
               for t in outputs]
     lines.append("Only these blocks are passed on; any text outside them is not.")
     if "patch" in outputs:

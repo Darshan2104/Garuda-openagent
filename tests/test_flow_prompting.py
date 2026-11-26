@@ -309,11 +309,12 @@ async def _flow_820(repo, steps, edits):  # noqa: F811
 
 def test_the_patch_instruction_asks_for_a_summary_not_a_diff():
     rules = art.instructions(["patch"])
-    assert '<garuda-artifact type="patch">\n...a short summary of your change...\n' in rules
+    assert ('<garuda-artifact type="patch">\n...your patch: a short summary of your change, '
+            'not a diff...\n') in rules
     assert ("what changed and why, the files you touched, and anything the next step should "
             "know") in rules
     assert "Do not paste a diff; Garuda attaches the real diff" in rules
-    assert "your patch" not in rules
+    assert "\n...your patch...\n" not in rules
     assert "paste a diff" not in art.instructions(["notes", "plan"])
     # Parsing is unchanged: any text in the block, a pasted diff included, is the patch.
     pasted = "diff --git a/x b/x\n@@ -0,0 +1,7 @@\n+x"
