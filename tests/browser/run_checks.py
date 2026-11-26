@@ -296,8 +296,10 @@ def suite(workdir: Path, shots: Path, *, owned_starts: bool) -> list[str]:
 
     # --- data correctness: unknowns, outcomes and one login story across pages --
     def data_correctness():
-        sessions = workdir / "dc-sessions"
-        env = {"GARUDA_GLOBAL_SETTINGS": str(workdir / "dc-settings.yaml")}
+        # Its own directory: the usage ledger and the login record live beside the settings
+        # file, and the sections that share `workdir` share those.
+        sessions = workdir / "dc" / "sessions"
+        env = {"GARUDA_GLOBAL_SETTINGS": str(workdir / "dc" / "settings.yaml")}
         seed(str(HERE / "seed_data_correctness.py"), str(sessions), env=env)
         port = dashboard(sessions, "web-dc.log", extra_env=env)
         return run_check("check_data_correctness.py", port, shots, env)

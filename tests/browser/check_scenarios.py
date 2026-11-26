@@ -57,7 +57,9 @@ def main():
         expect(page.locator("#starter-workspace option")).to_have_count(2)
         assert page.locator('button:has-text("Start")').count() == 0
         expect(page.locator('[data-starter="build-review"]')).to_contain_text("independent review configured")
-        expect(page.locator('[data-starter="build-review"]')).to_contain_text("Flow checks unavailable")
+        # build-review runs its checks at flow finalization (scenarios/compile.py flow_check_support).
+        expect(page.locator('[data-starter="build-review"]')).to_contain_text(
+            "Verification comes from acceptance receipts at flow finalization")
         page.screenshot(path=str(SHOTS / "starters-library.png"), full_page=True)
 
         page.goto(BASE + "#/starters/plan-change")
