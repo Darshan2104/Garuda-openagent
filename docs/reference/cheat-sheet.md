@@ -114,6 +114,9 @@ garuda memory review
 
 ```bash
 garuda config show
+garuda config show --json
+garuda flow list
+garuda flow list --json
 garuda config show --flow plan-build-review
 garuda config trust
 garuda config migrate

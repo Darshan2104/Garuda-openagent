@@ -436,7 +436,7 @@ class LeaseStore:
             self._issued[(key, session_id)] = Lease(
                 **{**self._issued[(key, session_id)].to_dict(), "quarantined": True})
 
-    def reclaim_dead(self, holder: Lease) -> bool:
+    def reclaim_dead(self, holder: Lease, *, settled_quarantine: bool = False) -> bool:
         """Remove ``holder`` only while its owner is proved dead (#676).
 
         Re-reads the record under the lock: the exact holder (same session,
@@ -446,6 +446,9 @@ class LeaseStore:
         container on the workspace may still exist (``executors``, #730).
         Returns False when the holder is already gone; raises
         ``LeaseConflictError`` when reclaim is not proved.
+        ``settled_quarantine`` (#772) is passed only by recovery after it proved
+        the recorded phase its owner quarantined for has no possible writer;
+        every other proof still applies.
         """
         from garuda.runtime.ownership import reclaim_refusal
 
@@ -460,7 +463,8 @@ class LeaseStore:
                 return False
             refusal = reclaim_refusal(
                 {"pid": current.pid, "identity": current.identity, "pgid": current.pgid},
-                quarantined=current.quarantined, liveness=self._liveness)
+                quarantined=current.quarantined and not settled_quarantine,
+                liveness=self._liveness)
             if refusal is None:
                 # A tmux pane or container is outside the lineage scan (#730).
                 from garuda.workspace.executors import executor_refusal

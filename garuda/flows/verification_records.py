@@ -16,13 +16,24 @@ from pathlib import Path
 from garuda.core.acceptance import verification_from
 from garuda.core.acceptance_records import CheckRecords, digest
 from garuda.runtime.private_records import open_directory, read_record
-from garuda.runtime.strict_store import CorruptRecord, StorageUnavailable, preserve_private_backup
+from garuda.runtime.strict_store import (
+    CorruptRecord,
+    StorageUnavailable,
+    preserve_private_backup,
+    read_private_bytes,
+    write_locked_document,
+)
 
 PHASE = "verification-phase.json"
 COMMIT = "verification-commit.json"
 RESUME_REQUEST = "verification-request.json"
 TERMINAL = {"passed", "failed", "void", "unverified", "cancelled"}
 UNLAUNCHED = {"refused", "skipped"}
+
+
+def _superseded(phase_id, kind="phase"):
+    """The archive name of a phase (or its unpublished commit) a rerun replaced (#772)."""
+    return f"verification-{kind}-{phase_id}.superseded.json"
 
 
 def _uuid(value):
@@ -92,6 +103,46 @@ class FlowVerificationRecords:
         finally:
             os.close(directory)
         return digest(request)
+
+    def saved_request(self, meta):
+        """The original check request of a checked CLI flow, bound to its meta (#772).
+
+        Unlike :meth:`resume_request` this does not require a pre-check stop:
+        a flow interrupted during its check phase reruns that phase under it.
+        """
+        reference = meta.get("flow_resume_request") if isinstance(meta, dict) else None
+        if not _hex(reference, 64):
+            raise CorruptRecord("checked flow has no original check request")
+        directory = self._open()
+        try:
+            request = read_record(directory, RESUME_REQUEST)
+        finally:
+            os.close(directory)
+        if (request is None or set(request) != {"version", "checks", "request", "flow"}
+                or not isinstance(request["checks"], list) or digest(request) != reference):
+            raise CorruptRecord("original flow check request is missing or changed")
+        return request
+
+    def current_phase(self):
+        """The durable phase intent and its published reference, read only."""
+        directory = self._open()
+        try:
+            phase = self._phase(directory)
+        finally:
+            os.close(directory)
+        return phase, {"phase_id": phase["phase_id"], "digest": digest(phase)}
+
+    def superseded(self, reference) -> bool:
+        """Whether ``reference`` names a phase that a check-phase rerun replaced (#772)."""
+        if (not isinstance(reference, dict) or set(reference) != {"phase_id", "digest"}
+                or not _uuid(reference["phase_id"]) or not _hex(reference["digest"], 64)):
+            return False
+        directory = self._open()
+        try:
+            phase = read_record(directory, _superseded(reference["phase_id"]), versions=(2,))
+        finally:
+            os.close(directory)
+        return phase is not None and digest(phase) == reference["digest"]
 
     def resume_request(self, meta):
         """Read the original request only for a settled, pre-check CLI stop."""
@@ -172,16 +223,37 @@ class FlowVerificationRecords:
                        or check["mode"] not in {"host", "docker"} for check in checks)):
             raise CorruptRecord("flow verification check identities are invalid")
 
-    def prepare(self, phase):
+    def prepare(self, phase, *, supersedes=None):
+        """Record the phase intent once; a rerun replaces an interrupted one (#772).
+
+        ``supersedes`` is the digest of the current phase, which the caller
+        proved has no possible writer (its owner is gone and no check of it is
+        uncertain). That phase, and a commit it never published, are archived
+        under their phase id before the new intent replaces them, so a crash in
+        between leaves either the old phase or the new one, never neither.
+        """
         self.validate_phase(phase)
         directory = self._open()
         try:
-            if read_record(directory, COMMIT) is not None:
-                raise CorruptRecord("flow verification already has a commit")
             raw = json.dumps(phase, sort_keys=True, allow_nan=False).encode()
             if len(raw) > 65_536:
                 raise StorageUnavailable("flow verification intent exceeds its bound")
-            preserve_private_backup(directory, PHASE, raw)
+            if supersedes is None:
+                if read_record(directory, COMMIT) is not None:
+                    raise CorruptRecord("flow verification already has a commit")
+                preserve_private_backup(directory, PHASE, raw)
+                return {"phase_digest": digest(phase)}
+            current = self._phase(directory)
+            if digest(current) != supersedes or current["phase_id"] == phase["phase_id"]:
+                raise CorruptRecord("the interrupted check phase changed before its rerun")
+            preserve_private_backup(directory, _superseded(current["phase_id"]),
+                                    read_private_bytes(directory, PHASE))
+            if read_record(directory, COMMIT) is not None:
+                preserve_private_backup(directory, _superseded(current["phase_id"], "commit"),
+                                        read_private_bytes(directory, COMMIT))
+                os.unlink(COMMIT, dir_fd=directory)
+                os.fsync(directory)
+            write_locked_document(directory, self.path / PHASE, phase)
             return {"phase_digest": digest(phase)}
         finally:
             os.close(directory)
@@ -445,12 +517,12 @@ class OwnedFlowVerification:
         if baseline_digest is not None:
             self.base["baseline_digest"] = baseline_digest
 
-    async def prepare(self):
+    async def prepare(self, *, supersedes=None):
         from garuda.core.acceptance_work import owned_call
 
         self.request.validate_ceiling(self.permissions)
-        return await self.owner.race(owned_call("flow-verification-prepare", self.base,
-                                                timeout=60))
+        data = self.base if supersedes is None else {**self.base, "supersedes": supersedes}
+        return await self.owner.race(owned_call("flow-verification-prepare", data, timeout=60))
 
     async def commit(self, phase_digest, result):
         from garuda.core.acceptance_work import owned_call

@@ -325,6 +325,13 @@ class FlowExecutionService:
                                            checked_checkpoint=meta["flow_resume_checkpoint"],
                                            saved_request=request)
             classification = recovery["classification"]
+            if classification != "uncertain" and meta.get("flow_verification_phase") is not None:
+                rerun = self._rerun_request(flow_session, meta, records)
+                if rerun is not None:
+                    return await self._execute(meta["flow"]["name"], meta["task"], meta["workspace"],
+                                               flow_session=flow_session,
+                                               checks=tuple(rerun["checks"]),
+                                               saved_request=rerun, rerun_checks=True)
             code = ("flow.verification_uncertain" if classification == "uncertain" else
                     "flow.verification_publication_incomplete" if classification in {
                         "commit-unpublished", "terminal-unpublished"} else
@@ -365,12 +372,48 @@ class FlowExecutionService:
                     self.store.update_meta(flow_session, {"quota_recovery": project(row)})
             raise
 
+    @staticmethod
+    def _rerun_request(flow_session: str, meta: dict, records) -> dict | None:
+        """The original request of a check phase that may run again (#772).
+
+        Only a CLI checked flow recorded ``interrupted`` whose phase owner is
+        proved dead qualifies: that owner settled the stop itself, or
+        ``garuda runtime recover`` proved it dead and released its workspace. One still ``running`` or ``quarantined``
+        names that command. Any other state keeps the read-only refusal.
+        """
+        from garuda.runtime.strict_store import StorageError
+
+        state = meta.get("flow_state")
+        if state in {"running", "quarantined"}:
+            raise engine.FlowStopped(
+                "flow.recovery_required",
+                f"checked flow {flow_session} is {state} in its check phase; run "
+                f"`garuda runtime recover --session {flow_session}` first, which proves its "
+                "process and every check process gone and releases the workspace")
+        if state != "interrupted" or meta.get("flow_operation") is not None:
+            return None
+        from garuda.runtime.ownership import owner_liveness
+
+        try:
+            phase, _reference = records.current_phase()
+            owner = phase["owner"]
+            if owner_liveness({key: owner[key] for key in ("pid", "identity", "pgid")}) is not False:
+                # The process that ran the phase is still alive (an in-process
+                # caller): never rerun beside it; keep the read-only refusal.
+                return None
+            return records.saved_request(meta)
+        except (StorageError, OSError, ValueError) as exc:
+            raise engine.FlowStopped(
+                "flow.verification_reconciliation_required",
+                "the original check request of the interrupted flow is missing or changed; "
+                "checks are never replayed without it") from exc
+
     async def _execute(self, name: str, task: str, workspace: str, *,
                        flow_session: str | None = None,
                        starter_record: dict | None = None,
                        checks: tuple[str, ...] | None = None,
                        recovery=None, checked_checkpoint=None,
-                       saved_request=None) -> FlowExecutionResult:
+                       saved_request=None, rerun_checks: bool = False) -> FlowExecutionResult:
         from garuda.config_sources import SourceCapture
         from garuda.flows.launch import launch_step
         from garuda.flows.quota_recovery import FlowRecovery
@@ -430,7 +473,14 @@ class FlowExecutionService:
                         "quota recovery does not support protected/check-enabled or parallel flows"}
                 else:
                     runner.quota_recovery = candidate
-        result = await runner.run(resume=flow_session is not None, checked_checkpoint=checked_checkpoint)
+        if rerun_checks:
+            if request is None:
+                raise engine.FlowStopped("flow.verification_reconciliation_required",
+                                         "the interrupted flow's checks are no longer selected")
+            result = await runner.rerun_checks()
+        else:
+            result = await runner.run(resume=flow_session is not None,
+                                      checked_checkpoint=checked_checkpoint)
         meta = self.store.load_meta(result.flow_session)
         return FlowExecutionResult(result, meta.get("review"), meta.get("state"))
 

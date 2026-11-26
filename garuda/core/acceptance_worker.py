@@ -28,6 +28,10 @@ class WorkspaceChanged(Exception):
     pass
 
 
+class CheckUncertain(Exception):
+    pass
+
+
 def _owner(data):
     from garuda.runtime.recovery import _process_identity
 
@@ -166,6 +170,25 @@ def _context(data):
     return {**_fingerprint({"workspace": workspace}), "cwd": cwd}
 
 
+def _may_supersede(records, expected, owner):
+    """Refuse a check-phase rerun unless the interrupted phase can have no writer (#772).
+
+    Its owner must be another, provably dead process, and every check it
+    recorded must be terminal, never launched or absent: a launch-authorized
+    or active check without its terminal receipt may still be running.
+    """
+    from garuda.runtime.ownership import owner_liveness
+
+    current, reference = records.current_phase()
+    previous = current["owner"]
+    if (reference["digest"] != expected or previous == owner
+            or owner_liveness({key: previous[key] for key in ("pid", "identity", "pgid")})
+            is not False):
+        raise OwnershipChanged("the interrupted check phase owner is not proved gone")
+    if records.reconcile_unfinished()["classification"] == "uncertain":
+        raise CheckUncertain("a check of the interrupted phase never settled")
+
+
 def dispatch(operation, data):
     if not isinstance(data, dict):
         raise ValueError("operation input is not a mapping")
@@ -192,6 +215,8 @@ def dispatch(operation, data):
     if operation in {"flow-evidence-version", "flow-evidence-boundary", "flow-evidence-finalize",
                      "flow-verification-prepare", "flow-verification-commit"}:
         fields.discard("baseline_digest")
+    if operation == "flow-verification-prepare":
+        fields.discard("supersedes")
     if operation not in schemas or fields != schemas[operation]:
         raise ValueError("unsupported operation or fields")
     if operation == "admitted-sources":
@@ -255,7 +280,10 @@ def dispatch(operation, data):
                           phase["workspace"], snapshot,
                           baseline_digest=data.get("baseline_digest")).manifest(phase["evidence_digest"])
         if operation == "flow-verification-prepare":
-            return records.prepare(phase)
+            supersedes = data.get("supersedes")
+            if supersedes is not None:
+                _may_supersede(records, supersedes, phase["owner"])
+            return records.prepare(phase, supersedes=supersedes)
         return records.commit(data["phase_digest"], data["results"],
                               data["references"], data["verdict"])
     store = CheckRecords(data["session_dir"], data["binding"])

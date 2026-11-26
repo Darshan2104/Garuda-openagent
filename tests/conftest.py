@@ -68,6 +68,36 @@ def _isolate_garuda_home(tmp_path_factory, monkeypatch):
     monkeypatch.delenv("GARUDA_RECOVERY_ROOT", raising=False)
 
 
+#: The shipped harnesses' documented login-check commands, as bare names
+#: resolved on PATH (``codex``, ``claude``), read like ``_SHIPPED`` above.
+_SHIPPED_PROBES = frozenset(
+    argv[0]
+    for path in (Path(__file__).resolve().parents[1] / "garuda" / "acp" / "builtin").glob("*.json")
+    for argv in [(json.loads(path.read_text()).get("auth_probe") or {}).get("argv") or []]
+    if argv)
+
+
+@pytest.fixture(autouse=True)
+def _no_real_harness_login_check(monkeypatch):
+    """Never run the host's real harness login check, e.g. ``codex login status`` (#783).
+
+    Background admission and other paths run the manifest's login check, so an
+    unstubbed test would pass or fail with the host's login state. A shipped
+    harness's check reads "could not run" (``failed``), as on a host without
+    the harness. A test's own fake CLI (any other command) still runs.
+    """
+    try:
+        from garuda.acp import login_probe
+    except ImportError:  # a minimal job without the runtime's dependencies
+        return
+    real = login_probe._run
+
+    def run(argv, timeout):
+        return None if argv and argv[0] in _SHIPPED_PROBES else real(argv, timeout)
+
+    monkeypatch.setattr(login_probe, "_run", run)
+
+
 @pytest.fixture
 def fake_acp_confinement(monkeypatch):
     """Exercise ACP wiring with fake adapters and a simulated Docker boundary."""

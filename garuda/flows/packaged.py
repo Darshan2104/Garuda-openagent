@@ -9,7 +9,8 @@ external harness:
 - ``plan-build-review`` — planner, then coder reviewed by reviewer.
 
 A flow of the same name in your ``garuda.yaml`` replaces a packaged one.
-``garuda config show --flow NAME`` prints one to copy. A packaged flow names
+``garuda flow list`` lists them all; ``garuda config show --flow NAME`` prints one
+to copy. A packaged flow names
 roles you define; running one whose roles are missing refuses and lists them.
 """
 
@@ -49,6 +50,22 @@ def available(resolved) -> dict[str, tuple[dict, str]]:
         for name, flow in resolved.config.get("flows", {}).items():
             out[name] = (flow, resolved.provenance.get(f"flows.{name}", gy.USER))
     return out
+
+
+#: ``garuda flow list`` labels for where a flow comes from.
+SOURCE_LABELS = {gy.PACKAGE: "packaged", gy.USER: "user", gy.PROJECT: "project"}
+
+
+def listing(resolved) -> list[dict]:
+    """One row per available flow, by name: what ``garuda flow list`` prints."""
+    rows = []
+    for name, (flow, source) in sorted(available(resolved).items()):
+        rows.append({"name": name, "source": SOURCE_LABELS.get(source, source),
+                     "description": flow.get("description"),
+                     "steps": len(flow.get("steps", [])),
+                     "roles": required_roles(flow),
+                     "missing_roles": missing_roles(flow, resolved)})
+    return rows
 
 
 def required_roles(flow: dict) -> list[str]:

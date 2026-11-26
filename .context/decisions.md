@@ -65,6 +65,37 @@ merge only defaults it, so a completed flow reported `updated_at == created_at`.
 a flow now ranks by its last activity, as a run session already did via
 `finish()`.
 
+## 2026-11-26 — A checked flow stopped in its check phase reruns its checks (#772)
+
+Steps are never replayed past a durable check-phase intent, and that does not
+change. The check phase, however, can now run again. `flow resume` on a CLI
+checked flow recorded `interrupted` with a published phase that has no
+uncertain check (`FlowService._rerun_request`) calls `FlowRunner.rerun_checks`.
+That method re-proves the saved request and flow definition, that every step
+attempt settled, the published phase (or one a crashed rerun already archived),
+and that the phase is bound to the committed evidence manifest. It acquires a
+new mutating lease and requires the current fingerprint to equal the old
+phase's candidate. It then runs `_finalize_verification` with `supersedes=`
+the old phase digest. The owned prepare (`_may_supersede`) refuses unless the
+old phase's owner is another, provably dead process and no check of it is
+uncertain. `FlowVerificationRecords.prepare` archives the old phase, and any
+commit it never published, as `verification-{phase,commit}-<id>.superseded.json`
+before it replaces `verification-phase.json`, so a crash leaves one phase,
+never none. Only the new phase's receipts become the verdict. No interrupted
+receipt is ever published as a result. We rerun instead of publishing the old
+terminal receipts because a commit must be made by the phase owner, and a
+cancelled check has no verdict to publish. `runtime recover` releases a lease
+its owner quarantined only for the check phase
+(`_settled_check_quarantine`: the flow is `quarantined` with no commit and no
+unsettled step, the phase is published, no check is uncertain, and the
+holder is the phase owner), via `reclaim_dead(settled_quarantine=True)` with
+every other proof intact. It then records the flow `interrupted` with
+`flow.check_phase_interrupted`. A `quarantined` or `running` flow in that state
+refuses `flow resume` with `flow.recovery_required`. `AcceptanceRunner` now
+reconciles on cancellation. A terminal receipt that was durable before the
+cancel arrived (the field race: its acknowledgement was lost) is kept, and the
+flow is no longer treated as launch-ambiguous and quarantined.
+
 ## 2026-11-26 — A SIGTERM'd checked flow settles; a killed flow is recoverable (#760)
 
 `flow run` and `flow resume` cancel the flow on SIGTERM as asyncio does on
@@ -4871,3 +4902,20 @@ in the same call are still checked.
   `init --project` with no terminal exits 2 with
   `config.trust_requires_terminal`, whether or not `--yes` is given. A "no"
   typed at the prompt in a terminal is a decline and still exits 0.
+
+## 2026-11-26: `garuda flow list` and `garuda config show --json` (#782)
+
+`garuda flow list [--json] [--workspace DIR]` lists every flow `garuda flow run`
+would accept in that workspace. It reuses `packaged.available()` over
+`load_effective()`, the same lookup the flow service and dashboard Setup use, so
+a user or project flow of a packaged name replaces it. Each row has `name`,
+`source` (`packaged`, `user` or `project`, short labels for the provenance
+`package-default`, `user-config` and `trusted-project`), `description`, `steps`,
+`roles` and `missing_roles`. Missing roles are reported, not refused: an
+unconfigured install still lists the packaged flows. An invalid `garuda.yaml`
+exits 2 with its config error, like `config show`.
+
+`garuda config show --json` prints `{config, provenance, withheld}`: the same
+resolved config, per-key sources and withheld project keys the text view prints
+as YAML and comments. With no `garuda.yaml` it prints `config: null` and exits 0,
+matching the text view's notice rather than failing.
