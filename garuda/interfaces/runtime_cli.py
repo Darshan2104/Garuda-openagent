@@ -142,8 +142,14 @@ def acp_adapter_for_workspace(
     project_settings: dict | None = None,
     store=None,
     persist_dir: str | None = None,
+    approval_handler=None,
 ):
-    """Resolve one configured ACP target before constructing its adapter."""
+    """Resolve one configured ACP target before constructing its adapter.
+
+    ``approval_handler`` answers the harness's ``session/request_permission``
+    asks (see `run_guard.broker_approval_handler`); without one, asks wait for
+    an explicit `permission_response`.
+    """
     from garuda.acp.catalog import AcpUnavailableError
     from garuda.runtime import RegistryError
     from garuda.runtime.protocol import RuntimeKind
@@ -171,6 +177,7 @@ def acp_adapter_for_workspace(
                 policy=policy,
                 cwd=workspace,
                 store=store,
+                approval_handler=approval_handler,
                 persist_dir=persist_dir,
             )
         else:
@@ -184,6 +191,7 @@ def acp_adapter_for_workspace(
                 policy=policy,
                 cwd=workspace,
                 store=store,
+                approval_handler=approval_handler,
                 persist_dir=persist_dir,
             )
     except RegistryError as exc:

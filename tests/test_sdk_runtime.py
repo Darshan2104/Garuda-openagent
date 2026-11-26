@@ -862,3 +862,51 @@ async def test_a_failed_sdk_acp_turn_still_records_its_usage(tmp_path, monkeypat
     (record,) = store.list_sessions()
     rows = [r for r in Ledger().records() if r.get("session_id") == record["session_id"]]
     assert {(r["kind"], r["cost_usd"]) for r in rows} == {("acp_usage_snapshot", 0.0025)}
+
+
+def _approval_records(meta: dict) -> list[dict]:
+    return [v for k, v in meta.items() if k.startswith("approval:")]
+
+
+@pytest.mark.parametrize("task,settled", [("delete it", "success"), ("abort it", "failed")])
+async def test_sdk_acp_run_denies_harness_asks_and_settles(tmp_path, monkeypatch, task, settled):
+    """#801: an unattended ask is denied at once (audited), never left pending."""
+    import asyncio
+
+    from garuda.acp.protocol import AcpCancelledError
+    from garuda.config import agent_home
+    from garuda.core.sessions import SessionStore
+
+    monkeypatch.setattr(agent_home, "resolve_agent_home",
+                        lambda workspace: _FakeHome(_fake_approval_extra()))
+    store = SessionStore(tmp_path / "sessions")
+    run = SoftwareAgent(workspace=tmp_path, runtime="fakeapproval", store=store).run(task)
+    if settled == "success":
+        result = await asyncio.wait_for(run, timeout=30)
+        assert result.success
+    else:  # the harness ends its turn on the denial
+        with pytest.raises(AcpCancelledError, match="denied"):
+            await asyncio.wait_for(run, timeout=30)
+    (record,) = store.list_sessions()
+    meta = store.load_meta(record["session_id"])
+    assert meta["status"] == settled
+    (approval,) = _approval_records(meta)
+    assert (approval["outcome"], approval["runtime_id"]) == ("deny", "fakeapproval")
+
+
+async def test_sdk_acp_run_that_times_out_settles_its_session(tmp_path, monkeypatch):
+    import asyncio
+
+    from garuda.config import agent_home
+    from garuda.core.sessions import SessionStore
+
+    runtimes = _fake_extra()
+    runtimes[0]["command"] = [*FAKE_ARGV[:-1], "slow"]
+    monkeypatch.setattr(agent_home, "resolve_agent_home", lambda workspace: _FakeHome(runtimes))
+    store = SessionStore(tmp_path / "sessions")
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(
+            SoftwareAgent(workspace=tmp_path, runtime="faketest", store=store).run("x"), timeout=3)
+    (record,) = store.list_sessions()
+    meta = store.load_meta(record["session_id"])
+    assert (meta["status"], meta["state"]["outcome"]) == ("cancelled", "cancelled")
