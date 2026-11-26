@@ -31,7 +31,7 @@ from garuda.types import AgentResult
 
 PORT = 8787
 TOKEN = "test-token-value"
-LISTS = ("/api/runs", "/api/sessions", "/api/inbox", "/api/config")
+LISTS = ("/api/runs", "/api/sessions", "/api/inbox", "/api/config", "/api/overview")
 
 
 def CachedSessionStore(*args, **kwargs):  # noqa: N802 - imported late: the file still collects

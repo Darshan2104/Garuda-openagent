@@ -28,6 +28,7 @@ from garuda.interfaces.web.resilience import (
     QueueOnce,
     meta_refusal,
     projected,
+    projecting_all,
     rows_isolating,
 )
 from garuda.interfaces.web.security import check_request
@@ -397,18 +398,32 @@ def _diagnostic_export(request: Request, ctx: DashboardContext, match) -> Respon
         return invalid(str(exc))
 
 
-#: The inbox's window, as ``read_model.inbox`` defaults it.
-INBOX_LIMIT = 200
-
-
 @route("GET", r"/api/inbox")
 def _inbox(request: Request, ctx: DashboardContext, _match) -> Response:
-    """Pending approvals across active sessions, with the digest each answer must bind."""
+    """Pending approvals across active sessions, with the digest each answer must bind.
+
+    Every session, not the newest 200: a session parked on an approval stops updating,
+    so a cap by ``updated_at`` would hide exactly the request that is waiting longest."""
     unreadable: list[str] = []
-    metas = ctx.store.list_sessions(limit=INBOX_LIMIT, unreadable=unreadable)
-    rows = rows_isolating(lambda chunk: read_model.inbox(ListedStore(ctx.store, chunk)),
+    metas = ctx.store.list_sessions(limit=None, unreadable=unreadable)
+    rows = rows_isolating(lambda chunk: read_model.inbox(ListedStore(ctx.store, chunk), limit=None),
                           metas, unreadable, newest_last=True)
     return ok({"approvals": rows, "unreadable_sessions": unreadable_report(unreadable)})
+
+
+@route("GET", r"/api/overview")
+def _overview(request: Request, ctx: DashboardContext, _match) -> Response:
+    """The landing page: what needs attention, what is running, what finished last.
+    Selected from every session server side; reads only."""
+    from garuda.interfaces.web.overview import overview
+
+    unreadable: list[str] = []
+    metas = ctx.store.list_sessions(limit=None, unreadable=unreadable)
+    queue = _queue_or_none()
+    queue = QueueOnce(queue) if queue is not None else None
+    payload = projecting_all(lambda chunk: overview(ListedStore(ctx.store, chunk), queue=queue),
+                             metas, unreadable)
+    return ok({**payload, "unreadable_sessions": unreadable_report(unreadable)})
 
 
 _APPROVAL_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")

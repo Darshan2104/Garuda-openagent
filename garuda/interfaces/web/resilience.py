@@ -94,6 +94,31 @@ def rows_isolating(build: Callable[[list[dict]], list], metas: list[dict],
     return rows
 
 
+def projecting_all(build: Callable[[list[dict]], Any], metas: list[dict],
+                   unreadable: list[str]) -> Any:
+    """``build(metas)`` for an aggregate over every session (the overview).
+
+    Like :func:`rows_isolating`, but the result is one document, not rows: on a failure
+    each session is tried alone, the ones that fail are reported unreadable, and the
+    aggregate is built again from the rest.
+    """
+    try:
+        return build(metas)
+    except Exception:
+        logger.warning("Dashboard aggregate failed; isolating the bad session(s)", exc_info=True)
+    readable = []
+    for meta in metas:
+        try:
+            build([meta])
+        except Exception:
+            name = meta.get("session_id")
+            logger.exception("Dashboard could not project session %r", name)
+            unreadable.append(name if isinstance(name, str) else "?")
+            continue
+        readable.append(meta)
+    return build(readable)
+
+
 def unreadable_session(session_id: str, detail: str) -> Response:
     return error(CODE_SESSION_UNREADABLE,
                  f"Session {session_id!r} has a record the dashboard cannot read ({detail}). "
