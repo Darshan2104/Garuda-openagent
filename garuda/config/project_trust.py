@@ -23,6 +23,7 @@ everything else still applies. A headless run cannot create trust:
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
 import stat
@@ -60,8 +61,8 @@ def read_project_file(workspace) -> ProjectFile | None:
         return None
     except OSError as exc:
         record_source_error()
-        raise gy.GarudaConfigError("config.invalid", "", f"{path}: {exc} (a symlinked "
-                                   "garuda.yaml is refused)") from exc
+        hint = " (a symlinked garuda.yaml is refused)" if exc.errno == errno.ELOOP else ""
+        raise gy.GarudaConfigError("config.invalid", "", f"{path}: {exc}{hint}") from exc
     try:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode):
