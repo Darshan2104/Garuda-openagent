@@ -1,0 +1,391 @@
+/* Overview: the landing page. What is happening, and does anything need me?
+ *
+ * Four sections, each fed and refreshed on its own so a slow or failing read never blanks
+ * the page:
+ *
+ *   /api/overview   (fast) needs attention (sessions), running now, recent
+ *   /api/setup      (slow) configuration errors, and which harnesses the roles use
+ *   /api/providers  (slow) each harness's availability and recorded login reading
+ *
+ * The session rows are the shared read model's, selected on the server from every session
+ * (not the newest 200), so an old crashed or waiting session is never missed. Nothing is
+ * computed here that the read model does not say: unknown stays "unknown", a login reading
+ * shows its age, and a review is never shown as verification.
+ *
+ * Re-rendering patches each list by row key, so a poll leaves scroll and focus alone and an
+ * unchanged row is never touched. Both pollers live on HOME and stop on navigation. */
+
+"use strict";
+
+var HOME = null;
+// Globals rather than constants so the browser check can shorten them.
+var HOME_FAST_MS = 10000;
+var HOME_SLOW_MS = 60000;
+
+function stopHomeView() {
+  if (!HOME) return;
+  HOME.fast.stop();
+  HOME.slow.stop();
+  HOME = null;
+}
+
+function overviewView() {
+  stopHomeView();
+  var state = { overview: null, overviewError: null, setup: null, setupError: null,
+                setupAt: null, providers: null, providersError: null, providersAt: null };
+  render(
+    '<div id="home-root">' +
+    '<div class="page-head"><h1>Overview</h1><span class="meta" id="home-updated"></span></div>' +
+    '<section class="card home-section" id="home-attention" aria-labelledby="home-attention-h">' +
+    '<h2 id="home-attention-h">Needs attention</h2><ul class="home-list" id="home-attention-list"></ul>' +
+    '<div class="home-status" id="home-attention-status"></div></section>' +
+    '<section class="card home-section" id="home-running" aria-labelledby="home-running-h">' +
+    '<h2 id="home-running-h">Running now <span class="meta" id="home-running-count"></span></h2>' +
+    '<ul class="home-list" id="home-running-list"></ul><div class="home-status" id="home-running-status"></div></section>' +
+    '<section class="card home-section" id="home-recent" aria-labelledby="home-recent-h">' +
+    '<h2 id="home-recent-h">Recent</h2><ul class="home-list" id="home-recent-list"></ul>' +
+    '<div class="home-status" id="home-recent-status"></div>' +
+    '<p class="home-foot"><a href="#/sessions">All sessions</a></p></section>' +
+    '<section class="card home-section" id="home-harnesses" aria-labelledby="home-harnesses-h">' +
+    '<h2 id="home-harnesses-h">Harness health</h2><ul class="home-list" id="home-harness-list"></ul>' +
+    '<div class="home-status" id="home-harness-status"></div>' +
+    '<p class="home-foot"><a href="#/providers">Providers</a></p></section>' +
+    "</div>"
+  );
+  el("home-root").addEventListener("click", function (event) {
+    var button = event.target.closest("button[data-home-retry]");
+    if (!button || HOME !== state) return;
+    var which = button.getAttribute("data-home-retry");
+    button.disabled = true;
+    // Let the next render redraw this status even if the retry fails the same way.
+    var holder = button.closest(".home-status");
+    if (holder) holder.homeHtml = null;
+    if (which === "overview") homeLoadOverview(state);
+    if (which === "setup" || which === "slow") homeLoadSetup(state);
+    if (which === "providers" || which === "slow") homeLoadProviders(state);
+  });
+  HOME = state;
+  homeRenderAll(state);
+  state.fast = new Poller(function () { return homeLoadOverview(state); }, HOME_FAST_MS).start();
+  state.slow = new Poller(function () {
+    return Promise.all([homeLoadSetup(state), homeLoadProviders(state)]);
+  }, HOME_SLOW_MS).start();
+}
+
+/* --- loading: each read settles into its own slot, then the page re-renders ----------- */
+
+function homeLoad(state, path, key) {
+  return api(path).then(function (payload) {
+    if (HOME !== state) return;
+    state[key] = payload;
+    state[key + "Error"] = null;
+    state[key + "At"] = Date.now();
+    homeRenderAll(state);
+  }, function (err) {
+    if (HOME !== state) return;
+    if (err.status === 401) { stopHomeView(); render(tokenRequiredPanel()); return; }
+    // A failed read clears its slot: showing the last answer under an error would let a
+    // stale "nothing is running" pass for the current one.
+    state[key] = null;
+    state[key + "Error"] = err;
+    homeRenderAll(state);
+  });
+}
+
+function homeLoadOverview(state) { return homeLoad(state, "/api/overview", "overview"); }
+function homeLoadSetup(state) { return homeLoad(state, "/api/setup", "setup"); }
+function homeLoadProviders(state) { return homeLoad(state, "/api/providers", "providers"); }
+
+/* --- in-place updates -------------------------------------------------------------------- */
+
+/* Make `list` hold exactly `items` ({key, html}) in order, touching only rows whose HTML
+ * changed: an unchanged row keeps its node, so focus and hover survive a poll. */
+function homePatchList(list, items) {
+  if (!list) return;
+  var existing = {};
+  Array.prototype.forEach.call(list.children, function (node) {
+    existing[node.getAttribute("data-key")] = node;
+  });
+  var previous = null;
+  items.forEach(function (item) {
+    var node = existing[item.key];
+    delete existing[item.key];
+    if (!node || node.homeHtml !== item.html) {
+      var template = document.createElement("template");
+      template.innerHTML = item.html;
+      var fresh = template.content.firstElementChild;
+      fresh.homeHtml = item.html;
+      if (node) list.replaceChild(fresh, node);
+      node = fresh;
+    }
+    var wanted = previous ? previous.nextSibling : list.firstChild;
+    if (node !== wanted) list.insertBefore(node, wanted);
+    previous = node;
+  });
+  Object.keys(existing).forEach(function (key) { existing[key].remove(); });
+}
+
+function homeSet(node, html) {
+  if (node && node.homeHtml !== html) { node.innerHTML = html; node.homeHtml = html; }
+}
+
+/* --- formatting ---------------------------------------------------------------------------- */
+
+function homePlural(count, word) { return count + " " + word + (count === 1 ? "" : "s"); }
+
+/* Whole minutes, so a running row's text changes at most once a minute rather than on every
+ * poll. Unknown when no start time was recorded. */
+function homeElapsed(iso) {
+  var then = iso ? new Date(iso).getTime() : NaN;
+  if (isNaN(then)) return "elapsed unknown";
+  var minutes = Math.max(0, Math.floor((Date.now() - then) / 60000));
+  if (minutes < 1) return "for under a minute";
+  if (minutes < 60) return "for " + minutes + "m";
+  var hours = Math.floor(minutes / 60);
+  if (hours < 24) return "for " + hours + "h " + (minutes % 60) + "m";
+  return "for " + Math.floor(hours / 24) + "d " + (hours % 24) + "h";
+}
+
+function homeEpochWhen(epoch) {
+  return epoch ? fmt.when(new Date(epoch * 1000).toISOString()) : "—";
+}
+
+function homeSessionLink(row) {
+  return '<a class="home-name" href="#/sessions/' + encodeURIComponent(row.session_id) + '">' +
+    esc(row.name || String(row.session_id).slice(0, 8)) + "</a>";
+}
+
+function homeStatus(kind, html) {
+  return '<div class="home-' + kind + '">' + html + "</div>";
+}
+
+function homeError(what, err, retry) {
+  return '<div class="home-error" role="alert" data-home-error="' + esc(retry) + '">' +
+    '<span class="pill failed">error</span> Could not load ' + esc(what) + ": " +
+    esc(err && err.message ? err.message : "unavailable") +
+    ' <button type="button" class="btn btn-small" data-home-retry="' + esc(retry) + '">Retry</button></div>';
+}
+
+function homeRow(key, kind, html) {
+  return { key: key, html: '<li class="home-row" data-key="' + esc(key) + '" data-kind="' + esc(kind) + '">' + html + "</li>" };
+}
+
+/* --- harness health: which harnesses the roles use, joined with the providers source ------ */
+
+/* The recorded login reading of one harness and when it was taken, from the /api/providers
+ * card. One function on purpose: if the login source changes, this is the only place to
+ * change. `checked_at` is epoch seconds or null; null means no reading was ever recorded. */
+function homeLoginReading(card) {
+  var login = (card && card.login) || {};
+  return { state: login.state || "unknown", checkedAt: login.checked_at || null };
+}
+
+function homeLoginText(reading) {
+  if (reading.state === "not_checked") return "login not checked";
+  var label = reading.state === "authenticated" ? "logged in" : String(reading.state).replace(/_/g, " ");
+  return label + " · " + (reading.checkedAt ? "checked " + homeEpochWhen(reading.checkedAt) : "check time unknown");
+}
+
+/* `null` until both slow reads answered. Harnesses come from the role table: each role's
+ * harness and its fallback chain. The built-in native runtime has no login to show. */
+function homeHarnesses(state) {
+  if (!state.setup || !state.providers) return null;
+  var used = {}, order = [];
+  (state.setup.roles || []).forEach(function (role) {
+    var chain = [{ harness: role.harness, fallback: false }].concat((role.fallback || []).map(function (f) {
+      return { harness: f.harness, fallback: true };
+    }));
+    chain.forEach(function (entry) {
+      if (!entry.harness || entry.harness === "native") return;
+      if (!used[entry.harness]) { used[entry.harness] = []; order.push(entry.harness); }
+      used[entry.harness].push(role.role + (entry.fallback ? " (fallback)" : ""));
+    });
+  });
+  var cards = {};
+  (state.providers.harnesses || []).forEach(function (card) { cards[card.id] = card; });
+  return order.sort().map(function (id) {
+    var card = cards[id] || null;
+    var reading = homeLoginReading(card);
+    return { id: id, roles: used[id], card: card, reading: reading,
+             unavailable: card ? card.available === false : true,
+             loggedOut: reading.state === "logged_out" };
+  });
+}
+
+function homeAvailabilityPill(h) {
+  if (!h.card) return '<span class="pill failed">not in catalog</span>';
+  if (h.card.available === true) return '<span class="pill success">available</span>';
+  if (h.card.available === false) return '<span class="pill failed">unavailable</span>';
+  return '<span class="pill unknown">availability unknown</span>';
+}
+
+function homeHarnessItems(harnesses) {
+  return harnesses.map(function (h) {
+    var login = h.card ? homeLoginText(h.reading) : "login unknown";
+    return homeRow("harness:" + h.id, "harness",
+      '<a class="home-name" href="#/providers">' + esc(h.id) + "</a> " + homeAvailabilityPill(h) +
+      ' <span class="pill ' + (h.reading.state === "authenticated" ? "success" : (h.loggedOut ? "failed" : "unknown")) +
+      '" data-login="' + esc(h.reading.state) + '">' + esc(login) + "</span>" +
+      '<span class="home-what stat-sub">used by ' + esc(h.roles.join(", ")) + "</span>");
+  });
+}
+
+/* --- needs attention --------------------------------------------------------------------- */
+
+function homeSessionAttention(o) {
+  var items = [];
+  var a = o.approvals;
+  if (a.waiting) {
+    var waitingRows = o.attention.waiting.items.filter(function (r) { return r.approvals_live; });
+    var oldest = waitingRows.map(function (r) { return r.updated_at; }).sort()[0];
+    items.push(homeRow("approvals", "approvals",
+      '<span class="pill running">approvals</span> <a class="home-name" href="#/inbox">' +
+      esc(homePlural(a.waiting, "approval")) + " waiting</a>" +
+      '<span class="home-what">in ' + esc(homePlural(a.sessions, "session")) +
+      (a.expired ? " · " + esc(a.expired) + " expired (they will be denied)" : "") + "</span>" +
+      '<span class="home-age">' + (oldest ? "session updated " + esc(fmt.when(oldest)) : "") + "</span>"));
+  }
+  o.attention.crashed.items.forEach(function (r) {
+    items.push(homeRow("crashed:" + r.session_id, "crashed",
+      '<span class="pill failed">crashed</span> ' + homeSessionLink(r) +
+      '<span class="home-what">its worker is gone and the work never finished · ' + esc(identityText(r)) + "</span>" +
+      '<span class="home-age">updated ' + esc(fmt.when(r.updated_at)) + "</span>"));
+  });
+  o.attention.waiting.items.forEach(function (r) {
+    items.push(homeRow("waiting:" + r.session_id, "waiting",
+      '<span class="pill running">waiting</span> ' + homeSessionLink(r) +
+      '<span class="home-what">' + (r.approvals_live
+        ? 'waiting on ' + esc(homePlural(r.approvals_live, "approval")) + ' · <a href="#/inbox">answer in Approvals</a>'
+        : "waiting; no approval is pending for it") + "</span>" +
+      '<span class="home-age">updated ' + esc(fmt.when(r.updated_at)) + "</span>"));
+  });
+  o.attention.paused.items.forEach(function (r) {
+    var stop = (r.flow && r.flow.stop) || {};
+    var q = r.quota_recovery || {};
+    var what = r.pause.kind === "quota"
+      ? "waiting for quota" + (q.reason ? ": " + esc(q.reason) : "") +
+        (q.next_check ? " · next check " + esc(new Date(q.next_check * 1000).toLocaleString()) : "")
+      : (stop.step ? "step " + esc(stop.step) + " " : "a step ") +
+        (r.pause.kind === "deadline" ? "ran past its deadline" : "went silent past its limit") +
+        (stop.code ? " (<code>" + esc(stop.code) + "</code>)" : "") +
+        " · resume with <code>garuda flow resume</code>";
+    items.push(homeRow("paused:" + r.session_id, "paused",
+      '<span class="pill unknown">paused</span> ' + homeSessionLink(r) +
+      '<span class="home-what">' + what + "</span>" +
+      '<span class="home-age">updated ' + esc(fmt.when(r.updated_at)) + "</span>"));
+  });
+  [["crashed", "crashed"], ["waiting", "waiting"], ["paused", "paused"]].forEach(function (pair) {
+    var list = o.attention[pair[0]];
+    if (list.total > list.items.length) {
+      items.push(homeRow("more:" + pair[0], "more", '<span class="stat-sub">and ' +
+        esc(list.total - list.items.length) + " more " + esc(pair[1]) + ' · <a href="#/sessions">Sessions</a></span>'));
+    }
+  });
+  return items;
+}
+
+function homeSlowAttention(state, harnesses) {
+  var items = [];
+  if (state.setup) {
+    // Harness errors are listed per harness below, from the same records as Harness health.
+    var errors = (state.setup.diagnostics || []).filter(function (d) {
+      return d.level === "error" && String(d.code || "").indexOf("harness.") !== 0;
+    });
+    if (errors.length) {
+      items.push(homeRow("config", "config",
+        '<span class="pill failed">configuration</span> <a class="home-name" href="#/setup">' +
+        esc(homePlural(errors.length, "configuration error")) + "</a>" +
+        '<span class="home-what"><code>' + esc(errors[0].code) + "</code> " + esc(fmt.truncate(errors[0].message, 140)) +
+        (errors.length > 1 ? " · and " + esc(errors.length - 1) + " more" : "") + "</span>" +
+        '<span class="home-age">checked ' + esc(fmt.when(new Date(state.setupAt).toISOString())) + "</span>"));
+    }
+  }
+  (harnesses || []).forEach(function (h) {
+    if (!h.unavailable && !h.loggedOut) return;
+    var problem = !h.card ? "is not in the runtime catalog" : (h.unavailable ? "is unavailable" : "is logged out");
+    items.push(homeRow("harness:" + h.id, "harness",
+      '<span class="pill failed">harness</span> <a class="home-name" href="#/providers">' + esc(h.id) + "</a>" +
+      '<span class="home-what">' + esc(problem) + " · used by " + esc(h.roles.join(", ")) + "</span>" +
+      '<span class="home-age">' + esc(h.loggedOut && !h.unavailable ? homeLoginText(h.reading)
+        : "checked " + fmt.when(new Date(state.providersAt).toISOString())) + "</span>"));
+  });
+  return items;
+}
+
+/* --- rendering ------------------------------------------------------------------------- */
+
+function homeRenderAll(state) {
+  var o = state.overview;
+  var harnesses = homeHarnesses(state);
+  var slowPending = (!state.setup && !state.setupError) || (!state.providers && !state.providersError);
+
+  // Needs attention: session rows first (fast), then configuration and harness rows (slow).
+  var attention = (o ? homeSessionAttention(o) : []).concat(homeSlowAttention(state, harnesses));
+  homePatchList(el("home-attention-list"), attention);
+  var status = [];
+  if (state.overviewError) status.push(homeError("sessions", state.overviewError, "overview"));
+  else if (!o) status.push(homeStatus("pending", "Loading sessions…"));
+  if (state.setupError) status.push(homeError("configuration", state.setupError, "setup"));
+  if (state.providersError) status.push(homeError("harness state", state.providersError, "providers"));
+  if (slowPending) status.push(homeStatus("pending", "Checking configuration and harnesses…"));
+  if (!attention.length && o && !status.length) {
+    status.push(homeStatus("calm", "Nothing needs you right now"));
+  } else if (!attention.length && o && !state.overviewError) {
+    status.unshift(homeStatus("calm", "No session needs you."));
+  }
+  homeSet(el("home-attention-status"), status.join(""));
+
+  // Running now.
+  var running = o ? o.running.items.map(function (r) {
+    var p = r.progress;
+    var step = p ? ' · <span class="home-step">step ' + esc(p.index) + " of " + esc(p.total) + " · " + esc(p.step) +
+      (p.attempt > 1 ? " (attempt " + esc(p.attempt) + ")" : "") + "</span>" : "";
+    var label = r.state && r.state.work === "queued" && r.queue ? queueText(r.queue) : r.label;
+    return homeRow("run:" + r.session_id, "running",
+      homeSessionLink(r) + (r.kind === "flow" ? ' <span class="pill unknown">flow</span>' : "") +
+      ' <span class="pill ' + (r.state && r.state.work === "working" ? "running" : "unknown") + '" data-state="' + esc(r.label) + '">' +
+      esc(label) + "</span>" +
+      '<span class="home-what stat-sub">' + esc(identityText(r)) + step + "</span>" +
+      '<span class="home-age">' + esc(homeElapsed(r.created_at)) + "</span>");
+  }) : [];
+  homePatchList(el("home-running-list"), running);
+  el("home-running-count").textContent = o ? String(o.running.total) : "";
+  var runStatus = "";
+  if (state.overviewError) runStatus = homeError("running sessions", state.overviewError, "overview");
+  else if (!o) runStatus = homeStatus("pending", "Loading…");
+  else if (!running.length) {
+    runStatus = homeStatus("calm", "Nothing is running" +
+      (canWrite() ? ' · <a href="#/starters">Starters</a>' +
+        (STATE.health && STATE.health.capabilities && STATE.health.capabilities.chat ? ' · <a href="#/chat">Chat</a>' : "") : ""));
+  } else if (o.running.total > running.length) {
+    runStatus = homeStatus("more", "and " + esc(o.running.total - running.length) + ' more · <a href="#/sessions">Sessions</a>');
+  }
+  homeSet(el("home-running-status"), runStatus);
+
+  // Recent.
+  var recent = o ? o.recent.map(function (r) {
+    var outcome = (r.state && r.state.outcome) || "unknown";
+    return homeRow("recent:" + r.session_id, "recent",
+      homeSessionLink(r) + (r.kind === "flow" ? ' <span class="pill unknown">flow</span>' : "") +
+      '<span class="home-chips">' + chip("outcome", outcome, outcomeClass(outcome)) + " " + verificationChip(r.verification) + "</span>" +
+      '<span class="home-what stat-sub">' + esc(identityText(r)) + "</span>" +
+      '<span class="home-age">' + esc(fmt.when(r.updated_at)) + "</span>");
+  }) : [];
+  homePatchList(el("home-recent-list"), recent);
+  homeSet(el("home-recent-status"), state.overviewError ? homeError("recent sessions", state.overviewError, "overview")
+    : (!o ? homeStatus("pending", "Loading…") : (!recent.length ? homeStatus("calm", "No finished sessions yet.") : "")));
+
+  // Harness health.
+  homePatchList(el("home-harness-list"), harnesses ? homeHarnessItems(harnesses) : []);
+  var hStatus = "";
+  if (state.setupError) hStatus += homeError("the role table", state.setupError, "setup");
+  if (state.providersError) hStatus += homeError("harness state", state.providersError, "providers");
+  if (!hStatus && !harnesses) hStatus = homeStatus("pending", "Checking harnesses…");
+  else if (harnesses && !harnesses.length) {
+    hStatus = homeStatus("calm", (state.setup.roles || []).length
+      ? "Your roles use no external harness." : 'No roles configured · <a href="#/setup">Setup</a>');
+  }
+  homeSet(el("home-harness-status"), hStatus);
+
+  if (o) el("home-updated").textContent = "updated " + new Date(state.overviewAt).toLocaleTimeString();
+}
