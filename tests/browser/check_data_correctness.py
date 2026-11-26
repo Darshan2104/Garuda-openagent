@@ -165,7 +165,7 @@ with sync_playwright() as p:
           and "no event log of its own" in quiet.inner_text() and "no spend snapshot" in quiet.inner_text())
     check("no empty live-events or spend panel", page.locator("#live-events").count() == 0
           and page.locator("#session-spend").count() == 0)
-    check("honest unknowns stay", "usage: unknown" in text(page, "#session-facts"))
+    check("honest unknowns stay", "usage: unknown" in text(page, "#session-usage"))
     check("the step sessions' reported usage is shown", "Step sessions' reported usage" in
           text(page, "#session-reported-usage"))
     page.screenshot(path=str(SHOTS / "data-flow-session.png"))

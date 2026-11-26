@@ -288,12 +288,19 @@ def _queue_or_none():
 
 @route("GET", r"/api/sessions")
 def _sessions(request: Request, ctx: DashboardContext, _match) -> Response:
-    """The shared read model (D.3): the same rows ``garuda sessions --json`` prints."""
+    """The shared read model (D.3): the same rows ``garuda sessions --json`` prints.
+
+    ``offset`` pages back through older sessions; ``q`` (search) and ``state`` (a state
+    label) filter server side across every session, not only the rows a page loaded."""
     limit = request.int_param("limit", reads.DEFAULT_LIMIT)
     if limit is None or limit < 1:
         return invalid("`limit` must be an integer >= 1.")
-    return ok({"sessions": read_model.sessions(ctx.store, limit=min(limit, reads.MAX_LIMIT),
-                                               queue=_queue_or_none())})
+    offset = request.int_param("offset", 0)
+    if offset is None or offset < 0:
+        return invalid("`offset` must be a non-negative integer.")
+    return ok(reads.session_page(ctx.store, limit=min(limit, reads.MAX_LIMIT), offset=offset,
+                                 query=request.first("q"), label=request.first("state"),
+                                 queue=_queue_or_none()))
 
 
 @route("GET", r"/api/sessions/(?P<sid>[^/]+)")

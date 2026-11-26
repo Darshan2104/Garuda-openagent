@@ -57,28 +57,11 @@ def _pause(meta: dict) -> dict | None:
 
 
 def _progress(store, meta: dict) -> dict | None:
-    """The step a running flow has launched and not yet settled, from its journal.
+    """The step a running flow has launched and not yet settled, from its journal (the
+    shared read model's, which a session's detail reports as ``flow_progress``)."""
+    from garuda.core.read_model import flow_progress
 
-    ``None`` when the flow declares no readable steps or no step is in flight (between
-    steps, or in its acceptance phase); the page then shows no step rather than a guess.
-    """
-    from garuda.core.starter_evidence import flow_steps
-    from garuda.flows.engine import unsettled_attempts
-
-    declared = flow_steps(meta)
-    if not declared:
-        return None
-    try:
-        pending = unsettled_attempts(store, meta.get("session_id") or "")
-    except (OSError, ValueError, TypeError):
-        return None
-    if not pending:
-        return None
-    step, attempt = pending[-1]
-    if step not in declared:
-        return None
-    return {"step": step, "attempt": attempt, "index": declared.index(step) + 1,
-            "total": len(declared)}
+    return flow_progress(store, meta)
 
 
 def _row(store, meta: dict, queue_index: dict, *, active: bool) -> dict[str, Any]:

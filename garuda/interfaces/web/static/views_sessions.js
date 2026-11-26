@@ -1,9 +1,14 @@
 /* Sessions and flows: the shared read model (D.3), rendered (D.4).
  *
  * Everything shown here comes from /api/sessions*, the same rows `garuda sessions --json`
- * prints; nothing is computed in the browser. Unknown stays visibly unknown: usage and cost
- * read "unknown" until the usage ledger exists, a queue that could not be read says so, and
- * a review outcome is its own badge — never the verification one. */
+ * prints; nothing is computed in the browser beyond formatting a time. Unknown stays visibly
+ * unknown: usage and cost read "unknown" until the usage ledger exists, a queue that could not
+ * be read says so, and a review outcome is its own badge — never the verification one.
+ *
+ * The three pages here (the list, a session, the approvals) each keep their state in one
+ * object on STATE and check it by identity before touching the DOM, so a response that lands
+ * after the user navigated away is dropped. Polls update in place: a row, a card or a section
+ * is replaced only when its HTML changed, and what the user opened stays open. */
 
 "use strict";
 
@@ -55,6 +60,9 @@ function queueText(queue) {
   return queue.state || "unknown";
 }
 
+function isActive(state) { return ["queued", "working", "waiting"].indexOf((state || {}).work) >= 0; }
+
+/* Every spend-gate field as its own chip: the session page and the Usage page show these. */
 function spendHtml(spend) {
   if (!spend) return chip("spend", "not recorded");
   if (spend.state !== "recorded") return chip("spend", "unreadable (unknown)");
@@ -74,133 +82,381 @@ function spendHtml(spend) {
   return html;
 }
 
+function knownText(value, format) {
+  return value === null || value === undefined ? "unknown" : (format ? format(value) : String(value));
+}
+
+function usdText(value) {
+  return typeof value === "number" ? fmt.cost(value) : knownText(value);
+}
+
+/* The spend gate in one line for the list: what settled against which caps. A cost Garuda
+ * could not price stays a lower bound, never a total; the chips are on the session page. */
+function spendSummaryText(spend) {
+  if (!spend) return "";
+  if (spend.state !== "recorded") return "spend unreadable (unknown)";
+  var tokens = knownText(spend.settled_tokens, fmt.tokens) + " / " +
+    (spend.max_tokens === null ? "no cap" : knownText(spend.max_tokens, fmt.tokens)) + " tokens";
+  var usd = spend.cost_status === "unknown" ? "≥ " + usdText(spend.settled_cost_usd) + " (lower bound)"
+                                            : usdText(spend.settled_cost_usd);
+  return "spend " + tokens + " · " + usd + " of " +
+    (spend.max_cost_usd === null ? "no USD cap" : usdText(spend.max_cost_usd) + " cap");
+}
+
+/* A recorded time as "3h ago", with the absolute time beside it or in its title. */
+function absoluteTime(iso) {
+  if (!iso) return "unknown";
+  var then = new Date(iso);
+  return isNaN(then.getTime()) ? "unknown" : then.toLocaleString();
+}
+
+function relativeTimeHtml(iso) {
+  if (!iso) return '<span class="stat-sub">unknown</span>';
+  return '<time datetime="' + esc(iso) + '" title="' + esc(absoluteTime(iso)) + '">' + esc(fmt.when(iso)) + "</time>";
+}
+
+function firstLine(text) {
+  return String(text || "").split("\n").map(function (l) { return l.trim(); }).filter(Boolean)[0] || "";
+}
+
+/* --- the Sessions list (#/sessions?q=…&state=…) ------------------------------------------
+ * A page of rows from the server, which searches and filters across every session; "Load
+ * older" asks for the next page. The filter lives in the hash, so a reload or a shared link
+ * keeps it and back/forward walks through filter changes. */
+
+var SESSIONS_PAGE = 50;
+var SESSIONS_POLL_MS = 15000;
+
+function parseSessionQuery(raw) {
+  var params = new URLSearchParams(raw || "");
+  return { q: params.get("q") || "", label: params.get("state") || "" };
+}
+
+function sessionsHash(filter) {
+  var params = new URLSearchParams();
+  if (filter && filter.q) params.set("q", filter.q);
+  if (filter && filter.label) params.set("state", filter.label);
+  var query = params.toString();
+  return "#/sessions" + (query ? "?" + query : "");
+}
+
+function sessionsUrl(filter, offset, limit) {
+  var params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+  if (filter.q.trim()) params.set("q", filter.q.trim());
+  if (filter.label) params.set("state", filter.label);
+  return "/api/sessions?" + params.toString();
+}
+
+function approvalsCellHtml(row) {
+  var pending = row.approvals_pending || 0;
+  var live = typeof row.approvals_live === "number" ? row.approvals_live : pending;
+  if (!pending) return "—";
+  return (live ? '<span class="pill running">' + esc(live) + " waiting</span>" : "") +
+    (pending > live ? '<div class="s-sub">' + esc(pending - live) + " expired</div>" : "");
+}
+
 function sessionRowHtml(row) {
   var state = row.state || {};
+  var id = String(row.session_id || "");
+  var task = fmt.truncate(firstLine(row.task), 64);
+  var where = row.workspace ? fmt.tail(row.workspace, 30) : "—";
+  var summary = spendSummaryText(row.spend);
   return (
-    '<tr class="session-row" data-session="' + esc(row.session_id) + '" data-label="' + esc(row.label) + '">' +
-    '<td><a href="#/sessions/' + encodeURIComponent(row.session_id) + '">' +
-    esc(row.name || row.session_id.slice(0, 8)) + "</a>" +
+    '<tr class="session-row" data-session="' + esc(id) + '" data-label="' + esc(row.label) + '">' +
+    '<td class="s-name" data-th="Session"><a href="#/sessions/' + encodeURIComponent(id) + '">' +
+    esc(row.name || id.slice(0, 8)) + "</a>" +
     (row.kind === "flow" ? ' <span class="pill unknown">flow</span>' : "") +
-    (row.origin === "consult" ? ' <span class="pill unknown">consult</span>' : "") + "</td>" +
-    '<td><span class="pill ' + (row.crashed ? "failed" : (state.work === "working" ? "running" : "unknown")) + '">' + esc(row.label) + "</span></td>" +
-    "<td>" + esc(identityText(row)) + "</td>" +
-    "<td>" + chip("outcome", state.outcome || "—", outcomeClass(state.outcome)) + " " + verificationChip(row.verification) + selfCheckChip(row.self_check) + "</td>" +
-    "<td>" + esc(queueText(row.queue)) + "</td>" +
-    '<td title="' + esc(row.workspace || "") + '">' + esc(row.workspace ? fmt.tail(row.workspace, 36) : "—") + (row.branch ? " @ " + esc(row.branch) : "") + "</td>" +
-    '<td class="num">' + esc(row.usage) + " / " + esc(row.cost) + '<div class="chips">' + spendHtml(row.spend) + "</div></td>" +
-    '<td class="num">' + (row.approvals_pending ? '<span class="pill running">' + row.approvals_pending + " waiting</span>" : "—") + "</td>" +
-    "<td>" + esc(fmt.when(row.updated_at)) + "</td>" +
+    (row.origin === "consult" ? ' <span class="pill unknown">consult</span>' : "") +
+    // Two runs of one task have the same name; the id and the task's first words tell them apart.
+    '<div class="s-sub"><code>' + esc(id.slice(0, 8)) + "</code>" + (task ? " · " + esc(task) : "") + "</div></td>" +
+    '<td data-th="State"><span class="pill ' + (row.crashed ? "failed" : (state.work === "working" ? "running" : "unknown")) + '">' +
+    esc(row.label) + "</span>" + (row.queue ? '<div class="s-sub">' + esc(queueText(row.queue)) + "</div>" : "") + "</td>" +
+    '<td class="s-clip" data-th="Runtime · role · model" title="' + esc(identityText(row)) + '">' + esc(identityText(row)) + "</td>" +
+    '<td class="s-facts" data-th="Outcome / verification">' + chip("outcome", state.outcome || "—", outcomeClass(state.outcome)) + " " +
+    verificationChip(row.verification) + selfCheckChip(row.self_check) + "</td>" +
+    '<td class="s-clip" data-th="Workspace" title="' + esc((row.workspace || "") + (row.branch ? " @ " + row.branch : "")) + '">' +
+    esc(where) + (row.branch ? '<div class="s-sub">@ ' + esc(row.branch) + "</div>" : "") + "</td>" +
+    '<td class="s-usage" data-th="Usage / cost"><span class="mono">' + esc(row.usage) + " / " + esc(row.cost) + "</span>" +
+    (summary ? '<div class="s-sub s-spend" title="' + esc(summary) + '">' + esc(summary) + "</div>" : "") + "</td>" +
+    '<td class="num" data-th="Approvals">' + approvalsCellHtml(row) + "</td>" +
+    '<td class="s-when" data-th="Updated">' + relativeTimeHtml(row.updated_at) + "</td>" +
+    '<td class="s-when" data-th="Started">' + relativeTimeHtml(row.created_at) + "</td>" +
     "</tr>"
   );
 }
 
-function sessionsView() {
-  render('<div class="loading">Loading sessions…</div>');
-  return api("/api/sessions").then(function (payload) {
-    var rows = payload.sessions;
-    if (!rows.length) {
-      render('<div class="empty"><p><strong>No sessions yet.</strong></p>' +
-             "<p>Start one with <code>garuda run --bg -t &quot;your task&quot;</code>.</p></div>");
-      return;
-    }
-    var counts = {};
-    rows.forEach(function (r) { counts[r.label] = (counts[r.label] || 0) + 1; });
-    var filter = STATE.filters.sessions || { q: "", label: "" };
-    if (filter.label && !counts[filter.label]) filter.label = "";
-    render(
-      '<div class="page-head"><h1>Sessions</h1><span class="meta" id="sessions-count">' + rows.length + "</span>" +
-      '<button type="button" class="btn" id="sessions-refresh">Refresh</button></div>' +
-      '<div class="filters"><input type="search" id="sessions-search" placeholder="Search name, id, model, workspace…  ( / )" value="' + esc(filter.q) + '">' +
-      '<div class="state-chips" id="sessions-states">' +
-      '<button type="button" class="state-chip" data-label="">all ' + rows.length + "</button>" +
-      Object.keys(counts).sort().map(function (label) {
-        return '<button type="button" class="state-chip" data-label="' + esc(label) + '">' + esc(label) + " " + counts[label] + "</button>";
-      }).join("") + "</div></div>" +
-      '<div class="table-wrap"><table class="table" id="sessions-table"><thead><tr>' +
-      "<th>Session</th><th>State</th><th>Runtime · role · model</th><th>Outcome / verification</th>" +
-      "<th>Queue</th><th>Workspace</th><th class=\"num\">Usage / cost</th><th class=\"num\">Approvals</th><th>Updated</th>" +
-      "</tr></thead><tbody>" + rows.map(sessionRowHtml).join("") + "</tbody></table>" +
-      '<div class="filter-empty" id="sessions-none" hidden>No session matches this filter.</div></div>'
-    );
-    el("sessions-refresh").addEventListener("click", sessionsView);
-    STATE.filters.sessions = filter;
-    applySessionFilter();
-    el("sessions-search").addEventListener("input", function (event) {
-      filter.q = event.target.value; applySessionFilter();
-    });
-    el("sessions-states").addEventListener("click", function (event) {
-      var button = event.target.closest(".state-chip");
-      if (!button) return;
-      filter.label = button.getAttribute("data-label"); applySessionFilter();
-    });
-  }).catch(function (err) {
-    if (err.status === 401) { render(tokenRequiredPanel()); return; }
-    render('<div class="notice err"><div class="notice-title">Could not load sessions</div>' +
-           '<div class="notice-body">' + esc(err.message) + "</div></div>");
+function sessionsView(rawQuery) {
+  stopSessionPages();
+  // The hash is the filter: plain #/sessions is unfiltered, so Back to it shows everything.
+  // A session page's "All sessions" link returns to the last filter (STATE.filters.sessions).
+  var filter = parseSessionQuery(rawQuery);
+  STATE.filters.sessions = filter;
+  var list = STATE.sessionList = { filter: filter, rows: [], counts: {}, total: null, matched: null,
+                                   nextOffset: null, seq: 0, inflight: 0, loadingOlder: false,
+                                   painted: false, error: null };
+  render(
+    '<div class="page-head"><h1>Sessions</h1><span class="meta" id="sessions-count">loading…</span>' +
+    '<button type="button" class="btn" id="sessions-refresh">Refresh</button></div>' +
+    '<div class="filters"><input type="search" id="sessions-search" placeholder="Search name, id, task, model, workspace…  ( / )" value="' + esc(filter.q) + '">' +
+    '<div class="state-chips" id="sessions-states"></div></div>' +
+    '<div class="notice err" id="sessions-error" hidden></div>' +
+    '<div class="table-wrap sessions-wrap"><table class="table sessions-table" id="sessions-table"><thead><tr>' +
+    "<th>Session</th><th>State</th><th>Runtime · role · model</th><th>Outcome / verification</th>" +
+    "<th>Workspace</th><th>Usage / cost</th><th class=\"num\">Approvals</th><th>Updated</th><th>Started</th>" +
+    '</tr></thead><tbody id="sessions-tbody"></tbody></table>' +
+    '<div class="filter-empty" id="sessions-none" hidden></div>' +
+    '<div class="sessions-more"><button type="button" class="btn" id="sessions-more" hidden>Load older</button></div></div>'
+  );
+  el("sessions-refresh").addEventListener("click", function () { reloadSessionList(list); });
+  var typing = null;
+  el("sessions-search").addEventListener("input", function (event) {
+    clearTimeout(typing);
+    var value = event.target.value;
+    typing = setTimeout(function () {
+      if (STATE.sessionList !== list) return;
+      filter.q = value;
+      // Typing replaces the history entry (no hashchange, so the field keeps focus).
+      history.replaceState(null, "", sessionsHash(filter));
+      reloadSessionList(list);
+    }, 250);
+  });
+  el("sessions-states").addEventListener("click", function (event) {
+    var button = event.target.closest(".state-chip");
+    if (!button) return;
+    var next = { q: el("sessions-search").value, label: button.getAttribute("data-label") };
+    // A state chip is a new history entry, so Back returns to the previous filter.
+    location.hash = sessionsHash(next);
+  });
+  el("sessions-more").addEventListener("click", function () { loadOlderSessions(list); });
+  list.poller = new Poller(function () { return refreshSessionList(list); }, SESSIONS_POLL_MS).start();
+  return Promise.resolve();
+}
+
+/* One request at a time per list. `seq` names the newest; a newer request (another filter,
+ * "Load older") supersedes one in flight, whose answer is then dropped. */
+function sessionListRequest(list, url, older) {
+  var seq = ++list.seq;
+  list.inflight = seq;
+  list.loadingOlder = older;
+  paintSessionMore(list);
+  function settled() {
+    if (list.inflight === seq) { list.inflight = 0; list.loadingOlder = false; }
+    return STATE.sessionList === list && seq === list.seq;
+  }
+  return api(url).then(function (payload) {
+    if (!settled()) return null;
+    return payload;
+  }, function (err) {
+    if (settled()) sessionListFailed(list, err);
+    return null;
   });
 }
 
-/* Filtering hides rows rather than re-rendering them, so every row the API returned stays in
- * the table and the filter survives a Refresh (it lives in STATE.filters). */
-function applySessionFilter() {
-  var filter = STATE.filters.sessions || { q: "", label: "" };
-  var needle = filter.q.trim().toLowerCase();
-  var shown = 0;
-  var rows = document.querySelectorAll("#sessions-table tr.session-row");
-  Array.prototype.forEach.call(rows, function (tr) {
-    var match = (!filter.label || tr.getAttribute("data-label") === filter.label) &&
-      (!needle || (tr.textContent + " " + tr.getAttribute("data-session") + " " + (tr.cells[5].title || "")).toLowerCase().indexOf(needle) >= 0);
-    tr.hidden = !match;
-    if (match) shown += 1;
+/* The loaded window again from the top: new sessions appear, changed rows are replaced and
+ * the rows loaded through "Load older" stay. */
+function refreshSessionList(list) {
+  if (STATE.sessionList !== list || list.inflight) return;
+  var limit = Math.min(500, Math.max(SESSIONS_PAGE, list.rows.length));
+  return sessionListRequest(list, sessionsUrl(list.filter, 0, limit), false).then(function (payload) {
+    if (!payload) return;
+    var fresh = payload.sessions || [];
+    var seen = {};
+    fresh.forEach(function (r) { seen[r.session_id] = true; });
+    var older = list.rows.slice(fresh.length).filter(function (r) { return !seen[r.session_id]; });
+    list.rows = fresh.concat(older);
+    list.nextOffset = older.length ? list.nextOffset : payload.next_offset;
+    acceptSessionPage(list, payload);
   });
-  Array.prototype.forEach.call(document.querySelectorAll("#sessions-states .state-chip"), function (chipNode) {
-    chipNode.classList.toggle("active", chipNode.getAttribute("data-label") === filter.label);
-  });
-  var count = el("sessions-count");
-  if (count) count.textContent = shown === rows.length ? String(rows.length) : shown + " of " + rows.length;
-  var none = el("sessions-none");
-  if (none) none.hidden = shown !== 0;
 }
+
+function reloadSessionList(list) {
+  if (STATE.sessionList !== list) return;
+  list.rows = [];
+  list.inflight = 0;  // supersede whatever is in flight: its answer is for the old filter
+  return refreshSessionList(list);
+}
+
+function loadOlderSessions(list) {
+  if (STATE.sessionList !== list || list.loadingOlder || list.nextOffset === null) return;
+  var offset = list.nextOffset;
+  return sessionListRequest(list, sessionsUrl(list.filter, offset, SESSIONS_PAGE), true).then(function (payload) {
+    if (!payload) return;
+    var seen = {};
+    list.rows.forEach(function (r) { seen[r.session_id] = true; });
+    list.rows = list.rows.concat((payload.sessions || []).filter(function (r) { return !seen[r.session_id]; }));
+    list.nextOffset = payload.next_offset;
+    acceptSessionPage(list, payload);
+  });
+}
+
+function acceptSessionPage(list, payload) {
+  list.total = payload.total;
+  list.matched = payload.matched;
+  list.counts = payload.counts || {};
+  list.error = null;
+  list.painted = true;
+  paintSessionList(list);
+}
+
+function sessionListFailed(list, err) {
+  if (err.status === 401) { stopSessionPages(); render(tokenRequiredPanel()); return; }
+  list.error = err;
+  var box = el("sessions-error");
+  if (!box) return;
+  box.hidden = false;
+  box.innerHTML = '<div class="notice-title">' + (list.painted ? "Could not refresh sessions" : "Could not load sessions") +
+    '</div><div class="notice-body">' + esc(err.message) + (err.code ? " (" + esc(err.code) + ")" : "") +
+    (list.painted ? " — showing what was loaded; it retries on its own." : "") + "</div>";
+  paintSessionMore(list);
+}
+
+/* Rows keyed by session id: a row is replaced only when its HTML changed, and moved only
+ * when the order did, so a poll never rebuilds the table under the pointer. */
+function paintSessionList(list) {
+  var tbody = el("sessions-tbody");
+  if (!tbody) return;
+  var existing = {};
+  Array.prototype.forEach.call(tbody.children, function (tr) { existing[tr.getAttribute("data-session")] = tr; });
+  var previous = null;
+  list.rows.forEach(function (row) {
+    var html = sessionRowHtml(row);
+    var node = existing[row.session_id];
+    if (!node || node.__html !== html) {
+      var holder = document.createElement("tbody");
+      holder.innerHTML = html;
+      var fresh = holder.firstElementChild;
+      fresh.__html = html;
+      if (node) tbody.replaceChild(fresh, node);
+      node = fresh;
+    }
+    delete existing[row.session_id];
+    var slot = previous ? previous.nextElementSibling : tbody.firstElementChild;
+    if (slot !== node) tbody.insertBefore(node, slot);
+    previous = node;
+  });
+  Object.keys(existing).forEach(function (key) { existing[key].remove(); });
+
+  var filter = list.filter;
+  var all = Object.keys(list.counts).reduce(function (sum, k) { return sum + list.counts[k]; }, 0);
+  var labels = Object.keys(list.counts).sort();
+  if (filter.label && labels.indexOf(filter.label) < 0) labels.push(filter.label);
+  var states = el("sessions-states");
+  var chipsHtml = '<button type="button" class="state-chip' + (filter.label ? "" : " active") + '" data-label="">all ' + esc(all) + "</button>" +
+    labels.map(function (label) {
+      return '<button type="button" class="state-chip' + (label === filter.label ? " active" : "") + '" data-label="' + esc(label) + '">' +
+        esc(label) + " " + esc(list.counts[label] || 0) + "</button>";
+    }).join("");
+  if (states && states.__html !== chipsHtml) { states.innerHTML = chipsHtml; states.__html = chipsHtml; }
+
+  var filtered = !!(filter.q.trim() || filter.label);
+  var shown = list.rows.length;
+  var count = el("sessions-count");
+  if (count) {
+    count.textContent = (shown === list.matched ? String(shown) : shown + " of " + list.matched) +
+      (filtered ? " matching · " + list.total + " in total" : (shown === list.matched ? "" : " sessions"));
+  }
+  var none = el("sessions-none");
+  if (none) {
+    none.hidden = shown !== 0;
+    none.innerHTML = list.total === 0
+      ? "<p><strong>No sessions yet.</strong></p><p>Start one with <code>garuda run --bg -t &quot;your task&quot;</code>.</p>"
+      : "No session matches this filter.";
+  }
+  var box = el("sessions-error");
+  if (box && !list.error) box.hidden = true;
+  paintSessionMore(list);
+}
+
+function paintSessionMore(list) {
+  var more = el("sessions-more");
+  if (!more) return;
+  var remaining = list.matched === null ? 0 : list.matched - list.rows.length;
+  more.hidden = list.nextOffset === null || list.nextOffset === undefined;
+  more.disabled = !!list.loadingOlder;
+  more.textContent = list.loadingOlder ? "Loading…" : "Load older (" + remaining + " more)";
+}
+
+/* --- one session (#/sessions/<id>) ---------------------------------------------------------
+ * Leads with what was asked and what came of it; the forensic records follow under "Details
+ * and evidence". While the session is active the page polls its log tail and refreshes its row,
+ * and it updates each section in place. */
+
+var SESSION_ROW_MS = 10000;
+var SESSION_TAIL_MS = 2000;
+var SESSION_RETRY_MAX_MS = 30000;
+var TASK_PREVIEW_LINES = 3;
 
 function artifactText(ref) {
   return ref.type + " from " + ref.producer_step + " (" + String(ref.digest || "").slice(0, 8) + ")";
+}
+
+function ranText(attempt) {
+  var who = attempt.runtime ? attempt.runtime + (attempt.model ? "/" + attempt.model : "") : "harness not recorded";
+  return (attempt.role ? attempt.role + " → " : "") + who;
 }
 
 function attemptHtml(attempt) {
   var delta = attempt.delta === null ? "unknown" : (attempt.delta ? "changed" : "unchanged");
   return (
     '<li class="attempt" data-attempt="' + esc(attempt.attempt) + '" data-status="' + esc(attempt.status) + '">' +
-    "attempt " + esc(attempt.attempt) + (attempt.role ? " · " + esc(attempt.role) : "") +
+    '<div class="attempt-head">attempt ' + esc(attempt.attempt) + " · " + esc(ranText(attempt)) +
     " " + chip("status", attempt.status, attempt.status === "done" ? "chip-on" : "chip-bad") +
     " " + chip("workspace", delta, "chip-off") +
     (attempt.no_edits ? " " + chip("no-edits", attempt.no_edits, attempt.no_edits === "unchanged" ? "chip-on" : "chip-bad") : "") +
-    (attempt.session_id ? ' · <a href="#/sessions/' + encodeURIComponent(attempt.session_id) + '">session</a>' : "") +
+    ' <span class="stat-sub">' + esc(attempt.duration_ms === null || attempt.duration_ms === undefined ? "duration unknown" : fmt.duration(attempt.duration_ms)) + "</span>" +
+    (attempt.session_id ? ' · <a href="#/sessions/' + encodeURIComponent(attempt.session_id) + '">session</a>' : "") + "</div>" +
     (attempt.stop ? '<div class="stat-sub">stopped: ' + esc(attempt.stop.code) + "</div>" : "") +
-    (attempt.inputs.length ? '<div class="stat-sub">in: ' + attempt.inputs.map(function (r) { return esc(artifactText(r)); }).join(", ") + "</div>" : "") +
-    (attempt.outputs.length ? '<div class="stat-sub">out: ' + attempt.outputs.map(function (r) { return esc(artifactText(r)); }).join(", ") + "</div>" : "") +
-    (attempt.members.length ? '<div class="stat-sub">reviewers: ' + attempt.members.map(function (m) { return esc(m.role) + (m.success ? " ✓" : " ✗"); }).join(", ") + "</div>" : "") +
+    ((attempt.inputs || []).length ? '<div class="stat-sub">in: ' + attempt.inputs.map(function (r) { return esc(artifactText(r)); }).join(", ") + "</div>" : "") +
+    ((attempt.outputs || []).length ? '<div class="stat-sub">out: ' + attempt.outputs.map(function (r) { return esc(artifactText(r)); }).join(", ") + "</div>" : "") +
+    ((attempt.members || []).length ? '<div class="stat-sub">reviewers: ' + attempt.members.map(function (m) { return esc(m.role) + (m.success ? " ✓" : " ✗"); }).join(", ") + "</div>" : "") +
     "</li>"
   );
 }
 
-function flowHtml(flow) {
+function stepStatus(step, current) {
+  var attempts = step.attempts || [];
+  if (current && current.step === step.id) return { text: "running · attempt " + current.attempt, cls: "running", key: "current" };
+  if (!attempts.length) return { text: "not run yet", cls: "unknown", key: "pending" };
+  var last = attempts[attempts.length - 1];
+  if (last.status === "done") return { text: "done", cls: "success", key: "done" };
+  return { text: last.status || "unknown", cls: last.status ? "failed" : "unknown", key: "failed" };
+}
+
+/* A flow as a vertical pipeline: each step, who ran it, its status, attempts, durations and
+ * what it passed on; the step in flight is highlighted. The review is its own badge. */
+function flowHtml(flow, progress) {
   if (!flow) return "";
   var review = flow.review;
+  var edges = flow.edges || [];
   return (
-    '<section class="flow" id="flow-detail"><h2>Flow ' + esc(flow.name) + " " + chip("flow", flow.state, "chip-off") + "</h2>" +
+    '<section class="card flow" id="flow-detail"><h2>Flow ' + esc(flow.name) + " " + chip("flow", flow.state, "chip-off") + "</h2>" +
     (flow.quota_recovery ? '<p id="flow-quota-recovery">Quota recovery: ' +
-      esc(flow.quota_recovery.state) + ' · ' + esc(flow.quota_recovery.reason || '') +
-      (flow.quota_recovery.next_check ? ' · next check ' +
-        esc(new Date(flow.quota_recovery.next_check * 1000).toLocaleString()) : '') + '</p>' : '') +
+      esc(flow.quota_recovery.state) + " · " + esc(flow.quota_recovery.reason || "") +
+      (flow.quota_recovery.next_check ? " · next check " +
+        esc(new Date(flow.quota_recovery.next_check * 1000).toLocaleString()) : "") + "</p>" : "") +
     // A review is advice about the work. It has its own badge and never says "verified".
     (review ? '<p id="flow-review">' + chip("review", reviewLabel(review), "chip-off") +
               ' <span class="stat-sub">a review is not verification</span></p>' : "") +
-    '<ol class="steps">' + flow.steps.map(function (step) {
-      return '<li class="step" data-step="' + esc(step.id) + '"><strong>' + esc(step.id) + "</strong>" +
-             (step.attempts.length ? '<ul class="attempts">' + step.attempts.map(attemptHtml).join("") + "</ul>"
-                                   : ' <span class="stat-sub">not run yet</span>') + "</li>";
+    '<ol class="pipeline steps">' + (flow.steps || []).map(function (step, index) {
+      var status = stepStatus(step, progress);
+      var attempts = step.attempts || [];
+      var last = attempts[attempts.length - 1];
+      var durations = attempts.map(function (a) { return a.duration_ms; });
+      var total = durations.length && durations.every(function (d) { return typeof d === "number"; })
+        ? durations.reduce(function (s, d) { return s + d; }, 0) : null;
+      var passes = edges.filter(function (e) { return e.from_step === step.id; });
+      return '<li class="pipe-step pipe-' + status.key + '" data-step="' + esc(step.id) + '"' + (status.key === "current" ? ' aria-current="step"' : "") + ">" +
+        '<div class="pipe-head"><span class="pipe-no">' + (index + 1) + "</span><strong>" + esc(step.id) + "</strong> " +
+        '<span class="pill ' + status.cls + '">' + esc(status.text) + "</span>" +
+        (last ? ' <span class="stat-sub">' + esc(ranText(last)) + " · " + attempts.length + " attempt" + (attempts.length === 1 ? "" : "s") +
+          " · " + esc(total === null ? "duration unknown" : fmt.duration(total)) + "</span>" : "") + "</div>" +
+        (attempts.length ? '<ul class="attempts">' + attempts.map(attemptHtml).join("") + "</ul>"
+                         : (status.key === "current" ? "" : ' <span class="stat-sub">not run yet</span>')) +
+        (passes.length ? '<div class="pipe-pass stat-sub">passes on: ' + passes.map(function (e) {
+          return esc(e.type) + " → " + esc(e.to_step);
+        }).join(", ") + "</div>" : "") + "</li>";
     }).join("") + "</ol>" +
-    (flow.edges.length ? '<h3>Artifact edges</h3><ul id="flow-edges">' + flow.edges.map(function (e) {
+    (edges.length ? '<h3>Artifact edges</h3><ul id="flow-edges">' + edges.map(function (e) {
       return "<li>" + esc(e.from_step) + " → " + esc(e.to_step) + " · " + esc(e.type) + "</li>";
     }).join("") + "</ul>" : "") + "</section>"
   );
@@ -322,66 +578,463 @@ function quietSessionHtml(row, streamable) {
   return parts.length ? '<p class="stat-sub" id="session-quiet">' + esc(parts.join(" · ")) + "</p>" : "";
 }
 
-function sessionDetailView(id) {
-  render('<div class="loading">Loading session…</div>');
-  return api("/api/sessions/" + encodeURIComponent(id)).then(function (row) {
-    var state = row.state || {};
-    // The live stream reads only the native event log. A finished session without one (a
-    // flow, an external harness) has nothing to stream, and "0 events · finished" read as
-    // if it had done nothing.
-    var streamable = !row.event_log || row.event_log.native || isActive(state);
-    render(
-      '<div class="page-head"><h1>' + esc(row.name || row.session_id.slice(0, 8)) + "</h1>" +
-      '<span class="pill unknown" id="session-label">' + esc(row.label) + "</span>" +
-      (row.background && isActive(state) && canAnswer()
-        ? '<button type="button" class="btn" id="session-stop">Stop</button>' : "") +
-      '<a class="btn" href="#/runs/' + encodeURIComponent(row.session_id) + '">Trace</a>' +
-      '<a class="btn" href="#/sessions">All sessions</a></div>' +
-      '<div class="chips" id="session-facts">' +
-      chip("process", state.process) + chip("work", state.work) +
-      chip("outcome", state.outcome || "—", outcomeClass(state.outcome)) +
-      verificationChip(row.verification) +
-      selfCheckChip(row.self_check) +
-      chip("queue", queueText(row.queue)) + chip("usage", row.usage) + chip("cost", row.cost) +
-      "</div>" + reportedUsageHtml(row) +
-      (row.spend ? '<div class="card" id="session-spend"><h2>Spend</h2>' + spendHtml(row.spend) + "</div>" : "") +
-      '<p class="stat-sub">' + esc(identityText(row)) + " · " + esc(row.workspace || "") +
-      (row.branch ? " @ " + esc(row.branch) : "") + (row.isolation !== "shared" ? " (" + esc(row.isolation) + ")" : "") + "</p>" +
-      (row.approvals.length ? '<h2>Waiting for you</h2><ul id="session-approvals">' + row.approvals.map(function (a) {
-        return "<li><code>" + esc(a.action) + '</code> <span class="stat-sub">' + esc(a.family) + " · ceiling " + esc(a.ceiling) + "</span></li>";
-      }).join("") + "</ul>" : "") +
-      ownershipHtml(row.ownership) +
-      artifactProjectionHtml(row.artifacts) +
-      failureEvidenceHtml(row.failure_evidence) +
-      flowHtml(row.flow) +
-      '<div id="starter-result-host"></div>' +
-      (streamable ? '<h2>Live events</h2><div id="live-events" class="stat-sub">connecting…</div>' : "") +
-      quietSessionHtml(row, streamable)
-    );
-    var stop = el("session-stop");
-    if (stop) stop.addEventListener("click", function () {
-      stop.disabled = true;
-      api("/api/sessions/" + encodeURIComponent(row.session_id) + "/cancel", { method: "POST", body: {} })
-        .then(function (r) { toast(r.result); return sessionDetailView(row.session_id); })
-        .catch(function (err) { toast(err.message); stop.disabled = false; });
-    });
-    if (streamable) startSessionStream(row.session_id); else stopSessionStream();
-    loadStarterResult(row.session_id);
-  }).catch(function (err) {
-    if (err.status === 401) { render(tokenRequiredPanel()); return; }
-    render('<div class="notice err"><div class="notice-title">Could not load the session</div>' +
-           '<div class="notice-body">' + esc(err.message) + "</div></div>");
+function sessionFailed(row) {
+  var outcome = (row.state || {}).outcome;
+  return !!row.crashed || outcome === "failed" || outcome === "refused";
+}
+
+function sessionStreamable(row) {
+  return !row.event_log || row.event_log.native || isActive(row.state);
+}
+
+/* Why it failed, in one plain sentence from what was recorded, and what to do next. */
+function failureSentence(row) {
+  var evidence = (row.failure_evidence || {}).original_cause || {};
+  var value = evidence.status === "present" ? (evidence.value || {}) : {};
+  var detail = value.detail && value.detail.value ? firstLine(value.detail.value) : "";
+  var flowStop = row.flow && row.flow.stop;
+  if (row.crashed) {
+    return { cause: "The worker process is gone, and it exited without recording an outcome.",
+             next: (row.ownership && row.ownership.reconciliation && row.ownership.reconciliation.path)
+               ? "Next: reconcile it with " + row.ownership.reconciliation.path.command + "."
+               : "Next: look at Runtimes for recovery, or start the task again." };
+  }
+  var cause;
+  if (value.code) cause = "It failed with " + value.code + (value.phase ? " during " + value.phase : "") + (detail ? ": " + fmt.truncate(detail, 220) : ".");
+  else if (row.error && row.error.code) cause = "It failed with " + row.error.code + (row.error.detail ? ": " + fmt.truncate(firstLine(row.error.detail), 220) : ".");
+  else if (flowStop && (flowStop.code || flowStop.message)) cause = "The flow stopped: " + (flowStop.message || flowStop.code) + (flowStop.code && flowStop.message ? " (" + flowStop.code + ")." : ".");
+  else cause = (row.state || {}).outcome === "refused" ? "Garuda refused to run it; no reason was recorded." : "It failed; no cause was recorded.";
+  var next;
+  if (row.flow && row.flow.quota_recovery) next = "Next: quota recovery is " + row.flow.quota_recovery.state + "; the flow resumes when the harness is available.";
+  else if (row.kind === "flow") next = "Next: open the failed step's session below to see what it did.";
+  else if (row.event_log && (row.event_log.native || row.event_log.external)) next = "Next: open the Trace to see the turn where it went wrong, then start it again.";
+  else next = "Next: start the task again; this session recorded no event log to inspect.";
+  return { cause: cause, next: next };
+}
+
+function sessionHeadHtml(page) {
+  var row = page.row, state = row.state || {};
+  var stop = page.stop;
+  var stopHtml = "";
+  if (row.background && canAnswer() && (isActive(state) || stop.phase === "sending")) {
+    if (stop.phase === "confirm") {
+      stopHtml = '<span class="stop-confirm" id="session-stop-box">Stop this session? ' +
+        '<button type="button" class="btn btn-danger" id="session-stop-confirm">Stop session</button> ' +
+        '<button type="button" class="btn" id="session-stop-cancel">Cancel</button></span>';
+    } else {
+      stopHtml = '<button type="button" class="btn" id="session-stop"' + (stop.phase === "sending" ? " disabled" : "") + ">" +
+        (stop.phase === "sending" ? "Stopping…" : "Stop") + "</button>";
+    }
+  }
+  if (stop.message) {
+    stopHtml += ' <span class="stat-sub' + (stop.phase === "error" ? " err-text" : "") + '" id="session-stop-result">' + esc(stop.message) + "</span>";
+  }
+  var labelCls = row.crashed || sessionFailed(row) ? "failed" : (isActive(state) ? "running" : (state.outcome === "completed" ? "success" : "unknown"));
+  return '<h1>' + esc(row.name || String(row.session_id).slice(0, 8)) + "</h1>" +
+    '<span class="pill ' + labelCls + '" id="session-label">' + esc(row.label) + "</span>" +
+    (row.kind === "flow" ? '<span class="pill unknown">flow</span>' : "") +
+    '<a class="btn" href="#/runs/' + encodeURIComponent(row.session_id) + '">Trace</a>' +
+    '<a class="btn" href="' + esc(sessionsHash(STATE.filters.sessions)) + '">All sessions</a>' +
+    // Stop comes last: its confirmation changes width, and nothing after it may move under
+    // the pointer (a second click once landed on the link that slid into its place).
+    (stopHtml ? '<span class="session-stop-area">' + stopHtml + "</span>" : "") +
+    (page.syncError ? '<span class="stat-sub err-text" id="session-sync">could not refresh: ' + esc(page.syncError) + "</span>"
+                    : (isActive(state) ? '<span class="stat-sub" id="session-sync">live</span>' : ""));
+}
+
+function sessionOverviewHtml(row) {
+  var state = row.state || {};
+  var task = row.task ? String(row.task) : "";
+  var lines = task.split("\n");
+  var preview = lines.slice(0, TASK_PREVIEW_LINES).join("\n");
+  if (preview.length > 400) preview = preview.slice(0, 399) + "…";
+  var longer = preview !== task;
+  var times = "Started " + relativeTimeHtml(row.created_at) + ' <span class="stat-sub">(' + esc(absoluteTime(row.created_at)) + ")</span>";
+  if (isActive(state)) {
+    times += " · running" + (row.created_at ? " for " + esc(fmt.duration(Math.max(0, Date.now() - new Date(row.created_at).getTime()))) : "");
+  } else if (row.ended_at) {
+    times += " · Ended " + relativeTimeHtml(row.ended_at) + ' <span class="stat-sub">(' + esc(absoluteTime(row.ended_at)) + ")</span>" +
+      " · took " + esc(fmt.duration(row.duration_ms));
+  } else {
+    times += " · end not recorded · duration unknown";
+  }
+  return '<section class="card session-overview" id="session-overview">' +
+    (task ? '<div class="session-task" id="session-task"><div class="stat-label">Task</div><p class="task-preview">' + esc(preview) + "</p>" +
+      (longer ? '<details data-key="task"><summary>Show the full task</summary><pre class="task-full">' + esc(task) + "</pre></details>" : "") + "</div>"
+          : '<p class="stat-sub" id="session-task">Task not recorded.</p>') +
+    '<p class="session-line" id="session-identity">' + esc(identityText(row)) + (row.agent ? ' · agent ' + esc(row.agent) : "") + "</p>" +
+    '<p class="session-line stat-sub" id="session-where" title="' + esc(row.workspace || "") + '">' + esc(row.workspace || "workspace not recorded") +
+      (row.branch ? " @ " + esc(row.branch) : "") + (row.isolation && row.isolation !== "shared" ? " (" + esc(row.isolation) + ")" : "") +
+      (row.queue ? " · queue: " + esc(queueText(row.queue)) : "") + "</p>" +
+    '<p class="session-line stat-sub" id="session-times">' + times + "</p></section>";
+}
+
+function sessionApprovalsHtml(row) {
+  var approvals = row.approvals || [];
+  if (!approvals.length) return "";
+  var live = approvals.filter(function (a) { return !a.expired; }).length;
+  return '<section class="notice approval" id="session-approvals-panel"><div class="notice-title">Waiting for you · ' + esc(live) + " approval" + (live === 1 ? "" : "s") +
+    (approvals.length > live ? ' <span class="stat-sub">(' + esc(approvals.length - live) + " expired)</span>" : "") + "</div>" +
+    '<ul id="session-approvals">' + approvals.map(function (a) {
+      return "<li><code>" + esc(a.action) + '</code> <span class="stat-sub">' + esc(a.family) + " · ceiling " + esc(a.ceiling) +
+        (a.expired ? " · expired — it will be denied" : "") + "</span></li>";
+    }).join("") + '</ul><a class="btn btn-primary" href="#/inbox">Answer in Approvals</a></section>';
+}
+
+function sessionResultHtml(row) {
+  var state = row.state || {};
+  var body = "";
+  if (row.final_message) {
+    body += '<div class="session-final" id="session-final"><div class="stat-label">Final message <span class="stat-sub">(stored summary; may be clipped)</span></div>' +
+      '<pre class="final-text">' + esc(row.final_message) + "</pre></div>";
+  } else if (row.output_withheld) {
+    body += '<p class="stat-sub" id="session-final">The output was withheld; it is not shown here.</p>';
+  } else if (isActive(state)) {
+    body += '<p class="stat-sub" id="session-final">Still running: the result appears here when it finishes.</p>';
+  } else {
+    body += '<p class="stat-sub" id="session-final">No final message was stored for this session.</p>';
+  }
+  var files = row.files_changed;
+  if (files && files.files && files.files.length) {
+    body += '<div id="session-files"><div class="stat-label">Files the agent recorded writing (' + esc(files.total) + ")</div>" +
+      '<ul class="file-list">' + files.files.map(function (f) { return "<li><code>" + esc(f) + "</code></li>"; }).join("") + "</ul>" +
+      (files.total > files.files.length ? '<p class="stat-sub">and ' + esc(files.total - files.files.length) + " more</p>" : "") +
+      '<p class="stat-sub">From its working state; the Trace page has the workspace diff.</p></div>';
+  }
+  if (sessionFailed(row)) {
+    var why = failureSentence(row);
+    body += '<div class="session-cause" id="session-cause"><p class="err-text">' + esc(why.cause) + "</p>" +
+      '<p class="stat-sub" id="session-next">' + esc(why.next) + "</p></div>";
+  }
+  return '<section class="card" id="session-result"><h2>Result</h2>' +
+    // Outcome and verification are two facts: two chips, never one.
+    '<div class="chips" id="session-facts">' + chip("outcome", state.outcome || "—", outcomeClass(state.outcome)) +
+    verificationChip(row.verification) + selfCheckChip(row.self_check) +
+    (row.flow && row.flow.review ? chip("review", reviewLabel(row.flow.review), "chip-off") : "") + "</div>" + body + "</section>";
+}
+
+function sessionUsageHtml(row, streamable) {
+  return '<section class="card" id="session-usage"><h2>Usage</h2><div class="chips">' +
+    chip("usage", row.usage) + chip("cost", row.cost) + "</div>" + reportedUsageHtml(row) +
+    (row.spend ? '<div id="session-spend"><h3>Spend gate</h3><p class="stat-sub">' + esc(spendSummaryText(row.spend)) + '</p><div class="chips">' + spendHtml(row.spend) + "</div></div>" : "") +
+    quietSessionHtml(row, streamable) + "</section>";
+}
+
+function sessionEvidenceHtml(row) {
+  var state = row.state || {};
+  return '<div class="evidence-block"><h2>State</h2><div class="chips" id="session-state-facts">' +
+    chip("process", state.process) + chip("work", state.work) + chip("outcome", state.outcome || "—", outcomeClass(state.outcome)) +
+    chip("queue", queueText(row.queue)) + "</div>" +
+    '<p class="stat-sub">Session <code>' + esc(row.session_id) + "</code></p></div>" +
+    ownershipHtml(row.ownership) + artifactProjectionHtml(row.artifacts) +
+    (sessionFailed(row) ? "" : failureEvidenceHtml(row.failure_evidence));
+}
+
+/* Replace a host's HTML only when it changed, keeping what the user opened inside it open. */
+function paintHost(id, html) {
+  var host = el(id);
+  if (!host || host.__html === html) return;
+  var open = {};
+  host.querySelectorAll("details[data-key]").forEach(function (d) { open[d.getAttribute("data-key")] = d.open; });
+  host.innerHTML = html;
+  host.__html = html;
+  host.querySelectorAll("details[data-key]").forEach(function (d) {
+    var key = d.getAttribute("data-key");
+    if (key in open) d.open = open[key];
   });
 }
+
+function paintSessionPage(page) {
+  var row = page.row;
+  paintHost("session-head", sessionHeadHtml(page));
+  paintHost("session-overview-host", sessionOverviewHtml(row));
+  paintHost("session-approvals-host", sessionApprovalsHtml(row));
+  paintHost("session-result-host", sessionResultHtml(row));
+  // Failure evidence leads only when something failed; otherwise it is under the details.
+  paintHost("session-failure-host", sessionFailed(row) && row.failure_evidence
+    ? '<div class="card">' + failureEvidenceHtml(row.failure_evidence) + "</div>" : "");
+  paintHost("session-flow-host", flowHtml(row.flow, row.flow_progress));
+  paintHost("session-usage-host", sessionUsageHtml(row, page.streamable));
+  paintHost("session-evidence-body", sessionEvidenceHtml(row));
+}
+
+function sessionDetailView(id) {
+  stopSessionPages();
+  var page = STATE.sessionPage = { id: id, row: null, stop: { phase: "idle", message: "" }, syncError: null,
+                                   refreshing: false, rowPoller: null, tail: null, streamable: false };
+  render('<div class="loading">Loading session…</div>');
+  return api("/api/sessions/" + encodeURIComponent(id)).then(function (row) {
+    if (STATE.sessionPage !== page) return;
+    page.row = row;
+    // The live tail reads only the native event log. A finished session without one (a
+    // flow, an external harness) has nothing to tail, and "0 events · finished" read as
+    // if it had done nothing.
+    page.streamable = sessionStreamable(row);
+    render(
+      '<div class="page-head" id="session-head"></div>' +
+      '<div id="session-approvals-host"></div>' +
+      '<div id="session-overview-host"></div>' +
+      '<div class="session-grid"><div id="session-result-host"></div><div id="session-failure-host"></div>' +
+      '<div id="session-flow-host"></div><div id="starter-result-host"></div>' +
+      (page.streamable ? '<section class="card" id="session-live"><h2>Live events</h2>' +
+        '<div class="live-status"><span id="live-events" class="stat-sub" aria-live="polite">connecting…</span> ' +
+        '<button type="button" class="btn btn-small" id="live-retry" hidden>Retry now</button></div></section>' : "") +
+      '<div id="session-usage-host"></div>' +
+      '<details class="card session-evidence" id="session-evidence"><summary><h2>Details and evidence</h2>' +
+      '<span class="stat-sub">state, ownership, artifact references, failure evidence, starter coverage</span></summary>' +
+      '<div id="session-evidence-body"></div><div id="starter-evidence-host"></div></details></div>'
+    );
+    paintSessionPage(page);
+    el("session-head").addEventListener("click", function (event) { onSessionHeadClick(page, event); });
+    if (page.streamable) {
+      page.tail = sessionTail(row.session_id, {
+        keep: false,
+        onUpdate: function (handle, payload) { onSessionTail(page, handle, payload); }
+      });
+      el("live-retry").addEventListener("click", function () { if (page.tail) page.tail.retry(); });
+    }
+    if (isActive(row.state)) startSessionRowPoller(page);
+    if (row.starter_origin) loadStarterResult(row.session_id);
+  }).catch(function (err) {
+    if (STATE.sessionPage !== page) return;
+    if (err.status === 401) { render(tokenRequiredPanel()); return; }
+    render('<div class="notice err"><div class="notice-title">Could not load the session</div>' +
+           '<div class="notice-body">' + esc(err.message) + (err.status ? " (" + esc(err.status) + ")" : "") + "</div></div>");
+  });
+}
+
+function startSessionRowPoller(page) {
+  if (page.rowPoller) return;
+  var first = true;
+  // The row was just read; the poller's first tick would only read it again.
+  page.rowPoller = new Poller(function () {
+    if (first) { first = false; return; }
+    return refreshSessionRow(page);
+  }, SESSION_ROW_MS).start();
+}
+
+function refreshSessionRow(page) {
+  if (STATE.sessionPage !== page || page.refreshing) return;
+  page.refreshing = true;
+  var wasActive = isActive(page.row.state);
+  return api("/api/sessions/" + encodeURIComponent(page.id)).then(function (row) {
+    page.refreshing = false;
+    if (STATE.sessionPage !== page) return;
+    page.row = row;
+    page.syncError = null;
+    paintSessionPage(page);
+    if (!isActive(row.state)) {
+      if (page.rowPoller) { page.rowPoller.stop(); page.rowPoller = null; }
+      // The starter card summarises a finished run; read it again once it has finished.
+      if (wasActive && row.starter_origin) loadStarterResult(row.session_id);
+    } else {
+      startSessionRowPoller(page);
+    }
+  }).catch(function (err) {
+    page.refreshing = false;
+    if (STATE.sessionPage !== page) return;
+    page.syncError = err.message + (err.status ? " (" + err.status + ")" : "");
+    paintHost("session-head", sessionHeadHtml(page));
+  });
+}
+
+function onSessionTail(page, handle, payload) {
+  if (STATE.sessionPage !== page) return;
+  var panel = el("live-events"), retry = el("live-retry");
+  if (panel) panel.textContent = tailStatusText(handle);
+  if (retry) retry.hidden = !handle.error;
+  if (!payload) return;
+  var now = payload.state || {}, shown = page.row.state || {};
+  // The tail carries the session's state with every poll: a change, or the end of the log of a
+  // session shown as active, means the row is stale. At most one re-read every few seconds.
+  var changed = now.work !== shown.work || now.outcome !== shown.outcome || now.process !== shown.process;
+  var ended = handle.ended && isActive(shown);
+  if ((changed || ended) && (ended || Date.now() - (page.lastTailRefresh || 0) > 3000)) {
+    page.lastTailRefresh = Date.now();
+    refreshSessionRow(page);
+  }
+}
+
+function onSessionHeadClick(page, event) {
+  var target = event.target.closest("button");
+  if (!target || STATE.sessionPage !== page) return;
+  if (target.id === "session-stop" && page.stop.phase !== "sending") {
+    page.stop = { phase: "confirm", message: "" };
+  } else if (target.id === "session-stop-cancel") {
+    page.stop = { phase: "idle", message: "" };
+  } else if (target.id === "session-stop-confirm" && page.stop.phase === "confirm") {
+    stopBackgroundSession(page);
+    return;
+  } else {
+    return;
+  }
+  paintHost("session-head", sessionHeadHtml(page));
+}
+
+/* Stop, confirmed, once: the button is disabled while the request is in flight and the
+ * server's answer is shown beside it. */
+function stopBackgroundSession(page) {
+  page.stop = { phase: "sending", message: "" };
+  paintHost("session-head", sessionHeadHtml(page));
+  return api("/api/sessions/" + encodeURIComponent(page.id) + "/cancel", { method: "POST", body: {} })
+    .then(function (r) {
+      if (STATE.sessionPage !== page) return;
+      page.stop = { phase: "done", message: r.result || "stop requested" };
+      paintHost("session-head", sessionHeadHtml(page));
+      return refreshSessionRow(page);
+    })
+    .catch(function (err) {
+      if (STATE.sessionPage !== page) return;
+      page.stop = { phase: "error", message: "Stop failed: " + err.message + (err.code ? " (" + err.code + ")" : "") };
+      paintHost("session-head", sessionHeadHtml(page));
+    });
+}
+
+/* --- the live tail ---------------------------------------------------------------------------
+ * Polls /api/runs/<id>/tail with the shared Poller, so nothing is held open between polls: a
+ * long-lived stream per tab used up the browser's six connections to this host and stalled
+ * every other tab. The cursor is a byte offset into the session's log, so a later poll (or a
+ * new handle given `offset`) continues with the next event: nothing repeats, nothing is
+ * skipped. The Poller pauses while the tab is hidden. A refused request (401, 403, 404) stops
+ * with its reason; anything else retries with exponential backoff up to 30 s and recovers on
+ * its own. */
+
+function tailStatusText(handle) {
+  var count = handle.count;
+  var last = count ? " · last: " + (handle.lastType || "?") : "";
+  if (handle.error && handle.error.terminal) return "stopped: " + handle.error.message;
+  if (handle.error) {
+    return "disconnected (" + handle.error.message + ") · retrying in " + fmt.duration(handle.error.retryMs) +
+      (count ? " · " + count + " events so far" : "");
+  }
+  if (handle.ended) return count ? count + " events" + last + " · finished" : "no events · finished";
+  if (!handle.connected) return "connecting…";
+  if (!count) return "connected · waiting for events";
+  return count + " events" + last + " · live";
+}
+
+function tailErrorMessage(err) {
+  if (err.status === 401) return "the dashboard token was refused (401); reopen the URL garuda web printed";
+  if (err.status === 403) return "the dashboard refused this request (403)";
+  if (err.status === 404) return "the session is not in this dashboard's store (404)";
+  if (!err.status) return "the dashboard did not answer";
+  return err.message + " (" + err.status + ")";
+}
+
+function sessionTail(id, options) {
+  options = options || {};
+  var base = options.intervalMs || SESSION_TAIL_MS;
+  // `keep: false` counts events without holding them (the session page needs only the count).
+  var keep = options.keep !== false;
+  var handle = {
+    offset: options.offset || 0, events: [], count: 0, lastType: null, ended: false, stopped: false, connected: false,
+    error: null, failures: 0, inFlight: false, poller: null, malformed: 0,
+    stop: function () { handle.stopped = true; if (handle.poller) handle.poller.stop(); },
+    retry: function () {
+      if (handle.stopped || handle.ended) return;
+      if (handle.poller) handle.poller.stop();
+      start();
+    }
+  };
+  // Assigned before the first tick, which a poll compares against to drop stale answers.
+  function start() {
+    handle.poller = new Poller(poll, base);
+    handle.poller.start();
+  }
+  function update(payload) { if (options.onUpdate) options.onUpdate(handle, payload); }
+  function poll() {
+    if (handle.stopped || handle.ended || handle.inFlight) return;
+    handle.inFlight = true;
+    var poller = handle.poller;
+    return api("/api/runs/" + encodeURIComponent(id) + "/tail?offset=" + handle.offset).then(function (payload) {
+      handle.inFlight = false;
+      if (handle.stopped || poller !== handle.poller) return;
+      var before = handle.offset;
+      if (payload.truncated) {
+        // The log was replaced: start over rather than append to it.
+        handle.events = [];
+        handle.count = 0;
+        handle.lastType = null;
+      } else {
+        (payload.events || []).forEach(function (event) {
+          if (keep) handle.events.push(event);
+          handle.count += 1;
+          handle.lastType = event.type;
+          if (options.onEvent) options.onEvent(event, handle);
+        });
+      }
+      handle.malformed += payload.malformed || 0;
+      handle.offset = payload.offset;
+      handle.failures = 0;
+      handle.error = null;
+      handle.connected = true;
+      var state = payload.state || {};
+      if (payload.eof && (!isActive(state) || payload.crashed)) {
+        handle.ended = true;
+        poller.stop();
+      } else {
+        // More is waiting: read it straight away, but only when this poll made progress (a
+        // torn final line reports eof false without moving the cursor).
+        poller.interval = !payload.eof && handle.offset > before ? 50 : base;
+      }
+      update(payload);
+    }, function (err) {
+      handle.inFlight = false;
+      if (handle.stopped || poller !== handle.poller) return;
+      handle.connected = false;
+      if ([400, 401, 403, 404].indexOf(err.status) >= 0) {
+        handle.error = { terminal: true, message: tailErrorMessage(err), status: err.status };
+        poller.stop();
+      } else {
+        handle.failures += 1;
+        var delay = Math.min(SESSION_RETRY_MAX_MS, base * Math.pow(2, handle.failures - 1));
+        handle.error = { terminal: false, message: tailErrorMessage(err), status: err.status, retryMs: delay };
+        poller.interval = delay;
+      }
+      update(null);
+    });
+  }
+  start();
+  return handle;
+}
+
+/* Every poller the three pages here own; the router calls this on each navigation. */
+function stopSessionPages() {
+  if (STATE.sessionList && STATE.sessionList.poller) STATE.sessionList.poller.stop();
+  STATE.sessionList = null;
+  var page = STATE.sessionPage;
+  if (page) {
+    if (page.tail) page.tail.stop();
+    if (page.rowPoller) page.rowPoller.stop();
+  }
+  STATE.sessionPage = null;
+  if (STATE.inbox && STATE.inbox.poller) STATE.inbox.poller.stop();
+  STATE.inbox = null;
+}
+
+function stopSessionStream() { stopSessionPages(); }
 
 /* --- the approval inbox (D.5) ---------------------------------------------
  * Lists what is waiting across sessions and sends the person's answer, bound to the request
  * digest this page was shown, to the session's file channel. It never answers a runtime: the
- * broker validates and decides, so "answer recorded" is not "allowed". */
+ * broker validates and decides, so "answer recorded" is not "allowed". The page polls while it
+ * is open and adds or removes cards only when the set of requests changes; a card under the
+ * pointer is never rebuilt. */
+
+var INBOX_POLL_MS = 5000;
 
 function canAnswer() {
   return !!(STATE.health && STATE.health.mode === "read-write");
 }
+
+/* "expires in 12m" or "expired 3m ago", from the request's own expiry (epoch seconds). */
+function expiryText(expiresAt) {
+  var seconds = expiresAt - Date.now() / 1000;
+  return seconds > 0 ? "expires in " + ageText(seconds).replace(/ ago$/, "").replace("just now", "under a minute")
+                     : "expired " + ageText(-seconds);
+}
+
+function approvalKey(a) { return a.session_id + "\u0000" + a.approval_id + "\u0000" + a.digest; }
 
 function approvalRowHtml(a) {
   var buttons = canAnswer() && !a.expired
@@ -391,128 +1044,148 @@ function approvalRowHtml(a) {
   return (
     '<li class="approval-item" data-session="' + esc(a.session_id) + '" data-approval="' + esc(a.approval_id) +
     '" data-digest="' + esc(a.digest) + '">' +
-    "<div><strong>" + esc(a.name || a.session_id.slice(0, 8)) + "</strong> " +
-    '<span class="stat-sub">' + esc(a.family) + " · ceiling " + esc(a.ceiling) + "</span></div>" +
+    '<div><strong><a href="#/sessions/' + encodeURIComponent(a.session_id) + '">' + esc(a.name || String(a.session_id).slice(0, 8)) + "</a></strong> " +
+    '<span class="stat-sub">' + esc(a.family) + " · ceiling " + esc(a.ceiling) +
+    (typeof a.expires_at === "number" ? " · " + esc(expiryText(a.expires_at)) : "") + "</span></div>" +
+    (a.task ? '<div class="stat-sub approval-task">' + esc(fmt.truncate(firstLine(a.task), 140)) + "</div>" : "") +
     "<pre>" + esc(a.action) + "</pre>" +
-    '<div class="approval-actions">' + buttons + ' <span class="stat-sub approval-result"></span></div></li>'
+    '<div class="approval-actions">' + buttons + ' <span class="stat-sub approval-result" aria-live="polite"></span></div></li>'
   );
 }
 
 function inboxView() {
-  render('<div class="loading">Loading approvals…</div>');
-  return api("/api/inbox").then(function (payload) {
-    var items = payload.approvals;
-    render(
-      '<div class="page-head"><h1>Approvals</h1><span class="meta">' + items.length + " waiting</span>" +
-      '<button type="button" class="btn" id="inbox-refresh">Refresh</button></div>' +
-      (items.length ? '<ul class="approvals" id="inbox-list">' + items.map(approvalRowHtml).join("") + "</ul>"
-                    : '<div class="empty" id="inbox-empty"><p>Nothing is waiting for you.</p></div>')
-    );
-    el("inbox-refresh").addEventListener("click", inboxView);
-    var list = el("inbox-list");
-    if (!list) return;
-    list.addEventListener("click", function (event) {
-      var button = event.target.closest("button[data-act]");
-      if (!button) return;
-      var item = button.closest(".approval-item");
-      answerInboxApproval(item, button.getAttribute("data-act") === "allow");
-    });
-  }).catch(function (err) {
-    if (err.status === 401) { render(tokenRequiredPanel()); return; }
-    render('<div class="notice err"><div class="notice-title">Could not load approvals</div>' +
-           '<div class="notice-body">' + esc(err.message) + "</div></div>");
+  stopSessionPages();
+  var inbox = STATE.inbox = { answered: {}, loaded: false, busy: false, poller: null };
+  render(
+    '<div id="inbox-root"><div class="page-head"><h1>Approvals</h1><span class="meta" id="inbox-count">loading…</span>' +
+    '<button type="button" class="btn" id="inbox-refresh">Refresh</button></div>' +
+    '<div class="notice err" id="inbox-error" hidden></div>' +
+    '<ul class="approvals" id="inbox-list"></ul>' +
+    '<div class="empty" id="inbox-empty" hidden><p>Nothing is waiting for you.</p></div>' +
+    '<section class="inbox-expired" id="inbox-expired-section" hidden><h2>Expired</h2>' +
+    '<p class="stat-sub">These timed out before anyone answered; the broker denies them.</p>' +
+    '<ul class="approvals" id="inbox-expired"></ul></section></div>'
+  );
+  el("inbox-refresh").addEventListener("click", function () { refreshInbox(inbox); });
+  el("inbox-root").addEventListener("click", function (event) {
+    var button = event.target.closest("button[data-act]");
+    if (!button || STATE.inbox !== inbox) return;
+    answerInboxApproval(button.closest(".approval-item"), button.getAttribute("data-act") === "allow");
+  });
+  inbox.poller = new Poller(function () { return refreshInbox(inbox); }, INBOX_POLL_MS).start();
+  return Promise.resolve();
+}
+
+/* Make `list` hold exactly `items`, in order, reusing the card already there for each one. */
+function syncApprovalCards(list, items) {
+  var existing = {};
+  Array.prototype.forEach.call(list.children, function (li) { existing[li.__key] = li; });
+  var previous = null;
+  items.forEach(function (a) {
+    var key = approvalKey(a);
+    var node = existing[key];
+    if (!node) {
+      var holder = document.createElement("ul");
+      holder.innerHTML = approvalRowHtml(a);
+      node = holder.firstElementChild;
+      node.__key = key;
+    }
+    delete existing[key];
+    var slot = previous ? previous.nextElementSibling : list.firstElementChild;
+    if (slot !== node) list.insertBefore(node, slot);
+    previous = node;
+  });
+  // A card whose answer is still in flight stays until the answer settles.
+  Object.keys(existing).forEach(function (key) {
+    if (!existing[key].hasAttribute("data-busy")) existing[key].remove();
   });
 }
 
+function refreshInbox(inbox) {
+  if (STATE.inbox !== inbox || inbox.busy) return;
+  inbox.busy = true;
+  return api("/api/inbox").then(function (payload) {
+    inbox.busy = false;
+    if (STATE.inbox !== inbox) return;
+    var all = (payload.approvals || []).filter(function (a) { return !inbox.answered[approvalKey(a)]; });
+    inbox.items = all;
+    inbox.loaded = true;
+    inbox.error = null;
+    paintInbox(inbox);
+  }).catch(function (err) {
+    inbox.busy = false;
+    if (STATE.inbox !== inbox) return;
+    if (err.status === 401) { stopSessionPages(); render(tokenRequiredPanel()); return; }
+    var box = el("inbox-error");
+    if (box) {
+      box.hidden = false;
+      box.innerHTML = '<div class="notice-title">' + (inbox.loaded ? "Could not refresh approvals" : "Could not load approvals") +
+        '</div><div class="notice-body">' + esc(err.message) + (err.code ? " (" + esc(err.code) + ")" : "") +
+        (inbox.loaded ? " — showing the last list; it retries on its own." : "") + "</div>";
+    }
+    if (!inbox.loaded) { var count = el("inbox-count"); if (count) count.textContent = "unknown"; }
+  });
+}
+
+function paintInbox(inbox) {
+  var list = el("inbox-list"), expiredList = el("inbox-expired");
+  if (!list || !expiredList) return;
+  var live = inbox.items.filter(function (a) { return !a.expired; });
+  var expired = inbox.items.filter(function (a) { return a.expired; });
+  syncApprovalCards(list, live);
+  syncApprovalCards(expiredList, expired);
+  el("inbox-error").hidden = true;
+  el("inbox-expired-section").hidden = expired.length === 0;
+  el("inbox-empty").hidden = live.length > 0 || list.children.length > 0;
+  paintInboxCount(inbox);
+}
+
+/* Counts what can still be answered, as the nav badge does; expired requests are apart. */
+function paintInboxCount(inbox) {
+  var count = el("inbox-count");
+  if (!count || !inbox.items) return;
+  var live = inbox.items.filter(function (a) { return !a.expired && !inbox.answered[approvalKey(a)]; }).length;
+  var expired = inbox.items.filter(function (a) { return a.expired; }).length;
+  count.textContent = live + " waiting" + (expired ? " · " + expired + " expired" : "");
+}
+
 function answerInboxApproval(item, allow) {
+  var inbox = STATE.inbox;
+  if (!item || item.hasAttribute("data-busy") || item.getAttribute("data-state")) return;
   var result = item.querySelector(".approval-result");
   var buttons = item.querySelectorAll("button");
+  item.setAttribute("data-busy", "1");
   buttons.forEach(function (b) { b.disabled = true; });
+  result.textContent = "sending…";
   return api("/api/sessions/" + encodeURIComponent(item.getAttribute("data-session")) +
              "/approvals/" + encodeURIComponent(item.getAttribute("data-approval")), {
     method: "POST", body: { allow: allow, digest: item.getAttribute("data-digest") }
   }).then(function () {
-    result.textContent = "answer recorded — the broker decides";
+    item.removeAttribute("data-busy");
     item.setAttribute("data-state", "recorded");
+    result.textContent = "answer recorded — the broker decides";
     if (typeof refreshInboxBadge === "function") refreshInboxBadge();
+    if (!inbox || STATE.inbox !== inbox) return;
+    // The request stays pending on disk until the broker decides; this page has answered it.
+    inbox.answered[item.__key] = true;
+    paintInboxCount(inbox);
+    toast("Answer recorded — the broker decides");
+    setTimeout(function () {
+      if (STATE.inbox !== inbox) return;
+      item.remove();
+      if (inbox.items) paintInbox(inbox);
+    }, 1500);
   }).catch(function (err) {
-    // Stale page, an earlier answer, an expired request: say so and let them reload.
-    result.textContent = err.message + " (" + (err.code || err.status) + ")";
+    item.removeAttribute("data-busy");
+    // Stale page, an earlier answer, an expired request: say so in the server's words. A
+    // refused answer cannot succeed on a retry; anything else (the dashboard unreachable) can.
+    result.textContent = err.message + " (" + (err.code || "error") + (err.status ? ", " + err.status : "") + ")";
     item.setAttribute("data-state", err.code || "error");
-  });
-}
-
-function isActive(state) { return ["queued", "working", "waiting"].indexOf(state.work) >= 0; }
-
-/* --- the live stream (D.3), read with fetch so the token header can be sent ------------
- * Reconnects with the id of the last frame it saw, which is a byte offset into the session's
- * log, so nothing repeats and nothing is skipped. */
-
-function streamSession(id, options) {
-  options = options || {};
-  var handle = {
-    lastId: options.lastId || "0", events: [], ended: false, stopped: false, connections: 0,
-    stop: function () { handle.stopped = true; if (handle._abort) handle._abort.abort(); }
-  };
-  function connect() {
-    if (handle.stopped || handle.ended) return;
-    handle.connections += 1;
-    handle._abort = new AbortController();
-    fetch("/api/sessions/" + encodeURIComponent(id) + "/stream", {
-      headers: { "X-Garuda-Token": TOKEN, "Last-Event-ID": handle.lastId },
-      signal: handle._abort.signal
-    }).then(function (response) {
-      if (!response.ok || !response.body) throw new Error("stream " + response.status);
-      var reader = response.body.getReader(), decoder = new TextDecoder(), buffer = "";
-      function pump() {
-        return reader.read().then(function (chunk) {
-          if (chunk.done) return;
-          buffer += decoder.decode(chunk.value, { stream: true });
-          var blocks = buffer.split("\n\n");
-          buffer = blocks.pop();
-          blocks.forEach(function (block) {
-            var frame = {};
-            block.split("\n").forEach(function (line) {
-              var at = line.indexOf(": ");
-              if (at > 0) frame[line.slice(0, at)] = line.slice(at + 2);
-            });
-            if (frame.id) handle.lastId = frame.id;
-            if (frame.event === "end") { handle.ended = true; }
-            else if (frame.event === "event") {
-              var data = JSON.parse(frame.data);
-              handle.events.push(data);
-              if (options.onEvent) options.onEvent(data, handle);
-            }
-          });
-          return pump();
-        });
-      }
-      return pump();
-    }).catch(function () { /* dropped: reconnect below */ }).then(function () {
-      if (!handle.stopped && !handle.ended) setTimeout(connect, options.retryMs || 1000);
-      if (options.onClose) options.onClose(handle);
-    });
-  }
-  connect();
-  return handle;
-}
-
-function startSessionStream(id) {
-  stopSessionStream();
-  var panel = el("live-events");
-  STATE.sessionStream = streamSession(id, {
-    onEvent: function (event, handle) {
-      if (!panel) return;
-      panel.textContent = handle.events.length + " events · last: " + (event.type || "?");
-    },
-    onClose: function (handle) {
-      if (panel && handle.ended) panel.textContent = handle.events.length + " events · finished";
+    if (err.status !== 409 && err.status !== 410) {
+      item.removeAttribute("data-state");
+      buttons.forEach(function (b) { b.disabled = false; });
     }
   });
-}
-
-function stopSessionStream() {
-  if (STATE.sessionStream) { STATE.sessionStream.stop(); STATE.sessionStream = null; }
 }
 
 /* --- the conversation panel (F.1) -------------------------------------------------------

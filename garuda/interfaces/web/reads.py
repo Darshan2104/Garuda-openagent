@@ -595,3 +595,53 @@ def _load_json(path: Path) -> Any | None:
     except (OSError, ValueError):
         logger.debug("Unreadable JSON at %s", path, exc_info=True)
         return None
+
+
+# --- the Sessions page: one page of the list -------------------------------------------
+
+def _session_haystack(meta: dict[str, Any]) -> str:
+    """The text the Sessions search matches: id, name, task, model, agent, role, runtime,
+    workspace and branch, as recorded."""
+    parts = [meta.get(key) for key in ("session_id", "name", "task", "model", "agent",
+                                        "workspace", "branch", "kind", "origin")]
+    role = meta.get("role")
+    if isinstance(role, dict):
+        parts.append(role.get("name"))
+    segments = meta.get("runtime_segments")
+    if isinstance(segments, list):
+        parts.extend(s.get("runtime_id") for s in segments if isinstance(s, dict))
+    return "\n".join(str(part) for part in parts if part).lower()
+
+
+def session_page(store: SessionStore, *, limit: int, offset: int = 0, query: str | None = None,
+                 label: str | None = None, queue=None) -> dict[str, Any]:
+    """One page of the Sessions list, newest first, filtered across *every* session.
+
+    The rows are the shared read model's (``read_model.listed_row``), the same ones
+    ``read_model.sessions`` and ``garuda sessions --json`` build; this only selects which.
+    ``total`` counts every readable session, ``matched`` those the search and state filter
+    keep, and ``counts`` the state labels among the sessions the search keeps, so a state
+    chip can say how many it would show. Full rows are built only for the page returned.
+    """
+    from garuda.core import read_model
+    from garuda.runtime.session_state import effective_state, summary_label
+
+    metas = store.list_sessions(limit=None)
+    needle = (query or "").strip().lower()
+    counts: dict[str, int] = {}
+    matched: list[dict] = []
+    for meta in metas:
+        if needle and needle not in _session_haystack(meta):
+            continue
+        state_label = summary_label(effective_state(meta))
+        counts[state_label] = counts.get(state_label, 0) + 1
+        if label and state_label != label:
+            continue
+        matched.append(meta)
+    index = read_model._queue_index(queue)
+    rows = [read_model.listed_row(store, meta, queue_index=index)
+            for meta in matched[offset:offset + limit]]
+    end = offset + len(rows)
+    return {"sessions": rows, "total": len(metas), "matched": len(matched), "counts": counts,
+            "offset": offset, "limit": limit,
+            "next_offset": end if end < len(matched) else None}

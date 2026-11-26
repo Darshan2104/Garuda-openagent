@@ -11,7 +11,7 @@ import os
 import tempfile
 from pathlib import Path
 
-from browser_support import launch
+from browser_support import count_is, launch, settle, text_contains
 from playwright.sync_api import sync_playwright
 
 BASE = os.environ.get("GARUDA_CHECK_BASE", "http://127.0.0.1:8897/")
@@ -40,7 +40,7 @@ with sync_playwright() as p:
     page.goto(f"{BASE}#/sessions", wait_until="load")
     page.wait_for_selector("#sessions-table")
     rows = page.locator("tr.session-row")
-    check("every seeded session is listed", rows.count() == 9, str(rows.count()))
+    check("every seeded session is listed", count_is(page, "tr.session-row", 9), str(rows.count()))
     labels = sorted(page.locator("tr.session-row").evaluate_all("r => r.map(x => x.dataset.label)"))
     check("states are all present", {"cancelled", "completed", "crashed", "failed", "queued",
                                       "waiting", "working"} <= set(labels), str(labels))
@@ -50,13 +50,102 @@ with sync_playwright() as p:
     check("a self-check is not verification", "verification: unavailable" in table
           and "verification: passed" not in table)
     check("evidence-free completion is labelled", "self-check: no_evidence" in table)
-    check("the waiting session shows its approval", "2 waiting" in table)
+    waiting_row = page.locator(f'tr.session-row[data-session="{WAITING}"]').inner_text()
+    check("the waiting session counts its live approval apart from the expired one",
+          "1 waiting" in waiting_row and "1 expired" in waiting_row, waiting_row)
     page.screenshot(path=str(SHOTS / "sessions-list.png"))
-    check("spend limits and scope are visible in the list",
-          "token cap: 400000" in table and "scope: native_run_tree" in table)
+
+    # --- the list fits the screen: one spend line per row, chips only on the session page ----
     done = "00000000-0000-0000-0000-000000000001"
+    page.set_viewport_size({"width": 1440, "height": 1000})
+    done_row = page.locator(f'tr.session-row[data-session="{done}"]')
+    check("the list shows the spend gate as one line, not a wall of chips",
+          "400.0k tokens" in done_row.inner_text()
+          and done_row.locator('.chip[data-chip="token cap"], .chip[data-chip="scope"]').count() == 0,
+          done_row.inner_text())
+    check("the list fits 1440 px without a horizontal scroll", page.evaluate(
+        "(() => { const w = document.querySelector('.sessions-wrap');"
+        " return w.scrollWidth <= w.clientWidth && document.documentElement.scrollWidth <= innerWidth; })()"),
+          str(page.evaluate("[document.querySelector('#sessions-table').scrollWidth, innerWidth]")))
+    headers = page.locator("#sessions-table thead th").all_inner_texts()
+    check("updated and started are columns of their own",
+          [h.strip().lower() for h in headers[-2:]] == ["updated", "started"], str(headers))
+    check("each name carries its short id and the task's first words", "00000000 · task done" in done_row.inner_text())
+    for scheme in ("light", "dark"):
+        page.emulate_media(color_scheme=scheme)
+        page.set_viewport_size({"width": 390, "height": 900})
+        check(f"at 390 px the rows stack as cards without a horizontal scroll ({scheme})", page.evaluate(
+            "document.documentElement.scrollWidth <= innerWidth && "
+            "getComputedStyle(document.querySelector('tr.session-row')).display !== 'table-row'"))
+        page.screenshot(path=str(SHOTS / f"sessions-list-390-{scheme}.png"), full_page=True)
+        page.set_viewport_size({"width": 1440, "height": 1000})
+        page.screenshot(path=str(SHOTS / f"sessions-list-1440-{scheme}.png"))
+    page.emulate_media(color_scheme="light")
+
+    # --- paging: the true total, "Load older", and a search over every session ---------------
+    page.evaluate("SESSIONS_PAGE = 4")
+    page.goto(f"{BASE}#/overview", wait_until="load")
+    page.goto(f"{BASE}#/sessions", wait_until="load")
+    check("the first page says how many exist", count_is(page, "tr.session-row", 4)
+          and text_contains(page, "#sessions-count", "4 of 9"), page.locator("#sessions-count").inner_text())
+    page.click("#sessions-more")
+    check("Load older appends the next page", count_is(page, "tr.session-row", 8))
+    page.click("#sessions-more")
+    check("the last page hides Load older", count_is(page, "tr.session-row", 9)
+          and settle(page, "() => document.querySelector('#sessions-more').hidden"))
+    page.goto(f"{BASE}#/overview", wait_until="load")
+    page.goto(f"{BASE}#/sessions", wait_until="load")
+    count_is(page, "tr.session-row", 4)
+    oldest = page.evaluate("""async (token) => {
+      const r = await fetch('/api/sessions?limit=50', {headers: {'X-Garuda-Token': token}});
+      const rows = (await r.json()).sessions; return rows[rows.length - 1];
+    }""", TOKEN)
+    page.fill("#sessions-search", oldest["task"])
+    check("search finds a session beyond the loaded page",
+          settle(page, "(id) => [...document.querySelectorAll('tr.session-row')].map(r => r.dataset.session).join() === id",
+                 oldest["session_id"]), oldest["task"])
+    check("the search is in the hash",
+          settle(page, "(q) => new URLSearchParams(location.hash.split('?')[1] || '').get('q') === q", oldest["task"]),
+          page.evaluate("location.hash"))
+    page.reload(wait_until="load")
+    check("a reload keeps the search", settle(page, "(id) => document.querySelectorAll('tr.session-row').length === 1"
+                                                    " && document.querySelector('tr.session-row').dataset.session === id",
+                                                    oldest["session_id"])
+          and page.input_value("#sessions-search") == oldest["task"])
+    page.fill("#sessions-search", "")
+    settle(page, "() => !location.hash.includes('q=')")
+    page.locator('#sessions-states .state-chip[data-label="crashed"]').click()
+    check("a state chip filters on the server and lands in the hash",
+          settle(page, "() => location.hash.includes('state=crashed') && document.querySelectorAll('tr.session-row').length === 2"
+                       " && [...document.querySelectorAll('tr.session-row')].every(r => r.dataset.label === 'crashed')"))
+    page.go_back()
+    check("back returns to the unfiltered list",
+          # The reload above reset SESSIONS_PAGE to its default, so every row is on one page.
+          settle(page, "() => !location.hash.includes('state=') && document.querySelectorAll('tr.session-row').length === 9"),
+          page.evaluate("location.hash"))
+    page.go_forward()
+    check("forward re-applies the state filter",
+          settle(page, "() => location.hash.includes('state=crashed') && document.querySelectorAll('tr.session-row').length === 2"))
+    page.evaluate("SESSIONS_PAGE = 50")
+
     page.goto(f"{BASE}#/sessions/{done}", wait_until="load")
     page.wait_for_selector("#session-spend")
+    check("the header leads with the task, identity and times",
+          "task done" in page.locator("#session-task").inner_text()
+          and "native" in page.locator("#session-identity").inner_text()
+          and "Ended" in page.locator("#session-times").inner_text()
+          and "took" in page.locator("#session-times").inner_text(), page.locator("#session-overview").inner_text())
+    check("the result shows the stored final message", "ok" in page.locator("#session-final").inner_text())
+    check("forensic records sit under one collapsed section",
+          page.locator("#session-evidence").get_attribute("open") is None
+          and page.locator("#session-evidence #session-ownership").count() == 1
+          and page.locator("#session-evidence #failure-evidence").count() == 1
+          and not page.locator("#failure-evidence").is_visible())
+    order = page.evaluate("""() => ['session-overview', 'session-result', 'session-evidence'].map(id =>
+        document.getElementById(id).getBoundingClientRect().top)""")
+    check("the task and result come before the evidence", order == sorted(order), str(order))
+    check("a plain run gets no starter evidence card", page.locator("#starter-result").count() == 0
+          and "Recorded run evidence" not in page.locator("#view").inner_text())
     check("detail preserves evidence-free self-check",
           "self-check: no_evidence" in page.locator("#session-facts").inner_text())
     spend = page.locator("#session-spend").inner_text()
@@ -90,10 +179,22 @@ with sync_playwright() as p:
           and "not verification" in page.locator("#flow-review").inner_text())
     facts = page.locator("#session-facts").inner_text()
     check("verification does not borrow the review", "verification: unavailable" in facts, facts)
-    page.screenshot(path=str(SHOTS / "sessions-flow.png"))
+    steps = page.locator("#flow-detail .pipe-step")
+    check("the flow is a pipeline of its steps in order", steps.count() == 2
+          and steps.nth(0).get_attribute("data-step") == "code" and "done" in steps.nth(0).inner_text()
+          and "coder →" in steps.nth(0).inner_text() and "passes on: diff → review" in steps.nth(0).inner_text(),
+          steps.nth(0).inner_text() if steps.count() else "")
+    check("each attempt links to its session", page.locator("#flow-detail li.attempt a[href^='#/sessions/']").count() == 2)
+    page.screenshot(path=str(SHOTS / "sessions-flow.png"), full_page=True)
 
     page.goto(f"{BASE}#/sessions/00000000-0000-0000-0000-000000000008", wait_until="load")
     page.wait_for_selector("#failure-evidence")
+    check("a failure says why in one sentence, with what to do next",
+          "It failed with model_error" in page.locator("#session-cause").inner_text()
+          and "Next:" in page.locator("#session-next").inner_text(), page.locator("#session-result").inner_text())
+    check("failure evidence leads (outside the collapsed details) when the session failed",
+          page.locator("#session-evidence #failure-evidence").count() == 0 and page.locator("#failure-evidence").is_visible())
+    page.click("#session-evidence > summary")
     evidence = page.locator("#failure-evidence")
     check("original failure remains separate from later recovery refusal",
           "model_error" in evidence.inner_text() and "flow.quota_wait" in evidence.inner_text())
@@ -199,6 +300,13 @@ with sync_playwright() as p:
     check("the inbox lists the waiting approval", "rm -rf build" in inbox and "ceiling smart" in inbox)
     check("a read-only dashboard offers no buttons", "read-only dashboard" in inbox
           and page.locator("#inbox-list button").count() == 0)
+    check("the header counts what can still be answered, expired apart",
+          text_contains(page, "#inbox-count", "1 waiting · 1 expired"), page.locator("#inbox-count").inner_text())
+    check("the expired request is listed apart", "git push" in page.locator("#inbox-expired").inner_text()
+          and "git push" not in inbox)
+    for scheme in ("light", "dark"):
+        page.emulate_media(color_scheme=scheme)
+        page.screenshot(path=str(SHOTS / f"inbox-1440-{scheme}.png"))
     browser.close()
 
 if problems:
