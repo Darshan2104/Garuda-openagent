@@ -84,7 +84,9 @@ every project. A full ID always resolves.
 `sessions fork-preview` accepts `--all-projects` with the same selection semantics
 as `run --fork`: `latest` selects the newest session anywhere and prefixes search
 across projects. Preview does not build resumed context or inherit artifacts;
-successful preview can still be refused by those steps after admission.
+successful preview can still be refused by those steps after admission. Both
+fork only native sessions: an ACP harness or flow session keeps no message
+history, so both refuse it with `fork.source_not_native`.
 
 ## Common `run` flags
 

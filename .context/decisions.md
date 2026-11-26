@@ -1,5 +1,40 @@
 # Durable decisions
 
+## 2026-11-26 — A plan-mode run returns its plan and never leaves plan mode (#771)
+
+claude-agent-acp 0.110.1 ends planning with ExitPlanMode, sent as an
+"Approve Plan" `session/request_permission` with `kind=switch_mode` and the
+plan in `toolCall.rawInput.plan`. Every allow option switches the session to
+an editing mode (`default`, `acceptEdits`, `auto`, `bypassPermissions`); the
+adapter has no "plan done" answer. Its "No, keep planning" (`reject`) answers
+`deny` with `interrupt: true` and the adapter ends the turn `cancelled`, still
+in plan mode. `AcpRuntime` now answers any `switch_mode` request itself while
+the agent reports mode `plan`: it selects the reject option (or answers
+`cancelled` without one), never consults the approval handler (so no
+`permissions` level or interactive answer can fail open), and records an
+`approval_request` plus an `approval_settled` deny event. When the agent then
+ends that turn `cancelled` and Garuda did not cancel it, the plan (the
+request's `rawInput.plan`, else its text content, at most 200,000 chars) is fed
+as the turn's message and the turn closes `completed` with a `plan_produced`
+lifecycle event; the session stays open in plan mode. A later denial in the
+same turn, or no plan text, keeps the old cancelled-turn handling. The
+`plan-exit` fake-agent profile reproduces the adapter's request shape. Plan-mode
+runs report `claude-sonnet-5-5` because Claude Code itself upgrades a Haiku
+main model while planning ("haiku plan upgrade"); Garuda sets no model there.
+
+## 2026-11-26 — A context fork names a non-native source (#770)
+
+`prepare_context_fork`, shared by `garuda sessions fork-preview` and
+`garuda run --fork`, reads the selected meta before the snapshot of
+`messages.json`. A source whose last runtime segment is ACP (or, without
+segments, whose model is `acp:<runtime>`), or a flow session, raises
+`ForkSourceNotNative` (a `ValueError`) with `fork.source_not_native: ACP session
+<id> (runtime <r>) has no message history to fork; context forks work on native
+sessions only.` Before, the snapshot failed first on the absent `messages.json`
+with the generic `record is missing, unreadable or symlinked`, which suggested a
+corrupt store. Both entry points keep exit 2 and write nothing. A session
+whose last runtime segment is native is unaffected.
+
 ## 2026-11-26 — A checked flow's check ceiling binds the flow workspace, not the cwd (#768)
 
 `FlowExecutionService` builds the check `PermissionEngine` with
@@ -4826,3 +4861,13 @@ Absent original authority, changed workspace or evidence, and any phase intent
 or partial check records fail closed. Started checks keep their existing
 read-only reconciliation path. Dashboard ownership and quota continuation
 retain their existing boundaries.
+
+## 2026-11-26: Doctor refuses an unknown `--runtime` id (#777)
+
+`garuda doctor --runtime ID` resolves each ID through the runtime registry, the
+same lookup `garuda run --runtime` uses, so an alias checks the harness it
+names. An unknown ID becomes an error diagnostic, `harness.unknown`. Its message
+is run's refusal ("runtime selection refused: unknown runtime 'ID'"), and its
+fix lists the known harness ids. Doctor keeps its existing exit code contract:
+any error diagnostic exits 1, in text and `--json` output. Known runtimes passed
+in the same call are still checked.
