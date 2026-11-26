@@ -291,6 +291,23 @@ def main() -> int:
                                          extra_env=dc_env))
         if not run_check("check_data_correctness.py", dc_port, shots, dc_env):
             failures.append("check_data_correctness.py")
+        # --- overview: the landing page, over more than 200 sessions, and an empty store --
+        ov_sessions = workdir / "overview" / "sessions"
+        ov_env = {"GARUDA_GLOBAL_SETTINGS": str(workdir / "overview" / "settings.yaml")}
+        subprocess.run([sys.executable, str(HERE / "seed_sessions.py"), str(ov_sessions),
+                        str(workdir), "--overview"], check=True, env={**os.environ, **ov_env})
+        ov_port = free_port(con_port + 20)
+        processes.append(start_dashboard(ov_sessions, ov_port, workdir / "web-ov.log",
+                                         extra_env=ov_env))
+        empty_sessions = workdir / "empty" / "sessions"
+        empty_sessions.mkdir(parents=True)
+        empty_port = free_port(ov_port + 1)
+        processes.append(start_dashboard(
+            empty_sessions, empty_port, workdir / "web-empty.log", read_only=False,
+            extra_env={"GARUDA_GLOBAL_SETTINGS": str(workdir / "empty" / "settings.yaml")}))
+        if not run_check("check_overview.py", ov_port, shots,
+                         {**ov_env, "GARUDA_CHECK_EMPTY_BASE": f"http://127.0.0.1:{empty_port}/"}):
+            failures.append("check_overview.py")
 
         # --- read-only starters, with real ACP/flow/acceptance history --------
         starter_workdir = workdir / "starters"

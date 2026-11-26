@@ -17,7 +17,7 @@ var TOKEN = sessionStorage.getItem("garuda_token") || "";
 if (location.hash.indexOf("#t=") === 0) {
   TOKEN = location.hash.slice(3);
   sessionStorage.setItem("garuda_token", TOKEN);
-  location.replace("#/runs");
+  location.replace("#/");
 }
 
 var STATE = {
