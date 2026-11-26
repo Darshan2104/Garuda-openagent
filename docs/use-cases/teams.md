@@ -159,7 +159,7 @@ Three flows ship with Garuda:
 |---|---|---|
 | `plan-only` | scout → planner | No |
 | `pair` | coder, reviewed by reviewer (up to three rounds) | Yes (the coder) |
-| `plan-build-review` | planner → coder, reviewed by reviewer | Yes (the coder) |
+| `plan-build-review` | planner → coder, reviewed by reviewer (who gets the plan and the patch) | Yes (the coder) |
 
 ```mermaid
 sequenceDiagram
@@ -167,6 +167,7 @@ sequenceDiagram
   participant C as coder
   participant R as reviewer
   P->>C: plan
+  P->>R: plan
   loop up to 3 rounds
     C->>R: patch
     R-->>C: findings (blocker / major)
@@ -327,7 +328,7 @@ flows:
     - id: review
       role: reviewer
       write_policy: no-edits
-      inputs: [patch]
+      inputs: [plan, patch]
       outputs: [review]
 ```
 

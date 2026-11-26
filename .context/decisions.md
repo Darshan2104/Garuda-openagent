@@ -5039,3 +5039,29 @@ typed too: `approval.answered`, `approval.stale_request`, `approval.expired`,
 `approval.refused`, and `approval.unavailable` for an OS error, which prints only
 the OS reason (`strerror`), never the path. The dashboard answer route already
 mapped a missing request to 404; its generic OS-error branch now also drops the path.
+
+## 2026-11-26: The packaged plan-build-review reviewer receives the plan (#818)
+
+The packaged `plan-build-review` review step declared `inputs: [patch]`, so the
+reviewer could not judge whether the build followed the plan the coder was
+given. It is now `inputs: [plan, patch]`; `pair` (no plan) and `plan-only` are
+unchanged. The load-time rules allow it: `validate_flow_inputs` needs only an
+earlier producer, and `validate_flow_reviews` needs every terminal input
+produced before or by the reviewed build, which the first-step plan is (the
+refusal in `test_terminal_review_refuses_inputs_from_after_the_reviewed_build`
+covers an input produced after the build). A `plan` is not in
+`WORKSPACE_BOUND`, so it loads in every review round and after `flow resume`
+even though the coder changed the workspace. Independence and the review
+packet read role plans and the build's receipt, not the reviewer's inputs.
+
+Packaged flows are not frozen into the flow record: `flow resume` reloads the
+definition by name. An unchecked flow, including a quota-recovery continuation
+(whose admission digests only the resolved `garuda.yaml`, which never holds
+packaged flows), resumes with the new reviewer inputs; step ids are unchanged
+and the plan is already recorded. A checked flow binds `digest(flow)` into its
+saved check request, so one started before this change would have refused
+`flow.verification_reconciliation_required` on resume or check rerun.
+`packaged.PREVIOUS` keeps the earlier definition, and the flow service, for a
+packaged flow with a saved check request, resumes with the earlier definition
+whose digest the request recorded (`packaged.recorded`). A configured flow,
+or a digest no packaged definition matches, still refuses as before.
