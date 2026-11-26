@@ -305,6 +305,47 @@ def load_session_delta(store, session_id: str, workspace: str | Path) -> Session
     return session_delta(Baseline.from_dict(recorded), workspace)
 
 
+def _review_delta(store, session_id: str,
+                  workspace: str | Path) -> tuple[Baseline, SessionDelta] | str:
+    """The session's recorded host baseline and its delta now, or why there is none.
+
+    Raises `DiffError`, `OSError` or `ValueError` when the records or the
+    workspace cannot be read.
+    """
+    meta = store.load_meta(session_id)
+    if (not isinstance(meta, dict) or meta.get("baseline_state") != BASELINE_CAPTURED
+            or meta.get("baseline_workspace") != _resolved_workspace(workspace)):
+        return "no captured baseline for this host workspace"
+    recorded = meta.get("baseline")
+    if not isinstance(recorded, dict) or not isinstance(recorded.get("commit"), str):
+        return "the candidate session has no recorded baseline commit"
+    baseline = Baseline.from_dict(recorded)
+    if baseline.commit and not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", baseline.commit):
+        return "the recorded baseline commit is not an object id"
+    delta = session_delta(baseline, workspace)
+    if not delta.attributable:
+        return delta.attribution
+    return baseline, delta
+
+
+def changed_since_baseline(store, session_id: str | None,
+                           workspace: str | Path) -> list[str] | None:
+    """Every path changed since ``session_id``'s recorded baseline, or None.
+
+    A review packet that covers several attempts of the reviewed step compares
+    the candidate with the first attempt's baseline (#814). None when that
+    baseline is missing, not captured, for another workspace, or no longer
+    attributable: unknown, never an empty change set.
+    """
+    if not session_id:
+        return None
+    try:
+        found = _review_delta(store, session_id, workspace)
+    except (DiffError, OSError, ValueError):
+        return None
+    return None if isinstance(found, str) else list(found[1].changed)
+
+
 def review_diff_evidence(store, session_id: str | None, workspace: str | Path,
                          changed: list[str] | None, *, changed_total: int | None,
                          changed_complete: bool | None) -> dict:
@@ -319,19 +360,10 @@ def review_diff_evidence(store, session_id: str | None, workspace: str | Path,
     if any(not isinstance(path, str) for path in changed):
         return {**unknown, "reason": "the recorded change list has invalid paths"}
     try:
-        meta = store.load_meta(session_id)
-        if (not isinstance(meta, dict) or meta.get("baseline_state") != BASELINE_CAPTURED
-                or meta.get("baseline_workspace") != _resolved_workspace(workspace)):
-            return {**unknown, "reason": "no captured baseline for this host workspace"}
-        recorded = meta.get("baseline")
-        if not isinstance(recorded, dict) or not isinstance(recorded.get("commit"), str):
-            return {**unknown, "reason": "the candidate session has no recorded baseline commit"}
-        baseline = Baseline.from_dict(recorded)
-        if baseline.commit and not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", baseline.commit):
-            return {**unknown, "reason": "the recorded baseline commit is not an object id"}
-        delta = session_delta(baseline, workspace)
-        if not delta.attributable:
-            return {**unknown, "reason": delta.attribution}
+        found = _review_delta(store, session_id, workspace)
+        if isinstance(found, str):
+            return {**unknown, "reason": found}
+        baseline, delta = found
         return diff_excerpts(baseline, delta, workspace, changed, changed_total=changed_total,
                              changed_complete=changed_complete)
     except (DiffError, OSError, ValueError) as exc:

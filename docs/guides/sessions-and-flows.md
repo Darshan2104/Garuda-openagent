@@ -443,6 +443,21 @@ again. `max_rounds: 2` means at most three coder/reviewer rounds. The flow
 then ends `review_approved` or `review_changes_requested`. A review is not
 verification: to verify, add checks.
 
+Before each review Garuda freezes a **review packet**: the candidate (the
+reviewed step's latest attempt and its workspace version), the changed files,
+bounded diff excerpts and what the loader made of changed configuration files.
+The changed files and excerpts cover the reviewed step's whole contribution in
+this flow, not only its latest round: they compare the workspace with the
+baseline recorded when the reviewed step's first attempt started, including an
+earlier attempt that failed or ran before a `garuda flow resume`. The packet's
+`attempts` block names the first and latest attempts and the session whose
+baseline is used. Files that were already dirty at that baseline (your own
+edits, or an earlier step's) are listed only if the reviewed step changed them
+again, labelled `preexisting_at_start`, and their excerpts include the earlier
+text. When that first baseline is missing, was not captured, belongs to another
+workspace or can no longer be attributed, the change list and diff are
+`unknown`, never a complete list of one round's files.
+
 By default the reviewer must be **independent**: it may not run as the same
 harness and model as the role it reviews, as one of that role's fallbacks, or
 as a role it may consult. The decision is recorded with the identities that
