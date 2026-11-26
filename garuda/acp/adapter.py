@@ -52,6 +52,7 @@ from garuda.acp.protocol import (
     AcpError,
     AcpProtocolError,
     AcpTimeoutError,
+    AcpUsageLimitError,
 )
 from garuda.runtime.events import RuntimeEvent, RuntimeEventKind
 from garuda.runtime.protocol import (
@@ -176,6 +177,10 @@ class AcpRuntime:
         self._cancel_requested = False
         #: What the session request sent (#726): method, cwd and MCP server names only.
         self._session_request: dict[str, Any] | None = None
+        #: How the latest turn ended (#824): the harness's raw v1 ``stopReason``
+        #: (``None`` when it sent none: Garuda cancelled, timed out or it failed)
+        #: and whether Garuda denied an action during it.
+        self._last_turn: dict[str, Any] | None = None
 
     def attach_consult(self, host) -> None:
         """Offer the ``consult`` tool to this agent when its adapter identity is proved (G.3)."""
@@ -341,6 +346,22 @@ class AcpRuntime:
     def metrics(self):
         """The attached metrics recorder, if any."""
         return self._metrics
+
+    @property
+    def last_turn(self) -> dict[str, Any] | None:
+        """``{"turn", "stop_reason", "approval_denied"}`` of the latest turn, or None
+        before the first. ``stop_reason`` is the harness's raw v1 stop reason
+        (``end_turn``, ``max_tokens``, ``max_turn_requests``, ``refusal``,
+        ``cancelled``); it does not change how the turn settles (#824)."""
+        return dict(self._last_turn) if self._last_turn is not None else None
+
+    def _latest_rate_limit(self) -> dict[str, Any] | None:
+        """The newest account limit snapshot the harness reported this session."""
+        for event in reversed(self._events):
+            usage = event.payload.get("usage") if event.kind is RuntimeEventKind.MESSAGE else None
+            if isinstance(usage, dict) and isinstance(usage.get("rate_limit"), dict):
+                return usage["rate_limit"]
+        return None
 
     def _timed(self, phase: str):
         if self._metrics is None:
@@ -825,6 +846,7 @@ class AcpRuntime:
         self._move(LifecycleState.RUNNING)
         self._turn += 1
         self._denied = []
+        self._last_turn = {"turn": self._turn, "stop_reason": None, "approval_denied": False}
         self._plan_result = None
         self._cancel_requested = False
         self._record_outbound_prompt(text)
@@ -874,6 +896,10 @@ class AcpRuntime:
         except AcpError as exc:
             from garuda.core.failure_evidence import classify_exception
 
+            self._last_turn["approval_denied"] = bool(self._denied)
+            if isinstance(exc, AcpUsageLimitError):
+                # The reset time the harness reported before it refused (#824).
+                exc.note_rate_limit(self._latest_rate_limit())
             self._note_error(exc)
             self._record_failure(exc, phase="prompt")
             self._finish_turn("failed", detail=str(exc), code=classify_exception(exc)[0])
@@ -882,9 +908,12 @@ class AcpRuntime:
             raise
         stop = result.get("stopReason") if isinstance(result, dict) else None
         plan = self._plan_result if stop == "cancelled" and not self._cancel_requested else None
+        denied_any = bool(self._denied)
+        self._last_turn["approval_denied"] = denied_any
         try:
             if not isinstance(stop, str):
                 raise AcpProtocolError("session/prompt returned no valid stopReason")
+            raw_stop = stop
             if plan is not None:
                 # The agent stopped because Garuda refused its plan-mode exit
                 # (#771): the plan is the reply and the turn is complete; the
@@ -895,7 +924,9 @@ class AcpRuntime:
                     "state": "plan_produced", "chars": len(plan), "mode": PLAN_MODE,
                     "detail": "plan returned as the result; leaving plan mode refused"})
                 stop = "end_turn"
-            closing = self._normalizer.finish(stop)
+            closing = self._normalizer.finish(stop, raw_stop_reason=raw_stop,
+                                              approval_denied=denied_any)
+            self._last_turn["stop_reason"] = raw_stop
         except AcpProtocolError as exc:
             # An unknown stop reason or an orphaned tool_call_update means the
             # trail cannot be closed truthfully: fail and reap, never stay

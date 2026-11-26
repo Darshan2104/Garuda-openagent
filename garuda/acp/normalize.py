@@ -5,8 +5,8 @@ message/thought chunks carrying content blocks, tool calls and their updates
 (whose `content` may hold diffs), plans and mode/command updates — into the
 `RuntimeEvent` vocabulary, so one reader renders native and external trails.
 Permission requests are JSON-RPC *requests* in v1, not updates; the adapter
-turns them into `APPROVAL_REQUEST` events. Raw protocol records stay in
-session-local diagnostics, redacted on read.
+turns them into `APPROVAL_REQUEST` events. Raw updates are not kept: only the
+normalized events, and only their allowlisted evidence is persisted.
 
 Ordering rules, stated once because every consumer depends on them:
 
@@ -24,10 +24,9 @@ Ordering rules, stated once because every consumer depends on them:
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
-from garuda.acp.protocol import AcpProtocolError
+from garuda.acp.protocol import AcpProtocolError, rate_limit_fields
 from garuda.context.redact import redact_text
 from garuda.runtime.events import RuntimeEvent, RuntimeEventKind
 
@@ -171,7 +170,9 @@ def _evidence(event: RuntimeEvent) -> dict[str, Any]:
         RuntimeEventKind.TOOL_CALL: ("tool_call_id", "kind", "status"),
         RuntimeEventKind.TOOL_RESULT: ("tool_call_id", "status"),
         RuntimeEventKind.APPROVAL_REQUEST: ("approval_id", "tool_call_id"),
-        RuntimeEventKind.LIFECYCLE: ("state", "stop_reason", "reason"),
+        # `raw_stop_reason` / `approval_denied`: how the harness ended the turn (#824).
+        RuntimeEventKind.LIFECYCLE: ("state", "stop_reason", "reason", "raw_stop_reason",
+                                     "approval_denied"),
         # A stable failure code (for example `harness.limit_reached`), never the text.
         RuntimeEventKind.ERROR: ("code",),
     }
@@ -185,6 +186,8 @@ def _evidence(event: RuntimeEvent) -> dict[str, Any]:
                 "context_used", "context_size", "cost_usd", "model"
             ) if (safe := _evidence_scalar(usage.get(key), statuses, "usage." + key)) is not None
         }
+        if limit := rate_limit_fields(usage.get("rate_limit"), validated=True):
+            selected_usage["rate_limit"] = limit
         prior_status = event.payload.get("evidence_status")
         if isinstance(prior_status, dict) and isinstance(prior_status.get("usage.model"), str) \
                 and prior_status["usage.model"] in {"clipped", "withheld"}:
@@ -238,7 +241,6 @@ class AcpNormalizer:
         self._turn_open = False
         self._pending_updates: dict[str, list[dict[str, Any]]] = {}
         self._seen_calls: set[str] = set()
-        self._diagnostics: list[dict[str, Any]] = []
 
     @property
     def turn(self) -> int:
@@ -280,7 +282,6 @@ class AcpNormalizer:
         kind = update.get("sessionUpdate")
         if not isinstance(kind, str) or not kind:
             raise AcpProtocolError("session/update requires a sessionUpdate kind")
-        self._diagnostics.append(dict(update))
         handler = {
             "agent_message_chunk": self._on_message_chunk,
             "agent_thought_chunk": self._on_thought_chunk,
@@ -290,11 +291,16 @@ class AcpNormalizer:
         }.get(kind, self._on_unknown)
         return handler(update)
 
-    def finish(self, stop_reason: str, *, detail: str = "", code: str = "") -> list[RuntimeEvent]:
+    def finish(self, stop_reason: str, *, detail: str = "", code: str = "",
+               raw_stop_reason: str | None = None,
+               approval_denied: bool | None = None) -> list[RuntimeEvent]:
         """Close the turn with a terminal event. No duplicate final message.
 
         `completed` ends the turn (a later `new_turn` reopens feeding);
         `cancelled`/`failed` end the session — anything after is rejected.
+        ``raw_stop_reason`` (the harness's own v1 ``stopReason``) and
+        ``approval_denied`` (Garuda denied an action this turn) are recorded on
+        the terminal event when given (#824); they never change its state.
         """
         self._ensure_open()
         if self._pending_updates:
@@ -308,6 +314,12 @@ class AcpNormalizer:
         except KeyError:
             raise AcpProtocolError(f"unknown stop reason {stop_reason!r}") from None
         payload: dict[str, Any] = {"state": state, "stop_reason": stop_reason}
+        if raw_stop_reason is not None:
+            if raw_stop_reason not in _TERMINAL_REASONS:
+                raise AcpProtocolError(f"unknown stop reason {raw_stop_reason!r}")
+            payload["raw_stop_reason"] = raw_stop_reason
+        if approval_denied is not None:
+            payload["approval_denied"] = bool(approval_denied)
         if detail:
             payload["detail"] = detail
         if state == "completed":
@@ -432,6 +444,10 @@ class AcpNormalizer:
             usage["model"] = model
         elif isinstance(model, str) and model:
             statuses["usage.model"] = "withheld"
+        # claude-agent-acp's account limit snapshot (#824): status, reset, window.
+        limit = rate_limit_fields(meta.get("_claude/rateLimit") if isinstance(meta, dict) else None)
+        if limit:
+            usage["rate_limit"] = limit
         return [self._emit(RuntimeEventKind.MESSAGE,
                            {"text": "", "acp_update": "usage_update", "usage": usage,
                             **({"evidence_status": statuses} if statuses else {})})]
@@ -445,14 +461,6 @@ class AcpNormalizer:
                 {"text": "", "acp_update": update["sessionUpdate"]},
             )
         ]
-
-    def diagnostic_trail(self) -> list[dict[str, Any]]:
-        """Raw updates with secrets scrubbed. Session-local; never a transcript."""
-        trail = []
-        for record in self._diagnostics:
-            cleaned, _ = redact_text(_freeze(record))
-            trail.append({"raw": cleaned})
-        return trail
 
 
 def _block_text(block: object, *, where: str) -> tuple[str, str]:
@@ -484,10 +492,3 @@ def _content_text(content: object) -> str:
                 if isinstance(text, str):
                     parts.append(text)
     return "\n".join(parts)
-
-
-def _freeze(value: Any) -> str:
-    try:
-        return json.dumps(value, default=str)
-    except (TypeError, ValueError):
-        return str(value)
