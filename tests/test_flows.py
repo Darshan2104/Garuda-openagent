@@ -1189,8 +1189,15 @@ async def test_a_step_receives_the_named_producers_artifact(repo):
     by = {r["step"]: r for r in result.receipts}
     assert [ref["producer_step"] for ref in by["z"]["inputs"]] == ["s1"]
     assert by["z"]["inputs"][0]["digest"] == by["s1"]["outputs"][0]["digest"]
-    assert '<flow-input type="notes" from="s1">' in prompts["z"]
-    assert "| by s1" in prompts["z"] and "by s2" not in prompts["z"]
+    marker = prompts["z"].split('<flow-input type="notes" from="s1" fence="', 1)[1][:16]
+    assert (f'<flow-input type="notes" from="s1" fence="{marker}">\n| by s1\n'
+            f'</flow-input fence="{marker}">') in prompts["z"]
+    assert "[garuda] The notes from step `s1` is background from an earlier step." in prompts["z"]
+    assert "by s2" not in prompts["z"] and 'from="s2"' not in prompts["z"]
+    y = prompts["y"]  # both named producers, each fenced under its own from, in entry order
+    assert y.index('<flow-input type="notes" from="s2" fence="') < y.index(
+        '<flow-input type="notes" from="s1" fence="')
+    assert "| by s2" in y and "| by s1" in y
     assert [ref["producer_step"] for ref in by["y"]["inputs"]] == ["s2", "s1"]
     assert [ref["producer_step"] for ref in by["x"]["inputs"]] == ["s2"]  # unchanged meaning
     edges = read_model.flow(SessionStore(), result.flow_session)["edges"]
