@@ -565,6 +565,7 @@ roles:
   reviewer: {harness: claude, model_id: <exact-id>, permissions: smart, write_policy: no-edits}
 consults: {max_per_session: 5, timeout_sec: 600, max_answer_chars: 8000}
 sessions: {isolation: auto, keep_days: 30}
+approvals: {park_timeout_sec: 1800}
 ```
 
 How the layers combine (package default, then user, then project, then the
@@ -626,6 +627,14 @@ A step's own keys override the flow's, key by key. A step that runs out stops
 with `flow.step_deadline` or `flow.step_silent`, and `garuda flow resume` runs
 it again; see [Step limits](sessions-and-flows.md#step-limits). Without
 `limits` a step has no deadline and no silence watchdog, as before.
+
+`approvals.park_timeout_sec` is how long an approval asked by a background
+run waits in the inbox (the dashboard's Approvals page or
+`garuda approvals answer`) before the request times out and counts as a denial.
+This covers background and dashboard flow steps, whose approvals are answered
+outside the terminal. It is whole seconds from 30 to 86400 (24 hours), and the
+default is 300. A project file may only lower it: a project value at or above
+yours (or above the default, if you set none) is ignored.
 
 `harnesses.<id>.handshake_timeout_sec` is how long Garuda waits for an
 external (ACP) harness to answer its startup calls (`initialize`,

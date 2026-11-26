@@ -5318,3 +5318,53 @@ becomes the step's error, `stop.cause.code` fallback and `stop.cause.stop_reason
 `run_acp_task` attaches the last turn's raw stop reason to a raised error
 (`acp_stop_reason`) for that purpose. A checked step without a deadline still
 has the one-hour worker limit; long checked steps need `deadline_min`.
+
+## 2026-11-27: A Claude usage limit pauses a flow; quota recovery resumes it after the reported reset; the approval park wait is configurable (#834)
+
+Since #824 a Claude limit is typed (`AcpUsageLimitError`, recorded by type name as
+the step session's `error_code`) and its validated reset is kept as `error_limit`,
+but a flow step that hit it failed the flow (`flow.step_failed`) and quota recovery
+admitted only flows with a Codex role. The engine now puts the session's validated
+`error_limit` in the step's `stop.cause.limit` (any harness, any step), and a plain
+step of a `claude` role whose cause code is a limit code (`LIMIT_CAUSE_CODES`)
+stops with `flow.quota_wait`. This applies whether or not recovery is enabled.
+Excluded: a checked flow, which keeps `flow.step_failed` because its resume contract
+(`RESUMABLE_CHECKED_STOPS`) settles that code and recovery refuses checked flows
+anyway; parallel group members, also refused by recovery; and Codex, which keeps
+`flow.step_failed` and its proved account read, so no Codex test changed.
+`flow.quota_wait` is not in `RETRYABLE_STOPS`, so a retrying Claude step that hits
+its limit no longer burns its retries against the limit.
+
+Claude has no documented read-only quota interface (`/usage` is interactive), and
+the design keeps "a reset timestamp is a hint, not proof". The only Claude evidence
+recovery uses is the reset Claude reported with the stop, and the tick never
+probes or prompts. `quota_recovery.claude_limit` accepts only a settled, closed
+`flow.quota_wait` receipt of a `claude` role with a limit cause. The record gets
+`quota_source: claude`, `reset_at`, `rate_limit_type` and
+`next_check = reset + 120 s`. The tick dispatches such a row only once
+`next_check` has passed, through the same claim, admission, evidence, workspace,
+configuration and source checks as Codex. A missing reset, or one already passed
+(a stale snapshot), still pauses and backs off 1 h, 2 h, 4 h, then every 8 h,
+counted by consecutive such pauses. Admission of a Claude row refuses a resume
+before the reported reset (`RecoveryWaiting`, so manual `flow resume` gets
+`flow.quota_wait` and the row keeps waiting). It skips the Codex probe, and a
+Claude-only flow is admitted without probing Codex. No account identity is bound
+for Claude. The refusals for checked, dashboard-owned, parallel and retrying
+flows are unchanged: they concern continuation contracts, not the quota source.
+`recovery enable` still requires a Codex executable. Codex rows project exactly as
+before; only Claude rows add `quota_source` and `rate_limit_type`. `flow show`
+prints `limit: <window>; resets at <UTC>` from the stop cause, plus the
+recovery record's reset.
+
+`garuda run` already printed the reset (#827). The CLI has no exit-code convention
+for limits (1 is a failed run, 2 a refusal, 3 a stopped flow), so it still exits 1.
+
+`approvals: {park_timeout_sec: N}` in garuda.yaml (30..86400, default 300) sets how
+long a background run's parked approval waits before it times out as a denial.
+The layers resolve like consult limits: a project value counts only when it is
+below the user's (or the default), so a project can only lower it. It is in the
+resolved configuration only when set, so existing admission digests are
+unchanged. `run_acp_task` and `run_agent_task` read it with
+`garuda_yaml.park_timeout_sec(workspace)` only when approvals are external
+(background and dashboard flow steps in the owned worker). An unreadable configuration there keeps 300 s and logs a warning.
+Foreground terminal runs and the ACP server's runtime keep the broker's 300 s.

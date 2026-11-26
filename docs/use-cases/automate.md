@@ -269,13 +269,13 @@ Add `--trajectory run.jsonl` to also save the events to a file after the run.
     `garuda runtime list --json` are all meant for scripts. `doctor` and
     `agent check` exit `1` when they find an error.
 
-## Continue quota-stopped Codex flows
+## Continue quota-stopped Codex and Claude flows
 
 <p class="gd-facts">Changes user crontab by default; optional macOS LaunchAgent · Schedule: minute 27 each hour · Output: JSON</p>
 
-**Use it when** a sequential CLI flow uses Codex and should continue after a
-proved subscription-quota reset even when the original Garuda process has
-exited.
+**Use it when** a sequential CLI flow uses Codex or Claude Code and should
+continue after its subscription limit resets, even when the original Garuda
+process has exited.
 
 Quota-bound recovery requires the host Codex ACP adapter version 2.1.1.
 
@@ -398,11 +398,47 @@ an already dispatched flow. `disable` first disables automatic dispatch and
 then removes only Garuda's marked cron block. It does not cancel or signal a
 live flow.
 
+### Claude flows
+
+A Claude Code step that hits its usage limit stops the flow with
+`flow.quota_wait`, not `flow.step_failed`, whether or not recovery is enabled.
+The stop records the limit's window and reset, and `garuda flow show` prints
+them:
+
+```text
+flow plan-build-review: stopped
+  stopped at step build: flow.quota_wait: step build did not complete: harness.limit_reached: You've hit your limit ...; the five_hour limit resets at 2026-11-26 15:00 UTC (agent error -32603)
+  cause: AcpUsageLimitError: harness.limit_reached: ...
+  limit: five_hour; resets at 2026-11-26 15:00 UTC
+```
+
+Claude has no documented read-only quota interface, so the tick never checks
+Claude's quota and never sends a prompt to test it. It uses the reset time that
+Claude reported when it stopped the step. An enrolled flow waits in
+`waiting-for-quota` until two minutes after that reset. The first tick after
+that resumes the pending step as a new attempt. Completed steps are not rerun.
+If the limit is hit again, for example a weekly window, the flow waits for the
+new reset. If Claude reported no reset, or a reset that has already passed, the
+flow still waits, and the tick tries the step again after 1 hour, then 2, then
+4, then every 8 hours. `garuda recovery status` and `flow show` show
+`quota_source: claude`, the window (`rate_limit_type`), `reset_at` and
+`next_check`. `garuda flow resume` refuses with `flow.quota_wait` before a
+reported reset. Without recovery, `garuda flow resume` reruns the stopped step
+whenever you choose.
+
+Claude recovery cannot check which account is logged in. The same admission,
+configuration, source, workspace and receipt checks as for Codex still apply,
+and so do the refusals below. `garuda recovery enable` still needs a Codex
+executable on `PATH`. The schedule also keeps the `PATH` it was installed with,
+which is how the resumed step finds `claude-agent-acp`. A checked flow keeps
+`flow.step_failed` for a Claude limit, so its own resume contract applies. A
+step's `retries` never rerun a quota wait.
+
 This release does not recover standalone `chat` or `run` sessions,
-check-protected or dashboard-owned flows, parallel groups, or Claude quota
-stops. When recovery is enabled, an owned/check-protected/dashboard flow or a
-parallel flow projects an `unsupported` recovery state and reason in flow
-status instead of appearing enrolled.
+check-protected or dashboard-owned flows, parallel groups, or flows with step
+`retries`. When recovery is enabled, an owned/check-protected/dashboard flow,
+a parallel flow or a retrying flow shows an `unsupported` recovery state and
+reason in flow status instead of appearing enrolled.
 
 ### macOS LaunchAgent backend
 

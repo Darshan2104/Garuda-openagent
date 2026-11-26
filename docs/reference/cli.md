@@ -287,7 +287,7 @@ isolation boundary.
     owned/check-protected/dashboard flows and parallel flows project an explicit
     `unsupported` state and reason.
 
-    See [Continue quota-stopped Codex flows](../use-cases/automate.md#continue-quota-stopped-codex-flows)
+    See [Continue quota-stopped Codex and Claude flows](../use-cases/automate.md#continue-quota-stopped-codex-and-claude-flows)
     for installation lifetime, continuation guarantees, visibility, and the
     unsupported flow types.
 

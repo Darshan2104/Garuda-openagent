@@ -98,12 +98,26 @@ Click a problem to see the fix.
       its plan limit. Wait for the reset time in the message (Claude's is
       given in UTC, for example `resets at 2026-11-26 15:00 UTC`), or use
       another harness in the role's `fallback:` chain. Garuda does not resume
-      the run by itself when the limit resets. A host error such as `Disk quota
+      a `garuda run` by itself when the limit resets. A flow step stopped by a
+      Claude limit stops the flow with `flow.quota_wait` and its reset time
+      (`garuda flow show` prints `limit: five_hour; resets at ...`). Run
+      `garuda flow resume` after the reset, or enable
+      [quota recovery](../use-cases/automate.md#claude-flows) to resume it
+      automatically. A host error such as `Disk quota
       exceeded (os error 122)` is not typed as a limit: it stays a plain
       `agent error`, so free disk space instead. Error text an agent sends
       back is redacted for secret patterns before Garuda stores or shows it.
 
 ## Permissions and modes
+
+??? question "A background flow step's approval timed out and was denied"
+
+    A background or dashboard flow step parks each approval in the inbox for
+    300 seconds, then denies it (`Approval timed out: ...`). Answer it from the
+    dashboard's Approvals page or with `garuda approvals answer`, or give it
+    more time with `approvals: {park_timeout_sec: 1800}` in `~/.agent/garuda.yaml`
+    (30 to 86400 seconds). A project `garuda.yaml` can only shorten it. See
+    [Configuration](../guides/configuration.md#roles-and-flows-garudayaml).
 
 ??? question "\"Approval required but no handler configured\" or \"User denied\""
 
