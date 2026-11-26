@@ -147,7 +147,8 @@ class Conversation:
                 self._runtime_name, model=self._model_name, agent=self._agent_name,
                 reasoning_model=self._reasoning_model, collection_model=self._collection_model,
                 model_binding=self._model_binding, mode=self._mode,
-                mcp_config=self._mcp_config)
+                mcp_config=self._mcp_config, workspace_kind=self._workspace_kind,
+                docker_image=self._docker_image, docker_host=self._docker_host)
             return await self._run_acp(task)
         if self._native_close is not None and not self._native_close.done():
             raise RuntimeError("The native conversation is closing")
@@ -266,16 +267,24 @@ class Conversation:
             pass
 
     async def _run_acp(self, task: str) -> AgentResult:
+        from garuda.runtime import RuntimeClosedError
+
         if self._acp_close is not None and (not self._acp_close.done() or self._sdk_session_id is not None):
             raise RuntimeError("The ACP conversation is closing")
         if self._acp_turn is not None and not self._acp_turn.done():
             raise RuntimeError("The ACP conversation already has an active turn")
         self._acp_close = None
         self._acp_result = None
+        # A cancelled turn closes the runtime (#813); a run refused for that keeps
+        # the record's outcome `cancelled` rather than turning it into `failed`.
+        refused_after_cancel = self._acp_cancelled
         self._acp_cancelled = False
         turn = self._acp_turn = asyncio.create_task(self._prompt_acp(task))
         try:
             return await asyncio.shield(turn)
+        except RuntimeClosedError:
+            self._acp_cancelled = self._acp_cancelled or refused_after_cancel
+            raise
         except asyncio.CancelledError as cancelled:
             if not turn.done() and not turn.cancelling():
                 self._acp_cancelled = True
@@ -625,6 +634,7 @@ class Conversation:
         })
         self._sdk_session_id = None
         self._acp_result = None
+        self._acp_cancelled = False
         self._acp_turn_count = 0
 
     async def _close_native(self) -> None:

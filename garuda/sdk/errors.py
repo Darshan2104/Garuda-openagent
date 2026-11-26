@@ -69,12 +69,15 @@ class OptionsUnsupportedOnRuntime(ValueError):
 #: (``eval``, ``rigorous``: native completion gates; ``readonly``: a narrower
 #: permission than the SDK harness path enforces) is refused on ACP (#724).
 DEFAULT_RUN_MODES = (None, "standard", "interactive")
+#: The SDK's default ``docker_image``: unset unless a caller changes it.
+DEFAULT_DOCKER_IMAGE = "ubuntu:22.04"
 
 
 def refuse_unservable_options(runtime: str, *, model, agent, reasoning_model=None,
                               collection_model=None, model_binding=None, mode=None,
                               mcp_config=None, resume=None, resume_all_projects=False,
-                              events=None) -> None:
+                              events=None, workspace_kind="local", docker_image=None,
+                              docker_host=None) -> None:
     """Refuse native-only options on a runtime that would ignore them."""
     if runtime == "native":
         return
@@ -110,6 +113,20 @@ def refuse_unservable_options(runtime: str, *, model, agent, reasoning_model=Non
             "harness in the mode its default permission allows, and run-mode gates exist only "
             "in the native loop. Use runtime='native', the CLI (`garuda run --runtime "
             f"{runtime} --mode readonly` runs a confined readonly harness), or leave it unset")
+    environment = [name for name, unset in (
+        ("workspace_kind", workspace_kind == "local"),
+        ("docker_image", docker_image in (None, DEFAULT_DOCKER_IMAGE)),
+        ("docker_host", docker_host is None)) if not unset]
+    if environment:
+        # The harness is launched on the host against the local workspace; a
+        # Docker or remote environment would be dropped while the run reported
+        # success. Refuse rather than run it somewhere the caller did not ask.
+        raise OptionsUnsupportedOnRuntime(
+            f"{', '.join(environment)} cannot be applied on the ACP runtime {runtime!r}: the "
+            "SDK runs the harness on this host in the local workspace, not in a Docker or "
+            "remote environment. Use runtime='native', the CLI (`garuda run --runtime "
+            f"{runtime} --mode readonly` runs a confined readonly harness in Docker), or leave "
+            "them unset")
     run_options = [name for name, value in (("resume", resume),
                                             ("resume_all_projects", resume_all_projects),
                                             ("events", events)) if value not in (None, False)]
