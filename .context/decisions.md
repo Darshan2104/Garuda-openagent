@@ -5144,6 +5144,32 @@ confirmed dead and that holds no lease or slot as `failed`/interrupted with
 `run.owner_lost`. A live owner's requests and sessions are never touched;
 since decisions are exclusive, a live broker racing the withdrawal fails closed.
 
+## 2026-11-26: The packaged plan-build-review reviewer receives the plan (#818)
+
+The packaged `plan-build-review` review step declared `inputs: [patch]`, so the
+reviewer could not judge whether the build followed the plan the coder was
+given. It is now `inputs: [plan, patch]`; `pair` (no plan) and `plan-only` are
+unchanged. The load-time rules allow it: `validate_flow_inputs` needs only an
+earlier producer, and `validate_flow_reviews` needs every terminal input
+produced before or by the reviewed build, which the first-step plan is (the
+refusal in `test_terminal_review_refuses_inputs_from_after_the_reviewed_build`
+covers an input produced after the build). A `plan` is not in
+`WORKSPACE_BOUND`, so it loads in every review round and after `flow resume`
+even though the coder changed the workspace. Independence and the review
+packet read role plans and the build's receipt, not the reviewer's inputs.
+
+Packaged flows are not frozen into the flow record: `flow resume` reloads the
+definition by name. An unchecked flow, including a quota-recovery continuation
+(whose admission digests only the resolved `garuda.yaml`, which never holds
+packaged flows), resumes with the new reviewer inputs; step ids are unchanged
+and the plan is already recorded. A checked flow binds `digest(flow)` into its
+saved check request, so one started before this change would have refused
+`flow.verification_reconciliation_required` on resume or check rerun.
+`packaged.PREVIOUS` keeps the earlier definition, and the flow service, for a
+packaged flow with a saved check request, resumes with the earlier definition
+whose digest the request recorded (`packaged.recorded`). A configured flow,
+or a digest no packaged definition matches, still refuses as before.
+
 ## 2026-11-26: Flow artifacts are scanned, never cut, and redacted before storing (#811, #812)
 
 `artifacts.extract` no longer uses a non-greedy regex, which cut an artifact
@@ -5177,6 +5203,42 @@ quota recovery only considers `flow.step_failed`. A parallel review member's
 artifact that cannot be stored now stops the group with its own code instead of
 escaping `_run_group` unhandled. It is also in `RETRYABLE_STOPS` (#823), so a
 step with `retries` runs again after a malformed envelope.
+
+## 2026-11-26: Claude usage limits are typed with their reset; turns record the raw stop reason (#824)
+
+`claude-agent-acp` (0.85.0 on PATH, 0.110.1 upstream; read in its source, no live
+limit provoked) fails a turn at an account limit with JSON-RPC `-32603`
+`Internal error: You've hit your ...` and `data: {errorKind: "rate_limit"}`;
+0.110.1 adds `data.rateLimit` (`status`, `resetsAt`, `rateLimitType`, ...).
+Garuda read only `data.message`/`data.details` and its limit pattern missed
+Claude's wording, so the stop was `acp.remote.internal_error`. `remote_error` now
+types `errorKind == "rate_limit"`, or a message starting with the SDK's
+`USAGE_LIMIT_ERROR_PREFIXES` after `Internal error: `, as `AcpUsageLimitError`
+(`harness.limit_reached`); the OS-quota exclusion (#728) still applies to the text
+path, and the Codex/OpenCode paths are unchanged. Only `status`, `resets_at`
+(int epoch seconds, 2020..2100) and `rate_limit_type` (short identifiers) are kept,
+through `rate_limit_fields`; never other `data` text. When the error has no reset
+(0.85.0), the adapter fills it from the latest `usage_update._meta
+["_claude/rateLimit"]` of the session (reset and window only, not that snapshot's
+status). The message, and so the `garuda run` and flow step stop, ends with
+`resets at <UTC>`; `Internal error` is dropped from it so quota recovery's
+`NON_QUOTA` does not read it as an internal error. The fields are recorded as
+`error_limit` in the session record, `limit` in the causal record (and its support
+bundle projection), and `rate_limit_*` on the usage snapshot row (the latest
+snapshot of the turn, even if a later report omitted it); `reported_usage` shows
+`rate_limit` only when one was reported. No auto-resume.
+
+Each ACP turn's closing lifecycle event now carries `raw_stop_reason` (the harness's
+v1 `stopReason`, also when a refused plan exit turns `cancelled` into `end_turn`)
+and `approval_denied`, both in the persisted evidence allowlist; the adapter's
+`last_turn` and `run_acp_task`'s outcome (`stop_reason`, `approval_denied`) expose
+them. Claude ends a denied turn `end_turn`, so the flag is how a later turn loop
+tells it apart. Additive only: `_TERMINAL_REASONS`, lifecycle states, the run's
+status, the SDK, the ACP server and the conformance replay are unchanged.
+
+The normalizer's copy of every raw update (`_diagnostics` / `diagnostic_trail`)
+was read only by its own unit test; it is removed, with its test replaced by one
+that the normalizer holds no raw update text.
 
 ## 2026-11-27: Flow step text is delivered raw in a per-prompt fence, with wording per type (#821)
 

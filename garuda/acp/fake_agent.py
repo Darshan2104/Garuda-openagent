@@ -14,6 +14,12 @@ Profiles: success, streaming, approval, diff, malformed, slow, exit-early,
 slow-initialize (never answers initialize within a handshake deadline), logged-out
 (session/new refuses: the harness has no login),
 usage-limit (the prompt fails like codex-acp at a plan limit: -32603 with the cause in `data`),
+claude-usage-limit (claude-agent-acp 0.110.1 at an account limit: a usage_update carrying
+`_claude/rateLimit`, then -32603 "Internal error: You've hit your ..." with
+`data: {errorKind: "rate_limit", rateLimit}`), claude-usage-limit-legacy (0.85.0: the same, but
+`data` is only `{errorKind: "rate_limit"}`), claude-usage (a normal turn whose usage_update
+carries `_claude/rateLimit`, then a later one without it), stop-reason (ends the turn with the
+prompt text as its `stopReason` when it is a v1 stop reason),
 resume (stable ids via --state-file; declares loadSession, answers session/load
 for its stored id and counts prompts across processes), version-mismatch, odd-stop (a stop
 reason outside v1), cancel-stop (the agent ends the turn `cancelled`), strict-v1 (rejects any request that is not v1-shaped:
@@ -74,6 +80,10 @@ BASE_PROFILES = frozenset(
         "version-mismatch",
         "remote-error",
         "usage-limit",
+        "claude-usage-limit",
+        "claude-usage-limit-legacy",
+        "claude-usage",
+        "stop-reason",
         "malformed-result",
         "odd-stop",
         "cancel-stop",
@@ -89,6 +99,25 @@ BASE_PROFILES = frozenset(
 PROFILES = BASE_PROFILES | frozenset(
     f"capabilities-{name}" for name in CAPABILITY_PROFILES
 )
+
+
+#: A claude-agent-acp ``rate_limit_info`` (claude-agent-sdk ``SDKRateLimitInfo``).
+#: ``resetsAt`` is 2026-11-26 15:00 UTC.
+CLAUDE_RATE_LIMIT = {"status": "rejected", "resetsAt": 1795705200, "rateLimitType": "five_hour",
+                     "utilization": 1.0, "overageStatus": "rejected",
+                     "overageDisabledReason": "org_level_disabled", "isUsingOverage": False}
+#: The CLI's own words claude-agent-acp puts after ``Internal error: ``.
+CLAUDE_LIMIT_TEXT = "You've hit your limit · resets 3pm (UTC)"
+_V1_STOP_REASONS = ("end_turn", "max_tokens", "max_turn_requests", "refusal", "cancelled")
+
+
+def _claude_usage(session_id: str, rate_limit: dict | None) -> None:
+    """A claude-agent-acp ``usage_update`` (0.85.0 ``rate_limit_event`` shape)."""
+    meta: dict = {"_claude/model": "claude-fake-1"}
+    if rate_limit is not None:
+        meta["_claude/rateLimit"] = rate_limit
+    _update(session_id, {"sessionUpdate": "usage_update", "used": 3400, "size": 200000,
+                         "_meta": meta})
 
 
 def _read_frame() -> dict:
@@ -485,6 +514,24 @@ def _handle_prompt(
             "data": {"message": "You've hit your usage limit. Upgrade to Pro "
                                 "(https://chatgpt.com/explore/pro) or try again at 3:05 PM.",
                      "codexErrorInfo": "usageLimitExceeded"}}})
+    elif profile in ("claude-usage-limit", "claude-usage-limit-legacy"):
+        # claude-agent-acp at an account limit (#824): the rate limit event's
+        # usage_update, then the failed prompt. 0.85.0 sends only `errorKind`.
+        _claude_usage(session_id, {**CLAUDE_RATE_LIMIT, "status": "allowed_warning"})
+        data: dict = {"errorKind": "rate_limit"}
+        if profile == "claude-usage-limit":
+            data["rateLimit"] = CLAUDE_RATE_LIMIT
+        _send({"jsonrpc": "2.0", "id": call_id, "error": {
+            "code": -32603, "message": f"Internal error: {CLAUDE_LIMIT_TEXT}", "data": data}})
+    elif profile == "claude-usage":
+        _claude_usage(session_id, {**CLAUDE_RATE_LIMIT, "status": "allowed"})
+        _update(session_id, {"sessionUpdate": "agent_message_chunk", "content": _text("ok")})
+        _claude_usage(session_id, None)
+        _result(call_id, {"stopReason": "end_turn"})
+    elif profile == "stop-reason":
+        reason = text.strip() if text.strip() in _V1_STOP_REASONS else "end_turn"
+        _update(session_id, {"sessionUpdate": "agent_message_chunk", "content": _text(reason)})
+        _result(call_id, {"stopReason": reason})
     elif profile == "slow":
         import time
 

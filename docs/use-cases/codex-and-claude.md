@@ -78,14 +78,14 @@ flows:
       - {id: plan, role: claude-planner, write_policy: no-edits, outputs: [plan]}
       - {id: build, role: coder, inputs: [plan], outputs: [patch],
          review: {by: reviewer, max_rounds: 2}}
-      - {id: review, role: reviewer, write_policy: no-edits, inputs: [patch], outputs: [review]}
+      - {id: review, role: reviewer, write_policy: no-edits, inputs: [plan, patch], outputs: [review]}
   claude-builds:
     description: Codex plans, Claude builds, Codex reviews and can send it back.
     steps:
       - {id: plan, role: planner, write_policy: no-edits, outputs: [plan]}
       - {id: build, role: claude-coder, inputs: [plan], outputs: [patch],
          review: {by: reviewer, max_rounds: 2}}
-      - {id: review, role: reviewer, write_policy: no-edits, inputs: [patch], outputs: [review]}
+      - {id: review, role: reviewer, write_policy: no-edits, inputs: [plan, patch], outputs: [review]}
 ```
 
 The Claude adapter offers model aliases (`sonnet`, `opus`, `haiku`), not full

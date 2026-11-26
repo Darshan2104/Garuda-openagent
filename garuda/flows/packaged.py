@@ -6,7 +6,8 @@ external harness:
 
 - ``plan-only`` — scout, then planner: a plan, no changes;
 - ``pair`` — coder, reviewed by reviewer (up to three rounds);
-- ``plan-build-review`` — planner, then coder reviewed by reviewer.
+- ``plan-build-review`` — planner, then coder reviewed by reviewer; the
+  reviewer receives the plan and the patch.
 
 A flow of the same name in your ``garuda.yaml`` replaces a packaged one.
 ``garuda flow list`` lists them all; ``garuda config show --flow NAME`` prints one
@@ -37,10 +38,28 @@ flows:
       - {id: plan, role: planner, write_policy: no-edits, outputs: [plan]}
       - {id: build, role: coder, inputs: [plan], outputs: [patch],
          review: {by: reviewer, max_rounds: 2}}
-      - {id: review, role: reviewer, write_policy: no-edits, inputs: [patch], outputs: [review]}
+      - {id: review, role: reviewer, write_policy: no-edits, inputs: [plan, patch], outputs: [review]}
 """
 
 FLOWS: dict[str, dict] = gy.load_text(TEXT)["flows"]
+
+#: Earlier packaged definitions, by name. A checked flow binds the digest of
+#: its definition into its saved check request; resuming one started under an
+#: earlier Garuda must keep the definition it started with (#818).
+_PREVIOUS_TEXT = """\
+version: 1
+flows:
+  plan-build-review:
+    description: A plan, an implementation, and an independent review of it.
+    steps:
+      - {id: plan, role: planner, write_policy: no-edits, outputs: [plan]}
+      - {id: build, role: coder, inputs: [plan], outputs: [patch],
+         review: {by: reviewer, max_rounds: 2}}
+      - {id: review, role: reviewer, write_policy: no-edits, inputs: [patch], outputs: [review]}
+"""
+
+PREVIOUS: dict[str, list[dict]] = {
+    name: [flow] for name, flow in gy.load_text(_PREVIOUS_TEXT)["flows"].items()}
 
 
 def available(resolved) -> dict[str, tuple[dict, str]]:
@@ -81,6 +100,22 @@ def required_roles(flow: dict) -> list[str]:
 def missing_roles(flow: dict, resolved) -> list[str]:
     defined = set((resolved.config.get("roles", {}) if resolved else {}))
     return [r for r in required_roles(flow) if r not in defined]
+
+
+def recorded(name: str, flow: dict, source: str, flow_digest) -> dict:
+    """The packaged definition a checked flow recorded when it started.
+
+    ``flow_digest`` is the definition digest saved in the flow's check
+    request. A packaged flow whose current definition no longer matches it
+    resumes with the earlier packaged definition that does; anything else
+    (a configured flow, or no match) is returned unchanged, so the engine's
+    own comparison still refuses a changed definition.
+    """
+    from garuda.core.acceptance_records import digest
+
+    if source != gy.PACKAGE or digest(flow) == flow_digest:
+        return flow
+    return next((old for old in PREVIOUS.get(name, []) if digest(old) == flow_digest), flow)
 
 
 def show(name: str, resolved) -> str:

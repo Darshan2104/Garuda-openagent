@@ -1153,3 +1153,64 @@ async def test_retries_are_refused_where_every_attempt_is_accounted_for(repo, ow
         await runner.run()
     assert caught.value.code == "flow.retries_unsupported"
     assert fake.launches == [] and LeaseStore().holders_of(repo) == []
+
+@pytest.mark.skipif(sys.platform != "linux", reason="owned flow checks require Linux")
+@pytest.mark.parametrize("recorded", ["previous", "current"])
+def test_checked_packaged_flow_resumes_with_the_definition_it_started_with(
+        repo, monkeypatch, capsys, recorded):
+    """#818: a checked flow binds its definition digest into its saved check request.
+
+    One started under an earlier packaged plan-build-review (reviewer inputs
+    [patch]) still resumes after the upgrade, with that recorded definition;
+    one started under the current definition resumes with the current one.
+    """
+    from garuda.flows import packaged
+    from tests.test_runtime_cli import _main
+
+    gy.user_path().write_text(
+        "version: 1\nroles:\n  planner: {harness: native, model_id: p/1}\n"
+        "  coder: {harness: native, model_id: c/1}\n"
+        "  reviewer: {harness: native, model_id: r/1}\n")
+    current = packaged.FLOWS["plan-build-review"]
+    (previous,) = packaged.PREVIOUS["plan-build-review"]
+    assert [s.get("inputs") for s in previous["steps"]][-1] == ["patch"]
+    assert [s.get("inputs") for s in current["steps"]][-1] == ["plan", "patch"]
+    launches, prompts = [], {}
+    outputs = {"plan": _block("plan", "edit a.txt"), "build": _block("patch", "a.txt"),
+               "review": _block("review", "verdict: approve")}
+
+    async def launcher(launch):
+        launches.append((launch.step_id, launch.attempt))
+        prompts[(launch.step_id, launch.attempt)] = launch.prompt
+        session = str(uuid.uuid4())
+        lease = launch.capability._parent.snapshot_ownership()["lease"]
+        info = repo.stat()
+        closure = {"version": 1, "request_digest": "a" * 64, "session_id": session,
+                   "parent_id": launch.flow_session, "step_id": launch.step_id,
+                   "attempt": launch.attempt, "workspace_identity": [info.st_dev, info.st_ino],
+                   "parent_owner": {key: lease[key] for key in ("pid", "identity", "pgid", "epoch")},
+                   "process": {"cleanup": {"backend": "linux-subreaper", "echild": True},
+                               "outcome": "exited", "supervisor": {}, "command": {}, "exit_code": 0}}
+        if launch.step_id == "review" and launch.attempt == 1:
+            return StepResult(session, True, "missing review artifact", closure)
+        return StepResult(session, True, outputs[launch.step_id], closure)
+
+    monkeypatch.setattr("garuda.flows.launch.launch_step", launcher)
+    with monkeypatch.context() as patch:
+        if recorded == "previous":
+            patch.setitem(packaged.FLOWS, "plan-build-review", previous)
+        code, out = _main(monkeypatch, capsys, "flow", "run", "plan-build-review", "-t", "ship it",
+                          "--workspace", str(repo), "--check", "true")
+    assert code == 3, out
+    stopped = json.loads(next(line for line in out.splitlines() if line.startswith("{")))
+    assert stopped["code"] == "flow.output_missing"
+    assert packaged.FLOWS["plan-build-review"] is current
+
+    code, out = _main(monkeypatch, capsys, "flow", "resume", stopped["flow_session"])
+    assert code == 0, out
+    assert launches == [("plan", 1), ("build", 1), ("review", 1), ("review", 2)]
+    meta = SessionStore().load_meta(stopped["flow_session"])
+    assert meta["review"]["status"] == "review_approved"
+    assert meta["state"]["verification"] == {"status": "passed", "authority": "user-request"}
+    saw_plan = '<flow-input type="plan" from="plan">' in prompts[("review", 2)]
+    assert saw_plan is (recorded == "current")
