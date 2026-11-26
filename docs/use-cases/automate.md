@@ -498,6 +498,14 @@ and final message. The ACP result has no independent verification by default:
 `success` is `True` when the harness ended its turn, whatever it answered.
 The session saves the harness as `model: acp:<runtime>` and `agent: <runtime>`,
 as `garuda run` does, and each turn's usage report goes to the usage ledger.
+An unknown agent name or a missing agent file raises
+`garuda.sdk.AgentNotFound` (a `FileNotFoundError`, code `agent.not_found`) from
+`AgentSpec.load`, `AgentSpec.from_file` and `run()`. A local `workspace=` that
+does not exist raises `garuda.sdk.WorkspaceMissing` (a `FileNotFoundError`, code
+`workspace.missing`), and one that is not a directory raises
+`garuda.sdk.WorkspaceNotDirectory` (a `NotADirectoryError`, code
+`workspace.not_directory`); both are `garuda.sdk.WorkspaceUnavailable` and are
+raised by `run()` before any session starts. The codes match the CLI's.
 A harness uses its own tools, so a run on an ACP runtime with registered tools
 or `load_project_tools=True` raises `garuda.sdk.ToolsUnsupportedOnRuntime` (a
 `ValueError`, code `sdk.tools_unsupported`) before the harness starts.

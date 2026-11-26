@@ -19,6 +19,7 @@ from garuda.interfaces.web.security import DEFAULT_PORT as WEB_DEFAULT_PORT
 from garuda.model.litellm_model import LitellmModel  # noqa: F401
 from garuda.tools import build_toolkit  # noqa: F401
 from garuda.workspace.factory import WORKSPACE_KINDS
+from garuda.workspace.paths import workspace_refusal  # noqa: F401  (moved, #798)
 
 
 def _add_model_flags(parser) -> None:
@@ -1325,17 +1326,6 @@ def task_text(args) -> str | None:
 
 
 TASK_REQUIRED = "task.missing: provide -t/--task or -f/--file"
-
-
-def workspace_refusal(workspace) -> str | None:
-    """A typed refusal for a ``--workspace`` that is not an existing directory,
-    checked before any config, session or lease touches it (#774)."""
-    path = Path(workspace).expanduser()
-    if not path.exists():
-        return f"workspace.missing: {workspace} does not exist"
-    if not path.is_dir():
-        return f"workspace.not_directory: {workspace} is not a directory"
-    return None
 
 
 def check_garuda_config(args):
