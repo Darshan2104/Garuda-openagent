@@ -758,18 +758,18 @@ class FlowRunner:
             raise
 
     async def _inputs(self, step: dict, done: list[dict]) -> list[tuple[art.ArtifactRef, str]]:
+        from garuda.config.garuda_yaml import input_source
+
         version = await self._version_for_flow()
         resolved = []
-        for kind in step.get("inputs", []):
-            # The latest receipt with this kind supplies it. A parallel group's
-            # receipt holds one per member, and every member's is delivered (#809).
-            receipt = next((r for r in reversed(done)
-                            if any(o["type"] == kind for o in r.get("outputs", []))), None)
-            if receipt is None:
-                raise FlowStopped("flow.input_missing", f"no earlier step produced a {kind}",
-                                  step=step["id"])
-            refs = [art.ArtifactRef.from_dict(o) for o in receipt["outputs"] if o["type"] == kind]
-            for ref in refs if "members" in receipt else refs[:1]:
+        for entry in step.get("inputs", []):
+            kind, source, member = input_source(entry)
+            refs = _input_refs(done, kind, source, member)
+            if not refs:
+                raise FlowStopped("flow.input_missing",
+                                  f"step {entry['from']!r} produced no {kind}" if source
+                                  else f"no earlier step produced a {kind}", step=step["id"])
+            for ref in refs:
                 try:
                     resolved.append((ref, art.load(self.dir, ref, workspace_version=version)))
                 except art.ArtifactError as exc:
@@ -1991,3 +1991,28 @@ class FlowRunner:
         if stop is not None:
             raise stop
         return receipt
+
+
+def _input_refs(done: list[dict], kind: str, source: str | None,
+                member: str | None) -> list[art.ArtifactRef]:
+    """The artifact refs one ``inputs`` entry resolves to, in member order.
+
+    A plain type: the latest receipt holding that type supplies it; a parallel
+    group's receipt holds one per member, and every member's is delivered (#809).
+    ``{type, from: STEP}`` (#817): the latest attempt's receipt of that step
+    (a reviewed or retried step has several), every member's for a group;
+    ``from: GROUP:ROLE`` takes that member's only.
+    """
+    if source is None:
+        receipt = next((r for r in reversed(done)
+                        if any(o["type"] == kind for o in r.get("outputs", []))), None)
+    else:
+        receipt = next((r for r in reversed(done) if r.get("step") == source), None)
+    if receipt is None:
+        return []
+    outputs = receipt.get("outputs", [])
+    if member is not None:
+        outputs = next((m.get("outputs", []) for m in receipt.get("members", [])
+                        if m.get("role") == member), [])
+    refs = [art.ArtifactRef.from_dict(o) for o in outputs if o["type"] == kind]
+    return refs if "members" in receipt else refs[:1]

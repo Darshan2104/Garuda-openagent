@@ -162,3 +162,30 @@ async def test_a_later_step_receives_every_members_artifact(repo):
     for role in ("r1", "r2"):
         assert f'<flow-input type="review" from="reviews-{role}">' in prompts["fix"]
         assert f"| from {role}" in prompts["fix"]
+
+
+@pytest.mark.parametrize("source, members", [("reviews:r2", ["r2"]), ("reviews", ["r1", "r2"])])
+async def test_a_later_step_can_name_one_member_of_a_group(repo, source, members):
+    """#817: ``from: GROUP:ROLE`` delivers that member's artifact; ``from: GROUP`` all."""
+    config = _config()
+    config["roles"]["coder"] = {"harness": "native"}
+    config["flows"]["grp"]["steps"].append(
+        {"id": "fix", "role": "coder", "inputs": [{"type": "review", "from": source}],
+         "outputs": ["notes"]})
+    prompts = {}
+
+    async def launcher(launch):
+        prompts[launch.step_id] = launch.prompt
+        if launch.step_id == "fix":
+            return StepResult(str(uuid.uuid4()), True,
+                              '<garuda-artifact type="notes">\nok\n</garuda-artifact>')
+        return StepResult(str(uuid.uuid4()), True, REVIEW.replace(
+            "verdict: approve", f"verdict: approve\nfrom {launch.role}"))
+
+    result = await _runner(repo, launcher, config).run()
+
+    assert result.completed
+    group, fix = result.receipts
+    assert [ref["producer_step"] for ref in fix["inputs"]] == [f"reviews-{m}" for m in members]
+    for role in ("r1", "r2"):
+        assert (f"| from {role}" in prompts["fix"]) == (role in members)
