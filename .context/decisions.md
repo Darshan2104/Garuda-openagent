@@ -5007,3 +5007,28 @@ typed too: `approval.answered`, `approval.stale_request`, `approval.expired`,
 `approval.refused`, and `approval.unavailable` for an OS error, which prints only
 the OS reason (`strerror`), never the path. The dashboard answer route already
 mapped a missing request to 404; its generic OS-error branch now also drops the path.
+
+## 2026-11-26: Flow artifacts are scanned, never cut, and redacted before storing (#811, #812)
+
+`artifacts.extract` no longer uses a non-greedy regex, which cut an artifact
+at the first `</garuda-artifact>` it quoted. A scanner counts opening and
+closing tags: a balanced envelope inside a block stays content, only top-level
+blocks are artifacts, unknown types and extra attributes are still ignored,
+and the last block of a type still wins (so an echoed instruction example
+followed by the real block keeps working). A closing tag outside any block or
+a block still open at the end raises `ArtifactError("flow.artifact_malformed")`,
+which `_run_step` and `_run_group` turn into a `FlowStopped`; nothing is passed
+on. The exact rules are in the module docstring.
+
+`artifacts.store` redacts content with `redact_text`, the consult path's
+redactor, before writing, so the file, digest, size and the next prompt all
+hold the redacted text. `ArtifactRef` gains `redactions` (spans removed);
+`from_dict` reads it with `.get`, so a reference from an older flow loads with
+`None`. `ARTIFACT_VERSION` stays 1: loading checks the bytes against the
+recorded digest and size, which old artifacts still satisfy. The review
+findings fed back to the reviewed step are redacted again (they already come
+from a redacted review artifact); the review packet is unchanged because
+`diff_excerpts` already withholds any excerpt that contains a secret.
+Redaction can break a structured (JSON) review whose string holds an escaped
+quote after a credential key; that review stops with `flow.review_invalid`,
+never approves.

@@ -451,6 +451,14 @@ Click a problem to see the fix.
     `task_complete`. Give the role an agent that says so; see
     [Level 5](../use-cases/teams.md#run-a-plan-build-review-flow).
 
+??? question "A flow stops with `flow.artifact_malformed`"
+
+    The step's answer has a `</garuda-artifact>` tag outside any block, or a
+    `<garuda-artifact>` block (or one quoted inside it) that never closes.
+    Garuda stops instead of guessing where the artifact ends. A complete
+    envelope quoted inside a block is fine; the stop message names the line.
+    Ask the role's agent to close each block once, at the end of its answer.
+
 ??? question "A read-only flow step runs until it hits its turn limit"
 
     The native completion checker can ask a read-only step for evidence it

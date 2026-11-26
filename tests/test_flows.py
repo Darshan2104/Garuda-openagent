@@ -237,6 +237,91 @@ async def test_only_the_envelope_counts_and_a_model_path_is_ignored(repo):
     assert ref["path"] == "artifacts/plan-1-plan.txt"
 
 
+
+QUOTED_ENVELOPE = ('Step 1: emit this\n<garuda-artifact type="plan">\n...your plan...\n'
+                   '</garuda-artifact>\nStep 2: TAIL-AFTER-ENVELOPE')
+
+
+async def test_a_quoted_envelope_inside_an_artifact_is_kept_whole(repo):
+    # #811: the first closing tag used to cut the plan silently.
+    async def plan(launch):
+        return StepResult("s", True, _block("plan", QUOTED_ENVELOPE))
+
+    async def build(launch):
+        assert "TAIL-AFTER-ENVELOPE" in launch.prompt
+        return StepResult("s", True, _block("patch", "x"))
+
+    runner = _runner(repo, Fake(repo, {"plan": plan, "build": build}))
+    result = await runner.run()
+    assert result.completed
+    stored = runner.dir / result.receipts[0]["outputs"][0]["path"]
+    assert stored.read_text() == QUOTED_ENVELOPE
+
+
+def test_an_echoed_instruction_example_then_the_real_block_passes_the_real_block():
+    output = ("You asked me to end like this:\n" + art.instructions(["plan"])
+              + "\nSo here it is.\n" + _block("plan", "1. the real plan")
+              + '\n<garuda-artifact type="other" x="1">ignored</garuda-artifact>')
+    assert art.extract(output) == {"plan": "1. the real plan"}
+
+
+@pytest.mark.parametrize("output, where", [
+    (_block("plan", "p") + "\nmore text\n</garuda-artifact>", "outside any block"),
+    ('notes\n<garuda-artifact type="plan">\n1. the plan, never closed', "never closed"),
+    (_block("plan", 'quoting <garuda-artifact type="plan"> without its end'), "never closed"),
+    ("</garuda-artifact>\n" + _block("plan", "p"), "outside any block"),
+])
+def test_an_ambiguous_envelope_is_malformed_never_cut(output, where):
+    with pytest.raises(art.ArtifactError, match=where) as caught:
+        art.extract(output)
+    assert caught.value.code == "flow.artifact_malformed"
+
+
+async def test_a_stray_closing_tag_stops_the_step_with_a_typed_code(repo):
+    async def plan(launch):
+        return StepResult("s", True, _block("plan", "1. part one") + "\n2. part two\n</garuda-artifact>")
+
+    fake = Fake(repo, {"plan": plan})
+    result = await _runner(repo, fake).run()
+    assert result.stopped.code == "flow.artifact_malformed" and result.stopped.step == "plan"
+    assert [launch.step_id for launch in fake.launches] == ["plan"]  # build never started
+    assert result.receipts[0]["outputs"] == []
+
+
+FAKE_SECRETS = ("AKIAFAKEFAKEFAKE0000", "sk-FAKEnotarealtoken0123456789")
+
+
+async def test_artifact_secrets_are_redacted_before_storing_and_passing_on(repo):
+    # #812: the secret reached the flow directory and the next agent verbatim.
+    notes = f"key id {FAKE_SECRETS[0]}\ntoken {FAKE_SECRETS[1]}\n1. edit a.txt"
+
+    async def plan(launch):
+        return StepResult("s", True, _block("plan", notes))
+
+    async def build(launch):
+        assert not any(secret in launch.prompt for secret in FAKE_SECRETS)
+        assert "[REDACTED:aws-key]" in launch.prompt and "| 1. edit a.txt" in launch.prompt
+        return StepResult("s", True, _block("patch", "x"))
+
+    runner = _runner(repo, Fake(repo, {"plan": plan, "build": build}))
+    result = await runner.run()
+    assert result.completed
+    ref = result.receipts[0]["outputs"][0]
+    stored = (runner.dir / ref["path"]).read_bytes()
+    assert not any(secret.encode() in stored for secret in FAKE_SECRETS)
+    assert ref["redactions"] == 2 and ref["size"] == len(stored)
+    assert result.receipts[1]["outputs"][0]["redactions"] == 0
+
+
+def test_a_reference_from_before_redaction_counts_still_loads(tmp_path):
+    flow = tmp_path / "flow"
+    ref = art.store(flow, type="plan", content="the plan", step="plan", session_id="s",
+                    attempt=1, workspace_version="v1")
+    old = {k: v for k, v in ref.to_dict().items() if k != "redactions"}
+    loaded = art.ArtifactRef.from_dict(old)
+    assert loaded.redactions is None
+    assert art.load(flow, loaded, workspace_version="v1") == "the plan"
+
 async def test_a_no_edits_step_that_writes_stops_the_flow_before_the_next(repo):
     async def sneaky_plan(launch):
         (repo / "planted.txt").write_text("x")

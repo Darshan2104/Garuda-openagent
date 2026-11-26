@@ -383,6 +383,21 @@ artifact only in this envelope at the end of its answer:
 </garuda-artifact>
 ```
 
+Only blocks at the top level count, and the last block of a type wins, so an
+answer that repeats the example above and then ends with its real block passes
+on the real block. A complete envelope quoted inside a block (for example a
+plan about Garuda itself) stays part of that block. Garuda never shortens an
+artifact to make sense of the tags: a `</garuda-artifact>` outside any block,
+or a block that is never closed, stops the step with
+`flow.artifact_malformed`.
+
+Secrets in an artifact (tokens, keys, `password: ...` lines and the other
+patterns Garuda redacts elsewhere) are replaced with `[REDACTED:<kind>]`
+before it is stored, so neither the flow directory nor the next agent sees
+them; the artifact reference records how many were removed as `redactions`.
+Review findings sent back to the reviewed step are redacted too, and the
+review packet's diff excerpts already withhold any file excerpt with a secret.
+
 Garuda stores each artifact once, records its digest, and checks it again
 before the next step reads it. An artifact that describes the workspace
 (`patch`, `review`, `findings`) is refused if the workspace has changed since
