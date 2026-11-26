@@ -279,7 +279,8 @@ def effective_flow_steps(flow: dict, *, path: str = "flow.steps") -> list[dict]:
 def validate_flow_inputs(steps: list[dict], *, path: str) -> None:
     """Every step input must be an output of an earlier step.
 
-    The engine hands a step the latest earlier artifact of each input kind; a
+    The engine hands a step the latest earlier artifact of each input kind
+    (every member's, from a parallel group); a
     kind no earlier step declares can never exist, so the flow is refused at
     load time instead of stopping with ``flow.input_missing`` mid-run.
     """
@@ -321,6 +322,26 @@ def validate_flow_reviews(steps: list[dict], *, path: str) -> None:
         available.update(terminal_outputs)
 
 
+def validate_flow_retries(steps: list[dict], *, path: str) -> None:
+    """``retries`` applies to plain steps only (#810).
+
+    A reviewed step reruns through ``review.max_rounds``, the terminal reviewer
+    of a reviewed flow runs inside that loop, and a parallel group reviews one
+    snapshot; none of them is retried, so the key is refused there.
+    """
+    reviewed = any(step.get("review") for step in steps)
+    for i, step in enumerate(steps):
+        if "retries" not in step:
+            continue
+        if "parallel" in step:
+            _fail(f"{path}[{i}].retries", "a parallel group cannot be retried")
+        if step.get("review"):
+            _fail(f"{path}[{i}].retries", "a reviewed step reruns through review.max_rounds")
+        if reviewed and i == len(steps) - 1:
+            _fail(f"{path}[{i}].retries",
+                  "the terminal reviewer of a reviewed flow runs once per review round")
+
+
 def _flow(value, path) -> dict:
     data = _mapping(value, path, ("steps", "description"))
     steps = data.get("steps")
@@ -333,6 +354,7 @@ def _flow(value, path) -> dict:
     steps = effective_flow_steps(out, path=steps_path)
     validate_flow_inputs(steps, path=steps_path)
     validate_flow_reviews(steps, path=steps_path)
+    validate_flow_retries(steps, path=steps_path)
     if "description" in data:
         out["description"] = _str(data["description"], f"{path}.description")
     return out

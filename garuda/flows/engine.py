@@ -50,6 +50,13 @@ JOURNAL = "journal.jsonl"
 #: ``flow.artifact_malformed`` and ``flow.artifact_too_large`` are settled like
 #: ``flow.output_missing``: the step ran, only its output could not be stored.
 INTERRUPTED_STOP = "flow.interrupted"
+# A plain step that itself failed or gave no usable output may run again, up
+# to its ``retries`` (#810). Refusals, no-edits violations, interruptions,
+# quota waits and input errors never do.
+RETRYABLE_STOPS = frozenset({"flow.step_failed", "flow.output_missing", "flow.artifact_too_large",
+                             "flow.artifact_malformed"})
+RETRY_NOTE = ("[garuda] An earlier attempt of this step failed. Its partial edits may already be "
+              "in the workspace; inspect existing work before acting.")
 RESUMABLE_CHECKED_STOPS = {"workspace.readonly_unenforced", "flow.step_failed", "flow.output_missing",
                            "flow.artifact_malformed", "flow.artifact_too_large",
                            "flow.review_invalid", INTERRUPTED_STOP}
@@ -381,11 +388,16 @@ class FlowRunner:
         self.store = store
         self.workspace = str(Path(workspace).resolve())
         self.name = name
-        from garuda.config.garuda_yaml import effective_flow_steps, validate_flow_reviews
+        from garuda.config.garuda_yaml import (
+            effective_flow_steps,
+            validate_flow_retries,
+            validate_flow_reviews,
+        )
 
         steps_path = f"flows.{name}.steps"
         self.steps = effective_flow_steps(flow, path=steps_path)
         validate_flow_reviews(self.steps, path=steps_path)
+        validate_flow_retries(self.steps, path=steps_path)
         self.flow = flow
         self.resolved = resolved
         self.task = task
@@ -753,15 +765,19 @@ class FlowRunner:
         version = await self._version_for_flow()
         resolved = []
         for kind in step.get("inputs", []):
-            ref = next((art.ArtifactRef.from_dict(o) for r in reversed(done)
-                        for o in r.get("outputs", []) if o["type"] == kind), None)
-            if ref is None:
+            # The latest receipt with this kind supplies it. A parallel group's
+            # receipt holds one per member, and every member's is delivered (#809).
+            receipt = next((r for r in reversed(done)
+                            if any(o["type"] == kind for o in r.get("outputs", []))), None)
+            if receipt is None:
                 raise FlowStopped("flow.input_missing", f"no earlier step produced a {kind}",
                                   step=step["id"])
-            try:
-                resolved.append((ref, art.load(self.dir, ref, workspace_version=version)))
-            except art.ArtifactError as exc:
-                raise FlowStopped(exc.code, str(exc), step=step["id"]) from exc
+            refs = [art.ArtifactRef.from_dict(o) for o in receipt["outputs"] if o["type"] == kind]
+            for ref in refs if "members" in receipt else refs[:1]:
+                try:
+                    resolved.append((ref, art.load(self.dir, ref, workspace_version=version)))
+                except art.ArtifactError as exc:
+                    raise FlowStopped(exc.code, str(exc), step=step["id"]) from exc
         return resolved
 
     def _read_only(self, step: dict, role: str) -> bool:
@@ -955,6 +971,14 @@ class FlowRunner:
         from garuda.runtime.session_state import finished, interrupted
 
         checked_resume = resume and checked_checkpoint is not None and self.verification_cli_checks is not None
+        if (self.require_owned or self.quota_recovery is not None) and any(
+                step.get("retries") for step in self.steps):
+            # An owned or checked flow accounts for every attempt in its evidence
+            # and quota recovery continues from recorded stops; neither knows
+            # about an automatic retry, so the combination is refused (#810).
+            raise FlowStopped("flow.retries_unsupported",
+                              "step retries are not supported in checked, dashboard-owned or "
+                              "quota-recovered flows; remove retries or run the flow without them")
         if resume and not checked_resume:
             from garuda.runtime.strict_store import StorageError
 
@@ -1134,8 +1158,7 @@ class FlowRunner:
                     await self._review_loop(step, steps[-1], done, lease, tried)
                     completed_steps.add(steps[-1]["id"])
                     continue
-                receipt = await self._run_step(step, done, lease,
-                                               attempt=tried.get(step["id"], 0) + 1)
+                receipt = await self._run_with_retries(step, done, lease, tried)
                 done.append(receipt)
             if self.verification_request is not None:
                 try:
@@ -1708,6 +1731,29 @@ class FlowRunner:
                               "the reviewed step's workspace version is unknown, so the review "
                               "cannot be bound to its candidate", step=terminal["id"])
         return packet
+
+    async def _run_with_retries(self, step: dict, done: list[dict], lease, tried: dict) -> dict:
+        """Run a plain step, again after a retryable stop, up to ``retries`` (#810).
+
+        Attempts are numbered from the recorded receipts, and the budget is the
+        step's total attempts: a resume after the retries ran out runs the step
+        once more and never retries it again.
+        """
+        attempt = tried.get(step["id"], 0) + 1
+        extra = ""
+        while True:
+            try:
+                return await self._run_step(step, done, lease, attempt=attempt, prompt_extra=extra)
+            except FlowStopped as stop:
+                # Only an attempt that launched and settled has a receipt; an
+                # input error before launch is never retried.
+                launched = (self.dir / "receipts" / _receipt_name(step["id"], attempt)).exists()
+                if (stop.code not in RETRYABLE_STOPS or stop.settled_refusal or not launched
+                        or attempt > step.get("retries", 0)):
+                    raise
+            tried[step["id"]] = attempt
+            attempt += 1
+            extra = RETRY_NOTE
 
     async def _record_step_receipt(self, receipt: dict) -> None:
         step, attempt = receipt["step"], receipt["attempt"]

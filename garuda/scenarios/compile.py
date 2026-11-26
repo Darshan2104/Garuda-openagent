@@ -67,7 +67,7 @@ def _limits(flow: dict | None) -> dict:
         return {"max_role_invocations": 1, "review_pairs": 0, "cost": "unknown"}
     invocations, pairs = 0, 0
     for step in flow["steps"]:
-        invocations += len(step.get("parallel", [])) or 1
+        invocations += (len(step.get("parallel", [])) or 1) + step.get("retries", 0)
         if "review" in step:
             rounds = step["review"].get("max_rounds", 1)
             pairs += rounds + 1

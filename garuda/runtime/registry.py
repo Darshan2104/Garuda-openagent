@@ -53,6 +53,20 @@ class RegistryError(AgentRuntimeError):
     """Malformed configuration or an unresolvable reference. Fail-closed."""
 
 
+class UnknownRuntime(ValueError):
+    """No runtime id or alias matches (#805): the CLI's ``harness.unknown``.
+
+    A ``ValueError``, so handlers of the earlier bare refusal still match;
+    ``known`` lists the configured runtime ids, as ``garuda doctor`` does.
+    """
+
+    code = "harness.unknown"
+
+    def __init__(self, message: str, known=()):
+        super().__init__(message)
+        self.known = tuple(known)
+
+
 @dataclass(frozen=True)
 class LoginFlow:
     """How a user authenticates, declared — never performed — by Garuda.
