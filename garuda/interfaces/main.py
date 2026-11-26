@@ -1825,6 +1825,9 @@ def run_flow(args) -> int:
                 print(f"  next quota check (epoch): {recovery['next_check']}")
         for line in _flow_verification_lines(store, args.flow_session, meta):
             print(line)
+        from garuda.flows import measure
+
+        measured_receipts: list[dict] = []
         for receipt in engine.receipts(store, args.flow_session):
             outs = ", ".join(o["type"] for o in receipt.get("outputs", [])) or "-"
             plan = receipt.get("role_plan") if isinstance(receipt.get("role_plan"), dict) else {}
@@ -1833,6 +1836,11 @@ def run_flow(args) -> int:
             extra = (f"; {ran}" if ran else "") + (f"; {took / 1000:.1f}s" if type(took) is int else "")
             print(f"  {receipt['step']} (attempt {receipt['attempt']}): {receipt['status']}; "
                   f"outputs: {outs}{extra}")
+            if (measured := measure.line(receipt)) is not None:
+                print(f"    {measured}")
+            measured_receipts.append(receipt)
+        if any(isinstance(r.get("measure"), dict) for r in measured_receipts):
+            print(f"  {measure.total_line(measure.flow_total(measured_receipts))}")
         return 0
     terminated: list[bool] = []
     try:

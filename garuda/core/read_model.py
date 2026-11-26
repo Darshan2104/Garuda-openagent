@@ -154,6 +154,9 @@ def _attempt(receipt: dict) -> dict:
         "delta": None if before is None or after is None else before != after,
         "no_edits": no_edits.get("result"),
         "stop": receipt.get("stop"),
+        # What the attempt cost and how much context it used (#832); ``None`` for a
+        # receipt written before it.
+        "measure": receipt.get("measure") if isinstance(receipt.get("measure"), dict) else None,
     }
 
 

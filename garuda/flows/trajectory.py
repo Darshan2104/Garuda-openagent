@@ -171,6 +171,10 @@ def _session(store, session_id: str | None, rows: list[dict] | None) -> tuple[di
     out["stop_reason"] = meta.get("stop_reason")
     out["approval_summary"] = approval_summary(meta)
     out["usage"] = _usage(session_id, rows)
+    from garuda.observability.usage import usage_summary
+
+    # Every usage report the harness sent, summarized (#832); ``None`` before it.
+    out["usage_summary"] = usage_summary(meta)
     try:
         events, summary = _events(store, session_id)
     except OSError as exc:
@@ -217,7 +221,7 @@ def trajectory(store, flow_session: str, meta: dict | None = None, *,
     under ``events_records`` (``export_records`` writes them as their own lines).
     """
     from garuda.core import read_model
-    from garuda.flows import engine
+    from garuda.flows import engine, measure
 
     meta = meta if meta is not None else store.load_meta(flow_session)
     view = read_model.flow(store, flow_session, meta)
@@ -278,6 +282,8 @@ def trajectory(store, flow_session: str, meta: dict | None = None, *,
             "reported_cost_usd": round(sum(costs), 8) if costs else None,
             "verification": checked["status"],
             "checks": len(checked["checks"]),
+            # The receipts' per-attempt measures, totalled (#832).
+            "measure": measure.flow_total(attempts),
         },
     }
 

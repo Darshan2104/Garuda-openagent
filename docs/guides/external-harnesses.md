@@ -395,6 +395,15 @@ an action in it. Claude ends a turn `end_turn` after a denial, so this flag is h
 denied turn is told apart. It changes neither the run's status nor how the turn
 settles.
 
+**Every usage report, summarized.** The usage ledger keeps the last
+`usage_update` of a turn per reporting segment. Each session also keeps
+`usage_summary` in its record: per segment, how many reports came, the first,
+peak and last `context_used`, the last `context_size`, the last reported
+`cost_usd` (cumulative, as the harness reports it) and model. Never the reports
+themselves, and at most 16 segments. A flow step attempt's `measure.usage`
+reads it (see "Study a flow run" in the sessions and flows guide). Claude Code
+reports context occupancy and cost; Codex reports context occupancy only.
+
 Codex's `getAuthStatus` app-server method can return an auth token when asked.
 Garuda never calls it. A limit or usage value without a supported source stays
 `unknown`, and an `unknown` or account-unbound limit never triggers a

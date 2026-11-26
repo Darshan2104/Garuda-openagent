@@ -64,6 +64,7 @@ def test_public_profile_sets_are_pinned():
         "silent",
         "long-tool",
         "parked-approval",
+        "usage-rising",
     }
     assert set(PROFILES) == set(BASE_PROFILES) | {
         "capabilities-full",

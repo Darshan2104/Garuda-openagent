@@ -260,6 +260,39 @@ records, one `check` record per flow check, and a closing `summary` (attempt
 count, total duration, review rounds, the reported cost, the verification
 status and check count).
 
+Each attempt's receipt also records `measure`: what the attempt cost and how
+much context it used, so a change to prompts or to how steps run can be
+measured rather than assumed.
+
+- `prompt`: the assembled prompt's `chars` and `est_tokens`, and its `parts` in
+  order (`task`, `preamble` for Garuda's role and fence lines, each `input`
+  with its `type` and producer `from`, `output_instructions`, `findings`,
+  `packet` for a reviewer's review packet, `note`). The parts' `chars` add up
+  to the prompt's. `est_tokens` is chars / 4, an estimate, not a tokenizer
+  count.
+- `sessions`, `turns` (ACP prompts sent; for a native step, model calls) and
+  `tool_calls`, read from each step session's event trail; `duration_ms`.
+- `usage`: every usage report the harness sent, summarized: `reports`,
+  `first_context_used`, `peak_context_used`, `context_size`, `cost_usd` (the
+  harness's own cumulative figure; Claude reports it, Codex does not),
+  `cost_complete` and `models`. These are the adapter's figures, not metered
+  by Garuda.
+- `stop_reason` (the harness's raw stop reason), `approval_denied` and
+  `liveness` (`deadline` or `silence` when a step limit stopped it).
+- `per_session`: the same per step session.
+
+`flow show` prints one line per measured attempt under its status line, for
+example `prompt ~165 tok (659 chars); sessions 1, turns 1, tool calls 6; peak
+context 24953/200000 (12 reports); USD 0.0398 reported; stop end_turn`, and a
+flow total line. `flow show --json` and `flow export` carry `measure` on each
+attempt and `summary.measure` for the flow: `sessions`, `turns`,
+`tool_calls`, `prompt_chars`, `prompt_est_tokens`, the largest
+`peak_context_used` and `reported_cost_usd` (with `cost_complete` true only
+when every attempt reported its whole cost). Each attempt's `session` also
+carries `usage_summary`. Receipts and sessions recorded before this have
+`measure` and `usage_summary` `null`, and `flow show` prints no measure line
+for them.
+
 A checked flow (`flow run NAME --check CMD`) answers "did the result pass its
 checks" from the trajectory alone: `verification` has the verdict (`status`,
 `authority`, `code`), the `phase_id` and `candidate` the checks ran against,

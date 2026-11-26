@@ -130,29 +130,45 @@ def _bodies(inputs, extra) -> list[str]:
 
 def assemble(*, task: str, flow: str, step: dict, role: str, inputs, read_only: bool,
              run: bool = False, extra: str | Findings | Packet | None = None,
-             marker: str | None = None) -> str:
+             marker: str | None = None, sizes: list | None = None) -> str:
     """The prompt for ``step`` run as ``role`` with its resolved ``inputs``.
 
     ``extra`` is a ``[garuda]`` note (a string Garuda wrote), the findings for
     a reviewed step's rerun or the packet for its reviewer; it ends the prompt.
     One marker fences every block in the prompt.
+
+    A ``sizes`` list receives the prompt's parts in order (#832), each
+    ``{"part", "chars"}`` (an input also its ``type`` and ``from``): ``task``,
+    ``preamble`` (Garuda's role and fence lines), ``input``,
+    ``output_instructions``, ``findings``, ``packet`` or ``note``. Their
+    ``chars`` add up to the prompt's length; a joining newline counts with the
+    part after it.
     """
     from garuda.flows.engine import read_only_instruction
 
     bodies = _bodies(inputs, extra)
     marker = marker or new_marker(bodies)
+    parts: list[str] = []
+    labels: list[tuple] = []
+
+    def add(label: tuple, *lines: str) -> None:
+        parts.extend(lines)
+        labels.extend([label] * len(lines))
+
+    preamble = ("preamble",)
+    role_line = f"[garuda] You are the {role} step `{step['id']}` of flow `{flow}`."
     if run:
         # The CLI run receives exactly this task; so does its owned child.
-        parts = [task]
+        add(("task",), task)
     elif read_only:
         # The raw task ("Fix ...") would invite an edit the step may not
         # make; a denied edit can end the agent's turn and fail the flow (#762).
-        parts = ["[garuda] The overall task is:", task, "",
-                 f"[garuda] You are the {role} step `{step['id']}` of flow `{flow}`.",
-                 read_only_instruction(step.get("outputs", []))]
+        add(preamble, "[garuda] The overall task is:")
+        add(("task",), task)
+        add(preamble, "", role_line, read_only_instruction(step.get("outputs", [])))
     else:
-        parts = [task, "",
-                 f"[garuda] You are the {role} step `{step['id']}` of flow `{flow}`."]
+        add(("task",), task)
+        add(preamble, "", role_line)
     explained = False
 
     def explain():
@@ -164,19 +180,41 @@ def assemble(*, task: str, flow: str, step: dict, role: str, inputs, read_only: 
 
     if not run:
         if inputs:
-            parts += ["", *explain()]
-        for ref, content in inputs:
-            parts += ["", render_input(ref, content, marker)]
+            add(preamble, "", *explain())
+        for position, (ref, content) in enumerate(inputs):
+            add(("input", ref.type, ref.producer_step, position), "",
+                render_input(ref, content, marker))
         rules = art.instructions(step.get("outputs", []))
         if rules:
-            parts += ["", rules]
+            add(("output_instructions",), "", rules)
     if isinstance(extra, Findings):
-        parts += ["", *explain(), render_findings(extra.text, marker)]
+        add(preamble, "", *explain())
+        add(("findings",), render_findings(extra.text, marker))
     elif isinstance(extra, Packet):
-        parts += ["", *explain(), render_packet(extra.packet, marker)]
+        add(preamble, "", *explain())
+        add(("packet",), render_packet(extra.packet, marker))
     elif extra:
-        parts += ["", extra]
+        add(("note",), "", extra)
+    if sizes is not None:
+        sizes.extend(part_sizes(parts, labels))
     return "\n".join(parts)
+
+
+def part_sizes(lines: list[str], labels: list[tuple]) -> list[dict]:
+    """Consecutive lines of one label as one part, sized as joined by newlines."""
+    out: list[dict] = []
+    last = None
+    for position, (line, label) in enumerate(zip(lines, labels, strict=True)):
+        chars = len(line) + (1 if position else 0)
+        if label == last:
+            out[-1]["chars"] += chars
+            continue
+        last = label
+        part = {"part": label[0], "chars": chars}
+        if label[0] == "input":
+            part.update({"type": label[1], "from": label[2]})
+        out.append(part)
+    return out
 
 
 def extra_record(extra) -> dict:

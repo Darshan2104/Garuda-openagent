@@ -17,7 +17,9 @@ usage-limit (the prompt fails like codex-acp at a plan limit: -32603 with the ca
 claude-usage-limit (claude-agent-acp 0.110.1 at an account limit: a usage_update carrying
 `_claude/rateLimit`, then -32603 "Internal error: You've hit your ..." with
 `data: {errorKind: "rate_limit", rateLimit}`), claude-usage-limit-legacy (0.85.0: the same, but
-`data` is only `{errorKind: "rate_limit"}`), claude-usage (a normal turn whose usage_update
+`data` is only `{errorKind: "rate_limit"}`), usage-rising (three usage_updates whose context
+peaks mid-turn, with a rising cost, one tool
+call, then the artifacts reply), claude-usage (a normal turn whose usage_update
 carries `_claude/rateLimit`, then a later one without it), stop-reason (ends the turn with the
 prompt text as its `stopReason` when it is a v1 stop reason),
 resume (stable ids via --state-file; declares loadSession, answers session/load
@@ -101,6 +103,7 @@ BASE_PROFILES = frozenset(
         "silent",
         "long-tool",
         "parked-approval",
+        "usage-rising",
     }
 )
 PROFILES = BASE_PROFILES | frozenset(
@@ -125,6 +128,18 @@ def _claude_usage(session_id: str, rate_limit: dict | None) -> None:
         meta["_claude/rateLimit"] = rate_limit
     _update(session_id, {"sessionUpdate": "usage_update", "used": 3400, "size": 200000,
                          "_meta": meta})
+
+
+def _usage_rising(session_id: str) -> None:
+    """Three ``usage_update``s whose context peaks in the middle, with a rising
+    cumulative cost, and one tool call (#832)."""
+    for used, cost in ((21000, 0.01), (26000, 0.02), (24000, 0.03)):
+        _update(session_id, {"sessionUpdate": "usage_update", "used": used, "size": 200000,
+                             "cost": {"amount": cost, "currency": "USD"},
+                             "_meta": {"_claude/model": "fake-model-1"}})
+        if used == 21000:
+            _update(session_id, {"sessionUpdate": "tool_call", "toolCallId": "c-read",
+                                 "title": "read a.txt", "kind": "read", "status": "completed"})
 
 
 def _read_frame() -> dict:
@@ -647,6 +662,9 @@ def _handle_prompt(
                 break
         _answer_artifacts(session_id, call_id, text, artifact_padding)
     elif profile in ("artifacts", "edits-unless-read-only", "silent"):
+        _answer_artifacts(session_id, call_id, text, artifact_padding)
+    elif profile == "usage-rising":
+        _usage_rising(session_id)
         _answer_artifacts(session_id, call_id, text, artifact_padding)
     elif profile == "write-anyway":
         # Asks to edit, is refused, and writes anyway: what the no-edits
