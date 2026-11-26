@@ -299,7 +299,10 @@ transcript stays in Runs.
 A tool call that needs approval shows a card in the chat. The chat's poll is
 also its heartbeat: while a turn runs or an approval waits, it keeps going when
 the tab is in the background or you are on another dashboard page (the Chat
-tab then shows a count). Once the tab is closed, the server denies the waiting
+tab then shows a count). The same holds for every chat the tab has open:
+**New chat** inside a chat starts another without dropping the first, and while
+you work in one, the others that wait for an answer are listed above it with a
+link back (and marked in the New chat page's list of open chats). Once the tab is closed, the server denies the waiting
 approval after a 90-second grace window, so the run is not blocked for the full
 five-minute timeout. 90 seconds is longer than the slowest heartbeat a
 background tab can send (browsers may wake a long-hidden tab's timers only once

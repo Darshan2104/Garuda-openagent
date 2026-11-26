@@ -454,3 +454,25 @@ def test_the_grace_window_outlasts_background_tab_throttling():
 
     assert HEARTBEAT_GRACE_SECONDS >= 75
     assert HEARTBEAT_GRACE_SECONDS * 2 < APPROVAL_TIMEOUT_SECONDS
+
+
+async def test_the_chat_list_says_which_chats_wait_for_an_answer_without_touching_them(wired):
+    """The New chat page marks open chats that are waiting for approval. Listing must not
+    count as a heartbeat, or a page that merely lists chats would keep abandoned asks alive."""
+    from types import SimpleNamespace
+
+    engine, events, broker, ctx = wired
+    broker._timeout = 60.0
+    for chat_id in ("chat-1", "chat-2"):
+        ctx.live.chats[chat_id] = SimpleNamespace(
+            chat_id=chat_id, as_dict=lambda chat_id=chat_id: {"chat_id": chat_id})
+    screening = asyncio.ensure_future(
+        engine.evaluate_tool_call("bash", {"command": ASK_COMMAND})
+    )
+    await _wait_for_ask(broker)
+    await asyncio.sleep(0.25)   # past the 0.2s grace
+    listed = payload_of(await call(ctx, "/api/chat"))["chats"]
+    assert {item["chat_id"]: item["pending_approvals"] for item in listed} == {
+        "chat-1": 1, "chat-2": 0}
+    assert broker.reap() == 1, "listing chats refreshed the heartbeat"
+    await asyncio.wait_for(screening, timeout=2)

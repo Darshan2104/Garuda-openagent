@@ -42,9 +42,10 @@ var CHAT_ID_KEY = "garuda_chat_id";
 var CHAT_DRAFT_KEY = "garuda_chat_draft:";
 /* Memory fallback for when sessionStorage is unavailable (private mode, blocked storage). */
 var CHAT_MEMORY = {};
-/* The one chat poller. Not STATE.poller: that slot belongs to whichever view is mounted, and
- * the chat's heartbeat may outlive its view. */
-var CHAT_POLLER = null;
+/* Every chat this tab has open, by id, each with its own poller (`chat.poller`, never
+ * STATE.poller: that slot belongs to whichever view is mounted, and a chat's heartbeat may
+ * outlive its view). STATE.chat is the one on screen, or the one to resume. */
+var CHAT_OPEN = {};
 
 function chatStore(key, value) {
   try {
@@ -73,7 +74,7 @@ function chatView() {
     return Promise.resolve();
   }
   // A chat still being watched from another page is resumed as it is, rows and all.
-  if (STATE.chat && CHAT_POLLER) return openChat(STATE.chat.id, STATE.chat.info);
+  if (STATE.chat && STATE.chat.poller) return openChat(STATE.chat.id, STATE.chat.info);
   render('<div class="loading">Looking for your chat…</div>');
   return api("/api/chat")
     .then(function (payload) {
@@ -95,7 +96,11 @@ function chatView() {
         chatStore(CHAT_ID_KEY, null);
         chatStore(CHAT_DRAFT_KEY + remembered, null);
       }
-      if (STATE.chat && STATE.chat.id === remembered) STATE.chat = null;
+      if (STATE.chat && STATE.chat.id === remembered) {
+        var stale = STATE.chat;
+        STATE.chat = null;
+        unwatchChat(stale);
+      }
     })
     .catch(function (err) {
       if (err.status === 401) { render(tokenRequiredPanel()); return; }
@@ -126,6 +131,8 @@ function renderChatStart(options) {
       '<span class="meta">' + esc(chat.agent) + " · " + esc(chat.permission_mode) + " · " +
       esc(fmt.num(chat.turns)) + " turns</span>" +
       '<span class="meta source-origin">' + esc(fmt.tail(chat.workspace, 48)) + "</span>" +
+      '<span class="flag flag-warn" data-waiting-for="' + esc(chat.chat_id) + '"' +
+      (chat.pending_approvals ? "" : " hidden") + ">waiting for your approval</span>" +
       '<button type="button" class="btn" data-resume="' + esc(chat.chat_id) + '">Resume</button></div>';
   }).join("");
   var workspaces = (config.workspaces || []).map(function (ws) {
@@ -173,6 +180,7 @@ function renderChatStart(options) {
       openChat(id, null);
     });
   });
+  renderOtherChats();
 }
 
 function startChat() {
@@ -205,7 +213,7 @@ function startChat() {
 
 function newChatState(chatId, known) {
   return {
-    id: chatId, info: known || null, offset: 0,
+    id: chatId, info: known || null, offset: 0, poller: null,
     rows: [], seq: 0, renderedSeq: 0, liveHtml: null,
     approvals: [], settled: [], usedSettled: Object.create(null), seenAsks: Object.create(null),
     answering: Object.create(null), graceSeconds: null,
@@ -215,13 +223,20 @@ function newChatState(chatId, known) {
   };
 }
 
+/* Mount a chat in the view. The chat being left (if another) is unmounted, not dropped: its
+ * heartbeat continues while it has a turn running or an approval waiting. */
 function openChat(chatId, known) {
-  var chat = STATE.chat && STATE.chat.id === chatId ? STATE.chat : null;
-  if (!chat) {
-    stopChat();
-    chat = newChatState(chatId, known);
-    STATE.chat = chat;
+  var chat = CHAT_OPEN[chatId] || null;
+  var previous = STATE.chat;
+  if (previous && previous !== chat) {
+    unmountChat(previous);
+    if (!previous.poller) delete CHAT_OPEN[previous.id];
   }
+  if (!chat) {
+    chat = newChatState(chatId, known);
+    CHAT_OPEN[chatId] = chat;
+  }
+  STATE.chat = chat;
   chatStore(CHAT_ID_KEY, chatId);
   chat.mounted = true;
   chat.renderedSeq = 0;      // the shell is new, so every row it keeps is drawn again
@@ -234,19 +249,33 @@ function openChat(chatId, known) {
   renderChatLog();
   renderApprovals();
   renderOffline();
+  renderOtherChats();
   setChatNavCount();
-  if (!CHAT_POLLER) {
-    CHAT_POLLER = new Poller(pollChat, CHAT_POLL_MS, {
-      hiddenInterval: CHAT_HIDDEN_MS,
-      keepAliveHidden: function () { return chatNeedsHeartbeat(STATE.chat); }
-    });
-    CHAT_POLLER.start();
-  } else {
-    chatSetIntervals(chat);
-    CHAT_POLLER.now();
-  }
+  watchChat(chat);
   refreshSources();
   return Promise.resolve();
+}
+
+/* Start (or hurry) a chat's poll. One Poller per chat this tab has open, each its own
+ * heartbeat, so an approval waiting in one chat is not reaped while the user works in another. */
+function watchChat(chat) {
+  if (!chat.poller) {
+    chat.poller = new Poller(function () { return pollChat(chat); }, CHAT_POLL_MS, {
+      hiddenInterval: CHAT_HIDDEN_MS,
+      keepAliveHidden: function () { return chatNeedsHeartbeat(chat); }
+    });
+    chatSetIntervals(chat);
+    chat.poller.start();
+  } else {
+    chatSetIntervals(chat);
+    chat.poller.now();
+  }
+}
+
+/* Stop watching a chat entirely: it ended, vanished, or has nothing left to keep alive. */
+function unwatchChat(chat) {
+  if (chat.poller) { chat.poller.stop(); chat.poller = null; }
+  if (CHAT_OPEN[chat.id] === chat && STATE.chat !== chat) delete CHAT_OPEN[chat.id];
 }
 
 function chatShellHtml(chatId) {
@@ -255,8 +284,10 @@ function chatShellHtml(chatId) {
     '<span class="meta" id="chat-meta">' + esc(chatId.slice(0, 8)) + "</span>" +
     '<a class="meta" id="chat-trace" href="#/runs">trace</a>' +
     '<button type="button" class="btn" id="chat-stop" hidden>Stop</button>' +
+    '<button type="button" class="btn" id="chat-new">New chat</button>' +
     '<button type="button" class="btn" id="chat-close">End chat</button>' +
     "</div>" +
+    '<div id="chat-others"></div>' +
     '<div class="notice err" id="chat-offline" role="status" hidden>' +
     '<div class="notice-title">Can\'t reach the dashboard</div>' +
     '<div class="notice-body" id="chat-offline-body"></div>' +
@@ -278,27 +309,53 @@ function chatShellHtml(chatId) {
   );
 }
 
-/* Called by the router on every navigation. A chat that is running a turn, sending one, or
- * waiting on an approval keeps its heartbeat; anything else stops polling. Either way the
- * chat itself stays open on the server, and coming back resumes it. */
-function leaveChat() {
-  var chat = STATE.chat;
+/* Take a chat out of the view. A chat that is running a turn, sending one, or waiting on an
+ * approval keeps its heartbeat; anything else stops polling. Either way the chat itself stays
+ * open on the server, and coming back resumes it. */
+function unmountChat(chat) {
   if (!chat || !chat.mounted) return;
   chat.mounted = false;
   if (!chatNeedsHeartbeat(chat)) {
-    if (CHAT_POLLER) { CHAT_POLLER.stop(); CHAT_POLLER = null; }
+    if (chat.poller) { chat.poller.stop(); chat.poller = null; }
+    if (STATE.chat !== chat) delete CHAT_OPEN[chat.id];
     return;
   }
   chatSetIntervals(chat);
   setChatNavCount();
   if (chat.approvals.length) {
-    toast("Chat is still waiting for your approval. It stays parked while this tab is open; " +
-          "closing the tab denies it.");
+    toast("Chat " + chat.id.slice(0, 8) + " is still waiting for your approval. It stays " +
+          "parked while this tab is open; closing the tab denies it.");
   }
 }
 
+/* Called by the router on every navigation. */
+function leaveChat() {
+  if (STATE.chat) unmountChat(STATE.chat);
+}
+
+/* Show the New chat form from inside a chat, leaving the current one running. */
+function showChatStart() {
+  if (STATE.chat) {
+    var chat = STATE.chat;
+    unmountChat(chat);
+    // Not the resume target any more unless something keeps it alive (then it is listed).
+    if (!chat.poller) delete CHAT_OPEN[chat.id];
+    STATE.chat = null;
+    chatStore(CHAT_ID_KEY, null);
+  }
+  render('<div class="loading">Loading…</div>');
+  return api("/api/chat")
+    .then(function (payload) { renderChatStart({ chats: payload.chats || [] }); })
+    .catch(function () { renderChatStart({ chats: [] }); });
+}
+
+/* Every chat this tab watches. Ends with the tab: a closed tab still leads to denial. */
 function stopChat() {
-  if (CHAT_POLLER) { CHAT_POLLER.stop(); CHAT_POLLER = null; }
+  Object.keys(CHAT_OPEN).forEach(function (id) {
+    var chat = CHAT_OPEN[id];
+    if (chat.poller) { chat.poller.stop(); chat.poller = null; }
+  });
+  CHAT_OPEN = {};
   STATE.chat = null;
   setChatNavCount();
 }
@@ -310,7 +367,7 @@ function chatNeedsHeartbeat(chat) {
 /* Poll comfortably faster than the server's grace window: this request *is* the heartbeat,
  * and missing it denies the user's own pending approval. */
 function chatSetIntervals(chat) {
-  if (!CHAT_POLLER || !chat) return;
+  if (!chat || !chat.poller) return;
   var grace = typeof chat.graceSeconds === "number" ? chat.graceSeconds * 1000 : null;
   var visible = chat.mounted ? CHAT_POLL_MS : CHAT_BACKGROUND_MS;
   var hidden = CHAT_HIDDEN_MS;
@@ -323,20 +380,26 @@ function chatSetIntervals(chat) {
     visible = Math.max(visible, backoff);
     hidden = Math.max(hidden, backoff);
   }
-  CHAT_POLLER.interval = visible;
-  CHAT_POLLER.hiddenInterval = hidden;
+  chat.poller.interval = visible;
+  chat.poller.hiddenInterval = hidden;
 }
 
-function chatPollNow() {
-  if (CHAT_POLLER) CHAT_POLLER.now();
+function chatPollNow(chat) {
+  chat = chat || STATE.chat;
+  if (chat && chat.poller) chat.poller.now();
+}
+
+/* Chats this tab keeps alive that are not on screen, with an approval waiting. */
+function waitingChats() {
+  return Object.keys(CHAT_OPEN).map(function (id) { return CHAT_OPEN[id]; })
+    .filter(function (chat) { return !chat.mounted && chat.approvals.length; });
 }
 
 function setChatNavCount() {
   var link = el("nav-chat");
   if (!link) return;
   var badge = el("nav-chat-count");
-  var chat = STATE.chat;
-  var count = chat && !chat.mounted ? chat.approvals.length : 0;
+  var count = waitingChats().reduce(function (sum, chat) { return sum + chat.approvals.length; }, 0);
   if (!badge) {
     if (!count) return;
     badge = document.createElement("span");
@@ -349,6 +412,33 @@ function setChatNavCount() {
   badge.title = count + " chat approval" + (count === 1 ? "" : "s") + " waiting";
 }
 
+/* Other chats waiting for an answer, each a link back: a strip above the current chat, and a
+ * marker on the New chat page's list of open chats. Redrawn only when its markup changes. */
+function renderOtherChats() {
+  var node = el("chat-others");
+  if (node) {
+    var html = waitingChats().map(function (chat) {
+      var tools = chat.approvals.map(function (ask) { return ask.tool_name || "a tool call"; });
+      return '<div class="notice approval chat-other" data-chat="' + esc(chat.id) + '">' +
+        '<div class="notice-title">Chat <span class="mono">' + esc(chat.id.slice(0, 8)) +
+        "</span> is waiting for your approval</div>" +
+        '<div class="composer-row"><span class="stat-sub">' + esc(tools.join(", ")) + "</span>" +
+        '<button type="button" class="btn btn-primary" data-switch="' + esc(chat.id) + '">' +
+        "Go to it</button></div></div>";
+    }).join("");
+    if (node._drawn !== html) {
+      node._drawn = html;
+      node.innerHTML = html;
+      node.querySelectorAll("[data-switch]").forEach(function (button) {
+        button.addEventListener("click", function () { openChat(button.getAttribute("data-switch"), null); });
+      });
+    }
+  }
+  view().querySelectorAll("[data-waiting-for]").forEach(function (flag) {
+    var chat = CHAT_OPEN[flag.getAttribute("data-waiting-for")];
+    if (chat) flag.hidden = !chat.approvals.length;
+  });
+}
 /* --- sources -------------------------------------------------------------- */
 
 function sourcesPanelHtml() {
@@ -436,6 +526,7 @@ function wireChat() {
     sendChatTurn();
   });
   el("chat-close").addEventListener("click", endChat);
+  el("chat-new").addEventListener("click", showChatStart);
   el("chat-stop").addEventListener("click", stopChatTurn);
   el("chat-retry").addEventListener("click", function () {
     var body = el("chat-offline-body");
@@ -614,9 +705,8 @@ function stopChatTurn() {
  * all three have arrived, so nothing renders out of order: an approval card cannot appear
  * before the tool call that caused it, and a denial row is labelled from the broker's record
  * of who settled it — which the broker writes before the event exists. */
-function pollChat() {
-  var chat = STATE.chat;
-  if (!chat) return Promise.resolve();
+function pollChat(chat) {
+  if (!chat || CHAT_OPEN[chat.id] !== chat) return Promise.resolve();
   var info, tail;
   return api("/api/chat/" + encodeURIComponent(chat.id))
     .then(function (payload) {
@@ -631,7 +721,7 @@ function pollChat() {
       return api("/api/approvals?owner=" + encodeURIComponent(chat.id));
     })
     .then(function (approvals) {
-      if (STATE.chat !== chat) return;
+      if (CHAT_OPEN[chat.id] !== chat) return;
       var wasOffline = chat.failures > 0;
       chat.failures = 0;
       chat.offline = null;
@@ -650,20 +740,20 @@ function pollChat() {
       chat.approvals = approvals.approvals || [];
       noticeNewAsks(chat);
       chatSetIntervals(chat);
-      if (chat.mounted) {
+      if (chat.mounted && STATE.chat === chat) {
         renderChatInfo();
         renderChatLog();
         renderApprovals();
         if (wasOffline) renderOffline();
-      } else if (!chatNeedsHeartbeat(chat) && CHAT_POLLER) {
-        // Off-page and nothing left to keep alive: stop. Coming back resumes from here.
-        CHAT_POLLER.stop();
-        CHAT_POLLER = null;
+      } else if (!chatNeedsHeartbeat(chat)) {
+        // Off-screen and nothing left to keep alive: stop. Coming back resumes from here.
+        unwatchChat(chat);
       }
       setChatNavCount();
+      renderOtherChats();
     })
     .catch(function (err) {
-      if (STATE.chat !== chat) return;
+      if (CHAT_OPEN[chat.id] !== chat) return;
       if (err.status === 401) { stopChat(); render(tokenRequiredPanel()); return; }
       if (err.status === 404 && info === undefined) { chatGone(chat); return; }
       // Unreachable or failing: say so instead of leaving "working… turn N" on screen, and
@@ -671,7 +761,7 @@ function pollChat() {
       chat.failures += 1;
       chat.offline = { status: err.status || null, code: err.code, message: err.message };
       chatSetIntervals(chat);
-      renderOffline();
+      if (STATE.chat === chat) renderOffline();
     });
 }
 
@@ -679,18 +769,27 @@ function noticeNewAsks(chat) {
   chat.approvals.forEach(function (ask) {
     if (chat.seenAsks[ask.ask_id]) return;
     chat.seenAsks[ask.ask_id] = 1;
-    if (!chat.mounted) toast("Chat needs your approval for " + (ask.tool_name || "a tool call") + ".");
+    if (!chat.mounted) {
+      toast("Chat " + chat.id.slice(0, 8) + " needs your approval for " +
+            (ask.tool_name || "a tool call") + ".");
+    }
   });
 }
 
 /* The server no longer has this chat. Say so; never open a replacement silently. */
 function chatGone(chat) {
-  if (STATE.chat !== chat) return;
-  var mounted = chat.mounted;
-  stopChat();
-  // Kept, so the next visit to the Chat page can say the previous chat is gone.
-  chatStore(CHAT_ID_KEY, chat.id);
+  if (CHAT_OPEN[chat.id] !== chat) return;
+  var current = STATE.chat === chat;
+  var mounted = current && chat.mounted;
+  if (current) STATE.chat = null;
+  unwatchChat(chat);
+  delete CHAT_OPEN[chat.id];
+  setChatNavCount();
+  renderOtherChats();
   chatStore(CHAT_DRAFT_KEY + chat.id, null);
+  // Off-screen, it is kept so the next visit to the Chat page can say the chat is gone; on
+  // screen, it is said right now.
+  if (current) chatStore(CHAT_ID_KEY, mounted ? null : chat.id);
   if (mounted && (location.hash || "") === "#/chat") {
     api("/api/chat")
       .then(function (payload) { renderChatStart({ gone: chat.id, chats: payload.chats || [] }); })
@@ -705,7 +804,7 @@ function renderOffline() {
   var node = el("chat-offline");
   if (!node || !chat) return;
   if (!chat.offline) { node.hidden = true; return; }
-  var wait = CHAT_POLLER ? Math.round(CHAT_POLLER.interval / 100) / 10 : null;
+  var wait = chat.poller ? Math.round(chat.poller.interval / 100) / 10 : null;
   var why = chat.offline.status
     ? "It answered " + chat.offline.status + " — " + chat.offline.code + ": " + chat.offline.message
     : "No answer: " + chat.offline.message;
@@ -968,7 +1067,10 @@ function endChat() {
   if (button) { button.disabled = true; button.textContent = "Ending…"; }
   api("/api/chat/" + encodeURIComponent(chat.id), { method: "DELETE" })
     .then(function () {
-      if (STATE.chat === chat) stopChat();
+      if (STATE.chat === chat) STATE.chat = null;
+      unwatchChat(chat);
+      delete CHAT_OPEN[chat.id];
+      setChatNavCount();
       chatStore(CHAT_ID_KEY, null);
       chatStore(CHAT_DRAFT_KEY + chat.id, null);
       toast("Chat closed and its workspace released.");

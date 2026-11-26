@@ -631,6 +631,108 @@ with sync_playwright() as p:
         if server(page, "/api/chat")["body"]["chats"]:
             problems.append("End chat did not end the chat")
 
+    # --- two chats: an approval waiting in one survives work in the other --------
+    # Each chat this tab has open keeps its own heartbeat while it has something pending, so
+    # switching to (or starting) another chat must not let the reaper deny the first one's ask.
+    def pending_for(page, chat_id):
+        # Unfiltered on purpose: naming an owner in the query is itself a heartbeat for it.
+        asks = server(page, "/api/approvals")["body"]["approvals"]
+        return sum(1 for ask in asks if ask["owner"] == chat_id)
+
+    def open_new_chat(page, workspace_index):
+        page.wait_for_selector("#chat-new-form", timeout=10_000)
+        page.select_option("#chat-new-workspace", str(workspace_index))
+        page.click("#chat-new-start")
+        page.wait_for_selector("#chat-form", timeout=10_000)
+        settle(page, "() => STATE.chat && STATE.chat.info && STATE.chat.info.session_id")
+        return page.evaluate("STATE.chat.id")
+
+    page.goto(f"{BASE}#/chat", wait_until="networkidle")
+    chat_a = open_new_chat(page, 0)
+    page.fill("#chat-task", "clean up in chat A")
+    page.click("#chat-send")
+    if not wait_for_card(page):
+        problems.append("chat A's ask did not park")
+    if page.query_selector("#chat-new") is None:
+        problems.append("a chat offers no way to start another one")
+        # Still exercise the heartbeat, opening B the only way an older build can.
+        chat_b = page.evaluate("""async (token) => {
+            const r = await fetch('/api/chat', {method: 'POST', body: JSON.stringify({workspace: 1}),
+                headers: {'X-Garuda-Token': token, 'Content-Type': 'application/json'}});
+            return (await r.json()).chat_id;
+        }""", TOKEN)
+        page.evaluate("id => openChat(id, null)", chat_b)
+        page.wait_for_selector("#chat-form", timeout=10_000)
+        settle(page, "id => STATE.chat && STATE.chat.id === id && STATE.chat.info", chat_b)
+    else:
+        page.click("#chat-new")
+        page.wait_for_selector("#chat-new-form", timeout=10_000)
+        marked = settle(page, """id => {
+            const flag = document.querySelector(`[data-waiting-for="${id}"]`);
+            return !!flag && !flag.hidden;
+        }""", chat_a, timeout=5000)
+        if not marked:
+            problems.append("the open-chats list did not mark chat A as waiting for approval")
+        page.screenshot(path=f"{SHOTS}/chat-two-start.png", full_page=True)
+        chat_b = open_new_chat(page, 1)
+    print("\ntwo chats:", chat_a[:8], chat_b[:8])
+    # Work in B: a turn whose own ask is answered, then time past A's grace window.
+    page.fill("#chat-task", "clean up in chat B")
+    page.click("#chat-send")
+    if wait_for_card(page):
+        page.click("[data-deny]")
+        text_contains(page, "#chat-log", "denied by you")
+    else:
+        problems.append("chat B's ask did not park")
+    page.wait_for_timeout(int(grace * 1000) + 3000)   # observation: past A's grace window
+    alive = pending_for(page, chat_a)
+    print(f"chat A pending after {grace + 3}s of work in chat B: {alive}")
+    if alive != 1:
+        problems.append("working in chat B let the reaper deny chat A's pending approval")
+    badge = page.query_selector("#nav-chat-count")
+    if not badge or not badge.is_visible() or badge.inner_text().strip() != "1":
+        problems.append("the Chat nav count did not show chat A's waiting approval")
+    strip = page.query_selector(f".chat-other[data-chat='{chat_a}'] [data-switch]")
+    if strip is None:
+        problems.append("chat B's page did not say chat A is waiting, with a link back")
+    page.screenshot(path=f"{SHOTS}/chat-two-waiting.png", full_page=True)
+    if strip is not None:
+        strip.click()
+        card = wait_for_card(page, 5000)
+        if (page.text_content("#chat-meta") or "").strip() != chat_a[:8]:
+            problems.append("the link back did not open chat A")
+        if not card:
+            problems.append("chat A's approval card was not shown after switching back")
+        else:
+            approval_posts.clear()
+            page.click("[data-approve]")
+            answered = settle(page, """() => !document.querySelector('.notice.approval')
+                              && document.querySelector('.chat-result')""")
+            if not answered or len(approval_posts) != 1 or pending_for(page, chat_a):
+                problems.append("chat A's approval could not be answered after the switch")
+
+    # A closed tab still leads to denial, background chats included: park an ask in B,
+    # switch to A (B is now watched in the background), and close the tab.
+    wait_until_idle(page)
+    page.evaluate("id => openChat(id, null)", chat_b)
+    page.wait_for_selector("#chat-form", timeout=10_000)
+    wait_until_idle(page)
+    page.fill("#chat-task", "clean up in chat B again")
+    page.click("#chat-send")
+    if not wait_for_card(page):
+        problems.append("chat B's second ask did not park")
+    page.evaluate("id => openChat(id, null)", chat_a)
+    page.wait_for_timeout(int(grace * 1000) + 2000)   # observation: B kept alive meanwhile
+    if pending_for(page, chat_b) != 1:
+        problems.append("chat B's ask was reaped while the tab watching it was open")
+    page.close()
+    page = browser.new_page()
+    page.goto(f"{BASE}#t={TOKEN}", wait_until="domcontentloaded")
+    left = wait_server(page, lambda pg: pending_for(pg, chat_b) == 0,
+                       timeout_ms=int(grace * 1000) + 6000)
+    if not left:
+        problems.append("closing the tab left chat B's background approval parked")
+
     browser.close()
 
 print("\n=== problems ===")
