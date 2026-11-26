@@ -59,6 +59,39 @@ CONTEXT_REWIND_NOTICE = (
 )
 
 
+class ForkSourceNotNative(ValueError):
+    """The fork source is an ACP harness or flow session with no native message history."""
+
+
+def _refuse_non_native_source(session_id: str, meta) -> None:
+    """Name a harness or flow source before reading the native-only message record."""
+    if not isinstance(meta, dict):
+        return
+    if meta.get("kind") == "flow":
+        raise ForkSourceNotNative(
+            f"fork.source_not_native: flow session {session_id} has no message history to fork; "
+            "context forks work on native sessions only."
+        )
+    segments = meta.get("runtime_segments")
+    last = segments[-1] if isinstance(segments, list) and segments and isinstance(segments[-1], dict) else None
+    model = meta.get("model")
+    if last is not None:
+        if last.get("kind") != "acp":
+            return
+        runtime = last.get("runtime_id")
+    elif isinstance(model, str) and model.startswith("acp:"):
+        runtime = model[len("acp:"):].split("/", 1)[0]
+    else:
+        return
+    if not isinstance(runtime, str) or not runtime:
+        agent = meta.get("agent")
+        runtime = agent if isinstance(agent, str) and agent else "unknown"
+    raise ForkSourceNotNative(
+        f"fork.source_not_native: ACP session {session_id} (runtime {runtime}) has no message history "
+        "to fork; context forks work on native sessions only."
+    )
+
+
 def validate_fork_request(*, fork, fork_at, resume=None, context=None, isolation="shared"):
     if fork is None:
         if fork_at is not None:
@@ -180,6 +213,9 @@ def _messages(data):
 
 
 def prepare_context_fork(reader, session_id: str, fork_at: int, *, bounded_reads: bool = False) -> ContextFork:
+    # An ACP harness or flow session keeps no messages.json; say so instead of
+    # surfacing the generic missing-record error from the snapshot read (#770).
+    _refuse_non_native_source(session_id, reader.load_meta(session_id))
     snapshot = _snapshot(reader, session_id, bounded_reads=bounded_reads)
     meta = parse_json(snapshot["meta.json"])
     if meta != reader.load_meta(session_id):
