@@ -404,8 +404,12 @@ def _answer_approval(request: Request, ctx: DashboardContext, match) -> Response
                      status=409)
     except RequestExpired:
         return error(CODE_EXPIRED, "That approval expired and will be denied.", status=410)
-    except (AnswerRefused, OSError, ValueError) as exc:
+    except (AnswerRefused, ValueError) as exc:
         return error("refused", f"The answer was not recorded: {exc}", status=409)
+    except OSError as exc:
+        # The OS error's text carries the absolute path; keep only its reason (#797).
+        return error("refused", "The answer was not recorded: "
+                     f"{exc.strerror or type(exc).__name__}", status=409)
     return ok({"session_id": session_id, "approval_id": approval_id, "allow": body["allow"],
                "state": "answer_recorded"})
 

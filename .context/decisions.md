@@ -4987,3 +4987,23 @@ A request without an `id` is a JSON-RPC notification and gets no response
 object; over HTTP the reply is `204 No Content`. No repo client or test sent
 id-less requests to this server. Auth is unchanged: an unauthorized request,
 notification or not, is still refused with -32001 (HTTP 401).
+
+## 2026-11-26: Flow stops say their code once and name the step; approval answers are typed (#796, #797)
+
+A role refused while its plan is built (`role.mode_unknown` and the other
+`RoleRefused` codes) stopped the flow at the role name, and its message was
+`str(RoleRefused)`, which already starts with the code, so `flow run` / `flow
+resume` printed the code twice. `FlowStopped` now drops a leading copy of its own
+code from the message, so every stop (including ones rebuilt from a recorded
+message) reads `code: message` once; `flow show` keeps its #749 de-dup.
+`FlowRunner._role_plan` takes the step id and records it as the stop's step; the
+per-role quota recovery admission check, which has no step, names the first step
+of that role. Stop codes and resumability are unchanged.
+
+`garuda approvals answer S ID` on an id with no parked request exits 2 with
+`approval.not_found: no parked approval 'ID' for session S` instead of the raw
+ENOENT text with the session's absolute path. Every other answer refusal is
+typed too: `approval.answered`, `approval.stale_request`, `approval.expired`,
+`approval.refused`, and `approval.unavailable` for an OS error, which prints only
+the OS reason (`strerror`), never the path. The dashboard answer route already
+mapped a missing request to 404; its generic OS-error branch now also drops the path.
