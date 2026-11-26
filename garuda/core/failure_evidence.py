@@ -253,7 +253,16 @@ def causal_record(
     exit_code = getattr(exc, "exit_code", None)
     if type(exit_code) is int:
         record["exit_code"] = exit_code
+    if limit := _limit_fields(getattr(exc, "rate_limit", None)):
+        record["limit"] = limit
     return record
+
+
+def _limit_fields(value: Any) -> dict[str, Any]:
+    """A usage limit's validated ``status``/``resets_at``/``rate_limit_type`` (#824)."""
+    from garuda.acp.protocol import rate_limit_fields
+
+    return rate_limit_fields(value, validated=True)
 
 
 def append_causal_record(session_dir: str | Path, record: dict[str, Any]) -> bool:
@@ -378,6 +387,7 @@ def _record_value(record: dict[str, Any], source: str) -> dict[str, Any] | None:
         },
         **({"remote_code": record["remote_code"]} if type(record.get("remote_code")) is int else {}),
         **({"exit_code": record["exit_code"]} if type(record.get("exit_code")) is int else {}),
+        **({"limit": limit} if (limit := _limit_fields(record.get("limit"))) else {}),
         **({"linked_to": value} if (value := _safe_scalar(record.get("linked_to"))) else {}),
     }
 

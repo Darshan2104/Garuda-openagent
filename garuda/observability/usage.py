@@ -212,8 +212,14 @@ def record_turn_acp_usage(store, session_id: str, events, *, runtime_id: str,
                and e.payload["usage"]]
     if not reports:
         return []
+    usage = reports[-1]
+    # The latest account limit snapshot rides with the last report, even when a
+    # later report of the turn did not repeat it (#824).
+    limits = [report["rate_limit"] for report in reports if isinstance(report.get("rate_limit"), dict)]
+    if limits and "rate_limit" not in usage:
+        usage = {**usage, "rate_limit": limits[-1]}
     return record_acp_usage(store, session_id, runtime_id=runtime_id,
-                            adapter_version=adapter_version, segment=segment, usage=reports[-1],
+                            adapter_version=adapter_version, segment=segment, usage=usage,
                             confined=confined)
 
 
@@ -232,7 +238,8 @@ def record_acp_usage(store, session_id: str, *, runtime_id: str, adapter_version
             adapter_version=adapter_version, counters=counters,
             context_used=usage.get("context_used"), context_size=usage.get("context_size"),
             observed_at=time.time(), session_id=session_id, project_id=meta.get("project_id"),
-            harness=runtime_id, model=usage.get("model"), confined=confined)
+            harness=runtime_id, model=usage.get("model"), confined=confined,
+            rate_limit=usage.get("rate_limit"))
         return AcpUsageNormalizer(ledger or Ledger()).ingest(report)
     except Exception:
         logger.warning("acp usage not recorded", exc_info=True)
@@ -266,6 +273,7 @@ def reported_usage(session_id: str, *, ledger: Ledger | None = None,
     reports = sorted(latest.values(), key=lambda r: r.get("time") or 0)
     last = reports[-1]
     costs = [r["cost_usd"] for r in reports if isinstance(r.get("cost_usd"), (int, float))]
+    limits = [r for r in reports if r.get("rate_limit_status") or r.get("rate_limit_resets_at")]
     return {
         "source": "adapter_reported",
         "note": "reported by the harness adapter; not metered or priced by Garuda",
@@ -278,6 +286,9 @@ def reported_usage(session_id: str, *, ledger: Ledger | None = None,
         "context_size": last.get("context_size"),
         "confined": any(r.get("confined") for r in reports),
         "segments": len(reports),
+        # The harness's latest account limit snapshot (#824), only when it sent one.
+        **({"rate_limit": {key: limits[-1].get("rate_limit_" + key)
+                           for key in ("status", "resets_at", "type")}} if limits else {}),
     }
 
 

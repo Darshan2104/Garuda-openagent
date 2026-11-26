@@ -145,22 +145,15 @@ def test_v1_content_blocks_and_unknown_kinds():
         normalizer.finish("mystery")
 
 
-def test_diagnostics_are_redacted_and_scoped():
+def test_the_normalizer_keeps_no_copy_of_raw_updates():
+    """Raw updates were copied for a diagnostic trail nothing read (#824):
+    after normalizing, no state of the normalizer holds the raw text."""
     normalizer = _normalizer()
     normalizer.feed(_chunk("token=supersecret1"))
-    pem = (
-        "-----BEGIN RSA PRIVATE KEY-----\n"
-        "MIIEpAIBAAKCAQEA7bq3fakekeybody\n"
-        "-----END RSA PRIVATE KEY-----"
-    )
-    normalizer.feed(_chunk(pem))
-    trail = normalizer.diagnostic_trail()
-    assert len(trail) == 2
-    assert "supersecret1" not in trail[0]["raw"]
-    assert "REDACTED" in trail[0]["raw"]
-    # Full PEM blocks (not just headers) are scrubbed from diagnostics.
-    assert "MIIEpAIBAAKCAQEA7bq3fakekeybody" not in trail[1]["raw"]
-    assert "BEGIN RSA PRIVATE KEY" not in trail[1]["raw"]
+    normalizer.feed({"sessionUpdate": "plan", "entries": [{"content": "raw-plan-canary"}]})
+    state = repr(vars(normalizer))
+    assert "supersecret1" not in state and "raw-plan-canary" not in state
+    assert not hasattr(normalizer, "diagnostic_trail")
 
 
 @pytest.mark.parametrize("update, usage", [
