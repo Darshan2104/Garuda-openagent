@@ -999,6 +999,111 @@ async def test_resumed_review_refuses_missing_or_mismatched_approval_binding(rep
     assert resumed.stopped.code == "flow.review_unresolved"
 
 
+class AttemptEditsScript(Script):
+    """Each build attempt is a real session with its own recorded baseline (#814)."""
+
+    def __init__(self, reviews, edits, *, fail=(), forget_first=False):
+        super().__init__(reviews)
+        self.edits, self.fail, self.forget_first = edits, set(fail), forget_first
+        self.sessions = {}
+
+    async def __call__(self, launch):
+        from pathlib import Path
+
+        from garuda.workspace import evidence
+
+        result = await super().__call__(launch)
+        if launch.step_id != "build":
+            return result
+        store, workspace = SessionStore(), Path(launch.workspace)
+        if self.forget_first and launch.attempt > 1:
+            store.update_meta(self.sessions[1], {"baseline_state": "missing", "baseline": {}})
+        store.begin(result.session_id, task="t", model="m", agent="a", workspace=str(workspace))
+        evidence.begin_session_evidence(store, result.session_id, workspace, "local")
+        for path, text in self.edits[launch.attempt].items():
+            (workspace / path).parent.mkdir(parents=True, exist_ok=True)
+            (workspace / path).write_text(text)
+        evidence.finish_session_evidence(store, result.session_id, workspace)
+        self.sessions[launch.attempt] = result.session_id
+        if launch.attempt in self.fail:
+            return StepResult(result.session_id, False, "", error="stopped mid-edit")
+        return result
+
+
+ATTEMPT_EDITS = {
+    1: {"calc.py": "def add(a, b):\n    return a + b\n", "README.md": "add(a, b) adds\n"},
+    2: {"tests/test_calc.py": "from calc import add\n\n\ndef test_add():\n"
+                              "    assert add(2, 3) == 5\n"},
+}
+ALL_FILES = ["README.md", "calc.py", "tests/test_calc.py"]
+
+
+def _covered(packet):
+    return [(f["path"], f["status"], f["preexisting_at_start"]) for f in packet["diff"]["files"]]
+
+
+async def test_a_later_round_packet_covers_every_attempt_of_the_reviewed_step(repo):
+    script = AttemptEditsScript([CHANGES, APPROVE], ATTEMPT_EDITS)
+    result = await _run(repo, script, _config(max_rounds=1)).run()
+    assert result.completed
+    first = _packet_from_prompt(script.prompts[("review", 1)])
+    assert first["version"] == rv.PACKET_VERSION == 2
+    assert first["changed"]["files"] == ["README.md", "calc.py"]
+    assert first["attempts"]["first"] == first["attempts"]["latest"] == {
+        "attempt": 1, "session_id": script.sessions[1]}
+    assert first["attempts"]["baseline_session"] == script.sessions[1]
+    second = _packet_from_prompt(script.prompts[("review", 2)])
+    # Round 2 still shows round 1's edits: they are part of the candidate.
+    assert second["changed"] == {"files": ALL_FILES, "total": 3, "complete": True,
+                                 "status": "recorded"}
+    assert _covered(second) == [(path, "captured", False) for path in ALL_FILES]
+    excerpts = {f["path"]: f["excerpt"] for f in second["diff"]["files"]}
+    assert "+    return a + b" in excerpts["calc.py"]
+    assert "+    assert add(2, 3) == 5" in excerpts["tests/test_calc.py"]
+    assert second["diff"]["complete"] is True
+    assert second["attempts"]["first"] == {"attempt": 1, "session_id": script.sessions[1]}
+    assert second["attempts"]["latest"] == {"attempt": 2, "session_id": script.sessions[2]}
+    assert second["attempts"]["baseline_session"] == script.sessions[1]
+    # The candidate stays the latest attempt, which the approval binds to.
+    assert (second["candidate"]["attempt"], second["candidate"]["session_id"]) == (
+        2, script.sessions[2])
+    meta = SessionStore().load_meta(result.flow_session)
+    assert meta["review_approvals"]["build"]["candidate"] == second["candidate"]
+    assert (meta["review_packet"]["changed_total"], meta["review_packet"]["changed_complete"]) == (
+        3, True)
+
+
+async def test_a_later_round_without_the_first_baseline_is_unknown_not_complete(repo):
+    script = AttemptEditsScript([CHANGES, APPROVE], ATTEMPT_EDITS, forget_first=True)
+    result = await _run(repo, script, _config(max_rounds=1)).run()
+    assert result.completed
+    second = _packet_from_prompt(script.prompts[("review", 2)])
+    assert second["changed"] == {"files": None, "total": None, "complete": None,
+                                 "status": "unknown"}
+    assert second["diff"]["status"] == "unknown" and second["diff"]["complete"] is None
+    assert second["config"]["status"] == "unknown"
+    assert second["attempts"]["first"] == {"attempt": 1, "session_id": script.sessions[1]}
+
+
+async def test_a_resumed_retry_packet_covers_the_failed_attempts_partial_edits(repo):
+    first = AttemptEditsScript([], ATTEMPT_EDITS, fail={1})
+    stopped = await _run(repo, first, _config(max_rounds=0)).run()
+    assert stopped.stopped.code == "flow.step_failed"
+
+    second = AttemptEditsScript([APPROVE], ATTEMPT_EDITS)
+    resolved = gy.resolve(gy.parse(_config(max_rounds=0)), None)
+    resumed = await FlowRunner(SessionStore(), repo, "pbr", resolved.config["flows"]["pbr"],
+                               resolved, task="t", launcher=second,
+                               flow_session=stopped.flow_session).run(resume=True)
+    assert resumed.completed
+    assert second.sequence == [("build", 2), ("review", 1)]
+    packet = _packet_from_prompt(second.prompts[("review", 1)])
+    assert packet["changed"]["files"] == ALL_FILES and packet["changed"]["complete"] is True
+    assert _covered(packet) == [(path, "captured", False) for path in ALL_FILES]
+    assert packet["attempts"]["first"] == {"attempt": 1, "session_id": first.sessions[1]}
+    assert packet["attempts"]["latest"] == {"attempt": 2, "session_id": second.sessions[2]}
+    assert packet["attempts"]["baseline_session"] == first.sessions[1]
+
 def _packaged_pbr_runner(repo, launcher, **kw):
     from garuda.flows import packaged
 

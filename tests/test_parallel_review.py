@@ -135,3 +135,30 @@ def test_writing_external_reviewers_in_docker_change_nothing(repo, tmp_path, mon
         meta = store.load_meta(member["session_id"])
         assert "refused=workspace,git,sentinel" in meta["final_message"]
         assert meta["confinement"]["image"] == IMAGE
+
+
+async def test_a_later_step_receives_every_members_artifact(repo):
+    """#809: a step after a group gets each member's review, labelled and recorded."""
+    config = _config()
+    config["roles"]["coder"] = {"harness": "native"}
+    config["flows"]["grp"]["steps"].append(
+        {"id": "fix", "role": "coder", "inputs": ["review"], "outputs": ["notes"]})
+    prompts = {}
+
+    async def launcher(launch):
+        prompts[launch.step_id] = launch.prompt
+        if launch.step_id == "fix":
+            return StepResult(str(uuid.uuid4()), True,
+                              '<garuda-artifact type="notes">\nok\n</garuda-artifact>')
+        return StepResult(str(uuid.uuid4()), True, REVIEW.replace(
+            "verdict: approve", f"verdict: approve\nfrom {launch.role}"))
+
+    result = await _runner(repo, launcher, config).run()
+
+    assert result.completed
+    group, fix = result.receipts
+    assert [ref["producer_step"] for ref in fix["inputs"]] == ["reviews-r1", "reviews-r2"]
+    assert [ref["digest"] for ref in fix["inputs"]] == [o["digest"] for o in group["outputs"]]
+    for role in ("r1", "r2"):
+        assert f'<flow-input type="review" from="reviews-{role}">' in prompts["fix"]
+        assert f"| from {role}" in prompts["fix"]

@@ -584,6 +584,15 @@ anything starts. A `settings.yaml` key such as `routing` in a `garuda.yaml`, a
 `max_parallel` that disagrees with `capacity`, or a `--runtime` that
 contradicts the selected role is refused as `config.conflict`.
 
+A flow step has a `role` or a `parallel` list of roles, and may name
+`inputs` and `outputs` (artifact types), `write_policy: no-edits`, a `review`
+and `retries` (0 to 10). Every input must be an output of an earlier step;
+after a parallel group, a step receives every member's artifact of that type.
+`retries` reruns a plain step that failed or gave no usable output and is
+refused on a parallel group, a reviewed step (use `review.max_rounds`) and the
+terminal reviewer of a reviewed flow. See
+[Retries](sessions-and-flows.md#retries).
+
 `harnesses.<id>.handshake_timeout_sec` is how long Garuda waits for an
 external (ACP) harness to answer its startup calls (`initialize`,
 `session/new`, `session/load` and setting role options), in whole seconds

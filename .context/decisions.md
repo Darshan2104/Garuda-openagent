@@ -1,5 +1,28 @@
 # Durable decisions
 
+## 2026-11-26 — A review packet covers every attempt of the reviewed step (#814)
+
+Each attempt of a reviewed step is a new session with a fresh baseline, and
+`FlowRunner._review_packet` built the packet from the latest attempt's session
+only, so on round 2 the reviewer saw just that round's files (`complete: true`)
+while round 1's edits counted as preexisting dirt. The packet now compares the
+current workspace with the baseline of the first session of the reviewed step's
+first attempt. `_first_attempt` finds that attempt from the flow's receipts on
+disk plus `done` (so stopped attempts and receipts loaded on resume count; an
+attempt refused before launch is skipped) and `_first_session` names the
+session whose baseline is the base: the receipt's `session_id` today, the first
+entry should an attempt ever run several sessions. Round 1 keeps the recorded
+session delta; later rounds use the new `changed_since_baseline`, which shares
+`_review_delta` (the old checks of `review_diff_evidence`), and the same list
+feeds the diff excerpts and `config_evidence`. A missing, uncaptured,
+other-workspace or unattributable first baseline, a missing earlier receipt, or
+a first attempt with no session (quarantined) makes the list and diff
+`unknown`. The packet gains an `attempts` block (first, latest,
+`baseline_session`); `candidate` stays the latest attempt, so the candidate
+binding and resume approval check are unchanged. `PACKET_VERSION` is 2 because
+`changed`/`diff` now mean the step's whole contribution; nothing reads the
+version or recomputes a stored digest.
+
 ## 2026-11-26 — SDK ACP runs deny unattended approvals (#801)
 
 `SoftwareAgent._run_acp` attached no approval path, so the harness's first
@@ -5059,6 +5082,37 @@ typed too: `approval.answered`, `approval.stale_request`, `approval.expired`,
 `approval.refused`, and `approval.unavailable` for an OS error, which prints only
 the OS reason (`strerror`), never the path. The dashboard answer route already
 mapped a missing request to 404; its generic OS-error branch now also drops the path.
+
+## 2026-11-26: Parallel group outputs reach later steps; step `retries` is applied (#809, #810)
+
+`FlowRunner._inputs` took the latest receipt holding an input type and then its
+first matching output, so after `{parallel: [r1, r2, r3], outputs: [review]}` a
+step with `inputs: [review]` saw only `r1`'s review. When the latest producing
+receipt is a group receipt (it has `members`), every member's artifact of that
+type is now loaded through `artifacts.load` (digest and staleness checks
+unchanged), labelled with its `producer_step` (`g-r1`, ...) and recorded in the
+consumer's receipt `inputs`. A non-group receipt is unchanged: the latest wins.
+Prompts, receipts and the read model's edges already handled several refs per
+type.
+
+`retries` was parsed and range-checked since C.1 (#158) but the engine never
+read it. A plain step that stops with `flow.step_failed`, `flow.output_missing`
+or `flow.artifact_too_large` after launching (it has a receipt) now runs again,
+each attempt with the next number, its own intent and receipt, and a
+`[garuda]` note that partial edits from the failed attempt may be in the
+workspace. Nothing else is retried: refusals, settled role refusals,
+`flow.no_edits_changed`, interruptions, `flow.quota_wait`, input errors. The
+budget is the step's total recorded attempts (`attempt <= retries` retries), so
+a `flow resume` after exhaustion runs one attempt and never loops.
+
+Refused, at load: `retries` on a parallel group, a reviewed step
+(`review.max_rounds` is its retry) and the terminal reviewer of a reviewed flow.
+Refused at `run()` before the lease with `flow.retries_unsupported`: owned or
+checked flows (their evidence coverage and resume checkpoints assume a stopped
+attempt ends the run) and flows under quota recovery (whose continuation is
+built from the recorded stop); the service does not enrol a flow with `retries`
+in quota recovery and records the `unsupported` reason instead. The scenario
+compiler's worst-case invocation count adds each step's retries.
 
 ## 2026-11-26: An interrupted `garuda run` settles as a cancel; dead-owner approvals are refused (#807, #808)
 

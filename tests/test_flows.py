@@ -963,6 +963,82 @@ def test_the_read_only_instruction_names_the_step_outputs():
     assert "inspect, plan or review as your role requires" in engine.read_only_instruction([])
 
 
+RETRY_CONFIG = {**CONFIG, "flows": {"pbr": {"steps": [
+    {"id": "plan", "role": "planner", "outputs": ["plan"], "retries": 2},
+    {"id": "build", "role": "coder", "inputs": ["plan"], "outputs": ["patch"]}]}}}
+
+
+async def test_a_failed_step_is_retried_with_a_note_and_new_attempts(repo):
+    """#810: a failed or output-less step runs again, each attempt with its own receipt."""
+    outcomes = iter([StepResult(str(uuid.uuid4()), False, ""),
+                     StepResult(str(uuid.uuid4()), True, "no envelope")])
+
+    async def plan(launch):
+        return next(outcomes, None) or await _plan(launch)
+
+    async def build(launch):
+        return StepResult(str(uuid.uuid4()), True, _block("patch", "x"))
+
+    fake = Fake(repo, {"plan": plan, "build": build})
+    result = await _runner(repo, fake, config=RETRY_CONFIG).run()
+
+    assert result.completed
+    assert [(r["step"], r["attempt"], r["status"], (r.get("stop") or {}).get("code"))
+            for r in result.receipts] == [
+        ("plan", 1, "stopped", "flow.step_failed"), ("plan", 2, "stopped", "flow.output_missing"),
+        ("plan", 3, "done", None), ("build", 1, "done", None)]
+    plans = [launch for launch in fake.launches if launch.step_id == "plan"]
+    assert [launch.attempt for launch in plans] == [1, 2, 3]
+    assert engine.RETRY_NOTE not in plans[0].prompt
+    assert all(launch.prompt.endswith(engine.RETRY_NOTE) for launch in plans[1:])
+    assert [e["event"] for e in engine.journal(SessionStore(), result.flow_session)] == [
+        "intent", "receipt"] * 4
+
+
+async def test_retries_stop_after_n_and_a_resume_runs_one_more_attempt(repo):
+    async def failing(launch):
+        return StepResult(str(uuid.uuid4()), False, "")
+
+    fake = Fake(repo, {"plan": failing})
+    result = await _runner(repo, fake, config=RETRY_CONFIG).run()
+    assert result.stopped.code == "flow.step_failed"
+    assert [launch.attempt for launch in fake.launches] == [1, 2, 3]
+
+    # The budget counts recorded attempts: the resume is one more, never 3 more.
+    fake = Fake(repo, {"plan": failing})
+    result = await _runner(repo, fake, config=RETRY_CONFIG,
+                           flow_session=result.flow_session).run(resume=True)
+    assert result.stopped.code == "flow.step_failed"
+    assert [launch.attempt for launch in fake.launches] == [4]
+    assert [r["attempt"] for r in result.receipts] == [1, 2, 3, 4]
+
+
+@pytest.mark.parametrize("how", ["no_edits", "quota_wait"])
+async def test_a_refusal_or_quota_wait_is_never_retried(repo, how):
+    async def plan(launch):
+        if how == "no_edits":
+            (repo / "planted.txt").write_text("x")
+            return StepResult(str(uuid.uuid4()), True, _block("plan", "p"))
+        return StepResult(str(uuid.uuid4()), False, "", quota_wait=True)
+
+    fake = Fake(repo, {"plan": plan})
+    result = await _runner(repo, fake, config=RETRY_CONFIG).run()
+
+    assert result.stopped.code == {"no_edits": "flow.no_edits_changed",
+                                   "quota_wait": "flow.quota_wait"}[how]
+    assert [launch.attempt for launch in fake.launches] == [1]
+
+
+@pytest.mark.parametrize("owner", ["require_owned", "quota_recovery"])
+async def test_retries_are_refused_where_every_attempt_is_accounted_for(repo, owner):
+    fake = Fake(repo, {})
+    runner = _runner(repo, fake, config=RETRY_CONFIG)
+    setattr(runner, owner, True if owner == "require_owned" else object())
+    with pytest.raises(engine.FlowStopped) as caught:
+        await runner.run()
+    assert caught.value.code == "flow.retries_unsupported"
+    assert fake.launches == [] and LeaseStore().holders_of(repo) == []
+
 @pytest.mark.skipif(sys.platform != "linux", reason="owned flow checks require Linux")
 @pytest.mark.parametrize("recorded", ["previous", "current"])
 def test_checked_packaged_flow_resumes_with_the_definition_it_started_with(
