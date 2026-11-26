@@ -31,7 +31,8 @@ native Garuda agent.
     the `--max-permission` posture or a stricter one.
 
 The command prints a URL with a one-time token (`http://127.0.0.1:8787/#t=…`);
-open that exact URL.
+open that exact URL. Press Ctrl-C to stop it: the dashboard finishes the flow
+and chat operations it owns, prints `Garuda dashboard stopped.` and exits 0.
 
 | Flag | Default | Use |
 |---|---|---|
@@ -245,7 +246,11 @@ place when you open a session and come back. A session's page adds:
   stopped once its recorded process identity matches.
 
 `garuda sessions --json` prints the same rows: the CLI and the dashboard read
-one model. A queue that can't be read shows as `unknown`, not as empty. A
+one model. A session whose record is damaged (a `meta.json` that isn't a JSON
+object, a field of the wrong type, a file the dashboard can't read) is left out
+of the Runs, Sessions and Approvals lists, and each page says **N sessions could
+not be read** (the ids are in its tooltip, the reason in the server log); the
+session's own page answers `session_unreadable` instead of failing. A queue that can't be read shows as `unknown`, not as empty. A
 session row's own usage and cost still read `unknown`; the Usage page has the
 totals, and a session's detail adds `reported_usage`, what an external harness's
 adapter reported (see [Sessions](sessions-and-flows.md)).
@@ -380,7 +385,33 @@ The HTTP transport checks Host, Origin and token before reading request bodies.
 duplicate lengths and any `Transfer-Encoding` receive HTTP 400; lengths
 above 12 MiB receive HTTP 413, without reading the body. Header refusals close
 the connection so an unread body cannot become another request. The dashboard
-allows up to 32 simultaneous connections, each with a 30-second read timeout.
+allows up to 32 simultaneous connections, each with a 30-second read timeout;
+one more is answered `503` with `Retry-After` and the message *too many open
+dashboard connections; close some tabs*.
+
+**Errors.** Every API error is JSON, `{"error": {"code", "message"}}`, with the
+same security headers as any response. `400 invalid_request` means the request
+itself was wrong (a malformed session id, query parameter or JSON body). A
+fault while serving a valid request is `500 internal_error`, logged with its
+traceback on the server; the response carries no internal detail. One damaged
+session is `409 session_unreadable` on its own routes; one still being written
+by a non-atomic writer is `503 session_being_written` with `Retry-After`. An
+agent loop that does not answer in time is `504 unavailable`.
+
+**List responses.** `/api/runs`, `/api/sessions` and `/api/inbox` carry
+`unreadable_sessions: {"count", "ids"}` (at most 50 ids; the count is exact).
+The lists are served from an in-memory index of the store that re-reads only
+the `meta.json` files whose size, modification time or inode changed, and
+notices sessions created or deleted since the last request; records over 1 MiB
+are reported unreadable rather than read. `/api/runs/<id>/buffers` and
+`/api/memory/proposals` take `limit` (default 200, at most 1000) and report
+`total`; `/api/runs/<id>/raw` refuses a document over 16 MiB with `413 too_large`.
+
+**Runtime discovery.** `/api/runtimes`, `/api/runtimes/<id>` and
+`/api/providers` share one harness discovery for 30 seconds, so moving between
+those pages doesn't re-run every harness's version and status checks. A
+runtime's detail on its own checks only that runtime. **Refresh** on the
+Providers page discards it.
 
 | Route | Purpose |
 |---|---|
@@ -427,6 +458,9 @@ The tail counts these records in `malformed`; the stream reports a `skipped`
 event with a `malformed` count. Later events remain available,
 and the persisted log is unchanged. A torn final record keeps its cursor until
 its newline arrives, including when it is oversized.
+If reading the session fails mid-stream (its record is locked or damaged), the
+stream sends an `error` event, `{"error": {"code": "stream_failed", …}}`, whose
+`id` is the last delivered offset, and closes cleanly for the client to reconnect.
 The stream sends a heartbeat every 15 seconds,
 ends with an `end` event once the session is finished and a poll delivers no
 records and makes no cursor progress, including a torn final append, and closes

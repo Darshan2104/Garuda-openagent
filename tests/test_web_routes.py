@@ -150,7 +150,8 @@ def test_config_offers_models_this_machine_has_run(ctx, store):
 
 def test_the_run_list_is_empty_on_a_fresh_store(ctx):
     payload = body(call(ctx, "/api/runs"))
-    assert payload == {"runs": [], "total": 0, "limit": reads.DEFAULT_LIMIT}
+    assert payload == {"runs": [], "total": 0, "limit": reads.DEFAULT_LIMIT,
+                       "unreadable_sessions": {"count": 0, "ids": []}}
 
 
 def test_a_run_row_carries_what_the_table_renders(ctx, store):
