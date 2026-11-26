@@ -389,6 +389,35 @@ before the next step reads it. An artifact that describes the workspace
 it was produced. The next step receives it as labelled data, not as
 instructions.
 
+A step's `inputs` take the latest earlier artifact of each type. When that
+came from a parallel group (`{parallel: [r1, r2, r3], outputs: [review]}`),
+the step receives every member's artifact of that type, each labelled with its
+member (`from="g-r1"`, `from="g-r2"`, ...) and checked the same way, and its
+receipt lists all of them in `inputs`.
+
+### Retries
+
+`retries: N` on a plain step (not reviewed, not a parallel group) runs it again,
+up to N more times, when the step itself failed (`flow.step_failed`), gave no
+required artifact (`flow.output_missing`) or gave one that was too large
+(`flow.artifact_too_large`). Each attempt has its own number, intent and
+receipt; the failed attempt's stopped receipt stays. A retried attempt's prompt
+ends with a `[garuda]` line saying an earlier attempt failed and its partial
+edits may already be in the workspace. Refusals (confinement, role,
+independence), `flow.no_edits_changed`, an interrupted step, `flow.quota_wait`
+and input errors are never retried.
+
+`retries` counts the step's total recorded attempts: a step with `retries: 2`
+runs at most three times in one run. A `flow resume` after the retries ran out
+runs it once more, without further retries.
+
+`retries` is refused when the flow loads on a parallel group, on a reviewed
+step (`review.max_rounds` reruns it) and on the terminal reviewer of a reviewed
+flow. A checked (`--check`) or dashboard-owned flow, or one under automatic
+quota recovery, refuses a flow with `retries` with `flow.retries_unsupported`
+before anything starts, because those flows account for every attempt
+themselves; remove `retries` to run it there.
+
 ### Reviews
 
 A step with `review: {by: reviewer, max_rounds: 2}` is reviewed by the flow's
@@ -482,9 +511,9 @@ it does not signal a flow already running. A lost dispatch owner becomes
 `uncertain` and is never automatically replayed.
 
 Automatic quota recovery does not support standalone `chat` or `run` sessions,
-check-protected or dashboard-owned flows, parallel groups, or Claude quota
-stops. If recovery is enabled, owned/check-protected/dashboard flows and
-parallel flows publish an `unsupported` recovery reason in `flow show` and the
+check-protected or dashboard-owned flows, parallel groups, steps with
+`retries`, or Claude quota stops. If recovery is enabled, owned/check-protected/dashboard
+flows, parallel flows and flows with `retries` publish an `unsupported` recovery reason in `flow show` and the
 web flow detail rather than silently enrolling. See the
 [automation recipe](../use-cases/automate.md#continue-quota-stopped-codex-flows)
 for setup, manual ticks, cancellation, and cron-host limitations.

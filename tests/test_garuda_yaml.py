@@ -31,7 +31,7 @@ flows:
   plan-build-review:
     steps:
       - {id: plan, role: planner, outputs: [plan]}
-      - {id: build, role: coder, inputs: [plan], outputs: [patch], retries: 2,
+      - {id: build, role: coder, inputs: [plan], outputs: [patch],
          review: {by: reviewer, max_rounds: 2}}
       - {id: review, role: reviewer, inputs: [patch], outputs: [review]}
 """
@@ -68,6 +68,15 @@ def test_maintained_examples_round_trip(text):
      "config.invalid", "flows.f.steps[0].flow"),
     ("version: 1\nroles: {r: {harness: codex}}\nflows: {f: {steps: [{role: r, retries: 11}]}}",
      "config.invalid", "flows.f.steps[0].retries"),
+    # retries apply to plain steps only (#810)
+    ("version: 1\nroles: {r: {harness: codex}}\nflows: {f: {steps: [{parallel: [r], retries: 1}]}}",
+     "config.invalid", "flows.f.steps[0].retries"),
+    ("version: 1\nroles: {r: {harness: codex}, v: {harness: codex}}\nflows: {f: {steps: ["
+     "{role: r, outputs: [patch], retries: 1, review: {by: v}}, {role: v, outputs: [review]}]}}",
+     "config.invalid", "flows.f.steps[0].retries"),
+    ("version: 1\nroles: {r: {harness: codex}, v: {harness: codex}}\nflows: {f: {steps: ["
+     "{role: r, outputs: [patch], review: {by: v}}, {role: v, outputs: [review], retries: 1}]}}",
+     "config.invalid", "flows.f.steps[1].retries"),
     ("version: 1\nconsults: {max_per_session: 101}\n", "config.invalid",
      "consults.max_per_session"),
     ("version: 1\nroles: {r: {harness: codex}}\n"
