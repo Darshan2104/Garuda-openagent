@@ -839,6 +839,7 @@ async def run_acp_task(
     began = False
     transferred_to_native = False
     deadline_hit = False
+    cancel_reason: str | None = None
     outcome: dict[str, Any] | None = None
     try:
         store.begin(
@@ -1079,12 +1080,15 @@ async def run_acp_task(
         if began and not transferred_to_native:
             _record_run_error(store, session_id, exc)
         raise
-    except asyncio.CancelledError:
+    except asyncio.CancelledError as exc:
+        # Ctrl-C or SIGTERM of `garuda run` names its reason (#807, #808).
+        cancel_reason = (exc.args[0] if exc.args and isinstance(exc.args[0], str) else "") \
+            or "task cancelled"
         if began:
             try:
                 from garuda.runtime.recovery import record_cancel
 
-                record_cancel(store, session_id, boundary="turn", reason="task cancelled")
+                record_cancel(store, session_id, boundary="turn", reason=cancel_reason)
             except Exception:
                 logger.warning("Failed to record ACP task cancellation", exc_info=True)
         raise
@@ -1128,6 +1132,14 @@ async def run_acp_task(
                     }
                     if deadline_hit:
                         settled.update(stop_reason="deadline", error_code="run.deadline_exceeded")
+                    elif cancel_reason is not None and outcome is None:
+                        # A cancelled run is not a failure (#808): its parked
+                        # approval was withdrawn by the broker on the way out.
+                        from garuda.runtime.session_state import interrupted
+
+                        settled.update(status="cancelled", state=interrupted(cancelled=True),
+                                       stop_reason="cancelled", error_code="run.cancelled",
+                                       error_detail=cancel_reason)
                     store.update_meta(session_id, settled)
                 except Exception:
                     logger.warning("Failed to record ACP session status", exc_info=True)

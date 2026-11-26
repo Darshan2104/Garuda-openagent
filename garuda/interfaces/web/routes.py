@@ -370,6 +370,7 @@ def _answer_approval(request: Request, ctx: DashboardContext, match) -> Response
     """
     from garuda.acp.approval_channel import (
         AnswerRefused,
+        OwnerGone,
         RequestExpired,
         StaleRequest,
         write_answer,
@@ -404,6 +405,9 @@ def _answer_approval(request: Request, ctx: DashboardContext, match) -> Response
                      status=409)
     except RequestExpired:
         return error(CODE_EXPIRED, "That approval expired and will be denied.", status=410)
+    except OwnerGone:
+        return error("owner_gone", "The run that asked has exited; no one would act on an answer.",
+                     status=410)
     except (AnswerRefused, ValueError) as exc:
         return error("refused", f"The answer was not recorded: {exc}", status=409)
     except OSError as exc:

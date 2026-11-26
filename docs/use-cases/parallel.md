@@ -220,7 +220,12 @@ apr-1-1791279590045-9f3c2a1b  approval   bash({'command': 'chmod +x scripts/test
   (`#/inbox`) and `garuda approvals answer` race to answer it; the first answer
   counts and the rest lose.
 - An answer is bound to that exact request. A replayed, edited, expired or
-  late answer is a denial. Pass `--digest` to refuse if the pending request
+  late answer is a denial. If the run that asked has exited, the answer is
+  refused (`approval.owner_gone`, exit 2) because nothing would act on it, and
+  `garuda approvals list` marks the request `owner gone`;
+  `garuda runtime recover --session S` withdraws it. Ctrl-C or SIGTERM of
+  `garuda run` withdraws its own parked approval, records the session
+  `cancelled` with the reason and exits 130 or 143. Pass `--digest` to refuse if the pending request
   is no longer the one you listed; the dashboard sends the same binding.
 - The terminal, a dashboard chat card and a file answer are all rechecked
   when they arrive: if the run's permission ceiling changed while the ask was

@@ -941,6 +941,75 @@ def _release_dead_owner_holdings(store, session_id: str, holders: list, leases, 
     return reaped, notes
 
 
+_WITHDRAWN = ("the run's process exited before an answer; withdrawn by `garuda runtime recover`")
+
+
+def _settle_dead_run(store, session_id: str, leases, capacity) -> list[str]:
+    """A plain run whose owner died: withdraw its parked approvals, settle it (#807).
+
+    Approvals are withdrawn (``cancelled``) only when their publishing process
+    is confirmed dead, so an answer can never be consumed afterwards. The
+    session is recorded ``failed``/interrupted only when it is still
+    ``running``, its owner is confirmed dead and it holds no lease or slot.
+    """
+    from garuda.acp.approval_channel import ChannelError, withdraw_orphaned
+    from garuda.runtime.capacity import CapacityError, CapacityStore
+    from garuda.runtime.ownership import owner_liveness
+    from garuda.runtime.session_state import interrupted
+    from garuda.workspace.lease import LeaseError, LeaseStore
+
+    try:
+        meta = store.load_meta(session_id)
+    except Exception as exc:
+        return [f"session {session_id} unreadable; its approvals and status were left ({exc})"]
+    state = meta.get("state") if isinstance(meta, dict) else None
+    owner = state.get("owner") if isinstance(state, dict) else None
+    owner_dead = isinstance(owner, dict) and owner_liveness(owner) is False
+    notes: list[str] = []
+    session_dir = getattr(store, "session_dir", None)
+    if callable(session_dir):
+        try:
+            withdrawn = withdraw_orphaned(Path(session_dir(session_id)) / "approvals", session_id,
+                                          session_owner_dead=owner_dead, reason=_WITHDRAWN)
+        except (ChannelError, OSError) as exc:
+            notes.append(f"parked approvals were not withdrawn: {exc}")
+            withdrawn = []
+        for request in withdrawn:
+            approval_id = request["approval_id"]
+            try:
+                from garuda.acp.broker import ApprovalRecord
+                from garuda.core.approval_outcome import ApprovalOutcome
+
+                record = ApprovalRecord(
+                    approval_id=approval_id, outcome=ApprovalOutcome.CANCELLED,
+                    action=str(request.get("action", "")), family=str(request.get("family", "")),
+                    runtime_id=str(request.get("runtime_id", "")), via="recover", reason=_WITHDRAWN)
+                store.update_meta(session_id, {f"approval:{approval_id}": record.to_dict()})
+            except Exception:
+                notes.append(f"withdrawn approval {approval_id} was not audited in the session record")
+            notes.append(f"withdrew parked approval {approval_id}: its run's process is gone")
+    if meta.get("status") != "running" or not owner_dead:
+        return notes
+    try:
+        if (leases if leases is not None else LeaseStore()).live_holders_for_session(session_id):
+            return [*notes, f"session {session_id} is still recorded running: a workspace lease remains"]
+        if (capacity if capacity is not None else CapacityStore()).slots_for_session(session_id):
+            return [*notes, f"session {session_id} is still recorded running: a capacity slot remains"]
+    except (LeaseError, CapacityError, OSError) as exc:
+        return [*notes, f"session {session_id} is still recorded running: holdings unreadable ({exc})"]
+
+    def _settle(current: dict) -> dict:
+        if current.get("status") != "running" or current.get("state") != state:
+            raise RecoveryError(f"session {session_id} changed while recovering; refusing")
+        return {"status": "failed", "state": interrupted(), "stop_reason": "owner_lost",
+                "error_code": "run.owner_lost",
+                "error_detail": "the run's process exited without settling; `garuda runtime "
+                                "recover` proved it gone and recorded it interrupted"}
+
+    store.mutate_meta(session_id, _settle)
+    return [*notes, f"session {session_id} recorded interrupted: its process is gone"]
+
+
 def _flow_parent_meta(source, session_id: str) -> dict | None:
     """The meta of a flow parent session (``kind: flow``), else None."""
     try:
@@ -1325,6 +1394,8 @@ def recover(
         if flow_meta is not None:
             notes += _settle_dead_flow(store, session_id, flow_meta, leases, capacity,
                                        settled_owner)
+        else:
+            notes += _settle_dead_run(store, session_id, leases, capacity)
     if report.state is RestartState.ROLLED_BACK:
         # Keep the target id so a prepared child left by a crash in a later
         # recovery attempt still binds to this handoff attempt.
