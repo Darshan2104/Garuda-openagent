@@ -53,7 +53,7 @@ entry points remain callable by Garuda's subprocesses.
 | Memory | `garuda memory list [--json]` | The note proposals waiting for your review in this project |
 | | `garuda memory review` | Accept, edit or reject each proposal; needs a terminal, and is the only way a note becomes memory |
 | | `garuda memory search QUERY [--workspace .] [--max-chars 2000] [--limit 5]` | Search accepted decisions in this project; labels stale/unknown sources and possible conflicts (maximum 4,000 characters, ten notes) |
-| Configuration | `garuda init [--project] [--model HARNESS=ID] [--yes]` | Propose a user `garuda.yaml` (roles) or, with `--project`, the project's checks; writes only after confirmation |
+| Configuration | `garuda init [--project] [--model HARNESS=ID] [--yes]` | Propose a user `garuda.yaml` (roles) or, with `--project`, the project's checks; writes only after confirmation (without a terminal, `--yes` is required; otherwise it exits 2) |
 | | `garuda config show [--flow NAME] [--json]` | The effective `garuda.yaml` and where each value came from, or one flow to copy. `--json` prints the same as one object: `config`, `provenance` (key to source) and `withheld` (project keys left out until trusted); `config` is `null` when there is no `garuda.yaml` |
 | | `garuda config migrate [--write]` | Preview or write the user `garuda.yaml` that carries `settings.yaml`'s runtimes and capacity |
 | | `garuda config trust` | Review and trust this project's `garuda.yaml` checks and native models (exact bytes; needs a terminal) |

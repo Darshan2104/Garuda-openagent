@@ -347,3 +347,48 @@ def test_effective_flow_ids_reject_explicit_generated_collisions(steps):
     with pytest.raises(GarudaConfigError, match="step ids must be unique") as error:
         gy.parse({"version": 1, "flows": {"qa": {"steps": steps}}})
     assert error.value.path == "flows.qa.steps"
+
+
+# --- flow inputs and reference errors -------------------------------------------------
+
+
+@pytest.mark.parametrize("steps, path", [
+    ([{"role": "coder", "inputs": ["plan"], "outputs": ["patch"]}], "flows.f.steps[0].inputs[0]"),
+    ([{"role": "coder", "outputs": ["patch"]},
+      {"role": "reviewer", "inputs": ["patch", "plan"], "outputs": ["review"]}],
+     "flows.f.steps[1].inputs[1]"),
+    # a step's own output is not an input to it
+    ([{"role": "coder", "inputs": ["patch"], "outputs": ["patch"]}], "flows.f.steps[0].inputs[0]"),
+])
+def test_a_flow_input_no_earlier_step_outputs_is_refused_at_load(steps, path):
+    with pytest.raises(GarudaConfigError) as caught:
+        _user(roles=ROLES, flows={"f": {"steps": steps}})
+    assert (caught.value.code, caught.value.path) == ("config.invalid", path)
+    assert "no earlier step outputs a" in str(caught.value)
+
+
+def test_packaged_flows_and_starters_have_satisfiable_inputs():
+    from garuda.flows import packaged
+
+    for flow in gy.load_text(packaged.TEXT)["flows"].values():
+        gy.validate_flow_inputs(gy.effective_flow_steps(flow), path="flow.steps")
+    flows = gy.load_text(EXAMPLE_USER).get("flows", {})
+    for flow in flows.values():
+        gy.validate_flow_inputs(gy.effective_flow_steps(flow), path="flow.steps")
+
+
+def test_an_unknown_flow_role_names_the_file(tmp_path):
+    ws = _repo(tmp_path / "ws")
+    (ws / "garuda.yaml").write_text(
+        "version: 1\nflows:\n  f:\n    steps:\n      - {role: ghost}\n")
+    with pytest.raises(GarudaConfigError) as caught:
+        gy.load_effective(ws)
+    assert caught.value.code == "config.invalid" and caught.value.path == "flows.f.steps[0]"
+    assert str(ws / "garuda.yaml") in str(caught.value) and "names no role 'ghost'" in str(caught.value)
+
+    gy.user_path().parent.mkdir(parents=True, exist_ok=True)
+    gy.user_path().write_text("version: 1\nroles: {coder: {harness: native, consult: [nobody]}}\n")
+    (ws / "garuda.yaml").unlink()
+    with pytest.raises(GarudaConfigError) as caught:
+        gy.load_effective(ws)
+    assert str(gy.user_path()) in str(caught.value) and caught.value.path == "roles.coder.consult"
