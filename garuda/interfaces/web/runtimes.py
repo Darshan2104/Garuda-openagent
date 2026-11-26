@@ -87,13 +87,12 @@ def list_runtimes(
 NOT_CHECKED = {"state": "not_checked", "checked_at": None, "age_seconds": None}
 
 
-def login_checks(extra: dict | None, workspace: str = ".", *, refresh: bool = False) -> dict[str, dict]:
-    """The one login reading per harness that every page shows (see
+def login_checks(extra: dict | None, workspace: str = ".") -> dict[str, dict]:
+    """The one login reading per harness that every page shows, read only (see
     :func:`garuda.interfaces.web.providers.login_readings`)."""
     from garuda.interfaces.web.providers import login_readings
 
-    registry = registry_from_context(extra or {}, workspace)
-    return login_readings(registry.manifests, disabled=registry.disabled_ids, refresh=refresh)
+    return login_readings(registry_from_context(extra or {}, workspace).manifests)
 
 
 def with_login_checks(entries: list[dict], checks: dict[str, dict]) -> list[dict]:

@@ -177,23 +177,43 @@ def _manifests():
     return {m.runtime_id: m for m in registry_from_context({}, ".").manifests}
 
 
-def test_runtimes_providers_and_setup_tell_one_login_story(ctx, monkeypatch):
+def _seed_logins():
     import time
 
     from garuda.acp import login_probe
 
     manifests = _manifests()
-    old = time.time() - 3 * 86400
-    login_probe.probe_login(manifests["claude"], cache_ttl=0, now=old,
+    login_probe.probe_login(manifests["claude"], cache_ttl=0, now=time.time() - 3 * 86400,
                             run=lambda argv, timeout: (1, '{"loggedIn": false}'))
     login_probe.probe_login(manifests["codex"], cache_ttl=0,
                             run=lambda argv, timeout: (0, "Logged in using ChatGPT"))
-    # The Runtimes read renews a stale record through probe_login; here the status command
-    # answers "logged in" for claude now, so the 3-day-old "logged out" must be replaced.
-    real_run = login_probe._run
-    monkeypatch.setattr(login_probe, "_run", lambda argv, timeout: (
-        (0, '{"loggedIn": true}') if argv[0] == "claude" else real_run(argv, timeout)))
+    return login_probe._cache_path()
 
+
+def _forbid_login_probes(monkeypatch) -> list:
+    """Record every attempt to run the login status command or renew the record (a raise
+    could be swallowed by a caller); the returned list must stay empty."""
+    from garuda.acp import login_probe
+
+    attempts: list = []
+    real_probe = login_probe.probe_login
+
+    def probe(manifest, **kwargs):
+        attempts.append(("probe_login", manifest.runtime_id))
+        return real_probe(manifest, **{**kwargs, "run": run})
+
+    def run(argv, timeout):
+        attempts.append(("status command", tuple(argv)))
+        return "timeout"
+
+    monkeypatch.setattr(login_probe, "_run", run)
+    monkeypatch.setattr(login_probe, "probe_login", probe)
+    return attempts
+
+
+def test_runtimes_providers_and_setup_tell_one_login_story(ctx, monkeypatch):
+    _seed_logins()
+    attempts = _forbid_login_probes(monkeypatch)
     runtimes = {r["runtime_id"]: r for r in get(ctx, "/api/runtimes")}
     providers = {c["id"]: c for c in get(ctx, "/api/providers")["harnesses"]}
     setup = {r["runtime_id"]: r for r in get(ctx, "/api/setup")["logins"]}
@@ -204,8 +224,26 @@ def test_runtimes_providers_and_setup_tell_one_login_story(ctx, monkeypatch):
         for reading in (runtimes[rid]["login_check"], providers[rid]["login"], setup[rid]):
             assert isinstance(reading["checked_at"], float)
             assert isinstance(reading["age_seconds"], float)
-    assert runtimes["claude"]["login_check"]["state"] == "authenticated"
+    # The 3-day-old reading is shown as what it is, with its age, on the Runtimes page too.
+    assert runtimes["claude"]["login_check"]["state"] == "logged_out"
+    assert runtimes["claude"]["login_check"]["age_seconds"] >= 3 * 86400 - 5
     assert runtimes["codex"]["login_check"]["state"] == "authenticated"
+    assert attempts == []
+
+
+@pytest.mark.parametrize("write_mode", [False, True])
+def test_runtime_reads_never_run_or_write_the_login_check(store, monkeypatch, write_mode):
+    """GET /api/runtimes and its detail are pure reads, in read-only and write mode: the
+    login record stays byte-identical and no status command runs."""
+    ctx = DashboardContext(port=PORT, token=TOKEN, store=store, allow_run=write_mode)
+    record = _seed_logins()
+    before = record.read_bytes()
+    attempts = _forbid_login_probes(monkeypatch)
+    get(ctx, "/api/runtimes")
+    get(ctx, "/api/runtimes/claude")
+    get(ctx, "/api/runtimes/codex")
+    assert attempts == []
+    assert record.read_bytes() == before
 
 
 def test_providers_and_setup_show_a_stale_reading_with_its_age(ctx):

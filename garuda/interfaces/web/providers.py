@@ -114,8 +114,7 @@ def _login_block(manifest, now: float) -> dict:
             "age_seconds": round(max(0.0, now - at), 1) if at else None}
 
 
-def login_readings(manifests, *, disabled=frozenset(), refresh: bool = False, run=None,
-                   now: float | None = None) -> dict[str, dict]:
+def login_readings(manifests, *, now: float | None = None) -> dict[str, dict]:
     """One login reading per harness, the one every dashboard page shows, with its age.
 
     The Runtimes page used to show discovery's own status-command run (``catalog.discover``:
@@ -126,24 +125,11 @@ def login_readings(manifests, *, disabled=frozenset(), refresh: bool = False, ru
     it keeps logged-out apart from failed/timeout/unrecognized, carries the time it was
     taken, and is what launch-time checks and Refresh record.
 
-    With ``refresh`` the record is renewed first through ``probe_login``'s own cache (at
-    most once per :data:`~garuda.acp.login_probe.CACHE_TTL`). Only the Runtimes read asks
-    for that, because it already runs the same documented status command through discovery
-    on every request; Providers and Setup only read, and show the reading's age. A disabled
-    harness is never probed.
+    A pure read: it runs nothing and writes nothing, on every page. Only the write-mode
+    Refresh (:func:`refresh`) renews the record.
     """
-    from garuda.acp.login_probe import CACHE_TTL, probe_login
-
-    out: dict[str, dict] = {}
-    for manifest in manifests:
-        if refresh and manifest.runtime_id not in disabled \
-                and getattr(manifest, "auth_probe", None) is not None:
-            try:
-                probe_login(manifest, cache_ttl=CACHE_TTL, run=run)
-            except Exception:  # a probe that cannot run leaves the last record standing
-                pass
-        out[manifest.runtime_id] = _login_block(manifest, time.time() if now is None else now)
-    return out
+    moment = time.time() if now is None else now
+    return {manifest.runtime_id: _login_block(manifest, moment) for manifest in manifests}
 
 
 def cards(entries: list[dict], manifests: dict, *, ledger: Ledger | None = None,

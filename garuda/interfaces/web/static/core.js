@@ -136,14 +136,19 @@ var STATUS_PILL = { success: "success", completed: "success", finished: "success
 
 /* A harness login reading, always with when it was taken: a check days old must not read
  * as current. Runtimes, Providers and Setup all render the same record through this. */
+/* An age in seconds as "just now", "5m ago", "3h ago" or "3d ago"; "unknown" when absent. */
+function ageText(seconds) {
+  if (typeof seconds !== "number" || !isFinite(seconds)) return "unknown";
+  if (seconds < 60) return "just now";
+  if (seconds < 3600) return Math.floor(seconds / 60) + "m ago";
+  if (seconds < 86400) return Math.floor(seconds / 3600) + "h ago";
+  return Math.floor(seconds / 86400) + "d ago";
+}
+
 function loginAge(check) {
   if (check && check.state === "no_probe") return "no documented status command";
   if (!check || typeof check.age_seconds !== "number") return "never checked";
-  var s = check.age_seconds;
-  if (s < 60) return "checked just now";
-  if (s < 3600) return "checked " + Math.floor(s / 60) + "m ago";
-  if (s < 86400) return "checked " + Math.floor(s / 3600) + "h ago";
-  return "checked " + Math.floor(s / 86400) + "d ago";
+  return "checked " + ageText(check.age_seconds);
 }
 
 function loginPill(check) {

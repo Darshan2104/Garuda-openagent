@@ -60,7 +60,11 @@ function renderRuntimes(runtimes, detail, detailId) {
   if (detail) detailHtml = renderRtDetail(detail);
   render(
     '<div class="page-head"><h1>Runtimes</h1>' +
-    '<span class="meta">' + runtimes.length + " harnesses</span></div>" +
+    '<span class="meta">' + runtimes.length + " harnesses</span>" +
+    // Reading this page never runs a login check; renewing the record is the write-mode
+    // Refresh the Providers page uses.
+    (canWrite() ? '<button type="button" class="btn" id="rt-login-refresh">Refresh login checks</button>' +
+                  '<span class="meta" id="rt-login-note"></span>' : "") + "</div>" +
     '<div class="table-wrap"><table id="rt-table"><thead><tr>' +
     "<th>Runtime</th><th>Kind</th><th>Health</th><th>Version</th><th>Login</th>" +
     "</tr></thead><tbody>" + rows + "</tbody></table></div>" +
@@ -88,6 +92,14 @@ function renderRuntimes(runtimes, detail, detailId) {
     });
   }
   wireRtOps();
+  var refresh = el("rt-login-refresh");
+  if (refresh) refresh.addEventListener("click", function () {
+    refresh.disabled = true;
+    el("rt-login-note").textContent = "refreshing…";
+    api("/api/providers/refresh", { method: "POST", body: {} })
+      .then(function () { return runtimesView(); })
+      .catch(function (err) { el("rt-login-note").textContent = err.message; refresh.disabled = false; });
+  });
 }
 
 function rtDatalistsHtml(runtimes, sessions) {
@@ -298,7 +310,7 @@ function limitsHtml(l) {
   }).join("");
   return '<div class="limits" data-status="' + esc(l.status) + '">' +
     '<span class="pill ' + (l.status === "known" ? "success" : "unknown") + '">' + esc(l.status) + "</span> " +
-    '<span class="stat-sub">source ' + esc(l.source) + " · observed " + esc(Math.round(l.age_seconds)) + "s ago" +
+    '<span class="stat-sub">source ' + esc(l.source) + " · observed " + esc(ageText(l.age_seconds)) +
     (l.status === "stale" ? " (older than a minute: not used for fallback)" : "") + "</span>" +
     "<ul>" + windows + "</ul>" + notesHtml(l) + eventsHtml(l) + "</div>";
 }

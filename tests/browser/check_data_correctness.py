@@ -135,9 +135,13 @@ with sync_playwright() as p:
     check("setup shows the same reading with its age",
           "checked 3d ago" in text(page, '#setup-logins [data-runtime="claude"]'))
 
-    # The Runtimes read renews the record; afterwards every page shows that one reading.
+    # The Runtimes read is a pure read: it shows the same 3-day-old record, and a read-only
+    # dashboard offers no way to renew it.
     page.goto(f"{BASE}#/runtimes", wait_until="load")
     page.wait_for_selector("#rt-table tbody tr")
+    check("runtimes shows the recorded check with its age",
+          "checked 3d ago" in text(page, '#rt-table tr:has(a[data-rt="claude"])'))
+    check("a read-only dashboard offers no login refresh", page.locator("#rt-login-refresh").count() == 0)
     runtimes = {rid: attr(page, f'#rt-table tr:has(a[data-rt="{rid}"]) [data-login]', "data-login")
                 for rid in ("claude", "codex")}
     ages = page.locator("#rt-table .login-age").all_inner_texts()

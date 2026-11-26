@@ -317,9 +317,10 @@ tokens and duration per native call.
 installed, its last recorded **login** check with when it was taken
 (**checked 3d ago**; `not checked` until a check runs), and its **limits**.
 Runtimes, Providers and Setup all show this one recorded check, so they never
-disagree; opening the Runtimes page renews it (at most once a minute) by
-running the harness's documented status command, and **Refresh** renews it
-on demand.
+disagree. Reading any of these pages runs no login check and changes
+nothing; only **Refresh** (write mode, here or **Refresh login checks** on
+the Runtimes page) renews it by running each harness's documented status
+command. A limit reading shows its age the same way (**observed 3d ago**).
 
 - A limit always carries its source and when it was observed. It reads
   **unknown** unless Garuda proved that source for the exact version (Claude
@@ -370,8 +371,10 @@ To change anything, edit your `garuda.yaml` or run `garuda init`.
 The Runtimes board works with the trusted runtime catalog and saved sessions.
 Dashboard chat stays native; the board adds:
 
-- runtime health, login state (the recorded login check and its age, renewed
-  when the board opens), version, capabilities, setup guidance, and
+- runtime health, login state (the recorded login check and its age, the
+  same reading Providers and Setup show; opening the board never runs it, and
+  **Refresh login checks** renews it in write mode), version, capabilities,
+  setup guidance, and
   vendor-reported quota where available, without inventing missing data;
 - a preview and an explicit **prepare** step for a native-to-ACP handoff;
 - the session's own changes, separated from changes that were already in the

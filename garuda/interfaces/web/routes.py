@@ -913,7 +913,7 @@ def _runtimes(request: Request, ctx: DashboardContext, _match) -> Response:
 
     workspace = str(ctx.workspace)
     return ok(with_login_checks(list_runtimes(workspace=workspace, extra=ctx.extra),
-                                login_checks(ctx.extra, workspace, refresh=True)))
+                                login_checks(ctx.extra, workspace)))
 
 
 def _usage_range(request: Request):
@@ -1063,7 +1063,7 @@ def _runtime_detail(request: Request, ctx: DashboardContext, match) -> Response:
 
     workspace = str(ctx.workspace)
     payload = inspect_runtime(None, match["rid"], workspace=workspace, extra=ctx.extra,
-                              checks=login_checks(ctx.extra, workspace, refresh=True))
+                              checks=login_checks(ctx.extra, workspace))
     if payload is None:
         return not_found(f"No runtime {match['rid']!r}.")
     return ok(payload)
