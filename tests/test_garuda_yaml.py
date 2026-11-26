@@ -465,17 +465,7 @@ def test_from_names_a_generated_step_id():
     assert doc["flows"]["f"]["steps"][1]["inputs"] == [{"type": "notes", "from": "reviewer-1"}]
 
 
-def test_flow_definition_digests_without_the_mapping_form_are_unchanged():
-    """Checked-flow resume compares ``digest(flow)``: values recorded on main before #817."""
-    from garuda.core.acceptance_records import digest
-    from garuda.flows import packaged
-
-    assert {name: digest(flow) for name, flow in packaged.FLOWS.items()} == {
-        "plan-only": "648334a53094acafb55b6c686a1b47353a143c70723d2853acd75958a883c1a2",
-        "pair": "c73516802af5b9f460ee47511f8ecd0d2aef2b882b84b41a5cddcdd2a5cd834c",
-        "plan-build-review": "ca004f407f1eef25fb911efd6dde30c0383233fa380a2a56f233220b76c4a62f",
-    }
-    flow = gy.load_text("""\
+_CUSTOM_PLAIN = """\
 version: 1
 flows:
   scouts:
@@ -483,5 +473,41 @@ flows:
       - {id: scout-api, role: scout, write_policy: no-edits, outputs: [notes]}
       - {id: scouts, parallel: [a, b], outputs: [notes]}
       - {id: plan, role: planner, inputs: [notes, notes], outputs: [plan]}
-""")["flows"]["scouts"]
+"""
+
+
+def _pre_817_inputs(raw_flow: dict, parsed_flow: dict) -> dict:
+    """A frozen copy of the normalization before #817: ``inputs`` was a list
+    of artifact-type strings, taken as written (``_artifacts``)."""
+    steps = []
+    for raw, parsed in zip(raw_flow["steps"], parsed_flow["steps"], strict=True):
+        step = {k: v for k, v in parsed.items() if k != "inputs"}
+        if "inputs" in raw:
+            assert all(isinstance(v, str) and v in gy.ARTIFACTS for v in raw["inputs"])
+            step["inputs"] = list(raw["inputs"])
+        steps.append(step)
+    return {**parsed_flow, "steps": steps}
+
+
+def test_flow_definition_digests_without_the_mapping_form_are_unchanged():
+    """Checked-flow resume compares ``digest(flow)``: a flow that uses only plain
+    inputs must normalize exactly as it did before #817."""
+    import yaml
+
+    from garuda.core.acceptance_records import digest
+    from garuda.flows import packaged
+
+    texts = [packaged.TEXT, _CUSTOM_PLAIN]
+    previous = getattr(packaged, "_PREVIOUS_TEXT", None)  # kept for resume (#826)
+    if previous is not None:
+        texts.append(previous)
+    checked = 0
+    for text in texts:
+        raw = yaml.safe_load(text)["flows"]
+        for name, flow in gy.load_text(text)["flows"].items():
+            assert digest(flow) == digest(_pre_817_inputs(raw[name], flow)), name
+            checked += 1
+    assert checked >= 4
+    # A literal pin only for a flow this test owns (recorded on main before #817).
+    flow = gy.load_text(_CUSTOM_PLAIN)["flows"]["scouts"]
     assert digest(flow) == "ad9777ec0527c2ee3c3712b2cfdd1ce59de4c9c6851388db48e03af51f41d421"
