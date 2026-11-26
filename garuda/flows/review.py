@@ -63,7 +63,8 @@ STRUCTURED_VERSION = 2
 MAX_REVIEW_BYTES = 64 * 1024
 _STRUCTURED_FIELDS = {"severity", "path", "lines", "message", "evidence", "verification",
                       "confidence"}
-#: The structured alternative a reviewer may be offered alongside :data:`FORMAT`.
+#: The structured alternative :func:`parse` accepts. It is no longer offered in
+#: prompts (#821): reviewers are told :data:`FORMAT` only.
 STRUCTURED_FORMAT = (
     "Or return one JSON object instead: {\"version\": 2, \"verdict\": \"approve\"|\"changes\", "
     "\"findings\": [{\"severity\": \"blocker|major|minor|nit\", \"path\": \"relative/file\", "
@@ -327,8 +328,8 @@ def build_packet(*, task: str, step: dict, reviewer: dict, spec: dict, candidate
     return packet
 
 
-def render_packet(packet: dict | None) -> str:
-    """The packet as labelled data for the reviewer's prompt (see :mod:`garuda.flows.prompting`)."""
+def render_packet(packet: dict | None, marker: str | None = None) -> str:
+    """The packet as fenced data for the reviewer's prompt (see :mod:`garuda.flows.prompting`)."""
     from garuda.flows.prompting import render_packet as render
 
-    return render(packet)
+    return render(packet, marker)

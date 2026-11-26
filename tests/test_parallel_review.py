@@ -176,5 +176,5 @@ async def test_a_later_step_receives_every_members_artifact(repo):
     assert [ref["producer_step"] for ref in fix["inputs"]] == ["reviews-r1", "reviews-r2"]
     assert [ref["digest"] for ref in fix["inputs"]] == [o["digest"] for o in group["outputs"]]
     for role in ("r1", "r2"):
-        assert f'<flow-input type="review" from="reviews-{role}">' in prompts["fix"]
+        assert f'<flow-input type="review" from="reviews-{role}" fence="' in prompts["fix"]
         assert f"| from {role}" in prompts["fix"]

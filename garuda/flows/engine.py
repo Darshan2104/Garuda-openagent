@@ -786,12 +786,14 @@ class FlowRunner:
         spec = self.resolved.config.get("roles", {}).get(role, {})
         return self._no_edits(step, role) or spec.get("permissions") == "readonly"
 
-    def _prompt(self, step: dict, role: str, inputs, *, read_only: bool | None = None) -> str:
+    def _prompt(self, step: dict, role: str, inputs, *, read_only: bool | None = None,
+                extra=None) -> str:
+        """The step's prompt (:func:`garuda.flows.prompting.assemble`); ``extra`` ends it."""
         if read_only is None and self.launch_kind != "run":
             read_only = self._read_only(step, role)
         return prompting.assemble(task=self.task, flow=self.name, step=step, role=role,
                                   inputs=inputs, read_only=bool(read_only),
-                                  run=self.launch_kind == "run")
+                                  run=self.launch_kind == "run", extra=extra)
 
     # -- running -----------------------------------------------------------------------
 
@@ -1559,7 +1561,7 @@ class FlowRunner:
                     or len(checkpoint.get("history", [])) != checkpoint["round"]):
                 raise FlowStopped("flow.recovery_checkpoint_invalid", "invalid review continuation")
             start, pending = checkpoint["round"], checkpoint["pending"]
-            history, extra = checkpoint["history"], checkpoint.get("extra", "")
+            history, extra = checkpoint["history"], prompting.extra_from(checkpoint)
 
         async def admit_reviewer(plan):
             independence = self._independence(
@@ -1582,14 +1584,14 @@ class FlowRunner:
                     await self._publish(self.flow_session, {"flow_continuation": {
                         "version": 1, "build": step["id"], "reviewer": terminal["id"],
                         "round": pair, "pending": target["id"], "history": history,
-                        "extra": extra}})
+                        **prompting.extra_record(extra)}})
                 packet = None
                 if target is terminal:
                     packet = await self._review_packet(step, terminal, done, spec, reviewer_plan)
                 tried[target["id"]] = tried.get(target["id"], 0) + 1
                 receipt = await self._run_step(
                     target, done, lease, attempt=tried[target["id"]],
-                    prompt_extra=extra if target is step else prompting.render_packet(packet),
+                    prompt_extra=extra if target is step else prompting.Packet(packet),
                     review_admission=admit_reviewer if target is terminal else None)
                 done.append(receipt)
             ref = next(art.ArtifactRef.from_dict(o) for o in receipt["outputs"]
@@ -1639,7 +1641,7 @@ class FlowRunner:
             # The review artifact was redacted when stored; redact again so no
             # other path can carry a reviewer's secret to the reviewed step (#812).
             findings = redact_text(parsed.findings_text())[0]
-            extra = prompting.render_findings(findings)
+            extra = prompting.Findings(findings)
         await self._publish(self.flow_session, {"review": {
             "status": "review_changes_requested", "rounds": rounds + 1, "history": history,
             "independence": independence}})
@@ -1788,7 +1790,8 @@ class FlowRunner:
         await self._touch()
 
     async def _run_step(self, step: dict, done: list[dict], lease, *, attempt: int = 1,
-                        prompt_extra: str = "", review_admission=None) -> dict:
+                        prompt_extra: str | prompting.Findings | prompting.Packet = "",
+                        review_admission=None) -> dict:
         from garuda.runtime.owned_role import StepInterrupted
         from garuda.runtime.roles import RoleRefused
         from garuda.workspace.no_edits import NoEditsGuard
@@ -1804,7 +1807,7 @@ class FlowRunner:
         plan = self._role_plan(role, step=step["id"], no_edits=no_edits)
         inputs = await self._inputs(step, done)
         version_before = await self._version_for_flow()
-        prompt = self._prompt(step, role, inputs) + (f"\n\n{prompt_extra}" if prompt_extra else "")
+        prompt = self._prompt(step, role, inputs, extra=prompt_extra)
         if self.quota_recovery is not None and self.quota_recovery.record is not None:
             prompt += ("\n\n[garuda] Continue from the retained workflow and current workspace after "
                        "a quota pause. Preserve partial edits and inspect existing work before "
