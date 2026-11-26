@@ -1,5 +1,28 @@
 # Durable decisions
 
+## 2026-11-26 — A review packet covers every attempt of the reviewed step (#814)
+
+Each attempt of a reviewed step is a new session with a fresh baseline, and
+`FlowRunner._review_packet` built the packet from the latest attempt's session
+only, so on round 2 the reviewer saw just that round's files (`complete: true`)
+while round 1's edits counted as preexisting dirt. The packet now compares the
+current workspace with the baseline of the first session of the reviewed step's
+first attempt. `_first_attempt` finds that attempt from the flow's receipts on
+disk plus `done` (so stopped attempts and receipts loaded on resume count; an
+attempt refused before launch is skipped) and `_first_session` names the
+session whose baseline is the base: the receipt's `session_id` today, the first
+entry should an attempt ever run several sessions. Round 1 keeps the recorded
+session delta; later rounds use the new `changed_since_baseline`, which shares
+`_review_delta` (the old checks of `review_diff_evidence`), and the same list
+feeds the diff excerpts and `config_evidence`. A missing, uncaptured,
+other-workspace or unattributable first baseline, a missing earlier receipt, or
+a first attempt with no session (quarantined) makes the list and diff
+`unknown`. The packet gains an `attempts` block (first, latest,
+`baseline_session`); `candidate` stays the latest attempt, so the candidate
+binding and resume approval check are unchanged. `PACKET_VERSION` is 2 because
+`changed`/`diff` now mean the step's whole contribution; nothing reads the
+version or recomputes a stored digest.
+
 ## 2026-11-26 — SDK ACP runs deny unattended approvals (#801)
 
 `SoftwareAgent._run_acp` attached no approval path, so the harness's first

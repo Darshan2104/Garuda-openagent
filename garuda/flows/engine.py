@@ -1632,6 +1632,43 @@ class FlowRunner:
                           f"the reviewer still requests changes after {rounds + 1} rounds",
                           step=terminal["id"])
 
+    def _first_attempt(self, step_id: str, done: list[dict]) -> dict | None:
+        """The reviewed step's first attempt in this flow that could have edited.
+
+        Read from the flow's own receipts, so stopped attempts and those loaded
+        on resume count (#814); an attempt refused before launch never ran and
+        is skipped. None when an earlier attempt has no readable receipt or no
+        session record: its edits could not be attributed.
+        """
+        try:
+            rows = {r.get("attempt"): r for r in receipts(self.store, self.flow_session)
+                    if r.get("step") == step_id}
+        except (OSError, ValueError):
+            return None
+        rows.update({r.get("attempt"): r for r in done if r.get("step") == step_id})
+        attempt = 1
+        while attempt in rows:
+            row = rows[attempt]
+            if not (row.get("status") == "stopped" and row.get("session_id") is None
+                    and "started_at" in row and row["started_at"] is None):
+                return row if self._first_session(row) else None
+            attempt += 1
+        return None
+
+    @staticmethod
+    def _first_session(receipt: dict | None) -> str | None:
+        """The first harness session an attempt ran: its baseline is the attempt's start.
+
+        A review packet compares the candidate with the baseline of the first
+        session of the reviewed step's first attempt (#814). Today an attempt
+        runs one session, its receipt's ``session_id``; an attempt that runs
+        several sessions in turn would name its first one here.
+        """
+        if receipt is None:
+            return None
+        session = receipt.get("session_id")
+        return session if isinstance(session, str) and session else None
+
     async def _review_packet(self, step: dict, terminal: dict, done: list[dict], spec: dict,
                              reviewer_plan) -> dict:
         """Freeze what the reviewer is shown, from the reviewed step's own records.
@@ -1644,7 +1681,7 @@ class FlowRunner:
         """
         from garuda.flows import review as rv
         from garuda.flows.review_evidence import config_evidence
-        from garuda.workspace.evidence import review_diff_evidence
+        from garuda.workspace.evidence import changed_since_baseline, review_diff_evidence
 
         reviewed = next((r for r in reversed(done) if r.get("step") == step["id"]), None)
         if reviewed is None:
@@ -1656,29 +1693,42 @@ class FlowRunner:
             raise FlowStopped("flow.review_stale_candidate",
                               "the workspace changed after the reviewed step; its candidate is "
                               "no longer what would be reviewed", step=terminal["id"])
-        try:
-            meta = self.store.load_meta(reviewed["session_id"]) if reviewed.get("session_id") else {}
-        except (OSError, ValueError):
-            meta = {}
-        changed = meta.get("delta_changed")
-        changed = changed if isinstance(changed, list) else None
-        changed_total = None if changed is None else rv.change_list_total(
-            changed, meta.get("delta_changed_total"))
-        changed_complete = rv.change_list_complete(changed, meta.get("delta_changed_total"))
+        # The candidate is everything the reviewed step changed in this flow:
+        # every attempt since the first one's baseline, not one round (#814).
+        first = await _settled_sync(self._first_attempt, step["id"], done)
+        base = self._first_session(first)
+        if base is not None and first is reviewed:
+            try:
+                meta = self.store.load_meta(base)
+            except (OSError, ValueError):
+                meta = {}
+            changed = meta.get("delta_changed")
+            changed = changed if isinstance(changed, list) else None
+            recorded_total = meta.get("delta_changed_total")
+        else:
+            changed = await _settled_sync(changed_since_baseline, self.store, base, self.workspace)
+            recorded_total = None if changed is None else len(changed)
+        changed_total = None if changed is None else rv.change_list_total(changed, recorded_total)
+        changed_complete = rv.change_list_complete(changed, recorded_total)
         packet = rv.build_packet(
             task=self.task, step=step, reviewer=terminal, spec=spec,
             candidate={"step": step["id"], "session_id": reviewed.get("session_id"),
                        "attempt": reviewed.get("attempt"), "workspace_version": candidate,
                        "workspace_version_before": reviewed.get("workspace_version_before")},
             changed=changed,
-            changed_total=meta.get("delta_changed_total"),
+            changed_total=recorded_total,
+            attempts={"first": None if first is None else {
+                          "attempt": first.get("attempt"), "session_id": first.get("session_id")},
+                      "latest": {"attempt": reviewed.get("attempt"),
+                                 "session_id": reviewed.get("session_id")},
+                      "baseline_session": base},
             version_binds=candidate is not None and self._version_binds(),
             reviewer_plan=reviewer_plan.record() if reviewer_plan is not None else None,
             no_edits=self._no_edits(terminal, terminal["role"]),
             config=await _settled_sync(
                 config_evidence, self.workspace, changed, changed_complete=changed_complete),
             diff=await _settled_sync(
-                review_diff_evidence, self.store, reviewed.get("session_id"), self.workspace,
+                review_diff_evidence, self.store, base, self.workspace,
                 changed, changed_total=changed_total, changed_complete=changed_complete))
         await self._publish(self.flow_session, {"review_packet": {
             "digest": packet["digest"], "candidate": packet["candidate"],
