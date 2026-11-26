@@ -468,9 +468,13 @@ existing trail, and a resumed session records the level of its latest run.
 
 Independently of the level, an ACP session records what the agent offered
 (`acp_session`: its `initialize` identity, each session option with its current
-value and choices, and its modes), the code and a redacted message of a run that
-failed (`error_code`, `error_detail`), and `sessions show` adds `approval_summary`
-(see [Sessions](sessions-and-flows.md)).
+value and choices, and its modes). These are the options as the agent offered
+them at `session/new`, before the role's options are applied, so an option's
+"current value" there is the agent's default, not necessarily what ran. The
+options Garuda applied for the role are in `role.acp_options`, and the model the
+agent reported running is `reported_model`. The session also records the code
+and a redacted message of a run that failed (`error_code`, `error_detail`), and
+`sessions show` adds `approval_summary` (see [Sessions](sessions-and-flows.md)).
 
 ## Runtime capacity
 
