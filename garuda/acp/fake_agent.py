@@ -25,7 +25,9 @@ write-anyway (asks to edit, is refused, writes anyway), edits-unless-read-only (
 and, refused, ends the turn `cancelled` like Codex), config-options (session/new offers model and effort options that
 session/set_config_option changes; replies name them; it starts in `--initial-mode`, and
 its `fake-mini` model offers no effort and takes `everything` as `edit`, like a model
-without a harness's broadest mode), capabilities-<name>.
+without a harness's broadest mode), plan-exit (ends planning with an "Approve Plan"
+`switch_mode` request carrying the plan, like claude-agent-acp; reject ends the turn
+`cancelled`, an allow leaves plan mode), capabilities-<name>.
 """
 
 from __future__ import annotations
@@ -75,6 +77,7 @@ BASE_PROFILES = frozenset(
         "malformed-result",
         "odd-stop",
         "cancel-stop",
+        "plan-exit",
         "strict-v1",
         "config-options",
         "write-anyway",
@@ -380,6 +383,51 @@ def _request_permission(
     return allowed
 
 
+#: The plan the `plan-exit` profile proposes.
+FAKE_PLAN = "1. Read calc/.\n2. Create x.txt containing hi."
+
+
+def _plan_exit(session_id: str, call_id: int, text: str) -> None:
+    """End planning the way claude-agent-acp 0.110.1 does (#771): an "Approve
+    Plan" `switch_mode` request whose input carries the plan. An allow option
+    leaves plan mode and the agent goes on to implement; "No, keep planning"
+    (reject) interrupts the turn, which ends `cancelled` in plan mode."""
+    plan = "" if "no plan" in text else FAKE_PLAN
+    plan_call = f"c-plan-{call_id}"
+    tool_call = {"toolCallId": plan_call, "title": "Approve Plan", "kind": "switch_mode",
+                 "rawInput": {"plan": plan} if plan else {}}
+    if plan:
+        tool_call["content"] = [{"type": "content", "content": _text(plan)}]
+    _update(session_id, {"sessionUpdate": "agent_thought_chunk", "content": _text("planning")})
+    _update(session_id, {"sessionUpdate": "tool_call", **tool_call, "status": "pending"})
+    _send({"jsonrpc": "2.0", "id": "perm-p", "method": "session/request_permission",
+           "params": {"sessionId": session_id, "toolCall": tool_call, "options": [
+               {"optionId": "acceptEdits", "name": "Yes, auto-accept edits",
+                "kind": "allow_always"},
+               {"optionId": "default", "name": "Yes, manually approve edits",
+                "kind": "allow_once"},
+               {"optionId": "reject", "name": "No, keep planning", "kind": "reject_once"}]}})
+    while True:
+        reply = _read_frame()
+        if reply.get("id") == "perm-p" and "method" not in reply:
+            break
+    outcome = (reply.get("result") or {}).get("outcome") or {}
+    chosen = outcome.get("optionId") if outcome.get("outcome") == "selected" else None
+    if chosen in ("acceptEdits", "default"):
+        _update(session_id, {"sessionUpdate": "tool_call_update", "toolCallId": plan_call,
+                             "status": "completed"})
+        _update(session_id, {"sessionUpdate": "current_mode_update", "currentModeId": chosen})
+        _update(session_id, {"sessionUpdate": "agent_message_chunk",
+                             "content": _text(f"left plan mode ({chosen}); implementing")})
+        _result(call_id, {"stopReason": "end_turn"})
+        return
+    _update(session_id, {"sessionUpdate": "tool_call_update", "toolCallId": plan_call,
+                         "status": "failed",
+                         "content": [{"type": "content",
+                                      "content": _text("User chose to keep planning")}]})
+    _result(call_id, {"stopReason": "cancelled"})
+
+
 def _edit_allowed(session_id: str) -> bool:
     """Ask to edit a file (an ACP `edit` tool call); whether Garuda allowed it."""
     tool_call = {"toolCallId": "c-edit", "title": "Edit files", "kind": "edit"}
@@ -513,6 +561,8 @@ def _handle_prompt(
         _result(call_id, {"stopReason": "end_turn"})
     elif profile == "cancel-stop":
         _result(call_id, {"stopReason": "cancelled"})
+    elif profile == "plan-exit":
+        _plan_exit(session_id, call_id, text)
     elif profile == "odd-stop":
         _result(call_id, {"stopReason": "mystery"})
     elif profile == "diff":

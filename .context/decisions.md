@@ -1,5 +1,27 @@
 # Durable decisions
 
+## 2026-11-26 — A plan-mode run returns its plan and never leaves plan mode (#771)
+
+claude-agent-acp 0.110.1 ends planning with ExitPlanMode, sent as an
+"Approve Plan" `session/request_permission` with `kind=switch_mode` and the
+plan in `toolCall.rawInput.plan`. Every allow option switches the session to
+an editing mode (`default`, `acceptEdits`, `auto`, `bypassPermissions`); the
+adapter has no "plan done" answer. Its "No, keep planning" (`reject`) answers
+`deny` with `interrupt: true` and the adapter ends the turn `cancelled`, still
+in plan mode. `AcpRuntime` now answers any `switch_mode` request itself while
+the agent reports mode `plan`: it selects the reject option (or answers
+`cancelled` without one), never consults the approval handler (so no
+`permissions` level or interactive answer can fail open), and records an
+`approval_request` plus an `approval_settled` deny event. When the agent then
+ends that turn `cancelled` and Garuda did not cancel it, the plan (the
+request's `rawInput.plan`, else its text content, at most 200,000 chars) is fed
+as the turn's message and the turn closes `completed` with a `plan_produced`
+lifecycle event; the session stays open in plan mode. A later denial in the
+same turn, or no plan text, keeps the old cancelled-turn handling. The
+`plan-exit` fake-agent profile reproduces the adapter's request shape. Plan-mode
+runs report `claude-sonnet-5-5` because Claude Code itself upgrades a Haiku
+main model while planning ("haiku plan upgrade"); Garuda sets no model there.
+
 ## 2026-11-26 — A checked flow's check ceiling binds the flow workspace, not the cwd (#768)
 
 `FlowExecutionService` builds the check `PermissionEngine` with
