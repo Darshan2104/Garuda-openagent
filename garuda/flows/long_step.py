@@ -770,3 +770,45 @@ def receipt_fields(record: dict | None) -> dict:
     if not record:
         return {}
     return {key: value for key, value in record.items() if key != "stop"}
+
+
+#: ``turn_loop_source`` of a receipt whose turn counts were recovered from its
+#: progress file because no loop reported them (an interrupted attempt).
+RECOVERED_SOURCE = "progress"
+
+
+def recovered_fields(path) -> dict:
+    """An interrupted attempt's last known turn counts, from its progress file.
+
+    A SIGTERM'd or crashed attempt never returns its loop's turn record, but
+    every finished turn was appended to ``progress/<step>-<attempt>.jsonl``. The
+    receipt gets the same top-level counts a finished loop reports (``turns``,
+    ``rotations``, ``continuations``, ``harness_sessions``: the native session
+    ids, ``None`` when unknown), plus ``last_turn_decision`` and ``last_turn_at``
+    from the last turn record and ``turn_loop_source: "progress"``, so a reader
+    never takes them for a finished loop's figures. A turn still in flight when
+    the attempt stopped has no record and is not counted. ``{}`` without a
+    progress file (a plain one-turn step records none).
+    """
+    if not Path(path).is_file():
+        return {}
+    rows = read_progress(path)
+    natives: list[str | None] = []
+    for row in rows:
+        session = row.get("session")
+        while type(session) is int and len(natives) < min(session, MAX_LISTED):
+            native = row.get("native_session_id")
+            natives.append(native[:256] if isinstance(native, str) and len(natives) == session - 1
+                           else None)
+    last = rows[-1] if rows else {}
+
+    def text(value, limit):
+        return " ".join(value.split())[:limit] if isinstance(value, str) else None
+
+    return {"turns": last.get("turn", 0), "harness_sessions": natives,
+            "rotations": sum(1 for r in rows if r.get("decision") == "rotate"),
+            "continuations": sum(1 for r in rows
+                                 if r.get("decision") == "next" and r.get("reason") != "repair"),
+            "last_turn_decision": text(last.get("decision"), 20),
+            "last_turn_at": text(last.get("at"), 40),
+            "turn_loop_source": RECOVERED_SOURCE}

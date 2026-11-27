@@ -1693,16 +1693,23 @@ def _flow_live_lines(live: dict | None) -> list[str]:
         return " ".join(str(value).split())[:limit]
 
     lines = []
+    # `running` (absent from an older view: then an unsettled attempt is the live one).
+    running = live.get("running", live.get("paused") is None)
     if live.get("step") and (live.get("started_at") or live.get("session_id")):
-        head = f"  live: step {text(live['step'], 80)}"
+        # Nothing runs for a stopped or paused flow (or a dead process): its last attempt.
+        head = f"  {'live' if running else 'last attempt'}: step {text(live['step'], 80)}"
         if live.get("attempt") is not None:
             head += f" (attempt {live['attempt']})"
+        if not running:
+            head += f", {text(live.get('state') or 'not running', 40)}"
+            if live.get("process"):
+                head += f" (process {text(live['process'], 20)})"
         if live.get("turns") is not None:
             head += (f", turn {live['turns']} in {live.get('harness_sessions') or 1} harness "
                      f"session(s), {live.get('rotations') or 0} rotation(s), "
                      f"{live.get('continuations') or 0} continuation(s)")
         else:
-            head += ", no turn finished yet"
+            head += ", no turn finished yet" if running else ", no turn finished"
         lines.append(head)
         detail = []
         if live.get("session_id"):
@@ -2041,6 +2048,15 @@ def run_flow(args) -> int:
                 extra += (f"; {receipt['turns']} turns, {receipt.get('rotations', 0)} rotations"
                           + "".join(f", repair {r.get('outcome')}" for r in repairs
                                     if isinstance(r, dict)))
+                if receipt.get("turn_loop_source") == "progress":
+                    # Interrupted: the last known counts, not a finished loop's report.
+                    last = receipt.get("last_turn_decision")
+                    extra += (f", {receipt.get('continuations', 0)} continuations (recovered "
+                              "from progress records"
+                              + (f"; last turn {' '.join(str(last).split())[:20]}"
+                                 + (f" at {receipt['last_turn_at']}"
+                                    if isinstance(receipt.get("last_turn_at"), str) else "")
+                                 if last else "") + ")")
             print(f"  {receipt['step']} (attempt {receipt['attempt']}): {receipt['status']}; "
                   f"outputs: {outs}{extra}")
             if (measured := measure.line(receipt)) is not None:
