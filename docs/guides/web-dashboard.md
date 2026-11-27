@@ -254,15 +254,39 @@ history. On top of that:
   Older measurements without a recorded execution are labelled
   **Unattributed historical prompts**, and gaps read **runtime tenure
   unknown** rather than being filled in.
-- **External harness** appears for a Claude Code, Codex or other ACP run: the
-  harness and adapter version, role, model, effort, the harness mode that ran,
-  the write policy, a per-turn count of message events, tool calls, tool
-  results, approval requests and errors, prompts sent, and each approval with
-  its outcome. Garuda never stores the harness's own messages or tool calls,
-  so the trace below it says so instead of showing empty turns. **Models used**
-  adds each turn's context snapshot, with the model the harness reported and
-  its estimated cost when it gives them. The run's **Cost** tile shows that
-  adapter-reported cost, labelled as such, instead of a blank.
+- **What Garuda recorded** leads the page for a Claude Code, Codex or other
+  ACP run with no native log: the full task, the outcome, the duration (the
+  same figure as the run list: recorded start to recorded end, **—** when no
+  end was recorded), prompts sent, the stored final message, the harness and adapter
+  version, role, model, effort, harness mode and write policy, a per-turn
+  count of message events, tool calls, tool results, approval requests and
+  errors, and each approval with its outcome (approval requests with no stored
+  decision say so). Garuda never stores the harness's own messages or tool
+  calls, so one short **Not recorded** note replaces the empty trace,
+  context-pressure and raw-event panels. A run that mixes a native lane with
+  an external one shows the same facts as an **External harness** card above
+  its native trace. **Models used** adds each turn's context snapshot, with
+  the model the harness reported and its estimated cost when it gives them.
+  The run's **Cost** tile shows that adapter-reported cost, labelled as such,
+  or **not reported by the adapter**.
+- **Following a live run** patches the page in place every few seconds. A turn
+  or panel whose content did not change is left alone, so an expanded turn, a
+  loaded subagent trace, the raw-events window with its filter and the focus
+  in it, the Models used panel (refreshed once when the run ends), the scroll
+  position and a text selection all stay put. A part holding your text
+  selection is updated once the selection is cleared. While the run is live,
+  its missing `session_end` and its unfinished last turn are shown as **in
+  progress**, not as alarms; a run that is no longer live and never finished
+  keeps the **No session_end** and **TURN NEVER FINISHED** notices. If the
+  dashboard stops answering, the Live card says **can't reach the dashboard —
+  retrying**, retries with a doubling wait of up to 30 seconds, and resumes
+  on its own.
+- **Raw events** loads up to 500 events at a time, and its filter searches
+  that loaded window only. A filter with no match names the events it
+  searched and offers **Search later events** / **Search earlier events**,
+  which walk the rest of the log a window at a time until one matches.
+- A link to a run that does not exist says **No such run** and links back to
+  Runs and Sessions.
 - **Consults** lists each question the session asked another role as a lane:
   who asked whom, the identity that ran, its outcome (`answered`, `withheld`,
   `failed`, `timeout`, `quarantined`, `interrupted`), duration, denied
