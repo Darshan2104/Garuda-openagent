@@ -231,6 +231,26 @@ def _starter_detail(request: Request, ctx: DashboardContext, match) -> Response:
     return scenarios.respond(scenarios.detail, request, ctx, match["starter"])
 
 
+# --- flows: every available flow, read only; start reuses the run-flow starter ----
+
+
+@route("GET", r"/api/flows")
+def _flow_library(request: Request, ctx: DashboardContext, _match) -> Response:
+    from garuda.interfaces.web import flows, scenarios
+
+    return scenarios.respond(flows.library, request, ctx)
+
+
+@route("GET", r"/api/flows/(?P<name>[a-z0-9][a-z0-9_-]{0,47})")
+def _flow_detail(request: Request, ctx: DashboardContext, match) -> Response:
+    from garuda.interfaces.web import flows, scenarios
+
+    try:
+        return scenarios.respond(flows.detail, request, ctx, match["name"])
+    except flows.FlowNotFound:
+        return not_found(f"No flow named {match['name']!r} is available in this workspace.")
+
+
 @route("GET", r"/api/scenario-runs/(?P<sid>[^/]+)")
 def _starter_result(request: Request, ctx: DashboardContext, match) -> Response:
     from garuda.interfaces.web import scenarios

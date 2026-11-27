@@ -298,7 +298,7 @@ function pollStarterOperation(state) {
   ]).then(function (both) {
     if (STATE.starterView !== state || state.operation !== operation) return;
     renderStarterOperation(state, both[0], both[1].approvals || []);
-    if (["terminal", "uncertain", "quarantined", "refused", "abandoned"].indexOf(both[0].status) === -1) {
+    if (OPERATION_SETTLED.indexOf(both[0].status) === -1) {
       scheduleStarterOperation(state, 900);
     }
   }).catch(function (err) {
@@ -311,20 +311,35 @@ function pollStarterOperation(state) {
   });
 }
 
+/* The operation phases after which nothing more happens. */
+var OPERATION_SETTLED = ["terminal", "uncertain", "quarantined", "refused", "abandoned"];
+
 function renderStarterOperation(state, row, approvals) {
   var host = el("starter-operation");
   if (!host) return;
-  if (["terminal", "uncertain", "quarantined", "refused", "abandoned"].indexOf(row.status) !== -1) {
+  if (OPERATION_SETTLED.indexOf(row.status) !== -1) {
     state.operation.done = true;
   }
-  var session = row.session_id ?
+  host.innerHTML = starterOperationHtml(row, approvals, "starter");
+  wireOperationApprovals(host, function () { pollStarterOperation(state); });
+}
+
+/* One owned operation and its approvals, shared by the Starters page ("starter"), a Flows
+ * start waiting for admission ("flow") and the session page's operation panel ("session").
+ * `grace` is the broker's heartbeat grace in seconds, when known. */
+function starterOperationHtml(row, approvals, where, grace) {
+  var session = row.session_id && where !== "session" ?
     '<a class="btn" href="#/sessions/' + encodeURIComponent(row.session_id) + '">Open session details</a>' : '';
-  host.innerHTML = '<section class="card starter-operation-card"><h3>Starter operation</h3><p>' +
+  var keep = where === "session" ?
+    '. Approvals for a flow started from the dashboard are answered here, not in the Approvals inbox. While this page is open it keeps them waiting; ' +
+    'about ' + esc(grace || 90) + ' seconds after it stops checking (you navigate away or close it), a waiting approval is denied and the step sees the denial. ' +
+    'The flow itself keeps running on the server.</p>' :
+    '. Keep this page open while approvals are waiting. Closing it denies unanswered asks but leaves server-owned work running.</p>';
+  return '<section class="card starter-operation-card"><h3>' + (where === "session" ? "Dashboard operation" : "Starter operation") + '</h3><p>' +
     chip("operation", row.status || row.phase) + ' ' + chip("flow", row.flow_state || "not admitted") +
     '</p><p class="stat-sub">Operation <code>' + esc(row.operation_id) + '</code>' +
     (row.session_id ? ' · session <code>' + esc(row.session_id) + '</code>' : '') +
-    (row.background ? '. This run continues after the dashboard closes. Answer its durable requests in <a href="#/inbox">Approval inbox</a>.</p>' :
-      '. Keep this page open while approvals are waiting. Closing it denies unanswered asks but leaves server-owned work running.</p>') +
+    (row.background ? '. This run continues after the dashboard closes. Answer its durable requests in <a href="#/inbox">Approval inbox</a>.</p>' : keep) +
     (row.reason ? '<p class="notice err">' + esc(row.reason) + '</p>' : '') + session +
     '<div class="starter-operation-approvals">' + (row.background ? '<p class="stat-sub">Background approvals use the session channel.</p>' : approvals.length ? approvals.map(function (ask) {
       return '<div class="notice warn"><div class="notice-title">Approval required</div><div class="notice-body"><code>' +
@@ -334,14 +349,18 @@ function renderStarterOperation(state, row, approvals) {
         esc(ask.ask_id) + '" data-owner="' + esc(ask.owner) + '" data-digest="' + esc(ask.digest) +
         '" data-approved="false">Deny</button></div>';
     }).join("") : '<p class="stat-sub">No approval is waiting.</p>') + '</div></section>';
+}
+
+/* Answer an operation's approval, bound to the ask's owner and digest, then `after()`. */
+function wireOperationApprovals(host, after) {
   host.querySelectorAll("[data-flow-approval]").forEach(function (button) {
     button.addEventListener("click", function () {
       var ask = this.getAttribute("data-flow-approval");
-      this.disabled = true;
-      api("/api/approvals/" + encodeURIComponent(ask), { method: "POST", body: {
-        approved: this.getAttribute("data-approved") === "true",
-        owner: this.getAttribute("data-owner"), digest: this.getAttribute("data-digest")
-      }}).then(function () { pollStarterOperation(state); }).catch(function (err) { if (isSuperseded(err)) return; toast(err.message); });
+      var body = { approved: this.getAttribute("data-approved") === "true",
+                   owner: this.getAttribute("data-owner"), digest: this.getAttribute("data-digest") };
+      guardAction(this, function () {
+        return api("/api/approvals/" + encodeURIComponent(ask), { method: "POST", body: body }).then(after);
+      }, { busy: "Sending…" });
     });
   });
 }
@@ -375,7 +394,7 @@ function starterResultHtml(row, split) {
     (coverage.next_offset != null ? '<button type="button" class="btn" id="starter-next-page">Next evidence page</button>' : "");
   var result = '<details><summary>Stored output · ' + esc((row.output || {}).scope || "unknown") + '</summary><p class="stat-sub">Stored summaries may be clipped. Missing or withheld output is not success evidence.</p><pre class="starter-data">' +
     esc((row.output || {}).text == null ? "Output unavailable or withheld." : row.output.text) + '</pre></details>' +
-    '<h3>Next action</h3><p>' + esc(action.label || "Inspect recorded evidence") + '</p>' + implement +
+    '<h3>Next action</h3><p>' + esc(action.label || "Inspect recorded evidence") + '</p>' + implement + flowRunAgainHtml(row) +
     (action.id === "implement-plan" && !workspace ? '<p>The recorded workspace is outside this dashboard’s allowlist. Copy the command into a terminal in that workspace.</p>' : "") +
     (action.command ? '<label>Suggested CLI command <textarea id="starter-next-command" readonly rows="3">' + esc(action.command) + '</textarea></label><button type="button" class="btn" id="starter-next-copy">Copy command</button>' : "");
   var head = '<section class="card starter-result" id="starter-result"><h2>' +

@@ -341,6 +341,21 @@ def suite(workdir: Path, shots: Path, *, owned_starts: bool) -> list[str]:
                          {"GARUDA_CHECK_STARTERS": str(manifest_path),
                           "GARUDA_CHECK_STARTER_PROFILES": json.dumps(bases_by_profile)})
 
+    # --- the Flows page: user, project and packaged flows; write and read-only --
+    def flows():
+        root = workdir / "flows"
+        root.mkdir()
+        env = {"GARUDA_GLOBAL_SETTINGS": str(root / "settings" / "settings.yaml")}
+        seed(str(HERE / "seed_flows.py"), str(root), env=env)
+        manifest = json.loads((root / "manifest.json").read_text())
+        args = ["--allow-workspace", manifest["workspace"]]
+        write_port = dashboard(root / "sessions", "web-flows.log", read_only=False,
+                               extra_env=env, extra_args=args)
+        ro_port = dashboard(root / "ro-sessions", "web-flows-ro.log", extra_env=env, extra_args=args)
+        return run_check("check_flows.py", write_port, shots,
+                         {**env, "GARUDA_CHECK_FLOWS": str(root / "manifest.json"),
+                          "GARUDA_CHECK_RO_BASE": f"http://127.0.0.1:{ro_port}/"})
+
     # --- chat, approvals and grounding, ScriptModel-backed --------------------
     def chat():
         sessions = workdir / "chat-sessions"
@@ -381,6 +396,7 @@ def suite(workdir: Path, shots: Path, *, owned_starts: bool) -> list[str]:
         ("check_data_correctness.py", data_correctness),
         ("check_runs_list.py + check_shell.py", shell),
         ("check_scenarios.py", starters),
+        ("check_flows.py", flows),
         # Linux-owned flow and role starts in the real Chrome channel
         *([("owned starts", lambda: run_owned_starts(workdir, shots, ports.take()))]
           if owned_starts else []),

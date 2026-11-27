@@ -71,8 +71,30 @@ def main() -> None:
         assert refused.status == 403
         page.screenshot(path=str(SHOTS / "owned-flow-start.png"), full_page=True)
         assert not errors, errors
+
+        # Flows: preview, Start, land on the session page, answer the approval there.
+        flow_starts = len(starts)
+        page.goto(BASE + "#/flows/plan-only?workspace=0")
+        expect(page.locator("#flow-pipeline .pipe-step")).to_have_count(1, timeout=20_000)
+        page.locator('[data-field="goal"]').fill("Approve one flow started from the Flows page")
+        page.locator("#flow-preview-button").click()
+        expect(page.locator("#flow-start")).to_be_visible(timeout=20_000)
+        page.locator("#flow-start").click()
+        page.wait_for_url(re.compile(r".*#/sessions/[0-9a-f-]+\?operation=[0-9a-f-]+$"), timeout=20_000)
+        assert len(starts) == flow_starts + 1 and starts[-1]["starter_id"] == "run-flow", starts[-1]
+        assert starts[-1]["inputs"]["flow"] == "plan-only"
+        panel = page.locator("#session-operation-host")
+        expect(panel.locator("[data-flow-approval]")).to_have_count(2, timeout=30_000)
+        expect(panel).to_contain_text("answered here, not in the Approvals inbox")
+        panel.locator('[data-flow-approval][data-approved="true"]').click()
+        expect(panel).to_contain_text("terminal", timeout=60_000)
+        expect(panel).to_contain_text("completed")
+        expect(page.locator("#flow-run-again")).to_have_attribute(
+            "href", re.compile(r"^#/flows/plan-only\?workspace=0$"), timeout=20_000)
+        page.screenshot(path=str(SHOTS / "owned-flow-start-flows-page.png"), full_page=True)
+        assert not errors, errors
         browser.close()
-    print("Owned flow Start, approval, duplicate, progress and stale preview: passed in Chrome")
+    print("Owned flow Start, approval, duplicate, progress, stale preview and the Flows page: passed in Chrome")
 
 
 if __name__ == "__main__":

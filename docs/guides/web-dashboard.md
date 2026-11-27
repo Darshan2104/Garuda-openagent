@@ -59,6 +59,7 @@ returns to the page you were on.
 | Page | Route | What it's for |
 |---|---|---|
 | Overview | `#/` (also `#/overview`) | The landing page: what needs you, what is running, what finished last, and the health of the harnesses your roles use |
+| Flows | `#/flows`, `#/flows/<name>?workspace=N` | Every flow you can run (yours, the project's, the packaged examples): its pipeline, readiness, a preview, and an owned Linux start in write mode |
 | Starters | `#/starters`, `#/starters/<id>` | Five packaged journeys, configured readiness, preview/copy, and owned Linux flow starts in write mode |
 | Runs | `#/runs` | Traces and metrics of what each agent did: turns, tool calls, diffs, tokens, cost, models used, consults |
 | Sessions | `#/sessions` | State, queue, approvals and control for each session (flow, Stop) |
@@ -93,7 +94,8 @@ finishes; a refusal shows the dashboard's message and error code.
 
 | Key | Does |
 |---|---|
-| `1`–`9`, `0` | Switch to the nth tab (`0` is the tenth, Chat in write mode); `?` lists them |
+| `1`–`9`, `0` | Switch to the nth tab (`0` is the tenth, Runtimes); `?` lists them |
+| `c` | Chat (write mode) |
 | `/` | Focus the page's search field |
 | `r` | Reload the current view, except Chat or a view with unsubmitted edits |
 | `t` | Toggle light and dark |
@@ -138,6 +140,59 @@ show an inline error with **Retry** if they fail; the rest of the page stays
 usable. The page refreshes every 10 seconds (Setup and Providers every
 minute) while the tab is visible, updates rows in place, and has no control
 that changes anything.
+
+## Flows
+
+**Flows** lists every flow `garuda flow list` shows for the selected workspace:
+your own (from your `garuda.yaml`), the project's (from its `garuda.yaml`, with a
+warning that it is not your configuration and whether that file is trusted), and
+the packaged examples. Each card shows its steps (step → role → harness/model,
+with review loops and parallel groups), readiness, missing roles with the fix,
+and **Start from dashboard: yes** or **copy-only** with the reason. A flow whose
+roles cannot be resolved is listed with its error and its configured steps; a
+`garuda.yaml` that cannot be loaded leaves the packaged flows listed beside its
+error. Without any flow of your own the page explains how to define one.
+
+Open a flow for its full pipeline, drawn like a finished flow on its session
+page: each step's roles with runtime, model, effort, configured and effective
+permission, write policy and fallbacks; its inputs (with `from` for an input
+taken from a named step), outputs, review, retries, limits, `long_run`, and the
+backstop a dashboard start gives it (one hour without `limits.deadline_min`,
+else its deadline plus a margin). Values the dashboard cannot know are listed
+as unknown with the reason.
+
+Fill **Task** (required), **Sources** and **Explicit checks** (one command per
+line) and press **Preview**. The preview shows readiness with every blocker and
+warning and its fix, who runs each step with configured and effective permission
+against the dashboard ceiling, the checks and their authority, limits, the
+equivalent `garuda flow run` command with **Copy**, and what to know before
+starting: a step without `deadline_min` is stopped at the backstop (the actual
+minutes), a flow started here is never resumed (`garuda flow resume` refuses
+it), and stopping the dashboard interrupts it. Editing any field discards the
+preview.
+
+**Start flow** appears only in write mode on Linux, for a flow the owned engine
+runs (no step retries, no `isolation` other than `shared`, no parallel group, no
+`long_run` on a non-ACP role), with every step within the ceiling and readiness
+without errors. It sends the `run-flow` starter's preview and authority digests
+with one operation id, reused on a retry, so a repeated click returns the same
+flow. Once admitted, the page opens the flow's session at
+`#/sessions/<id>?operation=<uuid>`, whose operation panel shows the operation and
+its approvals: **Allow** or **Deny** them there; they are not in **Approvals**.
+That page keeps them waiting while it is open; about 90 seconds after it stops
+checking (you navigate away or close it), a waiting approval is denied and the
+step sees the denial, while the flow keeps running. Return through the link with
+`?operation=` to see it again. A finished run's starter card offers **Run again**,
+back to the flow with the workspace selected.
+
+Everything else is copy-only, with its reason: a read-only dashboard
+(`dashboard.read_only`), a host without the Linux supervisor
+(`starter.ownership_unavailable`), an unsupported flow shape
+(`starter.retries_unsupported`, `starter.isolation_unsupported`,
+`starter.parallel_ownership_unavailable`, `flow.long_run_unsupported`), a step
+above the ceiling (`starter.permission_exceeds_ceiling`), a role the project
+file chose (`starter.project_role`), or another readiness error. Preview and Copy
+always work.
 
 ## Starters
 
@@ -646,6 +701,8 @@ Providers page discards it.
 
 | Route | Purpose |
 |---|---|
+| `GET /api/flows` | Every available flow for an allowlisted `workspace` index: source, file and trust, steps, roles, missing roles, typed `error`, `readiness`, `pipeline`, and `start` (`supported` and `reasons`), with `host` and recorded `logins`; a pure read, also read-only |
+| `GET /api/flows/<name>` | One flow, the same fields; `404` when no flow has that name in the workspace |
 | `GET /api/scenarios`, `GET /api/scenarios/<id>` | Installed starter library/detail and configured readiness; optional allowlisted `workspace` index |
 | `POST /api/scenarios/preview` | Pure compilation: `starter_id`, bounded `inputs`, optional integer `workspace`; also available read-only |
 | `POST /api/scenarios/start` | Write-mode Linux flow admission: exact `operation_id`, `starter_id`, `inputs`, `workspace`, `preview_digest`, and `authority_digest` |

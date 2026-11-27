@@ -872,6 +872,7 @@ function sessionDetailView(id) {
     page.streamable = sessionStreamable(row);
     render(
       '<div class="page-head" id="session-head"></div>' +
+      '<div id="session-operation-host"></div>' +
       '<div id="session-approvals-host"></div>' +
       '<div id="session-overview-host"></div>' +
       '<div class="session-grid"><div id="session-result-host"></div><div id="session-failure-host"></div>' +
@@ -895,6 +896,8 @@ function sessionDetailView(id) {
     }
     if (isActive(row.state)) startSessionRowPoller(page);
     if (row.starter_origin) loadStarterResult(row.session_id);
+    // Landed here from a dashboard start (Flows): the operation and its approvals.
+    if (routeParams().operation) startSessionOperation(page, routeParams().operation);
   }).catch(function (err) {
     if (isSuperseded(err) || STATE.sessionPage !== page) return;
     if (err.status === 401) { render(tokenRequiredPanel()); return; }
@@ -1106,6 +1109,7 @@ function stopSessionPages() {
   if (page) {
     if (page.tail) page.tail.stop();
     if (page.rowPoller) page.rowPoller.stop();
+    stopSessionOperation(page);
   }
   STATE.sessionPage = null;
   if (STATE.inbox && STATE.inbox.poller) STATE.inbox.poller.stop();
@@ -1122,6 +1126,7 @@ onReconnect(function () {
   var page = STATE.sessionPage;
   if (page && page.rowPoller) page.rowPoller.now();
   if (page && page.tail) page.tail.retry();
+  if (page && page.operation && page.operation.poller && !page.operation.done) page.operation.poller.now();
   if (STATE.inbox && STATE.inbox.poller) STATE.inbox.poller.now();
 });
 

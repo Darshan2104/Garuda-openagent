@@ -17,7 +17,10 @@ var ROUTES = [
   // A list page's filters ride in its query (routeParams() below), so a filtered list
   // survives a reload, can be shared, and back/forward steps through it.
   [/^#\/runs(?:\?.*)?$/, function () { return runsView(); }],
-  [/^#\/sessions\/([^/]+)$/, function (m) { return sessionDetailView(decodeURIComponent(m[1])); }],
+  // `?operation=<uuid>`: a dashboard start landed here; the page shows that operation too.
+  [/^#\/sessions\/([^/?]+)(?:\?.*)?$/, function (m) { return sessionDetailView(decodeURIComponent(m[1])); }],
+  [/^#\/flows(?:\?.*)?$/, function () { return flowsView(); }],
+  [/^#\/flows\/([^/?]+)(?:\?.*)?$/, function (m) { return flowDetailView(decodeURIComponent(m[1])); }],
   [/^#\/sessions(?:\?.*)?$/, function () { return sessionsView(); }],
   [/^#\/inbox$/, function () { return inboxView(); }],
   [/^#\/providers$/, function () { return providersView(); }],
@@ -40,6 +43,7 @@ function navigate() {
   leaveChat();
   if (typeof stopSessionStream === "function") stopSessionStream();
   stopStarterViews();
+  stopFlowViews();
   stopHomeView();
   var hash = location.hash || "#/";
   setActiveNav(hash);
@@ -335,20 +339,32 @@ function toggleKeysHelp(show) {
   if (!help.hidden) listTabKeys();
 }
 
-/* The number keys, listed from the tabs this dashboard shows (Chat is hidden when it
- * cannot work), so the help cannot drift from what the keys do. */
+/* The tab keys, listed from the tabs this dashboard shows (Chat is hidden when it cannot
+ * work), so the help cannot drift from what the keys do. The first ten tabs take 1-9 and 0
+ * in order; a tab with its own `data-key` (Chat: c) keeps that letter instead. */
 function listTabKeys() {
   var list = el("keys-tabs");
   if (!list) return;
   list.textContent = "";
-  visibleNavLinks().slice(0, 10).forEach(function (link, i) {
+  tabKeys().forEach(function (pair) {
     var item = document.createElement("li");
     var key = document.createElement("kbd");
-    key.textContent = i === 9 ? "0" : String(i + 1);
+    key.textContent = pair[0];
     item.appendChild(key);
-    item.appendChild(document.createTextNode(" " + navLabel(link)));
+    item.appendChild(document.createTextNode(" " + navLabel(pair[1])));
     list.appendChild(item);
   });
+}
+
+/* [[key, link], ...] for every visible tab that has a key. */
+function tabKeys() {
+  var numbered = 0, pairs = [];
+  visibleNavLinks().forEach(function (link) {
+    var own = link.getAttribute("data-key");
+    if (own) { pairs.push([own, link]); return; }
+    if (numbered < 10) { pairs.push([numbered === 9 ? "0" : String(numbered + 1), link]); numbered++; }
+  });
+  return pairs;
 }
 
 function visibleNavLinks() {
@@ -375,11 +391,10 @@ function onShortcut(event) {
     return;
   }
   if (event.key === "t") { toggleTheme(); return; }
-  // 1-9 are the first nine tabs and 0 the tenth, as on a keyboard's number row.
-  if (/^[0-9]$/.test(event.key)) {
-    var link = visibleNavLinks()[event.key === "0" ? 9 : Number(event.key) - 1];
-    if (link) location.hash = link.getAttribute("href");
-  }
+  // 1-9 are the first nine numbered tabs and 0 the tenth, as on a keyboard's number row;
+  // a tab with its own letter (Chat: c) answers to that.
+  var pair = tabKeys().filter(function (p) { return p[0] === event.key; })[0];
+  if (pair) location.hash = pair[1].getAttribute("href");
 }
 
 document.addEventListener("keydown", onShortcut);

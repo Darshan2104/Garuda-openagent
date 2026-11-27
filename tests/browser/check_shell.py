@@ -279,14 +279,19 @@ with sync_playwright() as p:
     page.locator("body").press("?")
     tabs = page.evaluate("Array.from(document.querySelectorAll('#keys-tabs li')).map(li => li.innerText)")
     visible = page.evaluate("Array.from(document.querySelectorAll('.nav-link')).filter(a => !a.hidden).length")
-    check("? lists one number key per tab", len(tabs) == visible and tabs[0].startswith("1")
-          and "Overview" in tabs[0] and (visible < 10 or tabs[9].startswith("0")), str(tabs))
+    check("? lists one key per tab", len(tabs) == visible and tabs[0].startswith("1")
+          and "Overview" in tabs[0] and "Flows" in tabs[1]
+          and (visible < 10 or tabs[9].startswith("0")), str(tabs))
+    check("Chat, the eleventh tab, answers to c",
+          any(t.startswith("c") and "Chat" in t for t in tabs), str(tabs))
     page.keyboard.press("Escape")
     page.locator("body").press("3")
-    check("and the keys do what it says", settle(page, "() => location.hash.indexOf('#/runs') === 0"),
+    check("and the keys do what it says", settle(page, "() => location.hash.indexOf('#/starters') === 0"),
           page.evaluate("location.hash"))
     check(f"'3' opens the tab the help lists third ({tabs[2] if len(tabs) > 2 else '?'})",
-          len(tabs) > 2 and "Runs" in tabs[2])
+          len(tabs) > 2 and "Starters" in tabs[2])
+    page.locator("body").press("c")
+    check("'c' opens Chat", settle(page, "() => location.hash === '#/chat'"), page.evaluate("location.hash"))
     context.close()
 
     # --- 4. phone navigation and every page at both widths and themes ----------------------------
