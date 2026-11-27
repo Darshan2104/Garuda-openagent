@@ -41,7 +41,7 @@ ROW_FIELDS = (
 )
 
 #: What a running flow's row carries from the shared live view (``read_model.flow_in_flight``).
-IN_FLIGHT_FIELDS = ("step", "attempt", "session_id", "turns", "last_activity_at", "idle_sec",
+IN_FLIGHT_FIELDS = ("running", "step", "attempt", "session_id", "turns", "last_activity_at", "idle_sec",
                     "started_at", "paused", "silence_state", "silence_limit_sec",
                     "tool_silence_limit_sec", "tool_in_flight", "approval_parked")
 

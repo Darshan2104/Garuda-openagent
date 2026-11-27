@@ -395,7 +395,8 @@ function flowDisclosuresHtml(data) {
     "(<code>flow.operation_managed</code>, or a check-record refusal for a flow with checks) and the dashboard does not relaunch it. " +
     "Start a new run instead. A flow run from the copied command resumes as usual.</li>");
   notes.push('<li id="flow-foreground">Stopping the dashboard (<code>garuda web</code>) interrupts a flow started here. Closing the browser tab does not; ' +
-    "its approvals wait on any page of an open dashboard tab and in Approvals, and are denied about 90 seconds after no tab is watching the run.</li>");
+    "its approvals wait on any page of an open dashboard tab and in Approvals for up to 5 minutes (also when a step runs in its own process), " +
+    "and are denied after that, about 90 seconds after no tab is watching the run, or at once if the dashboard stops.</li>");
   return '<h3>Before you start</h3><ul class="flow-disclosures">' + notes.join("") + "</ul>";
 }
 
@@ -498,7 +499,7 @@ var OPERATION_POLL_MS = 1500;
 function startSessionOperation(page, operationId) {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(operationId)) return;
   watchOperation(operationId);
-  var panel = page.operation = { id: operationId, approvals: [], done: false, grace: null, poller: null };
+  var panel = page.operation = { id: operationId, approvals: [], done: false, grace: null, timeout: null, poller: null };
   panel.poller = new Poller(function () { return pollSessionOperation(page, panel); }, OPERATION_POLL_MS, {
     hiddenInterval: 15000,
     keepAliveHidden: function () { return !panel.done && panel.approvals.length > 0; }
@@ -515,6 +516,7 @@ function pollSessionOperation(page, panel) {
     var row = both[0];
     panel.approvals = both[1].approvals || [];
     panel.grace = both[1].grace_seconds || panel.grace;
+    panel.timeout = both[1].timeout_seconds || panel.timeout;
     var host = el("session-operation-host");
     if (!host) return;
     if (row.session_id && row.session_id !== page.row.session_id) {
@@ -529,7 +531,7 @@ function pollSessionOperation(page, panel) {
       panel.poller.stop();
       refreshSessionRow(page);
     }
-    host.innerHTML = '<div id="session-operation">' + starterOperationHtml(row, panel.approvals, "session", panel.grace) + "</div>";
+    host.innerHTML = '<div id="session-operation">' + starterOperationHtml(row, panel.approvals, "session", panel.grace, panel.timeout) + "</div>";
     wireOperationApprovals(host, function () { if (panel.poller) panel.poller.now(); });
   }, function (err) {
     if (isSuperseded(err) || STATE.sessionPage !== page) return;

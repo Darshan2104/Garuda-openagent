@@ -30,10 +30,91 @@ var PAUSE_KINDS = {
 function pauseText(pause, stop) {
   if (!pause) return "";
   if (pause.kind === "quota") {
-    return typeof pause.reset_at === "number" ? "usage limit, resets " + untilEpochText(pause.reset_at)
+    return typeof pause.reset_at === "number" ? "usage limit, " + pauseResetText(pause.reset_at)
       : "waiting for its harness's usage limit";
   }
   return (stop && stop.step ? "step " + stop.step + " " : "a step ") + (PAUSE_KINDS[pause.kind] || "paused");
+}
+
+/* The pause in a few words, for a marker that points to the Result. */
+function pauseShortText(pause) {
+  return pause.kind === "quota" ? "usage limit" : (PAUSE_KINDS[pause.kind] || "paused");
+}
+
+/* "resets 13:24 (in 12 min)", or "reset passed at 13:24" once the time is behind us: never a
+ * negative countdown. */
+function pauseResetText(resetAt) {
+  var at = new Date(resetAt * 1000);
+  var clock = at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  if (resetAt * 1000 <= Date.now()) return "reset passed at " + clock;
+  var seconds = resetAt - Date.now() / 1000;
+  return "resets " + clock + " (" + (seconds < 3600 * 24 ? untilEpochText(resetAt) : at.toLocaleString()) + ")";
+}
+
+/* A recorded sentence may embed an ISO timestamp ("after 2026-11-27T16:31:24+00:00"): the
+ * page shows local time instead, the way it shows every reset ("13:24 (in 12 min)"). */
+var ISO_STAMP = /\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?/g;
+
+function localStampText(epoch) {
+  var at = new Date(epoch * 1000);
+  var clock = at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  var ahead = epoch - Date.now() / 1000;
+  if (ahead > 0 && ahead < 24 * 3600) return clock + " (" + untilEpochText(epoch) + ")";
+  return Math.abs(ahead) < 24 * 3600 ? clock : at.toLocaleString();
+}
+
+function humanStamps(text) {
+  return String(text).replace(ISO_STAMP, function (stamp) {
+    var ms = new Date(stamp).getTime();
+    return isNaN(ms) ? stamp : localStampText(ms / 1000);
+  });
+}
+
+/* How a pause ends, from the read model's `pause.resume` (automatic | manual) and `action`.
+ * Manual: the command to run (copyable), after the reset when there is one; once the reset has
+ * passed and nothing resumed it, that is said plainly. Automatic: quota recovery resumes it.
+ * A pause kind without `resume` (a deadline, silence, no progress…) is resumed by hand. */
+function pauseResume(pause, flowId) {
+  if (!pause) return null;
+  var resume = pause.resume || "manual";
+  var command = "garuda flow resume " + flowId;
+  var passed = typeof pause.reset_at === "number" && pause.reset_at * 1000 <= Date.now();
+  var text;
+  if (resume === "automatic") {
+    text = passed ? "reset passed; quota recovery resumes it at its next check"
+                  : "resumes automatically after the reset";
+  } else if (pause.kind === "quota") {
+    text = passed ? "reset passed; run the command to continue"
+                  : (typeof pause.reset_at === "number" ? "run the command after the reset" : "run the command after the limit resets");
+  } else {
+    text = "run the command to continue";
+  }
+  // The structured fields say it all when the reset is known; the recorded sentence is the
+  // fallback, with any timestamp in it shown as local time.
+  return { resume: resume, text: text, command: resume === "manual" ? command : null,
+           action: typeof pause.action === "string" && typeof pause.reset_at !== "number" ? humanStamps(pause.action) : null };
+}
+
+if (typeof document !== "undefined" && document.addEventListener) {
+  document.addEventListener("click", function (event) {
+    var button = event.target && event.target.closest && event.target.closest(".pause-block button.copy-fix[data-copy]");
+    if (!button) return;
+    var text = button.getAttribute("data-copy");
+    (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject()).then(function () { toast("Copied"); },
+      function () { toast("Copy is not available here; select the text"); });
+  });
+}
+
+/* The pause as one block: why, when (for a usage limit), how it ends, the command to copy. */
+function pauseBlockHtml(pause, stop, flowId, id) {
+  var how = pauseResume(pause, flowId);
+  if (!how) return "";
+  return '<div class="pause-block" data-state="paused" data-resume="' + esc(how.resume) + '"' + (id ? ' id="' + esc(id) + '"' : "") + ">" +
+    '<p class="pause-text"><span class="pill paused" data-state="paused">paused</span> ' + esc(pauseText(pause, stop)) + "</p>" +
+    '<p class="pause-how">' + chip("resume", how.resume, "chip-pause") + " " + esc(how.text) +
+    (how.command ? ' · <code class="pause-command">' + esc(how.command) + "</code> " +
+      '<button type="button" class="btn btn-small copy-fix" data-copy="' + esc(how.command) + '">Copy</button>' : "") + "</p>" +
+    (how.action ? '<p class="stat-sub pause-action">recorded next step: ' + esc(how.action) + "</p>" : "") + "</div>";
 }
 
 function outcomeClass(value) {
@@ -206,7 +287,9 @@ function sessionRowHtml(row) {
     flowStepLinkHtml(row.flow_step) + "</td>" +
     '<td data-th="State"><span class="pill ' + (row.pause ? "paused" : (row.crashed ? "failed" : (state.work === "working" ? "running" : "unknown"))) +
     '" data-state="' + esc(row.pause ? "paused" : row.label) + '">' +
-    esc(row.pause ? "paused" : row.label) + "</span>" + (row.queue ? '<div class="s-sub">' + esc(queueText(row.queue)) + "</div>" : "") + "</td>" +
+    esc(row.pause ? "paused" : row.label) + "</span>" + (row.queue ? '<div class="s-sub">' + esc(queueText(row.queue)) + "</div>" : "") +
+    (row.pause ? '<div class="s-sub s-pause" data-resume="' + esc(pauseResume(row.pause, id).resume) + '">' +
+      esc(pauseText(row.pause, null) + " · resume: " + pauseResume(row.pause, id).resume) + "</div>" : "") + "</td>" +
     '<td class="s-clip" data-th="Runtime · role · model" title="' + esc(identityText(row)) + '">' + esc(identityText(row)) + "</td>" +
     '<td class="s-facts" data-th="Outcome / verification">' + chip("outcome", state.outcome || "—", row.pause ? "chip-pause" : outcomeClass(state.outcome)) + " " +
     verificationChip(row.verification) + selfCheckChip(row.self_check) + "</td>" +
@@ -451,8 +534,15 @@ function turnLoopHtml(loop) {
     return knownText(pair[1]) + " " + pair[0] + (pair[1] === 1 ? "" : "s");
   });
   var outcomes = (loop.repair_outcomes || []).filter(Boolean);
-  return '<div class="stat-sub turn-loop">' + esc(parts.join(" · ")) +
-    (outcomes.length ? " (" + esc(outcomes.join(", ")) + ")" : "") + "</div>";
+  // An interrupted attempt's counts were recovered from its progress file (#873): the last
+  // the loop recorded before it stopped, said so, with that last turn's decision and time.
+  var recovered = loop.source === "progress";
+  var last = recovered ? [loop.last_decision ? "last turn: " + (liveWords(LIVE_DECISIONS, loop.last_decision) || loop.last_decision) : null,
+                          loop.last_turn_at ? fmt.when(loop.last_turn_at) : null].filter(Boolean).join(" · ") : "";
+  return '<div class="stat-sub turn-loop" data-source="' + esc(loop.source || "loop") + '">' +
+    (recovered ? '<span class="turn-loop-label">last known, from the progress file:</span> ' : "") +
+    esc(parts.join(" · ")) + (outcomes.length ? " (" + esc(outcomes.join(", ")) + ")" : "") +
+    (last ? " · " + esc(last) : "") + "</div>";
 }
 
 /* How much of the change set the approving review saw (#851): "partial" is worth a look. */
@@ -506,8 +596,9 @@ function edgeAttempt(attempt) {
 
 /* A flow as a vertical pipeline: each step, who ran it, its status, attempts, durations and
  * what it passed on; the step in flight is highlighted. The review is its own badge. */
-function flowHtml(flow, progress) {
+function flowHtml(flow, progress, options) {
   if (!flow) return "";
+  options = options || {};
   var review = flow.review;
   var edges = flow.edges || [];
   return (
@@ -542,12 +633,16 @@ function flowHtml(flow, progress) {
         (last ? ' <span class="stat-sub">' + esc(ranText(last)) + " · " + attempts.length + " attempt" + (attempts.length === 1 ? "" : "s") +
           " · " + esc(total === null ? "duration unknown" : fmt.duration(total)) + "</span>" : "") + "</div>" +
         (attempts.length ? '<ul class="attempts">' + attempts.map(attemptHtml).join("") + "</ul>" : "") +
-        // The step in flight (or paused) is described in its own block; never "not run yet".
-        (status.key === "current" || status.key === "paused"
-          ? '<div class="stat-sub pipe-live-note">' + (status.key === "current" ? "in flight" : "paused") +
-            (live && live.step === step.id && typeof live.turns === "number" ? " · turn " + esc(live.turns) : "") +
-            " · details in the step block above</div>"
-          : (attempts.length ? "" : ' <span class="stat-sub">not run yet</span>')) +
+        // The step in flight is described in its own block, a paused one in the Result (said
+        // once, with its command); never "not run yet".
+        ((status.key === "paused" || (last && last.pause)) && options.pause
+          ? '<div class="stat-sub pipe-pause" data-state="paused" data-resume="' + esc(pauseResume(options.pause, options.id).resume) + '">' +
+            "paused — " + esc(pauseShortText(options.pause)) + ', see <a href="#session-cause">Result</a></div>'
+          : (status.key === "current" || status.key === "paused"
+            ? '<div class="stat-sub pipe-live-note">' + (status.key === "current" ? "in flight" : "paused") +
+              (live && live.step === step.id && typeof live.turns === "number" ? " · turn " + esc(live.turns) : "") +
+              (status.key === "current" ? " · details in the step block above" : "") + "</div>"
+            : (attempts.length ? "" : ' <span class="stat-sub">not run yet</span>'))) +
         (passes.length ? '<div class="pipe-pass stat-sub">passes on: ' + passes.map(function (e) {
           return esc(e.type) + " → " + esc(e.to_step);
         }).join(", ") + "</div>" : "") + "</li>";
@@ -570,7 +665,10 @@ function flowHtml(flow, progress) {
 /* The step attempt in flight, or null (no live view, or the flow is paused). */
 function flowInFlight(flow) {
   var live = flow && flow.in_flight;
-  return live && !live.paused && live.step ? live : null;
+  if (!live || live.paused || !live.step) return null;
+  // The reader says whether the attempt runs now (#873); an open attempt whose process died
+  // is not "in flight". A reader without the field keeps the old inference.
+  return live.running === false ? null : live;
 }
 
 function flowPaused(flow) {
@@ -716,17 +814,16 @@ function liveTurnsHtml(turns) {
 function flowPausedBlockHtml(live, flowId) {
   var paused = live.paused || {};
   var known = FLOW_STOPS[paused.code] || {};
-  var resume = paused.code === "flow.quota_wait"
-    ? "Quota recovery resumes the flow on its own once the limit resets."
+  var resume = paused.code === "flow.quota_wait" ? "Quota recovery resumes the flow on its own once the limit resets."
     : (known.resume ? "Resume with: garuda flow resume " + flowId : "");
   return '<div class="live-step live-paused" id="flow-live" data-state="paused">' +
     '<p class="live-paused-reason"><span class="pill paused" data-state="paused">paused</span> <strong>Paused</strong>' +
     (paused.step || live.step ? " at step " + esc(paused.step || live.step) : "") +
     (live.attempt ? " (attempt " + esc(live.attempt) + ")" : "") + ": " +
-    esc(paused.message || known.text || paused.code || "no reason recorded") + "</p>" +
+    esc(humanStamps(paused.message || known.text || paused.code || "no reason recorded")) + "</p>" +
     '<dl class="live-facts">' +
     (typeof paused.reset_at === "number"
-      ? liveFact("reset_at", "Resets", esc(untilEpochText(paused.reset_at)) + ' <span class="stat-sub">(' +
+      ? liveFact("reset_at", "Reset", esc(pauseResetText(paused.reset_at)) + ' <span class="stat-sub">(' +
           esc(new Date(paused.reset_at * 1000).toLocaleString()) + ")</span>") : "") +
     (typeof paused.next_check === "number"
       ? liveFact("next_check", "Next check", esc(untilEpochText(paused.next_check)) + ' <span class="stat-sub">(' +
@@ -747,7 +844,11 @@ function flowLiveHtml(row) {
         "recorded for this step (an older flow, or records the reader could not read).</p></div>"
       : "";
   }
-  if (live.paused) return flowPausedBlockHtml(live, row.session_id);
+  // A paused flow is not running: its pause is said once, in the Result. A stop the read
+  // model does not call a pause (a quarantine) keeps its block here.
+  if (live.paused) return row.pause ? "" : flowPausedBlockHtml(live, row.session_id);
+  // Not running now (its process is gone): no "Step in flight" card, no stale quiet line.
+  if (live.running === false) return "";
   var sid = live.session_id;
   var identity = sid ? LIVE_IDENTITY[sid] : null;
   var elapsed = live.started_at && !isNaN(new Date(live.started_at).getTime())
@@ -1003,14 +1104,52 @@ function flowStopSentence(stop, sessionId, flow) {
            next: known.resume ? "Next: garuda flow resume " + sessionId + " runs the step again." : known.next };
 }
 
+/* A flow whose process stopped mid-step (`flow_state: interrupted`) records no flow_stop: say
+ * what is recorded. An attempt settled as flow.interrupted is run again by `flow resume` (the
+ * engine lists it as resumable, as FLOW_STOPS says); a launched attempt with no receipt is
+ * never replayed (engine.recover quarantines it; a checked flow's crash continuation settles
+ * it and goes on with the next step). */
+function interruptedSentence(row) {
+  var flow = row.flow || {};
+  if (flow.state !== "interrupted") return null;
+  var open = flow.in_flight && !flow.in_flight.paused && flow.in_flight.step ? flow.in_flight : null;
+  if (open) {
+    return { cause: "Interrupted: the flow's process stopped while step " + open.step +
+               (open.attempt ? " (attempt " + open.attempt + ")" : "") + " was running, and that attempt recorded no outcome.",
+             next: "Next: open the step's session below to see what it did; garuda flow resume " + row.session_id +
+               " does not run it again (a launched step without a recorded outcome is never replayed)." };
+  }
+  var last = null;
+  (flow.steps || []).forEach(function (step) {
+    (step.attempts || []).forEach(function (a) { if (a && a.stop) last = { step: step.id, attempt: a }; });
+  });
+  if (!last) {
+    return { cause: "Interrupted: the flow's process stopped; no step attempt recorded why.",
+             next: "Next: garuda flow show " + row.session_id + " lists what was recorded." };
+  }
+  var code = last.attempt.stop.code;
+  var known = FLOW_STOPS[code] || {};
+  return { cause: "Interrupted: the flow's process stopped before step " + last.step + " finished" +
+             (code ? " (" + code + ")" : "") + ".",
+           next: known.resume ? "Next: garuda flow resume " + row.session_id + " runs it again."
+             : "Next: garuda flow resume " + row.session_id + " does not run this stop again; open the step's session below." };
+}
+
 /* Why it failed, in one plain sentence from what was recorded, and what to do next. */
 function failureSentence(row) {
   var evidence = (row.failure_evidence || {}).original_cause || {};
   var value = evidence.status === "present" ? (evidence.value || {}) : {};
   var detail = value.detail && value.detail.value ? firstLine(value.detail.value) : "";
   var flowStop = row.flow && row.flow.stop;
+  if (row.pause) {
+    var how = pauseResume(row.pause, row.session_id);
+    return { cause: "Paused: " + pauseText(row.pause, flowStop) + ".",
+             next: "Next (resume: " + how.resume + "): " + how.text + (how.command ? ": " + how.command : "") + "." };
+  }
   var worded = row.kind === "flow" && flowStop && FLOW_STOPS[flowStop.code] ? flowStopSentence(flowStop, row.session_id, row.flow) : null;
   if (worded) return worded;
+  var interrupted = row.kind === "flow" && !flowStop ? interruptedSentence(row) : null;
+  if (interrupted) return interrupted;
   if (row.crashed) {
     return { cause: "The worker process is gone, and it exited without recording an outcome.",
              next: (row.ownership && row.ownership.reconciliation && row.ownership.reconciliation.path)
@@ -1122,10 +1261,14 @@ function sessionResultHtml(row) {
       (files.total > files.files.length ? '<p class="stat-sub">and ' + esc(files.total - files.files.length) + " more</p>" : "") +
       '<p class="stat-sub">From its working state; the Trace page has the workspace diff.</p></div>';
   }
-  if (sessionFailed(row)) {
+  if (row.pause) {
+    var stopped = row.flow && row.flow.stop;
+    body += '<div class="session-cause" id="session-cause" data-state="paused">' +
+      pauseBlockHtml(row.pause, stopped, row.session_id, "session-pause-block") +
+      (stopped && stopped.message ? '<p class="stat-sub">recorded stop: ' + esc(humanStamps(stopped.message)) + "</p>" : "") + "</div>";
+  } else if (sessionFailed(row)) {
     var why = failureSentence(row);
-    body += '<div class="session-cause" id="session-cause"' + (row.pause ? ' data-state="paused"' : "") +
-      '><p class="' + (row.pause ? "pause-text" : "err-text") + '">' + esc(why.cause) + "</p>" +
+    body += '<div class="session-cause" id="session-cause"><p class="err-text">' + esc(why.cause) + "</p>" +
       '<p class="stat-sub" id="session-next">' + esc(why.next) + "</p></div>";
   }
   return '<section class="card" id="session-result"><h2>Result</h2>' +
@@ -1149,7 +1292,7 @@ function sessionEvidenceHtml(row) {
     chip("queue", queueText(row.queue)) + "</div>" +
     '<p class="stat-sub">Session <code>' + esc(row.session_id) + "</code></p></div>" +
     ownershipHtml(row.ownership) + artifactProjectionHtml(row.artifacts) +
-    (sessionFailed(row) ? "" : failureEvidenceHtml(row.failure_evidence));
+    (sessionFailed(row) && !row.pause ? "" : failureEvidenceHtml(row.failure_evidence));
 }
 
 /* Replace a host's HTML only when it changed, keeping what the user opened inside it open. */
@@ -1183,10 +1326,12 @@ function paintSessionPage(page) {
   paintHost("session-approvals-host", sessionApprovalsHtml(row));
   paintHost("session-result-host", sessionResultHtml(row));
   // Failure evidence leads only when something failed; otherwise it is under the details.
-  paintHost("session-failure-host", sessionFailed(row) && row.failure_evidence
+  // A pause is not a failure to investigate: it leads with the pause block, its evidence
+  // stays under the collapsed details.
+  paintHost("session-failure-host", sessionFailed(row) && !row.pause && row.failure_evidence
     ? '<div class="card">' + failureEvidenceHtml(row.failure_evidence) + "</div>" : "");
   paintHost("session-live-step-host", sessionLiveStepHtml(row), { keepSelection: true });
-  paintHost("session-flow-host", flowHtml(row.flow, row.flow_progress));
+  paintHost("session-flow-host", flowHtml(row.flow, row.flow_progress, { pause: row.pause, id: row.session_id }));
   // What each attempt's receipt measured, and the flow total: the trace page's own table.
   paintHost("session-measure-host", row.flow && typeof flowMeasuredHtml === "function"
     ? flowMeasuredHtml(row.flow) : "");
@@ -1516,8 +1661,8 @@ function liveApprovalRowHtml(a) {
     "<div><strong>" + (where ? '<a href="' + where + '">' + esc(a.name || String(a.session_id).slice(0, 8)) + "</a>"
                               : esc(a.name || "dashboard operation")) + "</strong> " +
     '<span class="chip chip-off">dashboard flow</span> <span class="stat-sub">waiting ' + esc(fmt.duration(a.waiting_ms || 0)) +
-    " · answered here at once · denied after " + esc(a.timeout_seconds) + " s unanswered, or " + esc(a.grace_seconds) +
-    " s after no dashboard tab is watching its run</span></div>" +
+    " · answered here at once · denied after " + esc(a.timeout_seconds) + " s unanswered, " + esc(a.grace_seconds) +
+    " s after no dashboard tab is watching its run, or at once if the dashboard stops</span></div>" +
     (a.task ? '<div class="stat-sub approval-task">' + esc(fmt.truncate(a.task, 140)) + "</div>" : "") +
     "<pre>" + esc(a.action) + "</pre>" +
     '<div class="approval-actions">' + buttons + ' <span class="stat-sub approval-result" aria-live="polite"></span></div></li>'
@@ -1558,6 +1703,12 @@ function inboxView() {
   render(
     '<div id="inbox-root"><div class="page-head"><h1>Approvals</h1><span class="meta" id="inbox-count">loading…</span>' +
     '<button type="button" class="btn" id="inbox-refresh">Refresh</button></div>' +
+    // How long each kind of request waits (#871), exactly as the brokers enforce it.
+    '<p class="stat-sub page-lede" id="inbox-timeouts">A session-file request (a chat, a background flow step) ' +
+    "waits until its expiry, shown on its card (300 s; for a background step, <code>approvals.park_timeout_sec</code>, " +
+    "300 s by default), then it is denied. A flow started from this dashboard asks here directly: its request is answered at once, " +
+    "and denied after its timeout unanswered, about 90 s after no tab is watching its run, or at once if the " +
+    "dashboard stops, also when the step runs in its own process.</p>" +
     '<div class="notice err" id="inbox-error" hidden></div><div id="inbox-unreadable"></div>' +
     '<ul class="approvals" id="inbox-list"></ul>' +
     '<div class="empty" id="inbox-empty" hidden><p>Nothing is waiting for you.</p></div>' +
@@ -1899,7 +2050,7 @@ function setupAgentsHtml(agents) {
   }).join("");
   return '<div class="card" id="agents-setup"><h2>Agents</h2><p class="stat-sub">Read-only. Digests identify exactly what a run would use; ' +
     "token sizes are estimated (chars/4). Instruction and prompt text is not shown here — use <code>garuda agent show NAME</code>.</p>" +
-    '<div class="table-wrap"><table class="table" id="agents-table"><thead><tr><th>Agent</th><th>Source</th><th>Definition</th><th>Prompt</th>' +
+    '<div class="table-wrap"><table class="table table-stack" id="agents-table"><thead><tr><th>Agent</th><th>Source</th><th>Definition</th><th>Prompt</th>' +
     "<th class=\"num\">Size</th><th>Declared</th></tr></thead><tbody>" + rows + "</tbody></table></div></div>";
 }
 
@@ -1916,10 +2067,10 @@ function setupConsultsHtml(k) {
       (a.exposed ? '<span class="pill success">offered</span>' : '<span class="pill unknown">not offered</span> ' + esc(a.reason)) + "</td></tr>";
   }).join("");
   return '<div class="card" id="consults-setup"><h2>Consults</h2><p class="stat-sub">' + esc(k.note) + "</p>" +
-    (grants ? '<div class="table-wrap"><table class="table" id="consult-grants"><thead><tr><th>Asker</th><th>May ask</th><th>Tool</th></tr></thead><tbody>' + grants + "</tbody></table></div>"
+    (grants ? '<div class="table-wrap"><table class="table table-stack" id="consult-grants"><thead><tr><th>Asker</th><th>May ask</th><th>Tool</th></tr></thead><tbody>' + grants + "</tbody></table></div>"
             : '<p class="stat-sub">No role is allowed to consult another. Grants live in your user <code>garuda.yaml</code> (<code>roles.&lt;name&gt;.consult</code>).</p>') +
     '<p class="stat-sub" id="consult-limits">Ceilings: ' + limits + "</p>" +
-    '<div class="table-wrap"><table class="table" id="consult-adapters"><thead><tr><th>Adapter</th><th>Forwards MCP</th><th>Permission identity</th><th>Pauses workspace</th><th>Tool</th></tr></thead><tbody>' + adapters + "</tbody></table></div></div>";
+    '<div class="table-wrap"><table class="table table-stack" id="consult-adapters"><thead><tr><th>Adapter</th><th>Forwards MCP</th><th>Permission identity</th><th>Pauses workspace</th><th>Tool</th></tr></thead><tbody>' + adapters + "</tbody></table></div></div>";
 }
 
 var DIAG_LEVELS = ["error", "warning", "info"];
@@ -1992,10 +2143,10 @@ function setupView() {
       '<div id="setup-root"><div class="page-head"><h1>Setup</h1><span class="meta">read-only</span></div>' +
       '<p class="stat-sub">Files: ' + esc(s.files.user) + " (yours), " + esc(s.files.project) + " (this project).</p>" +
       '<div class="card"><h2>Diagnostics</h2>' + diagnostics + setupLoginsHtml(s.logins) + "</div>" +
-      '<div class="card"><h2>Roles</h2>' + (roles ? '<div class="table-wrap"><table class="table" id="roles-table"><thead><tr><th>Role</th><th>Harness</th><th>Model</th><th>Effort</th><th>Permissions / writes</th><th>Harness mode</th><th>Agent</th><th>Fallback chain</th><th>From</th></tr></thead><tbody>' + roles + "</tbody></table></div>"
+      '<div class="card"><h2>Roles</h2>' + (roles ? '<div class="table-wrap"><table class="table table-stack" id="roles-table"><thead><tr><th>Role</th><th>Harness</th><th>Model</th><th>Effort</th><th>Permissions / writes</th><th>Harness mode</th><th>Agent</th><th>Fallback chain</th><th>From</th></tr></thead><tbody>' + roles + "</tbody></table></div>"
         : '<p class="stat-sub">No roles. <code>garuda init</code> proposes some.</p>') + "</div>" +
       setupAgentsHtml(s.agents) + setupConsultsHtml(s.consults) +
-      '<div class="card"><h2>Flows</h2><div class="table-wrap"><table class="table" id="flows-table"><thead><tr><th>Flow</th><th>From</th><th>Steps</th><th>Roles</th><th>Missing</th></tr></thead><tbody>' + flows + "</tbody></table></div></div>" +
+      '<div class="card"><h2>Flows</h2><div class="table-wrap"><table class="table table-stack" id="flows-table"><thead><tr><th>Flow</th><th>From</th><th>Steps</th><th>Roles</th><th>Missing</th></tr></thead><tbody>' + flows + "</tbody></table></div></div>" +
       '<div class="card"><h2>Where each value came from</h2>' + (s.withheld.length ? '<p class="stat-sub" id="withheld">Withheld until trusted: ' + esc(s.withheld.join(", ")) + "</p>" : "") +
       '<table class="table" id="provenance-table"><tbody>' + s.provenance.map(function (p) {
         return "<tr><td>" + esc(p.key) + "</td><td>" + esc(p.source) + "</td></tr>";

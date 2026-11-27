@@ -1184,7 +1184,7 @@ function externalTurnsHtml(ext) {
       '</td><td class="num">' + esc(t.approval_request) + '</td><td class="num">' + esc(t.error) +
       "</td></tr>";
   }).join("");
-  return '<div class="table-wrap"><table class="table" id="external-turns"><thead><tr>' +
+  return '<div class="table-wrap"><table class="table table-stack" id="external-turns"><thead><tr>' +
     '<th>Turn</th><th class="num">Message events</th><th class="num">Tool calls</th>' +
     '<th class="num">Tool results</th><th class="num">Approval requests</th>' +
     '<th class="num">Errors</th></tr></thead><tbody>' +

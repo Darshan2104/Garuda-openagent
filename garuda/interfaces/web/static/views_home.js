@@ -188,7 +188,7 @@ function homeError(what, err, retry) {
 /* A running flow's step in flight, from the shared live view (`in_flight`): its turn count
  * and last activity, as recorded; nothing when the reader has neither. */
 function homeLiveText(live) {
-  if (!live || live.paused) return "";
+  if (!live || live.paused || live.running === false) return "";
   var parts = [];
   if (typeof live.turns === "number") parts.push("turn " + live.turns);
   if (live.last_activity_at) parts.push("last activity " + fmt.when(live.last_activity_at));
@@ -332,15 +332,17 @@ function homeSessionAttention(o) {
     var q = r.quota_recovery || {};
     var what = r.pause.kind === "quota"
       ? (typeof r.pause.reset_at === "number"
-          // A usage-limit pause whose reset was recorded (a Claude limit): when it resets.
-          ? "paused: usage limit, resets " + esc(untilEpochText(r.pause.reset_at)) +
-            " (" + esc(new Date(r.pause.reset_at * 1000).toLocaleString()) + ")"
+          // A usage-limit pause whose reset was recorded: when it resets, or that it passed.
+          ? "paused: usage limit, " + esc(pauseResetText(r.pause.reset_at))
           : "waiting for quota" + (q.reason ? ": " + esc(q.reason) : "")) +
         (q.next_check ? " · next check " + esc(new Date(q.next_check * 1000).toLocaleString()) : "")
       : (stop.step ? "step " + esc(stop.step) + " " : "a step ") +
         (PAUSE_KINDS[r.pause.kind] || "paused") +
-        (stop.code ? " (<code>" + esc(stop.code) + "</code>)" : "") +
-        " · resume with <code>garuda flow resume</code>";
+        (stop.code ? " (<code>" + esc(stop.code) + "</code>)" : "");
+    // How it ends: automatically (quota recovery) or by the command, after the reset.
+    var how = pauseResume(r.pause, r.session_id);
+    what += ' · <span class="home-resume" data-resume="' + esc(how.resume) + '">' + esc(how.text) +
+      (how.command ? ': <code>' + esc(how.command) + "</code>" : "") + "</span>";
     pausedRows.push({ row: r, item: homeRow("paused:" + r.session_id, "paused",
       '<span class="pill paused">paused</span> ' + homeSessionLink(r) +
       '<span class="home-what">' + what + "</span>" +

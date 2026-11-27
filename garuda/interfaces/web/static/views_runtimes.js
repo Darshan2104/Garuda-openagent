@@ -66,7 +66,7 @@ function renderRuntimes(runtimes, detail, detailId) {
     // Refresh the Providers page uses.
     (canWrite() ? '<button type="button" class="btn" id="rt-login-refresh">Refresh login checks</button>' +
                   '<span class="meta" id="rt-login-note"></span>' : "") + "</div>" +
-    '<div class="table-wrap"><table id="rt-table"><thead><tr>' +
+    '<div class="table-wrap"><table class="table-stack" id="rt-table"><thead><tr>' +
     "<th>Runtime</th><th>Kind</th><th>Health</th><th>Version</th><th>Login</th>" +
     "</tr></thead><tbody>" + rows + "</tbody></table></div>" +
     detailHtml +
@@ -244,7 +244,7 @@ function wireRtOps() {
         rtResult("rt-diff-result",
           '<div class="meta">baseline <code>' + esc((timeline.baseline_commit || "").slice(0, 12)) +
           "</code></div>" +
-          '<div class="table-wrap"><table><thead><tr><th>Path</th><th>Kind</th><th>Whose</th>' +
+          '<div class="table-wrap"><table class="table-stack"><thead><tr><th>Path</th><th>Kind</th><th>Whose</th>' +
           "</tr></thead><tbody>" + rows + "</tbody></table></div>");
       })
       .catch(function (err) { if (isSuperseded(err)) return; rtResult("rt-diff-result", rtError(err)); });
@@ -351,7 +351,7 @@ function providerCardHtml(card) {
     body += '<p class="stat-sub">' + esc(card.rate_limits.status) + " — " + esc(card.rate_limits.reason) + "</p>";
   }
   body += '<p class="stat-sub">Observed use (' + esc(card.observed_use.label) + ")</p>" +
-    '<div class="table-wrap"><table class="table"><thead><tr><th>Window</th><th class="num">Sessions</th><th class="num">Native calls</th><th class="num">ACP turns</th><th class="num">Tokens</th><th class="num">Cost</th></tr></thead><tbody>' +
+    '<div class="table-wrap"><table class="table table-stack"><thead><tr><th>Window</th><th class="num">Sessions</th><th class="num">Native calls</th><th class="num">ACP turns</th><th class="num">Tokens</th><th class="num">Cost</th></tr></thead><tbody>' +
     useRowHtml(card.observed_use) + "</tbody></table></div>";
   return '<div class="card provider-card" data-provider="' + esc(card.id) + '" data-kind="' + esc(card.kind) + '">' + head + body + "</div>";
 }

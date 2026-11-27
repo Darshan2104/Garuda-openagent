@@ -133,8 +133,9 @@ own chip that never uses verification's wording. Tags that say what something
 *is* rather than its state (flow, consult, example, other project) are outlined
 with no marker. A cost an adapter reported is labelled as reported, not
 metered. Light and dark themes follow the system setting; `t` or the ◑ button
-switches. On a phone each table row becomes a card of labelled values and no
-page scrolls sideways.
+switches. On a phone each table row becomes a card of labelled values, and
+neither the page nor a table inside it scrolls sideways (only code, diffs and
+raw payloads may).
 
 ## Overview
 
@@ -145,7 +146,9 @@ page scrolls sideways.
   will be denied) → **Approvals**; sessions whose worker **crashed** and
   sessions **waiting** on an approval → the session; flows **paused** on a
   resumable stop (a usage-limit pause, shown as **paused: usage limit, resets
-  in 3h** with the absolute time when the harness reported its reset; a quota
+  13:24 (in 12 min)** when the harness reported its reset, then how it ends:
+  **resumes automatically after the reset**, or the `garuda flow resume <id>`
+  command to run after it; a quota
   wait recorded by quota recovery; a step's own
   deadline or silence limit, or a long step's own pause: no measurable
   progress, its turn budget used, or its harness refusing to continue) → the
@@ -216,7 +219,8 @@ without errors. It sends the `run-flow` starter's preview and authority digests
 with one operation id, reused on a retry, so a repeated click returns the same
 flow. Once admitted, the page opens the flow's session at
 `#/sessions/<id>?operation=<uuid>`, whose operation panel shows the operation and
-its approvals: **Allow** or **Deny** them there or on **Approvals**, which lists
+its approvals: **Allow** or **Deny** them there or on **Approvals** (each waits
+up to 5 minutes unanswered, then it is denied), which lists
 them beside the session-file requests (marked **dashboard flow**, linking to the
 session) and counts them in the nav badge and the Overview; the step's own file request for the same ask is shown and counted once, as this one. Such an approval is
 held by this dashboard, not a session file: an answer is the decision at once,
@@ -224,7 +228,8 @@ bound to the ask's owner and digest, so any tab that lists it may answer it. Eve
 run a tab started or opened stays watched from any page of that tab, even
 hidden; about 90 seconds after no dashboard tab is watching a run (its tabs were
 closed), a waiting approval is denied, recorded as "stopped watching", and the
-step sees the denial while the flow keeps running. A finished run's starter card
+step sees the denial while the flow keeps running; if the dashboard stops, a
+waiting approval is denied at once. A finished run's starter card
 offers **Run again**, back to the flow with the workspace selected and the
 recorded task filled in to edit.
 
@@ -492,18 +497,40 @@ A session's page leads with the work, and keeps the evidence below:
   sentence. The step in flight is highlighted. When the flow stopped, the
   Result says why in one sentence and, for a resumable stop (a deadline,
   silence, no progress, the turn budget, a refusal, a failed step or missing
-  output), that `garuda flow resume <id>` runs the step again; a usage-limit
-  pause says when the limit resets and that quota recovery resumes the flow.
-  A flow paused on its own pause (a usage limit, a deadline, silence, no
-  progress, the turn budget or a refusal) says **paused** in its header with
-  the reason beside it, and its stopped step is drawn paused; its recorded
-  outcome stays as stored (`failed`) and the session row's `pause` field says
-  why, the same in `garuda sessions --json`. A failed step is a failure, not a
-  pause. A step killed
+  output), that `garuda flow resume <id>` runs the step again. A paused flow
+  leads its Result with the pause: why, and for a usage limit when it resets
+  (**resets 13:24 (in 12 min)**), how it ends as the session row's
+  `pause.resume` says (**automatic**: quota recovery resumes it after the
+  reset; **manual**: the `garuda flow resume <id>` command, with a Copy
+  button, to run after the reset — a checked flow stopped on a usage limit is
+  manual). Without a recorded reset time it shows the read model's own
+  sentence (`pause.action`), any timestamp in it in local time; a raw
+  timestamp is never shown. Once the reset time has passed and nothing
+  resumed it, it says **reset passed; run the command to continue** rather
+  than counting below zero. A pause is not a failure to investigate: its
+  failure evidence stays in the collapsed **Details and evidence**. The pause
+  is said once, there: a paused flow has no live step card (it is not
+  running), the pipeline's paused step reads **paused — usage limit, see
+  Result**, and the header, the flow trace, the Overview's paused rows and
+  the Sessions list keep one line each. A flow paused on its own pause (a usage limit, a
+  deadline, silence, no progress, the turn budget or a refusal) says **paused**
+  in its header; its recorded outcome stays as stored (`failed`) and the
+  session row's `pause` field says why, the same in `garuda sessions --json`.
+  A failed step is a failure, not a pause. An interrupted attempt shows the
+  counts its receipt recovered from the step's progress file, labelled **last
+  known, from the progress file**, with its last turn's decision and time.
+  A flow whose process stopped mid-step (`interrupted`, no recorded stop) says
+  so: **Interrupted: the flow's process stopped before step build finished**
+  and, for an attempt settled as `flow.interrupted`, that `garuda flow resume
+  <id>` runs it again; a launched attempt that recorded no outcome is never
+  replayed, and the page says that instead.
+  A step killed
   by the supervisor's backstop (`flow.step_backstop`) is quarantined instead,
   and the page says to set `limits.deadline_min` for a step that runs that
   long.
-- **Step in flight**, for a flow whose step is running: the attempt, when it
+- **Step in flight**, for a flow whose step is running now (the live view's
+  `running`; an open attempt whose process is gone shows no card and no quiet
+  line): the attempt, when it
   started and for how long, who runs it (role → harness/model, read from the
   step's own session), links to that session and its trace, turns · rotations
   · continuations, the last turn's stop reason and decision in plain words,
@@ -521,8 +548,8 @@ A session's page leads with the work, and keeps the evidence below:
   context), three shown and the rest one click away. A field the live view
   does not report (a step without limits, an older flow) leaves its line out
   rather than guessing. The step never reads
-  "not run yet" while it is in flight. A paused step says why, when its limit
-  resets and when quota recovery checks next, and `garuda flow resume <id>`
+  "not run yet" while it is in flight. A step stopped on something that is
+  not a pause (a quarantine) says why here, and `garuda flow resume <id>`
   where the engine lists the stop as resumable. An older flow, or one whose
   records the reader cannot read, says **No live detail recorded for this
   step**. Every value is the shared live view (`garuda flow show --json`'s
@@ -592,7 +619,9 @@ the tab is in the background or you are on another dashboard page (the Chat
 tab then shows a count). The same holds for every chat the tab has open:
 **New chat** inside a chat starts another without dropping the first, and while
 you work in one, the others that wait for an answer are listed above it with a
-link back (and marked in the New chat page's list of open chats). Once the tab is closed, the server denies the waiting
+link back (and marked in the New chat page's list of open chats). An approval
+nobody answers is denied after five minutes, also while the tab is open; ending
+the chat denies it at once. Once the tab is closed, the server denies the waiting
 approval after a 90-second grace window, so the run is not blocked for the full
 five-minute timeout. 90 seconds is longer than the slowest heartbeat a
 background tab can send (browsers may wake a long-hidden tab's timers only once
@@ -604,8 +633,10 @@ names the first outcome.
 ## Approvals
 
 The Approvals page lists every approval waiting in an interactive session (a
-`garuda chat`, or a dashboard conversation) and answers it by writing a
-session-bound answer for the session's approval broker. A successful response
+`garuda chat`, or a dashboard conversation), every request a background flow
+step parked in its session's file channel, and the asks of flows started from
+this dashboard. It answers a session-file request by writing a session-bound
+answer for the session's approval broker. A successful response
 means "answer recorded", not "the tool will run": the broker checks the
 session, request digest, nonce, expiry and permission ceiling, and records one
 decision.
@@ -622,7 +653,18 @@ decision.
   and denied. The card shows the server's message, code and status.
 - If the browser abandons an approval it was polling, Garuda denies it instead
   of leaving the run blocked.
-- Headless runs, including `--bg` runs, deny approvals at once, so they never
+- How long a request waits, by kind (the page says so at the top):
+  - a session-file request (a chat, a background flow step) waits until its
+    expiry, shown on its card: 300 s, or for a background step
+    `approvals.park_timeout_sec` (300 s by default, 30 s to 24 h). After that
+    it is denied, and an answer is refused (`expired`, 410);
+  - a flow started from this dashboard asks here directly, also when the step
+    runs in its own role worker process: the answer is the decision at once.
+    It is denied after its timeout unanswered (5 minutes), about 90 seconds
+    after no dashboard tab is watching its run, or at once if the dashboard
+    stops (the step's process sees its parent gone and takes that as a
+    denial).
+- Headless runs (`garuda run --bg`) deny approvals at once, so they never
   appear here.
 
 ## Usage
