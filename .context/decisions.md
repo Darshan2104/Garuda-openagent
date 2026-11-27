@@ -5363,6 +5363,103 @@ becomes the step's error, `stop.cause.code` fallback and `stop.cause.stop_reason
 (`acp_stop_reason`) for that purpose. A checked step without a deadline still
 has the one-hour worker limit; long checked steps need `deadline_min`.
 
+## 2026-11-27: A flow `patch` is a summary; Garuda attaches the real diff and lets a later writer read it (#820)
+
+The `patch` output instruction (`artifacts.instructions`) now asks for a short
+summary (what changed and why, files touched, what the next step should know)
+and says "Do not paste a diff; Garuda attaches the real diff it computes from
+the workspace" (`artifacts.PATCH_SUMMARY`). Agents had pasted full diffs (one
+large enough to stop a flow with `flow.artifact_too_large`) or hand-written
+ones with wrong hunk headers. Parsing is unchanged: any text in the block is
+the patch, so an old prompt's answer still passes. The placeholder still
+starts with `...your patch` (`...your patch: a short summary of your change,
+not a diff...`): `garuda/acp/fake_agent.py` and other tooling find the blocks a
+prompt asks for by that prefix.
+
+A consumer of a `patch` gets Garuda's own diff of the producing step
+(`FlowRunner._attachments`, rendered by `prompting.diff_body` / `render_diff`
+in a `flow-diff` fence with the prompt's one marker, once per producing step).
+It is the review packet's evidence (#814): `changed_since_baseline` and
+`review_diff_evidence` from the baseline of the first session of the
+producer's first attempt (`_first_attempt`, `_first_session`) to the workspace
+now, so it keeps the packet's bounds (4 KiB per file, 32 KiB, 200 files) and
+withheld secret excerpts, and the rendered text is redacted once more. It is
+computed at consumption, not stored, so receipts and artifact references are
+unchanged. The terminal reviewer gets no `flow-diff` for the step it reviews:
+its packet already carries that diff. A parallel group's members, which get no
+packet, do get it.
+
+A later writing or planning step may read an earlier `patch` after the
+workspace moved on: `artifacts.validate_content(..., moved_on_ok=True)` (and
+`load`) admits a `MOVED_ON_READABLE` type (`patch` only) and the prompt
+carries a `[garuda]` note that the workspace has changed since, with Garuda's
+diff then including the later changes. The engine decides per consuming step
+(`_reads_moved_on`): a step that may edit or that outputs `plan`, and outputs
+no `review` or `findings`; never the terminal reviewer (it always outputs
+`review`) nor a parallel group. `_inputs` decides this from the step itself,
+so its signature is unchanged. Everyone else keeps
+`flow.input_stale`, the terminal review keeps `flow.review_stale_candidate`,
+and `review` / `findings` stay workspace-bound for every reader. Other callers
+of `load` / `validate_content` (starter evidence, the handoff scenario) keep the
+strict default.
+
+`ARTIFACT_VERSION` stays 1: the reference has no new field, the stored content
+is still the block's text, and old flows on disk load and resume as before (a
+resumed writer that consumes an old stale `patch` now runs with the note).
+
+## 2026-11-27: A Claude usage limit pauses a flow; quota recovery resumes it after the reported reset; the approval park wait is configurable (#834)
+
+Since #824 a Claude limit is typed (`AcpUsageLimitError`, recorded by type name as
+the step session's `error_code`) and its validated reset is kept as `error_limit`,
+but a flow step that hit it failed the flow (`flow.step_failed`) and quota recovery
+admitted only flows with a Codex role. The engine now puts the session's validated
+`error_limit` in the step's `stop.cause.limit` (any harness, any step), and a plain
+step of a `claude` role whose cause code is a limit code (`LIMIT_CAUSE_CODES`)
+stops with `flow.quota_wait`. This applies whether or not recovery is enabled.
+Excluded: a checked flow, which keeps `flow.step_failed` because its resume contract
+(`RESUMABLE_CHECKED_STOPS`) settles that code and recovery refuses checked flows
+anyway; parallel group members, also refused by recovery; and Codex, which keeps
+`flow.step_failed` and its proved account read, so no Codex test changed.
+`flow.quota_wait` is not in `RETRYABLE_STOPS`, so a retrying Claude step that hits
+its limit no longer burns its retries against the limit.
+
+Claude has no documented read-only quota interface (`/usage` is interactive), and
+the design keeps "a reset timestamp is a hint, not proof". The only Claude evidence
+recovery uses is the reset Claude reported with the stop, and the tick never
+probes or prompts. `quota_recovery.claude_limit` accepts only a settled, closed
+`flow.quota_wait` receipt of a `claude` role with a limit cause. The record gets
+`quota_source: claude`, `reset_at`, `rate_limit_type` and
+`next_check = reset + 120 s`. The tick dispatches such a row only once
+`next_check` has passed, through the same claim, admission, evidence, workspace,
+configuration and source checks as Codex. A missing reset, or one already passed
+(a stale snapshot), still pauses and backs off 1 h, 2 h, 4 h, then every 8 h,
+counted by consecutive such pauses. Admission of a Claude row refuses a resume
+before the reported reset (`RecoveryWaiting`, so manual `flow resume` gets
+`flow.quota_wait` and the row keeps waiting). It skips the Codex probe, and a
+Claude-only flow is admitted without probing Codex. No account identity is bound
+for Claude. The refusals for checked, dashboard-owned, parallel and retrying
+flows are unchanged: they concern continuation contracts, not the quota source.
+`recovery enable` requires the Codex executable only when the user garuda.yaml
+has no roles or a role (or fallback) on Codex; with Claude-only roles it installs
+without one and records `codex_executable: null`, and the wrapper's `PATH` is the
+installing one. A Codex flow without a recorded executable has no probe and blocks
+(fail closed). Codex rows project exactly as before; only Claude rows add `quota_source` and `rate_limit_type`. `flow show`
+prints `limit: <window>; resets at <UTC>` from the stop cause, plus the
+recovery record's reset.
+
+`garuda run` already printed the reset (#827). The CLI has no exit-code convention
+for limits (1 is a failed run, 2 a refusal, 3 a stopped flow), so it still exits 1.
+
+`approvals: {park_timeout_sec: N}` in garuda.yaml (30..86400, default 300) sets how
+long a background run's parked approval waits before it times out as a denial.
+The layers resolve like consult limits: a project value counts only when it is
+below the user's (or the default), so a project can only lower it. It is in the
+resolved configuration only when set, so existing admission digests are
+unchanged. `run_acp_task` and `run_agent_task` read it with
+`garuda_yaml.park_timeout_sec(workspace)` only when approvals are external
+(background and dashboard flow steps in the owned worker). An unreadable configuration there keeps 300 s and logs a warning.
+Foreground terminal runs and the ACP server's runtime keep the broker's 300 s.
+
 ## 2026-11-27: Configured flows can run in their own worktree, with checkpoints and rollback
 
 Every configured flow ran in the user's checkout: `service.py` forced
@@ -5454,3 +5551,70 @@ unknown and takes the latest attempt with outputs as notes.
 Reuse: `garuda/context/brief.py` is session-shaped and HTML-escapes; only its
 redaction helper (`_redacted`) is reused. Fencing and rendering are
 `prompting.fence`/`render_findings`, so the brief shares the prompt's marker.
+
+## 2026-11-27: Flows hold up for 10-12 hour steps (#837)
+
+Six bounds were sized for short steps.
+
+The ACP trail (`acp-events.jsonl`) was appended per event and never rotated. The
+adapter now writes through `garuda.observability.event_log.append`, which renames
+the active file to `acp-events.NNNNNN.jsonl` (the next number) when the next line
+would pass `ROTATE_BYTES` (64 MiB) and deletes rotated parts beyond
+`KEEP_ROTATED` (8), oldest first. The active name is unchanged, so liveness by
+mtime and every legacy single-file session read as before. Readers walk
+`part_paths` / `iter_lines` in order: the trajectory and `flow export` (one
+16 MiB / 5,000-event budget across all parts; the summary gains `parts` and
+`pruned` only when there is more than one part or early parts were deleted),
+lanes (projected to `kind` and `segment_id` so a large trail is not held whole),
+the conversation view behind `sessions show`, `garuda run --trajectory`
+(concatenated) and the dashboard trail (`interfaces/web/reads.py`
+`external_trail`, one line through `event_log.open_trail`). The bounded
+failure-evidence and support readers still read the active file only, within
+their 4 MiB source bound, and now mark coverage `clipped` when rotated parts
+exist (`acp_trail_coverage`). `pruned` is "lowest kept number is not 1", which
+the predictable names make cheap.
+
+A heartbeat that raised ended `race`. `WorkspaceLeaseGuard._renew` retries a
+storage failure (`OSError`, or a plain `LeaseError` caused by `OSError` /
+`StorageError`, which is what `_locked` and `_read_all` raise) up to
+`HEARTBEAT_RETRIES` (3) times, `ttl / 12` apart, and never past
+`last success + ttl`; the first attempt is at `ttl / 3`, so the last retry lands
+at 7/12 of the TTL. `LeaseConflictError` and a missing record are never retried.
+Ownership is not extended by retrying: the record's `heartbeat_at` moves only on a
+successful write.
+
+The owned worker's result was cut to its last 32 KB while an artifact may be
+64,000 characters, so the tail lost the opening tag and extraction refused.
+`MAX_RESULT_OUTPUT` is 262,144 bytes (above 64,000 four-byte characters). The
+socket reader's line limit is `RESULT_REQUEST_LIMIT` (6x that plus 64 KiB, the
+worst case of JSON `\u` escaping); every request other than `result` is still
+refused above `CONTROL_LIMIT`, and nonce, sequence, peer credential and result
+shape checks are unchanged. `role_worker.py` is untouched; it already calls
+`bounded_output`.
+
+Check limits are a top-level `check_limits: {timeout_sec, phase_timeout_sec}`
+(the `checks` key is a list): 1..14,400 and 1..43,200, defaults 900 and 3,600.
+`resolve` lets the user set any value; a project value above what the project
+would otherwise get is `config.project_widening`, not a silent clamp (a project
+that needs more should hear that it did not get it). `freeze_resolved_checks`
+passes them into `CheckLimits`, whose maxima (`LIMIT_MAXIMA`, also used by the
+durable record check) are now 4 h / 12 h, and `REQUEST_LIMITS["acceptance"]`
+allows 4 h. Default requests are byte-identical, so saved request identities and
+resume comparisons are unchanged. `garuda run --check` passes `timeout_sec` to
+`run_check`.
+
+`REQUEST_LIMITS["role"]` capped the owned worker at 3,600 s, so a checked step
+with `deadline_min` above 50 (backstop deadline + 600 s) was refused at
+activation; it is now 7 days + 600 s, the `deadline_min` maximum. Without a
+deadline the backstop stays 3,600 s; a worker it kills now raises
+`StepBackstopExceeded(CleanupUncertain)` carrying a `stop` record
+(`flow.step_backstop`, the step, a message naming `limits.deadline_min`). The
+engine's crash path writes it as `flow_stop` beside the unchanged `quarantined`
+state, so `flow show` prints it through `_flow_stop_line`, and the CLI's
+cleanup-unproved error uses it.
+
+An approval now records `coverage` (`rv.packet_coverage`: `partial` when the
+packet's changed list or diff excerpts say `complete: false`, `complete` when
+both are true, else `unknown`) and `flow show` prints one line per approval. It
+is read from the packet after the digest is taken and `_review_approved` does not
+look at it, so digests and approval rules are unchanged.

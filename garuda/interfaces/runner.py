@@ -374,7 +374,11 @@ async def run_agent_task(
     # instead of hanging until timeout.
     try:
         lease.start_heartbeat()
-        install_session_broker(permissions, store, events.session_id, external=external_approvals)
+        from garuda.config.garuda_yaml import park_timeout_sec
+
+        # A background run's parked asks wait `approvals.park_timeout_sec` (#834).
+        install_session_broker(permissions, store, events.session_id, external=external_approvals,
+                               timeout_sec=park_timeout_sec(workspace) if external_approvals else None)
         # Persist the trusted routing decision before the runtime is started.
         # The caller has already resolved any automatic selection, so this
         # pin protects the executor actually being launched.

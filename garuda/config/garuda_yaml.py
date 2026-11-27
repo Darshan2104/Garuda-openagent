@@ -25,7 +25,13 @@ CLI request:
   ``--model`` flag was given) the nearest ``defaults.role``;
 - a named role or flow replaces the whole definition below it;
 - permission ceilings and consult limits intersect (the stricter wins);
+- ``check_limits`` (per check command and per check phase): the user file may
+  set any value up to the maximum; a project may only lower the value it
+  would get without it (``config.project_widening``);
 - checks accumulate, deduplicated on run text, cwd, environment and mode;
+- ``approvals.park_timeout_sec`` (how long a background step's parked approval
+  waits for an answer) only lowers: a project value at or above the user's
+  (or the 300 s default) is ignored;
 - ``harnesses``, ``sessions.keep_days``, ``fallback`` chains and ``consult``
   grants are **user-only**: a project may keep a subset or remove them, never
   add (``config.project_widening``);
@@ -62,11 +68,18 @@ WRITE_POLICIES = ("edits", "no-edits")
 #: ``silence_min`` and ``tool_silence_min`` up to one day.
 STEP_LIMITS = {"deadline_min": (1, 7 * 24 * 60), "silence_min": (1, 24 * 60),
                "tool_silence_min": (1, 24 * 60)}
+#: Check time limits in seconds: ``check_limits.<key>`` is (default, maximum). The
+#: defaults are the bounds every check request had before they were configurable.
+CHECK_LIMITS = {"timeout_sec": (900, 4 * 3600), "phase_timeout_sec": (3600, 12 * 3600)}
 #: A long step's turn loop (``long_run``): whole hours and turns, with their bounds.
 #: Absent keys take :data:`garuda.flows.long_step.DEFAULTS`.
 LONG_RUN = {"max_hours": (1, 24), "session_turns": (1, 200), "session_hours": (1, 24),
             "max_turns": (1, 1000), "no_progress_turns": (1, 50)}
 ISOLATION = ("shared", "worktree", "auto")
+#: Bounds and default of `approvals.park_timeout_sec` (#834): 30 s to 24 h, 300 s.
+MIN_PARK_TIMEOUT_SEC = 30
+MAX_PARK_TIMEOUT_SEC = 24 * 3600
+DEFAULT_PARK_TIMEOUT_SEC = 300
 #: A configured flow runs in the user's checkout or in its own worktree (no ``auto``).
 FLOW_ISOLATION = ("shared", "worktree")
 ARTIFACTS = ("plan", "patch", "review", "findings", "notes", "summary")
@@ -548,7 +561,7 @@ def parse(data: Any, *, source: str = "") -> dict:
             _fail(key, "is a settings.yaml key; it does not belong in garuda.yaml "
                        "(see `garuda config migrate`)", code="config.conflict")
     _mapping(data, "", ("version", "defaults", "harnesses", "roles", "flows", "checks",
-                        "consults", "sessions"))
+                        "check_limits", "consults", "sessions", "approvals"))
     if data.get("version") != VERSION:
         _fail("version", f"must be {VERSION}", code="config.unsupported_version")
     out: dict[str, Any] = {"version": VERSION}
@@ -569,6 +582,10 @@ def parse(data: Any, *, source: str = "") -> dict:
         if not isinstance(data["checks"], list):
             _fail("checks", "must be a list")
         out["checks"] = [_check(c, f"checks[{i}]") for i, c in enumerate(data["checks"])]
+    if "check_limits" in data:
+        limits = _mapping(data["check_limits"], "check_limits", tuple(CHECK_LIMITS))
+        out["check_limits"] = {key: _int(limits[key], f"check_limits.{key}", 1, CHECK_LIMITS[key][1])
+                               for key in CHECK_LIMITS if key in limits}
     if "consults" in data:
         consults = _mapping(data["consults"], "consults",
                             ("max_per_session", "timeout_sec", "max_answer_chars",
@@ -597,6 +614,13 @@ def parse(data: Any, *, source: str = "") -> dict:
         if "keep_days" in sessions:
             out["sessions"]["keep_days"] = _int(sessions["keep_days"], "sessions.keep_days",
                                                 1, 3650)
+    if "approvals" in data:
+        approvals = _mapping(data["approvals"], "approvals", ("park_timeout_sec",))
+        out["approvals"] = {}
+        if "park_timeout_sec" in approvals:
+            out["approvals"]["park_timeout_sec"] = _int(
+                approvals["park_timeout_sec"], "approvals.park_timeout_sec",
+                MIN_PARK_TIMEOUT_SEC, MAX_PARK_TIMEOUT_SEC)
     _check_references(out)
     return out
 
@@ -755,6 +779,13 @@ def _narrow_harnesses(user: dict, project: dict) -> dict:
     return out
 
 
+def check_limits(resolved) -> dict[str, int]:
+    """The effective ``check_limits`` of a resolved configuration, defaults filled in."""
+    config = getattr(resolved, "config", None) or {}
+    configured = config.get("check_limits") or {}
+    return {key: configured.get(key, default) for key, (default, _high) in CHECK_LIMITS.items()}
+
+
 def resolve(
     user: dict | None = None,
     project: dict | None = None,
@@ -822,6 +853,28 @@ def resolve(
                 consults[key] = value
                 prov[f"consults.{key}"] = source
 
+    # check limits: the user may raise them to the maximum; a project only lowers them
+    bounds: dict[str, int] = {}
+    for source, doc in layers:
+        for key, value in doc.get("check_limits", {}).items():
+            effective = bounds.get(key, CHECK_LIMITS[key][0])
+            if source == PROJECT and value > effective:
+                _fail(f"check_limits.{key}",
+                      f"{value} would raise the {effective} s limit the project gets; "
+                      "a project may only lower check limits", code="config.project_widening")
+            bounds[key] = value
+            prov[f"check_limits.{key}"] = source
+    approvals: dict[str, int] = {}
+    for source, doc in layers:
+        value = doc.get("approvals", {}).get("park_timeout_sec")
+        if value is None:
+            continue
+        if source == PROJECT and value >= approvals.get("park_timeout_sec",
+                                                         DEFAULT_PARK_TIMEOUT_SEC):
+            continue  # a project may only lower the wait
+        approvals["park_timeout_sec"] = value
+        prov["approvals.park_timeout_sec"] = source
+
     checks: list[dict] = []
     seen: set = set()
     for source, doc in [*layers, (CLI, {"checks": [{"run": c} for c in cli_checks]})]:
@@ -842,6 +895,10 @@ def resolve(
         config["sessions"] = sessions
     if consults:
         config["consults"] = consults
+    if bounds:
+        config["check_limits"] = bounds
+    if approvals:
+        config["approvals"] = approvals
     if checks:
         config["checks"] = checks
 
@@ -937,6 +994,25 @@ def load_effective(workspace, *, cli_role=None, cli_runtime=None, cli_model=None
             if "model_id" in role
         )
     return resolved
+
+
+def park_timeout_sec(workspace) -> int:
+    """How long a background step's parked approval waits before it is denied (#834).
+
+    ``approvals.park_timeout_sec`` of the effective configuration for
+    ``workspace``, else the 300 s default. A configuration that cannot be read
+    here keeps the default: the run itself reports that configuration error.
+    """
+    import logging
+
+    try:
+        resolved = load_effective(workspace)
+    except (GarudaConfigError, ConfigError, OSError):
+        logging.getLogger(__name__).warning("approval park timeout not read; using the default",
+                                            exc_info=True)
+        return DEFAULT_PARK_TIMEOUT_SEC
+    value = ((resolved.config if resolved else {}).get("approvals") or {}).get("park_timeout_sec")
+    return value if isinstance(value, int) else DEFAULT_PARK_TIMEOUT_SEC
 
 
 # --- migration ---------------------------------------------------------------------

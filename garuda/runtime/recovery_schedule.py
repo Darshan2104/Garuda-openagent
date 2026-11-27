@@ -50,6 +50,34 @@ def _resolved_executable(name: str, *, required: bool) -> str | None:
     return str(Path(found).resolve())
 
 
+def _codex_required() -> bool:
+    """Whether ``enable`` needs the Codex executable (#834).
+
+    Codex quota is proved by its own CLI, so it stays required unless your user
+    ``garuda.yaml`` defines roles and none of them, fallbacks included, uses
+    Codex (for example Claude-only roles, whose recovery reads the reset Claude
+    reported). Codex is still recorded when it is on PATH. A Codex role that
+    appears later without a recorded executable blocks its continuation; it is
+    never resumed unproved.
+    """
+    from garuda.config import garuda_yaml as gy
+
+    try:
+        doc = gy.load_file(gy.user_path())
+    except gy.GarudaConfigError:
+        return True
+    roles = (doc or {}).get("roles") or {}
+    if not roles:
+        return True
+    return any(candidate.get("harness") == "codex"
+               for role in roles.values()
+               for candidate in (role, *role.get("fallback", [])))
+
+
+def _codex_executable() -> str | None:
+    return _resolved_executable("codex", required=_codex_required())
+
+
 def _paths(root: Path) -> tuple[Path, Path, Path]:
     return root / _SETTINGS, root / _SCRIPT, root / _LOG
 
@@ -94,14 +122,14 @@ def _write_private_text(
             pass
 
 
-def _wrapper(python: str, codex: str, root: Path, log_path: Path) -> str:
-    codex_directory = str(Path(codex).parent)
+def _wrapper(python: str, codex: str | None, root: Path, log_path: Path) -> str:
     preserved: dict[str, str] = {}
     for name in _PRESERVED_ENV:
         value = os.environ.get(name)
         if value:
             preserved[name] = value
-    preserved["PATH"] = f"{codex_directory}{os.pathsep}{preserved.get('PATH', '/usr/bin:/bin')}"
+    path = preserved.get('PATH', '/usr/bin:/bin')
+    preserved["PATH"] = f"{Path(codex).parent}{os.pathsep}{path}" if codex else path
     preserved.setdefault("LANG", "C.UTF-8")
     for name in _AUTHORITY_PATH_ENV:
         value = os.environ.get(name)
@@ -243,8 +271,7 @@ def install(root: Path, *, backend: str = "cron") -> dict:
         return _install_launchd(root)
     root = _absolute(Path(root))
     settings_path, script_path, log_path = _paths(root)
-    codex = _resolved_executable("codex", required=True)
-    assert codex is not None
+    codex = _codex_executable()
     # Keep a virtualenv's interpreter path: resolving its symlink can select
     # the base interpreter, which does not have this Garuda installation.
     python = str(_absolute(Path(sys.executable)))
@@ -491,8 +518,7 @@ def _install_launchd(root: Path) -> dict:
             _require_launchd()
         ss.write_locked_document(directory_fd, settings_path, {**existing, "version": 1,
                                                              "enabled": False, "backend": "launchd"})
-        codex = _resolved_executable("codex", required=True)
-        assert codex is not None
+        codex = _codex_executable()
         python = str(_absolute(Path(sys.executable)))
         wrapper = _wrapper(python, codex, root, log_path)
         label, path, target = _launchd_paths(root)

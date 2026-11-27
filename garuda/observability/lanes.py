@@ -22,8 +22,9 @@ from pathlib import Path
 from typing import Any
 
 from garuda.context.redact import redact_text
+from garuda.observability import event_log
 
-ACP_EVENTS_FILE = "acp-events.jsonl"
+ACP_EVENTS_FILE = event_log.ACP_EVENTS_FILE
 
 #: Version of the sharing format. Readers reject newer versions they cannot
 #: interpret instead of guessing at unknown fields.
@@ -63,8 +64,12 @@ class CrossRuntimeTrace:
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
+    return _records(path.read_text(encoding="utf-8").splitlines())
+
+
+def _records(lines) -> list[dict[str, Any]]:
     records = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in lines:
         line = line.strip()
         if not line:
             continue
@@ -81,8 +86,8 @@ def read_cross_runtime(session_dir: str | Path) -> CrossRuntimeTrace:
     """Build the lane view for one session directory.
 
     Reads `meta.json` (unified segments, handoff), `events.jsonl` (native
-    trail, counted per lane via cursors), and `acp-events.jsonl` (normalized
-    external events, counted by kind). Missing files mean absent data, never
+    trail, counted per lane via cursors), and `acp-events.jsonl` with its rotated
+    parts (normalized external events, counted by kind). Missing files mean absent data, never
     an error — that is what keeps historical logs readable.
     """
     root = Path(session_dir)
@@ -91,7 +96,10 @@ def read_cross_runtime(session_dir: str | Path) -> CrossRuntimeTrace:
     except (OSError, ValueError):
         meta = {}
     native_count = len(_read_jsonl(root / "events.jsonl"))
-    external = _read_jsonl(root / ACP_EVENTS_FILE)
+    # Every kept part of a size-rotated trail, in order (event_log); lanes count
+    # only an event's kind and segment, so nothing else is held in memory.
+    external = [{key: record[key] for key in ("kind", "segment_id") if key in record}
+                for record in _records(event_log.iter_lines(root))]
     return build_cross_runtime(meta, native_count, external, fallback_session_id=root.name)
 
 

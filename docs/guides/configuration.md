@@ -438,7 +438,13 @@ paths, and the writer refuses any field outside its schema.
 
 ## Study traces
 
-An external harness's run keeps a trail in its session (`acp-events.jsonl`). By
+An external harness's run keeps a trail in its session (`acp-events.jsonl`). A long
+run's trail is rotated by size: at 64 MiB the file moves to
+`acp-events.000001.jsonl` (then `000002`, and so on) and a new one starts; the
+newest 8 rotated files are kept beside the current one and older ones are
+deleted. `sessions show`, `flow export`, the trajectory a run saves with
+`--trajectory FILE` and the dashboard read every kept file in order; a trail that lost
+its oldest files says `pruned`. By
 default it holds metadata only: ids, tool kinds, statuses, lifecycle, prompt
 digests and usage reports, never the harness's messages or tool calls. To study and
 optimise a workflow, opt in to tool detail in your own settings (a project file
@@ -565,6 +571,7 @@ roles:
   reviewer: {harness: claude, model_id: <exact-id>, permissions: smart, write_policy: no-edits}
 consults: {max_per_session: 5, timeout_sec: 600, max_answer_chars: 8000}
 sessions: {isolation: auto, keep_days: 30}
+approvals: {park_timeout_sec: 1800}
 ```
 
 How the layers combine (package default, then user, then project, then the
@@ -575,6 +582,8 @@ command line):
 - Checks **accumulate**; an identical check is listed once.
 - `harnesses`, `sessions.keep_days`, `fallback` chains and `consult` grants are
   **yours only**: a project file may keep a subset or remove them, never add.
+- `check_limits` may only be **lowered** by a project file
+  (`config.project_widening` otherwise); see [Check time limits](#check-time-limits).
 - `--runtime` or `--model` on the command line skips an implicit
   `defaults.role`.
 
@@ -653,6 +662,14 @@ the step starts (`flow.long_run_unsupported`); a flow's default skips native
 steps. See [Long steps](sessions-and-flows.md#long-steps). Without `long_run`
 a step sends one prompt, as before.
 
+`approvals.park_timeout_sec` is how long an approval asked by a background
+run waits in the inbox (the dashboard's Approvals page or
+`garuda approvals answer`) before the request times out and counts as a denial.
+This covers background and dashboard flow steps, whose approvals are answered
+outside the terminal. It is whole seconds from 30 to 86400 (24 hours), and the
+default is 300. A project file may only lower it: a project value at or above
+yours (or above the default, if you set none) is ignored.
+
 A flow may set `isolation: worktree` so it runs in its own Git worktree from
 your checkout's `HEAD` instead of in your checkout (`shared`, the default):
 
@@ -672,6 +689,31 @@ the key keeps its definition digest. Dashboard flow starts refuse a flow that
 sets `isolation: worktree` (`flow.isolation_unsupported`); run it with
 `garuda flow run`. See
 [Worktree flows and checkpoints](sessions-and-flows.md#worktree-flows-and-checkpoints).
+
+### Check time limits
+
+A check command may run for 900 seconds and a flow's whole check phase for
+3,600 seconds. A test suite that needs longer can say so:
+
+```yaml
+# ~/.agent/garuda.yaml
+check_limits: {timeout_sec: 7200, phase_timeout_sec: 21600}
+```
+
+- `timeout_sec` (1 to 14400, 4 hours; default 900): one check command. It also
+  bounds each command a plain run checks with `--check CMD`.
+- `phase_timeout_sec` (1 to 43200, 12 hours; default 3600): every check of a
+  checked flow together.
+
+Your user file may raise either value up to its maximum. A project file may
+only lower the value it would otherwise get (`config.project_widening` names
+the key it tried to raise). A check that runs out fails as timed out; a check
+phase that runs out stops verification with `verification.phase_timeout`. The
+limits are part of the flow's frozen check request, so `flow resume` runs the
+original checks under the limits they started with. Which checks run, and the
+trust a project's checks need, are unchanged.
+
+### Harness startup timeout
 
 `harnesses.<id>.handshake_timeout_sec` is how long Garuda waits for an
 external (ACP) harness to answer its startup calls (`initialize`,

@@ -196,7 +196,8 @@ class CheckRecords:
 
     @staticmethod
     def _limits(limits):
-        maxima = {"timeout": 900, "phase_timeout": 3600, "term_grace": 3, "kill_grace": 3}
+        from garuda.core.acceptance_request import LIMIT_MAXIMA as maxima
+
         if (not isinstance(limits, dict) or set(limits) != set(maxima)
                 or any(type(limits[k]) not in (int, float) or not math.isfinite(limits[k])
                        or not 0 < limits[k] <= maximum for k, maximum in maxima.items())):
