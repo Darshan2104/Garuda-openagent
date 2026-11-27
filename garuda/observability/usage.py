@@ -203,7 +203,8 @@ def record_fallback_start(store, session_id: str, *, ledger: Ledger | None = Non
 def record_turn_acp_usage(store, session_id: str, events, *, runtime_id: str,
                           adapter_version: str, segment: str,
                           confined: bool = False) -> list[dict]:
-    """Record the last usage report among one ACP turn's normalized events.
+    """Record the last usage report among one ACP turn's normalized events, and
+    fold all of them into the session's ``usage_summary`` (#832).
 
     The CLI and the SDK both account an external turn this way. Never raises.
     """
@@ -218,6 +219,9 @@ def record_turn_acp_usage(store, session_id: str, events, *, runtime_id: str,
     limits = [report["rate_limit"] for report in reports if isinstance(report.get("rate_limit"), dict)]
     if limits and "rate_limit" not in usage:
         usage = {**usage, "rate_limit": limits[-1]}
+    # Every report of the turn, summarized into the session (#832): the ledger
+    # keeps only the last one, and the peak context would be lost.
+    record_usage_summary(store, session_id, segment, reports)
     return record_acp_usage(store, session_id, runtime_id=runtime_id,
                             adapter_version=adapter_version, segment=segment, usage=usage,
                             confined=confined)
@@ -244,6 +248,111 @@ def record_acp_usage(store, session_id: str, *, runtime_id: str, adapter_version
     except Exception:
         logger.warning("acp usage not recorded", exc_info=True)
         return []
+
+
+#: Reporting segments one session's usage summary keeps; the oldest are dropped.
+MAX_SUMMARY_SEGMENTS = 16
+
+
+def _count(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def _money(value: Any) -> float | None:
+    return (float(value) if isinstance(value, (int, float)) and not isinstance(value, bool)
+            and value >= 0 else None)
+
+
+def summarize_reports(reports: list[dict]) -> dict | None:
+    """A bounded summary of usage reports in the order they came (#832): how many,
+    the first, peak and last ``context_used``, the last ``context_size``, the last
+    reported ``cost_usd`` (the harness's cumulative figure) and the last model."""
+    if not reports:
+        return None
+    used = [n for r in reports if (n := _count(r.get("context_used"))) is not None]
+    sizes = [n for r in reports if (n := _count(r.get("context_size"))) is not None]
+    costs = [c for r in reports if (c := _money(r.get("cost_usd"))) is not None]
+    models = [r["model"] for r in reports if isinstance(r.get("model"), str) and r["model"]]
+    return {"reports": len(reports),
+            "first_context_used": used[0] if used else None,
+            "peak_context_used": max(used) if used else None,
+            "last_context_used": used[-1] if used else None,
+            "context_size": sizes[-1] if sizes else None,
+            "cost_usd": costs[-1] if costs else None,
+            "model": models[-1][:200] if models else None}
+
+
+def _merged(old: dict, new: dict) -> dict:
+    """``new`` reports after ``old`` ones of the same segment."""
+    def later(key):
+        return new.get(key) if new.get(key) is not None else old.get(key)
+
+    peaks = [v for v in (old.get("peak_context_used"), new.get("peak_context_used"))
+             if _count(v) is not None]
+    return {"reports": (_count(old.get("reports")) or 0) + new["reports"],
+            "first_context_used": (old.get("first_context_used")
+                                   if old.get("first_context_used") is not None
+                                   else new.get("first_context_used")),
+            "peak_context_used": max(peaks) if peaks else None,
+            **{key: later(key) for key in ("last_context_used", "context_size", "cost_usd",
+                                           "model")}}
+
+
+def record_usage_summary(store, session_id: str, segment: str, reports: list[dict]) -> None:
+    """Fold a turn's usage reports into the session's ``usage_summary`` (#832).
+
+    Per reporting segment: never the raw reports, at most
+    :data:`MAX_SUMMARY_SEGMENTS` segments. Never raises."""
+    summary = summarize_reports(reports)
+    if summary is None:
+        return
+    segment = str(segment)[:128]
+
+    def fold(meta: dict) -> dict:
+        current = meta.get("usage_summary")
+        rows = [dict(row) for row in (current.get("segments") or [])
+                if isinstance(row, dict)] if isinstance(current, dict) else []
+        for position, row in enumerate(rows):
+            if row.get("segment") == segment:
+                rows[position] = {"segment": segment, **_merged(row, summary)}
+                break
+        else:
+            rows.append({"segment": segment, **summary})
+        return {"usage_summary": {"version": 1, "segments": rows[-MAX_SUMMARY_SEGMENTS:]}}
+
+    try:
+        store.mutate_meta(session_id, fold)
+    except Exception:
+        logger.warning("usage summary not recorded", exc_info=True)
+
+
+def usage_summary(meta: dict) -> dict | None:
+    """A session's summary of every usage report its harness sent, or ``None``
+    (none sent, or a session recorded before #832). Segments combine: the first
+    segment's first ``context_used``, the largest peak, the last ``context_size``,
+    the segments' last costs summed (each is a cumulative figure for its segment).
+    The adapter's own figures: not metered or priced by Garuda."""
+    raw = meta.get("usage_summary") if isinstance(meta, dict) else None
+    rows = [row for row in (raw.get("segments") or []) if isinstance(row, dict)] \
+        if isinstance(raw, dict) and isinstance(raw.get("segments"), list) else []
+    if not rows:
+        return None
+    firsts = [n for row in rows if (n := _count(row.get("first_context_used"))) is not None]
+    peaks = [n for row in rows if (n := _count(row.get("peak_context_used"))) is not None]
+    lasts = [n for row in rows if (n := _count(row.get("last_context_used"))) is not None]
+    sizes = [n for row in rows if (n := _count(row.get("context_size"))) is not None]
+    costs = [c for row in rows if (c := _money(row.get("cost_usd"))) is not None]
+    return {"source": "adapter_reported",
+            "reports": sum(_count(row.get("reports")) or 0 for row in rows),
+            "first_context_used": firsts[0] if firsts else None,
+            "peak_context_used": max(peaks) if peaks else None,
+            "last_context_used": lasts[-1] if lasts else None,
+            "context_size": sizes[-1] if sizes else None,
+            "cost_usd": round(sum(costs), 8) if costs else None,
+            "cost_complete": bool(costs) and len(costs) == len(rows),
+            "models": sorted({row["model"] for row in rows
+                              if isinstance(row.get("model"), str) and row["model"]}),
+            "segments": len(rows)}
 
 
 def reported_usage(session_id: str, *, ledger: Ledger | None = None,

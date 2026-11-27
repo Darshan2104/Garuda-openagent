@@ -5659,6 +5659,34 @@ both are true, else `unknown`) and `flow show` prints one line per approval. It
 is read from the packet after the digest is taken and `_review_approved` does not
 look at it, so digests and approval rules are unchanged.
 
+## 2026-11-27: Each flow step attempt records what it cost and how much context it used (#832)
+
+Cost and context changes to flows must be measured. The ledger kept only the
+last `usage_update` per segment, so a session's peak context was lost, and a
+receipt kept no split of its prompt. A live baseline (`pair2`, two rounds, Claude)
+showed a fresh Claude session starts at about 22k tokens of context before any
+work and Garuda's prompt is 1-7% of it: the count of sessions is the lever.
+
+`record_turn_acp_usage` now also folds all of a turn's reports into the
+session's `usage_summary` (per segment: `reports`, `first_context_used`,
+`peak_context_used`, `last_context_used`, `context_size`, `cost_usd`, `model`;
+at most 16 segments; never the raw reports), read by `usage.usage_summary`.
+The ledger rows and `reported_usage` are unchanged.
+
+`prompting.assemble(sizes=[...])` returns the prompt's parts in order with their
+chars (they add up to the prompt's length). The engine adds a receipt field
+`measure` (new `garuda/flows/measure.py`): prompt chars, `est_tokens` (chars / 4,
+labelled an estimate), parts, sessions, turns, tool calls (from each session's
+event trail), `duration_ms`, the combined usage summary, the raw harness
+`stop_reason`, `approval_denied` (from the turn's closing lifecycle event) and
+`liveness` (from `StepResult`, #828), and `per_session`. A parallel group's one
+receipt measures every member's session. Additive: receipt status, the two
+journal entries per attempt, digests and resume are unchanged; old receipts and
+sessions read as `null`. `flow show` prints one measure line per attempt (counts
+a later turn loop records on the receipt, `sessions`, `turns`, `rotations`,
+`continuations`, `repairs`, show when present) and a total; `--json` and export
+carry `measure` and `summary.measure`.
+
 ## 2026-11-27: A long step's rotation brief comes from flow memory
 
 The turn loop (#842) shipped a minimal `default_brief` in
