@@ -431,7 +431,8 @@ function attemptHtml(attempt) {
     " " + chip("workspace", delta, "chip-off") +
     (attempt.no_edits ? " " + chip("no-edits", attempt.no_edits, attempt.no_edits === "unchanged" ? "chip-on" : "chip-bad") : "") +
     ' <span class="stat-sub">' + esc(attempt.duration_ms === null || attempt.duration_ms === undefined ? "duration unknown" : fmt.duration(attempt.duration_ms)) + "</span>" +
-    (attempt.session_id ? ' · <a href="#/sessions/' + encodeURIComponent(attempt.session_id) + '">session</a>' : "") + "</div>" +
+    (attempt.session_id ? ' <a class="btn btn-small attempt-trace" href="#/runs/' + encodeURIComponent(attempt.session_id) + '">Open trace</a>' +
+      ' · <a href="#/sessions/' + encodeURIComponent(attempt.session_id) + '">session</a>' : "") + "</div>" +
     turnLoopHtml(attempt.turn_loop) +
     (attempt.stop ? '<div class="stat-sub attempt-stop">stopped: ' + esc(attempt.stop.code) +
       (FLOW_STOPS[attempt.stop.code] ? " — " + esc(FLOW_STOPS[attempt.stop.code].text) : "") + "</div>" : "") +
@@ -449,6 +450,10 @@ function stepStatus(step, current) {
   var last = attempts[attempts.length - 1];
   if (last.status === "done") return { text: "done", cls: "success", key: "done" };
   return { text: last.status || "unknown", cls: last.status ? "failed" : "unknown", key: "failed" };
+}
+
+function edgeAttempt(attempt) {
+  return attempt === null || attempt === undefined ? "" : " #" + esc(attempt);
 }
 
 /* A flow as a vertical pipeline: each step, who ran it, its status, attempts, durations and
@@ -487,7 +492,10 @@ function flowHtml(flow, progress) {
         }).join(", ") + "</div>" : "") + "</li>";
     }).join("") + "</ol>" +
     (edges.length ? '<h3>Artifact edges</h3><ul id="flow-edges">' + edges.map(function (e) {
-      return "<li>" + esc(e.from_step) + " → " + esc(e.to_step) + " · " + esc(e.type) + "</li>";
+      // Each round passes its own artifact, so the attempts and digest tell two apart.
+      return "<li>" + esc(e.from_step) + edgeAttempt(e.from_attempt) + " → " + esc(e.to_step) +
+        edgeAttempt(e.to_attempt) + " · " + esc(e.type) +
+        (e.digest ? ' <code class="stat-sub">' + esc(String(e.digest).slice(0, 8)) + "</code>" : "") + "</li>";
     }).join("") + "</ul>" : "") + "</section>"
   );
 }

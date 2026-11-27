@@ -176,7 +176,9 @@ with sync_playwright() as p:
     page.wait_for_selector("#flow-detail")
     flow = page.locator("#flow-detail").inner_text()
     check("flow steps and attempts", "code" in flow and "review" in flow and "attempt 1" in flow)
-    check("artifact edge between steps", "code → review" in page.locator("#flow-edges").inner_text())
+    # Named by attempt: two rounds pass two artifacts along the same pair of steps.
+    check("artifact edge between steps", "code #1 → review #1" in page.locator("#flow-edges").inner_text(),
+          page.locator("#flow-edges").inner_text())
     check("workspace delta per attempt", "workspace: changed" in flow and "workspace: unchanged" in flow)
     check("the review is its own badge", "review: approved" in page.locator("#flow-review").inner_text()
           and "not verification" in page.locator("#flow-review").inner_text())
