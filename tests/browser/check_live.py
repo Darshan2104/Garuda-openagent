@@ -31,8 +31,9 @@ SHOTS = Path(os.environ.get("GARUDA_CHECK_SHOTS", tempfile.mkdtemp(prefix="garud
 SESSIONS = Path(os.environ["GARUDA_CHECK_SESSIONS"])
 SID = "live-demo"
 TURNS = 12
-# Long enough per turn for every live check below to run while the run is still in flight.
-TURN_SECONDS = 4.5
+# Generous: a condition that holds returns at once, so a deadline only costs time on failure,
+# and a loaded machine must not turn a slow page into a false failure.
+DEADLINE_MS = 30_000
 
 problems: list[str] = []
 requests: list[str] = []
@@ -40,11 +41,35 @@ requests: list[str] = []
 # request, which is the expected outcome then rather than a fault in the page.
 OUTAGE = [False]
 
+# Stepped, not timed: the run advances only when this check says so (see fake_run.py). A
+# timed writer raced the browser — under load it was turns ahead, or finished, before the
+# check first looked, and "the timeline did not grow" failed about one run in three.
 writer = subprocess.Popen(
-    [sys.executable, str(HERE / "fake_run.py"), str(SESSIONS), SID, str(TURNS), str(TURN_SECONDS)],
-    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+    [sys.executable, str(HERE / "fake_run.py"), str(SESSIONS), SID, str(TURNS), "0",
+     "--stepped"],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+    bufsize=1,
 )
+if not writer.stdout.readline().startswith("started"):
+    raise SystemExit("fake_run.py did not start")
 started = time.monotonic()
+steps_written = [0]
+
+
+def step(count: int = 1) -> None:
+    """Write `count` steps and return once they are on disk. Each step starts one turn."""
+    for _ in range(count):
+        writer.stdin.write("\n")
+        writer.stdin.flush()
+        line = writer.stdout.readline()
+        if not line.startswith("step "):
+            raise SystemExit(f"fake_run.py stopped: {line!r}")
+        steps_written[0] += 1
+
+
+def turns_at_least(page, count: int) -> bool:
+    return settle(page, "n => document.querySelectorAll('.turn').length >= n", count,
+                  timeout=DEADLINE_MS)
 
 
 def tail_requests() -> int:
@@ -76,10 +101,11 @@ with sync_playwright() as p:
     page.on("pageerror", lambda e: problems.append(f"pageerror: {e}"))
     page.on("request", lambda r: requests.append(r.url))
 
+    step(2)   # two turns, the second in progress
     page.goto(f"{BASE}#t={TOKEN}", wait_until="networkidle")
     # The token URL lands on the Overview; the runs list is its own tab.
     page.goto(f"{BASE}#/runs", wait_until="networkidle")
-    count_at_least(page, "#table-card .pill.running")
+    count_at_least(page, "#table-card .pill.running", timeout=DEADLINE_MS)
     page.wait_for_load_state("networkidle")
 
     # --- the runs list picks up a run started elsewhere ----------------------
@@ -140,8 +166,9 @@ with sync_playwright() as p:
 
     # --- the detail view fills in live --------------------------------------
     page.goto(f"{BASE}#/runs/{SID}", wait_until="networkidle")
-    settle(page, "() => !!document.querySelector('#live-badge')"
-                 " && document.querySelectorAll('.turn').length > 0")
+    settle(page, "n => !!document.querySelector('#live-badge')"
+                 " && document.querySelectorAll('.turn').length >= n", steps_written[0],
+           timeout=DEADLINE_MS)
     live_badge = page.query_selector("#live-badge")
     print("\nlive badge:", bool(live_badge))
     if not live_badge:
@@ -185,12 +212,12 @@ with sync_playwright() as p:
     }""")
     settle(page, "() => document.querySelectorAll('#raw-body .raw-row').length > 0")
     before_state = page_state(page)
-    # Two structure refreshes: the timeline grows by two turns.
-    settle(page, "n => document.querySelectorAll('.turn').length >= n + 2",
-           before_state["turns"], timeout=20_000)
+    # Two more turns, which the page can only show through structure refreshes.
+    step(2)
+    turns_at_least(page, before_state["turns"] + 2)
     after_state = page_state(page)
     print(f"reader state before refreshes: {before_state}")
-    print(f"reader state after ~6.5s:      {after_state}")
+    print(f"reader state after two turns:  {after_state}")
     if after_state["turns"] <= before_state["turns"]:
         problems.append("no structure refresh happened during the reader-state check")
     if not before_state["rows"]:
@@ -222,9 +249,9 @@ with sync_playwright() as p:
         return {id: turn.id, top: turn.getBoundingClientRect().top,
                 text: selection.toString(), turns: document.querySelectorAll(".turn").length};
     }""")
+    step(2)
     if anchor:
-        settle(page, "n => document.querySelectorAll('.turn').length >= n + 2",
-               anchor["turns"], timeout=20_000)
+        turns_at_least(page, anchor["turns"] + 2)
     held_state = page.evaluate("""(id) => {
         const turn = document.getElementById(id);
         return {top: turn ? turn.getBoundingClientRect().top : null,
@@ -247,6 +274,7 @@ with sync_playwright() as p:
     OUTAGE[0] = True
     page.route("**/tail*", lambda route: route.abort())
     outage_start = tail_requests()
+    step(1)   # the run keeps going while the dashboard is unreachable
     page.wait_for_timeout(8000)
     outage_polls = tail_requests() - outage_start
     meta = page.text_content("#live-meta") or ""
@@ -262,9 +290,11 @@ with sync_playwright() as p:
     recovered = settle(page, """() => {
         const meta = document.getElementById("live-meta");
         return !!meta && !meta.textContent.includes("can't reach");
-    }""", timeout=30_000)
+    }""", timeout=40_000)
     meta = page.text_content("#live-meta") or ""
     OUTAGE[0] = False
+    # What was written during the outage arrives once it is over.
+    turns_at_least(page, steps_written[0])
     print(f"recovered: {recovered} ({meta!r})")
     if not recovered:
         problems.append("the live view did not recover once the dashboard was reachable again")
@@ -286,10 +316,13 @@ with sync_playwright() as p:
     page.screenshot(path=str(SHOTS / "live-midrun.png"), full_page=True)
 
     # --- it stops when the run ends -----------------------------------------
-    writer.wait(timeout=120)
+    step(TURNS + 1 - steps_written[0])   # the remaining turns, then the session end
+    writer.stdin.close()
+    writer.wait(timeout=60)
     settle(page, """n => !document.querySelector('#live-badge')
                      && document.querySelectorAll('.turn').length === n
-                     && document.querySelectorAll('.gate').length === 1""", TURNS, timeout=20_000)
+                     && document.querySelectorAll('.gate').length === 1""", TURNS,
+           timeout=DEADLINE_MS)
     final_turns = len(page.query_selector_all(".turn"))
     badge_gone = page.query_selector("#live-badge") is None
     gates = len(page.query_selector_all(".gate"))
