@@ -587,10 +587,16 @@ function reviewCoverageHtml(coverage) {
 /* An attempt's stop. A paused attempt (its receipt's own pause, or the attempt its flow's
  * pause stopped on) reads as a pause, pointing to where the pause is said; its raw stop code
  * stays in the tooltip and in Details and evidence. The red callout is for failures only. */
-function attemptStopHtml(attempt, pauseKind, link) {
+function attemptStopHtml(attempt, pauseKind, link, replacedBy) {
   var stop = attempt.stop;
   if (!stop) return "";
   var known = FLOW_STOPS[stop.code];
+  if (replacedBy !== null && replacedBy !== undefined) {
+    // History, not a standing failure: a later attempt of this step succeeded.
+    return '<div class="stat-sub attempt-stop" data-state="replaced" data-code="' + esc(stop.code) + '" title="' +
+      esc("stop code: " + stop.code) + '">' + esc((REPLACED_STOPS[stop.code] || "stopped: " + stop.code) +
+      " · replaced by attempt " + replacedBy) + (known ? " — " + esc(known.text) : "") + "</div>";
+  }
   if (!pauseKind) {
     return '<div class="stat-sub attempt-stop">stopped: ' + esc(stop.code) + (known ? " — " + esc(known.text) : "") + "</div>";
   }
@@ -600,21 +606,32 @@ function attemptStopHtml(attempt, pauseKind, link) {
     (link ? ' — see <a href="#' + esc(link.id) + '" data-scroll-to="' + esc(link.id) + '">' + esc(link.label) + "</a>" : "") + "</div>";
 }
 
-function attemptHtml(attempt, flowPause, link) {
+/* What a replaced attempt's stop was, in a word (the full sentence follows). */
+var REPLACED_STOPS = {
+  "flow.interrupted": "interrupted", "flow.step_deadline": "ran past its deadline",
+  "flow.step_silent": "went silent"
+};
+
+/* `replacedBy`: the number of a later attempt of the same step that succeeded, when there is
+ * one. Its stop is then history, drawn neutral; red is for a failure that stands. */
+function attemptHtml(attempt, flowPause, link, replacedBy) {
   var delta = attempt.delta === null ? "unknown" : (attempt.delta ? "changed" : "unchanged");
-  var pauseKind = attempt.pause || (flowPause && flowPause.kind) || null;
+  var replaced = attempt.status !== "done" && replacedBy !== null && replacedBy !== undefined;
+  var pauseKind = replaced ? null : (attempt.pause || (flowPause && flowPause.kind) || null);
   return (
     '<li class="attempt" data-attempt="' + esc(attempt.attempt) + '" data-status="' + esc(attempt.status) + '"' +
-    (pauseKind ? ' data-pause="' + esc(pauseKind) + '"' : "") + ">" +
+    (pauseKind ? ' data-pause="' + esc(pauseKind) + '"' : "") +
+    (replaced ? ' data-replaced="' + esc(replacedBy) + '"' : "") + ">" +
     '<div class="attempt-head">attempt ' + esc(attempt.attempt) + " · " + esc(ranText(attempt)) +
-    " " + chip("status", attempt.status, attempt.status === "done" ? "chip-on" : (pauseKind ? "chip-pause" : "chip-bad")) +
+    " " + chip("status", attempt.status, attempt.status === "done" ? "chip-on"
+      : (replaced ? "chip-off" : (pauseKind ? "chip-pause" : "chip-bad"))) +
     " " + chip("workspace", delta, "chip-off") +
     (attempt.no_edits ? " " + chip("no-edits", attempt.no_edits, attempt.no_edits === "unchanged" ? "chip-on" : "chip-bad") : "") +
     ' <span class="stat-sub">' + esc(attempt.duration_ms === null || attempt.duration_ms === undefined ? "duration unknown" : fmt.duration(attempt.duration_ms)) + "</span>" +
     (attempt.session_id ? ' <a class="btn btn-small attempt-trace" href="#/runs/' + encodeURIComponent(attempt.session_id) + '">Open trace</a>' +
       ' · <a href="#/sessions/' + encodeURIComponent(attempt.session_id) + '">session</a>' : "") + "</div>" +
     turnLoopHtml(attempt.turn_loop) +
-    attemptStopHtml(attempt, pauseKind, link) +
+    attemptStopHtml(attempt, pauseKind, link, replaced ? replacedBy : null) +
     ((attempt.inputs || []).length ? '<div class="stat-sub">in: ' + attempt.inputs.map(function (r) { return esc(artifactText(r)); }).join(", ") + "</div>" : "") +
     ((attempt.outputs || []).length ? '<div class="stat-sub">out: ' + attempt.outputs.map(function (r) { return esc(artifactText(r)); }).join(", ") + "</div>" : "") +
     ((attempt.members || []).length ? '<div class="stat-sub">reviewers: ' + attempt.members.map(function (m) { return esc(m.role) + (m.success ? " ✓" : " ✗"); }).join(", ") + "</div>" : "") +
@@ -680,7 +697,8 @@ function flowHtml(flow, progress, options) {
         (attempts.length ? '<ul class="attempts">' + attempts.map(function (a, i) {
           // The flow's pause names its stopped step: its last attempt is the paused one.
           var paused = options.pause && flow.stop && flow.stop.step === step.id && i === attempts.length - 1;
-          return attemptHtml(a, paused ? options.pause : null, link);
+          var later = attempts.slice(i + 1).filter(function (b) { return b.status === "done"; })[0];
+          return attemptHtml(a, paused ? options.pause : null, link, later ? later.attempt : null);
         }).join("") + "</ul>" : "") +
         // The step in flight is described in its own block, a paused one in the Result (said
         // once, with its command); never "not run yet".

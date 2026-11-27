@@ -619,6 +619,9 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
   background: var(--surface); color: var(--st-fail); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--st-fail-dot) 40%, transparent);
 }
 .attempt[data-pause] .attempt-stop { color: var(--st-pause); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--st-pause-dot) 40%, transparent); }
+/* An attempt a later one replaced: history, neutral; red is for a failure that stands. */
+.attempt[data-replaced] { border-left-color: var(--border); }
+.attempt[data-replaced] .attempt-stop { color: var(--muted); box-shadow: inset 0 0 0 1px var(--border); }
 a.attempt-trace { margin-left: 4px; }
 .pipe-pass { margin-top: var(--s2); font-size: 12.5px; }
 .pipe-pass::before { content: "↳ "; }

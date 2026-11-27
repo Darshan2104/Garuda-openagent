@@ -323,3 +323,21 @@ console.log(JSON.stringify({panel: context.starterOperationHtml(op, [], "session
     assert "300 s" in lede and "about 90 s after no tab is watching its run" in lede
     assert "or at once if the dashboard stops" in lede
 
+
+
+def test_an_attempt_a_later_one_replaced_is_history_not_a_failure():
+    """A stopped attempt followed by a successful one of the same step is drawn neutral, with
+    its sentence; red stays for a failure that stands (no later success)."""
+    out = _node(r"""
+const a = (n, status, code) => Object.assign({attempt: n, status: status}, code ? {stop: {code: code}} : {});
+const flow = {name: "soak", state: "completed", stop: null, in_flight: null, steps: [
+  {id: "build", attempts: [a(1, "stopped", "flow.interrupted"), a(2, "done")]},
+  {id: "review", attempts: [a(1, "stopped", "flow.step_silent"), a(2, "stopped", "flow.step_failed")]}]};
+console.log(JSON.stringify({html: context.flowHtml(flow, null, {})}));
+""")
+    build, review = out["html"].split('data-step="review"')
+    first = build.split('data-attempt="1"')[1].split("</li>")[0]
+    assert 'data-replaced="2"' in first and "chip-bad" not in first
+    assert 'data-state="replaced"' in first and "interrupted · replaced by attempt 2 — The step was interrupted" in first
+    # No later success in review: both stops stand.
+    assert review.count("chip-bad") == 2 and "replaced" not in review

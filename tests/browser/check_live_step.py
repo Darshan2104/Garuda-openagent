@@ -47,8 +47,11 @@ FLOW_LIMIT = "00000000-0000-0000-0000-00000000f009"
 FLOW_LIMIT_PASSED = "00000000-0000-0000-0000-00000000f00c"
 FLOW_INTERRUPTED = "00000000-0000-0000-0000-00000000f00d"
 FLOW_DEAD = "00000000-0000-0000-0000-00000000f00e"
+#: A completed flow whose first build attempt was interrupted and the second succeeded, and
+#: whose review ran past its deadline once before passing: history, not standing failures.
+FLOW_REPLACED = "00000000-0000-0000-0000-00000000f00f"
 #: What looks like a failure: a red chip, pill, callout or notice. None belongs to a pause.
-FAILURE_STYLED = '.chip-bad, .pill.failed, .err-text, .notice.err, .attempt-stop:not([data-state="paused"])'
+FAILURE_STYLED = '.chip-bad, .pill.failed, .err-text, .notice.err, .attempt-stop:not([data-state])'
 
 
 def failure_styled(page, scope):
@@ -169,6 +172,15 @@ def seed(sessions: Path) -> None:
             "measure": measure.attempt(store, prompt="p" * 1200,
                                        parts=[{"part": "task", "chars": 1200}],
                                        session_ids=[sid], duration_ms=61000 + index)})
+
+    replaced = flow(FLOW_REPLACED, "Soak with a retry", flow_state="completed", status="completed",
+                    state=session_state.finished(success=True), final_message="done")
+    for index, step, attempt, stop in ((0, "build", 1, "flow.interrupted"), (0, "build", 2, None),
+                                       (1, "review", 1, "flow.step_deadline"), (1, "review", 2, None)):
+        engine._write_once(replaced / "receipts" / f"{step}-{attempt}.json", {
+            "index": index, "step": step, "role": "coder" if step == "build" else "reviewer",
+            "attempt": attempt, "success": stop is None, "status": "stopped" if stop else "done",
+            "inputs": [], "outputs": [], **({"stop": {"code": stop, "message": stop}} if stop else {})})
 
     # A checked flow's usage limit settles as flow.step_failed with cause harness.limit_reached
     # (#834): a quota pause that only `garuda flow resume` continues, after the reset.
@@ -412,6 +424,29 @@ def main() -> int:
               and "last known, from the progress file" in loop.inner_text()
               and "6 turns · 1 rotation · 5 continuations" in loop.inner_text()
               and "continued with another turn" in loop.inner_text(), loop.inner_text() if loop.count() else "")
+
+        # --- a completed flow's replaced attempts: history, not failures ----------------------
+        page.goto(f"{BASE}#/sessions/{FLOW_REPLACED}", wait_until="load")
+        page.wait_for_selector('#flow-detail .attempt[data-replaced]')
+        first = page.locator('#flow-detail li.pipe-step[data-step="build"] .attempt[data-attempt="1"]')
+        check("an interrupted attempt a later one replaced says so, keeping its sentence",
+              first.get_attribute("data-replaced") == "2"
+              and "interrupted · replaced by attempt 2 — The step was interrupted by a signal" in first.inner_text(),
+              first.inner_text())
+        review = page.locator('#flow-detail li.pipe-step[data-step="review"] .attempt[data-attempt="1"]')
+        check("so does a deadline stop followed by a success",
+              "ran past its deadline · replaced by attempt 2" in review.inner_text(), review.inner_text())
+        bad = failure_styled(page, "#session-result, #flow-detail")
+        check("a completed flow with replaced attempts shows nothing failure-styled", not bad, str(bad))
+        page.goto(f"{BASE}#/runs/{FLOW_REPLACED}", wait_until="load")
+        page.wait_for_selector('#flow-steps .attempt[data-replaced="2"]')
+        bad = failure_styled(page, "#flow-steps")
+        check("nor does its trace's pipeline", not bad, str(bad))
+        page.goto(f"{BASE}#/sessions/{FLOW_INTERRUPTED}", wait_until="load")
+        page.wait_for_selector("#flow-detail .attempt-stop")
+        check("an interrupted attempt nothing replaced stays a failure",
+              page.locator('#flow-detail .attempt-stop:not([data-state])').count() == 1
+              and page.locator("#flow-detail .attempt .chip-bad").count() == 1)
 
         # --- a flow whose step is not running: no stale live card ----------------------------
         page.goto(f"{BASE}#/sessions/{FLOW_DEAD}", wait_until="load")

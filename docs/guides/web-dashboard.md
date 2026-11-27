@@ -498,7 +498,9 @@ A session's page leads with the work, and keeps the evidence below:
   the change set. A long step's attempt adds its turn loop as its receipt
   recorded it (**7 turns · 1 rotation · 5 continuations · 1 repair**); a
   one-turn step shows none. A stopped attempt names its stop code in a plain
-  sentence. The step in flight is highlighted. When the flow stopped, the
+  sentence, in red only while its failure stands: an attempt a later attempt
+  of the same step replaced with a success is history, drawn neutral
+  (**interrupted · replaced by attempt 2** with its sentence). The step in flight is highlighted. When the flow stopped, the
   Result says why in one sentence and, for a resumable stop (a deadline,
   silence, no progress, the turn budget, a refusal, a failed step or missing
   output), that `garuda flow resume <id>` runs the step again. A paused flow
