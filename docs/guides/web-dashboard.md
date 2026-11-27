@@ -227,6 +227,10 @@ and leases the execution checkout before launching its child, preserving the
 previewed source authority. Uncommitted source changes are not copied to a
 worktree; its session records that fact. Refused, never-admitted worktrees are
 removed after preparation settles; admitted worktrees remain for inspection.
+An approval the role child asks appears on the **Approvals** page and waits there
+for up to 5 minutes, like any dashboard approval, even though the child runs in
+its own process. An answer after that is a denial, and so is a dashboard that
+stops while the request waits.
 **Queue in background** creates the intent's reserved session and binds its
 operation before enqueueing. The detached Linux worker waits without a workspace
 lease, revalidates the admitted configuration and sources, then owns the role

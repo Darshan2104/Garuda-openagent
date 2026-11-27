@@ -630,3 +630,43 @@ async def test_owned_role_refuses_foreign_or_insufficient_authority_before_execu
             await readonly.release()
         server.shutdown()
         server.server_close()
+
+
+@linux
+async def test_an_owned_approval_answered_after_thirty_seconds_is_honoured(case, monkeypatch):
+    """The answer window is the broker's own park timeout, not the control socket's 10 s."""
+    workspace, parent, _leases, store = case
+    settings = Path(os.environ["GARUDA_GLOBAL_SETTINGS"])
+    server, _requests = install_native(workspace, settings)
+    monkeypatch.setenv("OPENAI_API_KEY", "local-protocol-fixture")
+    profile = workspace / ".agent" / "agents" / "owned.yaml"
+    profile.write_text(profile.read_text() + "tool_rules: {bash: ask}\n")
+    asked = []
+
+    async def approve(action):
+        asked.append(time.monotonic())
+        await asyncio.sleep(31)  # a person who answers after half a minute
+        return True
+
+    (workspace / "release").touch()
+    task = None
+    try:
+        role = role_agent.bind(RolePlan("builder", "native", "native", permissions="auto", profile="owned"), str(workspace))
+        capability = parent.delegate(f"{parent.session_id}:build:1")
+        request = prepare_owned_step(StepLaunch(parent.session_id, "build", "builder", role, "ask late",
+                                     str(workspace), capability, 1, False, store), timeout=120)
+        task = asyncio.create_task(execute_owned_role(request, capability, approval=approve))
+        result = await asyncio.wait_for(task, 110)
+        assert len(asked) == 1
+        assert result.success, result.error
+        assert result.output == "native role completed"
+        assert (workspace / "writes").exists()  # the allowed command really ran
+        (record,) = [value for key, value in store.load_meta(request.session_id).items()
+                     if key.startswith("approval:")]
+        assert record["outcome"] == "allow" and record["via"] == "answerer"
+    finally:
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        server.shutdown()
+        server.server_close()
