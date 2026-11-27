@@ -67,6 +67,8 @@ STEP_LIMITS = {"deadline_min": (1, 7 * 24 * 60), "silence_min": (1, 24 * 60),
 LONG_RUN = {"max_hours": (1, 24), "session_turns": (1, 200), "session_hours": (1, 24),
             "max_turns": (1, 1000), "no_progress_turns": (1, 50)}
 ISOLATION = ("shared", "worktree", "auto")
+#: A configured flow runs in the user's checkout or in its own worktree (no ``auto``).
+FLOW_ISOLATION = ("shared", "worktree")
 ARTIFACTS = ("plan", "patch", "review", "findings", "notes", "summary")
 #: Keys that belong to ``settings.yaml``; in a ``garuda.yaml`` they conflict.
 LEGACY_KEYS = ("runtimes", "disabled_runtimes", "runtime_refs", "routing", "models",
@@ -480,7 +482,7 @@ def validate_flow_retries(steps: list[dict], *, path: str) -> None:
 
 
 def _flow(value, path) -> dict:
-    data = _mapping(value, path, ("steps", "description", "limits", "long_run"))
+    data = _mapping(value, path, ("steps", "description", "limits", "long_run", "isolation"))
     steps = data.get("steps")
     if not isinstance(steps, list) or not steps:
         _fail(f"{path}.steps", "must be a non-empty list")
@@ -503,6 +505,9 @@ def _flow(value, path) -> dict:
             _check_long_run({**out["long_run"], **step["long_run"]}, f"{steps_path}[{i}].long_run")
     if "description" in data:
         out["description"] = _str(data["description"], f"{path}.description")
+    if "isolation" in data:
+        # Only when written: a flow without it keeps its definition digest.
+        out["isolation"] = _choice(data["isolation"], f"{path}.isolation", FLOW_ISOLATION)
     return out
 
 

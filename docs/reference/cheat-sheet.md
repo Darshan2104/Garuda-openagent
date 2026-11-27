@@ -128,6 +128,8 @@ garuda flow show FLOW_ID
 garuda flow show FLOW_ID --json
 garuda flow export FLOW_ID --out trace.jsonl
 garuda flow resume FLOW_ID
+garuda flow run plan-build-review -t "Add a --version flag" --isolation worktree
+garuda flow rollback FLOW_ID --to 2
 ```
 
 ## Dashboard
