@@ -302,5 +302,39 @@ async def test_inbox_and_overview_list_the_broker_asks_of_dashboard_operations(w
     await asyncio.gather(*tasks[1:], return_exceptions=True)
 
 
+async def test_a_steps_own_file_request_for_a_live_ask_is_counted_once(write_context, monkeypatch):
+    """An owned step also publishes its ask in its session's file channel: one approval."""
+    import time
+    import uuid
+
+    from garuda.acp.approval_channel import FileApprovalChannel
+    from garuda.acp.broker import ApprovalRequest
+    from garuda.runtime import session_state
+
+    ctx = write_context
+    operation, flow_session, step = str(uuid.uuid4()), str(uuid.uuid4()), str(uuid.uuid4())
+    record = {"workspace": str(ctx.allowed_workspaces[0]), "session_id": flow_session}
+    monkeypatch.setattr(ctx.flow_starts.intents, "read", lambda owner: record if owner == operation else None)
+    action = "bash({'command': 'rm -rf build/'})"
+    store = ctx.store
+    store.begin(step, task="t", model="m", agent="build", workspace=record["workspace"])
+    store.update_meta(step, {"state": {**session_state.started(), "work": "waiting"},
+                             "flow_step": {"flow_session": flow_session, "step": "plan", "attempt": 1}})
+    FileApprovalChannel(store.session_dir(step) / "approvals", step).publish(
+        ApprovalRequest("apr-1", action, "terminal", "native", step),
+        ceiling="smart", expires_at=time.time() + 3600)
+    task = asyncio.create_task(ctx.live.approvals.make_handler(operation, lambda: None)(action))
+    await asyncio.sleep(0)
+
+    inbox = _body(await asyncio.to_thread(_get, ctx, "/api/inbox"))
+    assert [row["approval_id"] for row in inbox["approvals"]] == ["apr-1"]  # read model as is
+    (live,) = inbox["live"]
+    assert live["covers"] == [{"session_id": step, "approval_id": "apr-1"}]
+    overview = _body(await asyncio.to_thread(_get, ctx, "/api/overview"))["approvals"]
+    assert (overview["waiting"], overview["live"], overview["sessions"]) == (1, 1, 1)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+
 def test_a_read_only_inbox_lists_no_dashboard_asks(context):
     assert _body(_get(context, "/api/inbox"))["live"] == []

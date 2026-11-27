@@ -432,11 +432,12 @@ def _inbox(request: Request, ctx: DashboardContext, _match) -> Response:
     metas = ctx.store.list_sessions(limit=None, unreadable=unreadable)
     rows = rows_isolating(lambda chunk: read_model.inbox(ListedStore(ctx.store, chunk), limit=None),
                           metas, unreadable, newest_last=True)
-    from garuda.interfaces.web.operation_approvals import live_approvals
+    from garuda.interfaces.web.operation_approvals import live_approvals, mark_covered
 
     # `approvals` stays the shared read model's list (what `garuda` reads from session
-    # files); `live` adds what this dashboard's own broker holds for the flows it started.
-    return ok({"approvals": rows, "live": live_approvals(ctx),
+    # files); `live` adds what this dashboard's own broker holds for the flows it started,
+    # each naming (`covers`) the step session's file request that is the same ask.
+    return ok({"approvals": rows, "live": mark_covered(ctx, live_approvals(ctx), rows),
                "unreadable_sessions": unreadable_report(unreadable)})
 
 
@@ -452,14 +453,17 @@ def _overview(request: Request, ctx: DashboardContext, _match) -> Response:
     queue = QueueOnce(queue) if queue is not None else None
     payload = projecting_all(lambda chunk: overview(ListedStore(ctx.store, chunk), queue=queue),
                              metas, unreadable)
-    from garuda.interfaces.web.operation_approvals import live_approvals
+    from garuda.interfaces.web.operation_approvals import live_approvals, mark_covered
 
-    # Approvals this dashboard's broker holds for flows it started count as waiting too.
-    live = live_approvals(ctx)
+    # Approvals this dashboard's broker holds for flows it started count as waiting too,
+    # once: a step's own file request for the same ask is not counted again.
+    live = mark_covered(ctx, live_approvals(ctx))
+    covered = [c for row in live for c in row.get("covers", [])]
     approvals = dict(payload.get("approvals") or {})
     approvals["live"] = len(live)
-    approvals["waiting"] = approvals.get("waiting", 0) + len(live)
-    approvals["sessions"] = approvals.get("sessions", 0) + len({row["session_id"] for row in live})
+    approvals["waiting"] = max(0, approvals.get("waiting", 0) - len(covered)) + len(live)
+    approvals["sessions"] = (max(0, approvals.get("sessions", 0) - len({c["session_id"] for c in covered}))
+                             + len({row["session_id"] for row in live}))
     return ok({**payload, "approvals": approvals,
                "unreadable_sessions": unreadable_report(unreadable)})
 

@@ -1207,6 +1207,15 @@ function liveApprovalRowHtml(a) {
   );
 }
 
+/* {"<session>\0<approval>": true} for the step-session file requests a live ask covers. */
+function coveredApprovalKeys(live) {
+  var keys = {};
+  (live || []).forEach(function (a) {
+    (a.covers || []).forEach(function (c) { keys[c.session_id + "\u0000" + c.approval_id] = true; });
+  });
+  return keys;
+}
+
 function approvalRowHtml(a) {
   if (a.source === "dashboard-operation") return liveApprovalRowHtml(a);
   var buttons = canAnswer() && !a.expired
@@ -1284,7 +1293,10 @@ function refreshInbox(inbox) {
     var live = (payload.live || []).map(function (a) { return Object.assign({ source: "dashboard-operation" }, a); });
     // Listing an ask here opens its run in this tab: the app-level watcher keeps it alive.
     live.forEach(function (a) { if (typeof watchOperation === "function") watchOperation(a.owner); });
-    var all = live.concat(payload.approvals || []).filter(function (a) { return !inbox.answered[approvalKey(a)]; });
+    // A step's own file request for an ask listed live is the same approval: shown once.
+    var covered = coveredApprovalKeys(live);
+    var files = (payload.approvals || []).filter(function (a) { return !covered[a.session_id + "\u0000" + a.approval_id]; });
+    var all = live.concat(files).filter(function (a) { return !inbox.answered[approvalKey(a)]; });
     inbox.items = all;
     inbox.loaded = true;
     paintHost("inbox-unreadable", unreadableNote(payload));

@@ -33,6 +33,55 @@ def _first_line(text, limit: int = 200):
     return line[:limit]
 
 
+def mark_covered(ctx, live: list[dict], file_rows: list[dict] | None = None) -> list[dict]:
+    """Name, on each live ask, the session-file request that is the same ask.
+
+    An owned flow step's worker also publishes its ask in its own session's file channel
+    (``read_model.inbox`` lists it), while the step waits on the dashboard broker. The
+    two are one approval: ``covers`` lists the file requests (``session_id``,
+    ``approval_id``) of this flow's step sessions with the same action, so a page shows
+    and counts it once, answered through the broker the step waits on. The read-model
+    list itself is left as it is.
+    """
+    if not live:
+        return live
+    from garuda.context.redact import redact_text
+    from garuda.core import read_model
+
+    flows = {row["session_id"] for row in live if row.get("session_id")}
+    if file_rows is None:
+        file_rows = []
+        try:
+            metas = ctx.store.list_sessions(limit=None, unreadable=[])
+        except Exception:  # noqa: BLE001 - nothing marked covered, never a guess
+            metas = []
+        for meta in metas:
+            step = meta.get("flow_step") if isinstance(meta.get("flow_step"), dict) else {}
+            if step.get("flow_session") in flows:
+                try:
+                    file_rows += [{"session_id": meta["session_id"], **row}
+                                  for row in read_model.approvals(ctx.store, meta["session_id"])]
+                except Exception:  # noqa: BLE001
+                    continue
+    parents: dict[str, str | None] = {}
+
+    def parent(session_id):
+        if session_id not in parents:
+            try:
+                step = ctx.store.load_meta(session_id).get("flow_step")
+                parents[session_id] = step.get("flow_session") if isinstance(step, dict) else None
+            except Exception:  # noqa: BLE001
+                parents[session_id] = None
+        return parents[session_id]
+
+    for row in live:
+        action = redact_text(str(row.get("action", "")))[0]
+        row["covers"] = [{"session_id": f["session_id"], "approval_id": f.get("approval_id")}
+                         for f in file_rows
+                         if f.get("action") == action and parent(f["session_id"]) == row.get("session_id")]
+    return live
+
+
 def _pending(broker) -> list[dict]:
     """The broker's pending asks; read from an HTTP thread while the loop may park one."""
     for _ in range(3):

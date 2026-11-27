@@ -285,9 +285,13 @@ function refreshInboxBadge() {
   if (CONNECTION.down) return Promise.resolve();
   return api("/api/inbox", { keep: true }).then(function (payload) {
     if (INBOX_BADGE) INBOX_BADGE.interval = BADGE_BASE_MS;
-    var count = (payload && payload.approvals ? payload.approvals : []).filter(function (a) { return !a.expired; }).length +
-      // and the asks this dashboard's broker holds for flows it started (never expired here)
-      (payload && payload.live ? payload.live.length : 0);
+    // Session-file requests, and the asks this dashboard's broker holds for flows it
+    // started; a step's file request for a live ask is the same approval, counted once.
+    var live = payload && payload.live ? payload.live : [];
+    var covered = coveredApprovalKeys(live);
+    var count = (payload && payload.approvals ? payload.approvals : []).filter(function (a) {
+      return !a.expired && !covered[a.session_id + "\u0000" + a.approval_id];
+    }).length + live.length;
     ["nav-inbox-count", "nav-menu-count"].forEach(function (id) {
       var badge = el(id);
       if (!badge) return;

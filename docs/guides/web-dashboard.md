@@ -207,7 +207,7 @@ flow. Once admitted, the page opens the flow's session at
 `#/sessions/<id>?operation=<uuid>`, whose operation panel shows the operation and
 its approvals: **Allow** or **Deny** them there or on **Approvals**, which lists
 them beside the session-file requests (marked **dashboard flow**, linking to the
-session) and counts them in the nav badge and the Overview. Such an approval is
+session) and counts them in the nav badge and the Overview; the step's own file request for the same ask is shown and counted once, as this one. Such an approval is
 held by this dashboard, not a session file: an answer is the decision at once,
 bound to the ask's owner and digest, so any tab that lists it may answer it. Every
 run a tab started or opened stays watched from any page of that tab, even
