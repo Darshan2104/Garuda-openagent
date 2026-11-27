@@ -419,7 +419,7 @@ function reviewCoverageHtml(coverage) {
     return " " + chip("coverage" + (steps.length > 1 ? " (" + step + ")" : ""), value,
       value === "partial" ? "chip-bad" : (value === "complete" ? "chip-on" : "chip-off"));
   }).join("") + (steps.some(function (s) { return coverage[s] === "partial"; })
-    ? ' <span class="stat-sub">the reviewer saw only part of the change set</span>' : "");
+    ? ' <span class="stat-sub">the reviewer saw only part of the change set ·</span>' : "");
 }
 
 function attemptHtml(attempt) {
