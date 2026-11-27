@@ -441,12 +441,19 @@ function authLost() {
  * with exponential backoff, capped at 30 s and never sooner than a Retry-After; when it
  * answers, the banner clears itself and every onReconnect() callback runs (the router's
  * refreshes the current view). api() reports failures here itself, so a view renders
- * `err.message` (or apiErrorText(err)) and never needs its own banner or retry loop. */
+ * `err.message` (or apiErrorText(err)) and never needs its own banner or retry loop.
+ *
+ * A request that got no answer is first confirmed with one probe: only when /api/health
+ * fails too is the dashboard declared unreachable (banner, reads fail fast, one backed-off
+ * probe). If the probe answers, the failure was that one request's, and the view's own
+ * backoff handles it — declaring an outage there, and a reconnect a moment later, made a
+ * view that kept failing retry in a tight loop. A connection-limit 503 is the server's own
+ * word, so it is declared at once. */
 
 var UNREACHABLE = "Can’t reach the dashboard — is `garuda web` still running?";
 var TOO_MANY_TABS = "Too many open dashboard tabs — the dashboard serves at most 32 connections at once; close some tabs.";
 var PROBE_MAX_MS = 30000;
-var CONNECTION = { down: false, attempt: 0, delay: 0, timer: null, listeners: [] };
+var CONNECTION = { down: false, checking: false, attempt: 0, delay: 0, timer: null, listeners: [] };
 
 /* The server's connection-limit refusal: a 503 without a route's error envelope, or with a
  * Retry-After. A route that 503s (read-only, no flow gateway) answers in its envelope. */
@@ -485,6 +492,23 @@ function onReconnect(fn) {
 }
 
 function connectionLost(err) {
+  if (err && err.code === "too_many_connections") { declareDown(err); return; }
+  if (CONNECTION.down || CONNECTION.checking) return;
+  CONNECTION.checking = true;
+  fetch("/api/health", { headers: { "X-Garuda-Token": TOKEN }, cache: "no-store" }).then(function (response) {
+    CONNECTION.checking = false;
+    if (isConnectionLimit(response, null)) {
+      declareDown({ code: "too_many_connections", retryAfter: retryAfterSeconds(response) });
+    } else if (response.status === 401) {
+      authLost();
+    }
+  }, function () {
+    CONNECTION.checking = false;
+    declareDown(err);
+  });
+}
+
+function declareDown(err) {
   CONNECTION.reason = (err && err.code) || "network";
   showConnectionBanner(err);
   if (CONNECTION.down) return;

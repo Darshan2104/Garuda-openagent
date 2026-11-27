@@ -132,7 +132,7 @@ with sync_playwright() as p:
     probes = [t for t, url in requests if t >= down_at and url.endswith("/api/health")]
     gaps = [round(b - a, 2) for a, b in zip(probes, probes[1:], strict=False)]
     check("the probe backs off (few probes, growing gaps)",
-          1 <= len(probes) <= 4 and all(b > a * 1.4 for a, b in zip(gaps, gaps[1:], strict=False)), f"{len(probes)} probes, gaps {gaps}")
+          1 <= len(probes) <= 5 and all(b > a * 1.4 for a, b in zip(gaps, gaps[1:], strict=False)), f"{len(probes)} probes, gaps {gaps}")
     check("the approvals badge sends nothing while down",
           not [u for t, u in requests if t >= down_at and "/api/inbox" in u])
     page.screenshot(path=str(SHOTS / "shell-offline.png"))
