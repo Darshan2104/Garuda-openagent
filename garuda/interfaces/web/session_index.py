@@ -27,6 +27,16 @@ The directory listing is keyed on the store root's own ``mtime_ns``. Everything 
 stat'ed *before* it is read: a replacement landing between the two leaves new bytes under
 the old key, which the next stat then misses — never old bytes under a new key.
 
+**Racily clean stats.** The kernel stamps times from a coarse clock, so a second change
+in the same tick as the read before it leaves every stat unchanged: a session directory
+created just after a listing, or a ``meta.json`` rewritten in place with the same size.
+As in git's racy-index rule, an unchanged key is trusted only when the times it carries
+are :data:`RACY_NS` older than the moment it was taken. Until then the root is listed
+again on every request, and a record is checked against a digest of the bytes it was
+read from (plus its directory's entries) — a raw read, not a parse, so ``reads`` does not
+move unless the record really changed. A warm request against a store whose root and
+records are older than that does no listing, no read and no parse.
+
 **What is kept.** Only records that loaded; a record that could not be read is retried
 on the next request rather than remembered as broken. Records are held as compact JSON
 bytes and parsed fresh for each response, so no caller can mutate what another request
@@ -46,12 +56,13 @@ next stat corrects whichever installed last if it was the older.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import stat
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 
 from garuda.core.session_publication import META_LIMIT, REGISTRY, MetadataBusy
 from garuda.core.sessions import SessionStore, UnreadableSession, validate_session_limit
@@ -70,6 +81,11 @@ TORN_READ_RETRIES = 3
 #: How many unreadable session ids a list response names (its count is always exact).
 MAX_REPORTED_IDS = 50
 
+#: How much older than the moment it was taken a stat's times must be before an unchanged
+#: stat is trusted. Covers the coarse clock the kernel stamps times from (a tick is a few
+#: milliseconds) and filesystems with coarser timestamps, with room to spare.
+RACY_NS = 2_000_000_000
+
 
 class BeingWritten(str):
     """A session id in an ``unreadable`` list whose record was locked, not damaged."""
@@ -77,6 +93,12 @@ class BeingWritten(str):
 
 def _file_key(st: os.stat_result) -> tuple[int, int, int, int]:
     return (st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+
+
+def _stamp(key: tuple) -> int:
+    """The newest time in a record key: ``meta.json``'s and its directory's."""
+    meta, _ino, folder_mtime, folder_ctime, _policy = key
+    return max(meta[2], meta[3], folder_mtime, folder_ctime)
 
 
 @dataclass
@@ -88,6 +110,16 @@ class _Entry:
     problem: str | None
     #: The record as compact JSON, or ``None`` once evicted by the byte budget.
     raw: bytes | None
+    #: ``time.time_ns()`` just before ``key`` was last stat'ed and found current.
+    checked_at: int = 0
+    #: While racily clean, what the record was read from (see :meth:`_proof`).
+    proof: tuple | None = None
+    #: Identifies the parse this entry holds; kept when a racy entry is confirmed.
+    token: object = field(default_factory=object)
+
+    def trusted(self) -> bool:
+        """Whether an unchanged stat proves this record unchanged (it is not racy)."""
+        return _stamp(self.key) < self.checked_at - RACY_NS
 
 
 def unreadable_report(ids: list[str]) -> dict:
@@ -115,8 +147,9 @@ class CachedSessionStore(SessionStore):
         self._registry_text = os.path.join(self._root_text, REGISTRY)
         self._lock = threading.Lock()
         self._entries: dict[str, _Entry] = {}
-        self._names: tuple[tuple[int, int], list[str]] | None = None
-        #: ``{session_id: (record key, summarize, value)}`` for :meth:`summaries`.
+        #: ``(root key, trusted, names)``; see :meth:`_listing`.
+        self._names: tuple[tuple[int, int], bool, list[str]] | None = None
+        #: ``{session_id: (entry token, summarize, value)}`` for :meth:`summaries`.
         self._summaries: dict[str, tuple] = {}
         #: How many records were parsed off disk; tests assert the cache is used.
         self.reads = 0
@@ -158,9 +191,11 @@ class CachedSessionStore(SessionStore):
         fresh: dict[str, tuple] = {}
         out: list[tuple[str, object]] = []
         for name in listable:
-            key = current[name].key
+            # The token, not the stat key: a racy record re-read under an unchanged key
+            # is a new parse, and a confirmed one keeps its token.
+            key = current[name].token
             hit = memo.get(name)
-            if hit is not None and hit[0] == key and hit[1] is summarize:
+            if hit is not None and hit[0] is key and hit[1] is summarize:
                 fresh[name] = hit
                 out.append((name, hit[2]))
                 continue
@@ -217,7 +252,16 @@ class CachedSessionStore(SessionStore):
         return listable, current, bad
 
     def _listing(self) -> list[str] | None:
-        """The store root's entries, re-listed only when the root itself changed."""
+        """The store root's entries, re-listed unless the root is unchanged *and* its
+        mtime was safely older than the previous listing (git's racy-index rule).
+
+        A directory's mtime comes from the kernel's coarse clock, so a session created in
+        the same tick as the previous listing leaves ``(st_ino, st_mtime_ns)`` unchanged.
+        A listing taken while the root's mtime is within :data:`RACY_NS` of it is not
+        trusted; the root is listed again until a listing postdates it by that much."""
+        # Taken before the stat: anything created after it is stamped at least this late,
+        # less one clock tick, which RACY_NS covers.
+        now = time.time_ns()
         try:
             st = os.stat(self._root_text)
         except FileNotFoundError:
@@ -227,11 +271,11 @@ class CachedSessionStore(SessionStore):
         key = (st.st_ino, st.st_mtime_ns)
         with self._lock:
             names = self._names
-        if names is None or names[0] != key:
-            names = (key, os.listdir(self._root_text))
+        if names is None or names[0] != key or not names[1]:
+            names = (key, st.st_mtime_ns < now - RACY_NS, os.listdir(self._root_text))
             with self._lock:
                 self._names = names
-        return names[1]
+        return names[2]
 
     def _key(self, name: str, registry: bool) -> tuple | None | bool:
         """Everything a record's readability depends on; ``None`` when this is not a
@@ -262,14 +306,26 @@ class CachedSessionStore(SessionStore):
     def _current(self, name: str, cached: _Entry | None, bad: list[str],
                  registry: bool) -> _Entry | None:
         for _attempt in range(TORN_READ_RETRIES):
+            # Taken before the stat, as in :meth:`_listing`.
+            now = time.time_ns()
             key = self._key(name, registry)
             if key is None:
                 return None
             if key is False:
                 bad.append(name)
                 return None
+            racy = _stamp(key) >= now - RACY_NS
+            checked = None
             if cached is not None and cached.key == key:
-                return cached
+                if cached.trusted():
+                    return cached
+                # Racily clean: the same stat may hide a change made in the tick it was
+                # taken. Compare what the record was read from; only a difference re-reads.
+                checked = self._proof(name)
+                if checked is not None and checked == cached.proof:
+                    return replace(cached, checked_at=now, proof=checked if racy else None)
+            # Before the parse: a change between the two makes the next check re-read.
+            proof = (checked or self._proof(name)) if racy else None
             try:
                 meta = self._read(name)
             except FileNotFoundError:
@@ -290,11 +346,38 @@ class CachedSessionStore(SessionStore):
                 bad.append(name)
                 return None
             except ValueError as exc:
-                return _Entry(key=key, updated_at=None, problem=str(exc), raw=None)
+                return _Entry(key=key, updated_at=None, problem=str(exc), raw=None,
+                              checked_at=now, proof=proof)
             return _Entry(key=key, updated_at=meta.get("updated_at", ""), problem=None,
-                          raw=json.dumps(meta, separators=(",", ":")).encode("utf-8"))
+                          raw=json.dumps(meta, separators=(",", ":")).encode("utf-8"),
+                          checked_at=now, proof=proof)
         bad.append(name)
         return None
+
+    def _proof(self, name: str) -> tuple | None:
+        """A digest of ``meta.json``'s bytes and the session directory's entry names, read
+        without parsing or locking; ``None`` when either cannot be read."""
+        directory = os.path.join(self._root_text, name)
+        try:
+            fd = os.open(os.path.join(directory, "meta.json"), os.O_RDONLY | os.O_NONBLOCK)
+        except OSError:
+            return None
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                return None
+            digest = hashlib.sha256()
+            left = self._max_meta_bytes + 1
+            while left > 0:
+                chunk = os.read(fd, min(left, 1 << 16))
+                if not chunk:
+                    break
+                digest.update(chunk)
+                left -= len(chunk)
+            return digest.digest(), tuple(sorted(os.listdir(directory)))
+        except OSError:
+            return None
+        finally:
+            os.close(fd)
 
     def _read(self, name: str) -> dict:
         """The record, validated as ``list_sessions`` admits it, without waiting on a lock."""

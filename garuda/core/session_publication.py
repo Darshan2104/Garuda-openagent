@@ -11,8 +11,10 @@ import hashlib
 import json
 import os
 import stat
+import threading
 import time
 import uuid
+from collections import deque
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -254,6 +256,114 @@ class MetadataBusy(StorageUnavailable):
     """``wait=False`` found the common metadata lock held; nothing was read or changed."""
 
 
+#: How long a strict cycle waits for the common metadata lock without seeing progress:
+#: from joining the queue, or from the last time a cycle ahead of it took the lock.
+LOCK_WAIT = 5.0
+
+
+class _Turnstile:
+    """First come, first served among this process's cycles on one metadata lock.
+
+    ``flock`` has no timed blocking form, so the cross-process lock is polled, and polls
+    are not fair: under load one of several threads polling the same lock can lose every
+    race until its deadline passes. Queuing this process's cycles here first leaves one
+    poller per process, so only contention with another process polls at all, and a
+    thread waits on the cycles ahead of it, not on luck.
+    """
+
+    def __init__(self, key):
+        self.key = key
+        self.condition = threading.Condition()
+        self.queue: deque = deque()
+        #: Cycles registered here, queued or not; the turnstile is dropped at zero.
+        self.users = 0
+        #: How many cycles have taken the lock; a waiter's patience restarts on each.
+        self.progress = 0
+
+    def enter(self, wait: bool):
+        """``(token, deadline)`` once it is this cycle's turn; ``None`` when it is not
+        its turn at once (``wait=False``) or nothing ahead took the lock for
+        :data:`LOCK_WAIT` seconds. The deadline also bounds the ``flock`` poll."""
+        token = object()
+        with self.condition:
+            if self.queue and not wait:
+                return None
+            self.queue.append(token)
+            turn = None
+            try:
+                seen, deadline = self.progress, time.monotonic() + LOCK_WAIT
+                while self.queue[0] is not token:
+                    if self.progress != seen:
+                        seen, deadline = self.progress, time.monotonic() + LOCK_WAIT
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return None
+                    self.condition.wait(remaining)
+                turn = token, deadline
+                return turn
+            finally:
+                if turn is None:
+                    self.queue.remove(token)
+                    self.condition.notify_all()
+
+    def locked(self):
+        """The cycle at the front took the lock: the queue behind it is moving."""
+        with self.condition:
+            self.progress += 1
+            self.condition.notify_all()
+
+    def leave(self, token):
+        with self.condition:
+            self.queue.remove(token)
+            self.condition.notify_all()
+
+
+_TURNSTILES: dict[tuple[int, int], _Turnstile] = {}
+_TURNSTILES_GUARD = threading.Lock()
+
+
+def _forget_turnstiles_after_fork():
+    # A forked child has none of its parent's threads: their places in line are void.
+    global _TURNSTILES_GUARD
+    _TURNSTILES.clear()
+    _TURNSTILES_GUARD = threading.Lock()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_forget_turnstiles_after_fork)
+
+
+def _take_turn(lock, wait):
+    """Wait for this process's turn at ``lock``: ``(turnstile, token, deadline)``."""
+    info = os.fstat(lock)
+    key = (info.st_dev, info.st_ino)
+    with _TURNSTILES_GUARD:
+        turnstile = _TURNSTILES.get(key)
+        if turnstile is None:
+            turnstile = _TURNSTILES[key] = _Turnstile(key)
+        turnstile.users += 1
+    try:
+        turn = turnstile.enter(wait)
+    except BaseException:
+        _end_turn(turnstile, None)
+        raise
+    if turn is None:
+        _end_turn(turnstile, None)
+        if not wait:
+            raise MetadataBusy("common metadata lock is held")
+        raise StorageUnavailable("common metadata lock is unavailable")
+    return (turnstile, *turn)
+
+
+def _end_turn(turnstile, token):
+    if token is not None:
+        turnstile.leave(token)
+    with _TURNSTILES_GUARD:
+        turnstile.users -= 1
+        if not turnstile.users and _TURNSTILES.get(turnstile.key) is turnstile:
+            del _TURNSTILES[turnstile.key]
+
+
 @contextmanager
 def publication_cycle(meta_path: Path, *, initializing=False, wait=True):
     """Yield a strict transaction, or None for an ordinary legacy session.
@@ -261,6 +371,10 @@ def publication_cycle(meta_path: Path, *, initializing=False, wait=True):
     ``wait=False`` makes one attempt at the common metadata lock and raises
     :class:`MetadataBusy` if a writer holds it, instead of polling for up to five
     seconds. Every other step, including validation, is the same in both modes.
+
+    Cycles in this process take turns in arrival order (:class:`_Turnstile`) before
+    contending for the cross-process ``flock``; a wait gives up with
+    ``StorageUnavailable`` after :data:`LOCK_WAIT` seconds in which no cycle took the lock.
     """
     meta_path = meta_path.absolute()
     policy = _policy(meta_path)
@@ -270,14 +384,15 @@ def publication_cycle(meta_path: Path, *, initializing=False, wait=True):
     if fcntl is None:
         raise StorageUnavailable("strict metadata requires cross-process locking")
     directory = open_directory(meta_path.parent)
-    lock = None
+    lock = turn = None
     try:
         _private_directory(directory)
         lock = os.open("meta.json.lock", os.O_RDWR | FLAGS, dir_fd=directory)
         private_file(lock)
         cycle = MetadataCycle(meta_path, policy, directory, lock, initializing)
         cycle.validate()
-        deadline = time.monotonic() + 5
+        turn = _take_turn(lock, wait)
+        turnstile, _token, deadline = turn
         while True:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -288,9 +403,13 @@ def publication_cycle(meta_path: Path, *, initializing=False, wait=True):
                 if time.monotonic() >= deadline:
                     raise StorageUnavailable("common metadata lock is unavailable") from None
                 time.sleep(.01)
+        turnstile.locked()
         cycle.validate()
         yield cycle
     finally:
         for fd in (lock, directory):
             if fd is not None:
                 os.close(fd)
+        # After the close released the flock, so the next in line takes it at once.
+        if turn is not None:
+            _end_turn(turn[0], turn[1])

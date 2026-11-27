@@ -272,6 +272,111 @@ def test_cached_listing_matches_the_store_and_reads_only_what_changed(tmp_path):
     assert "s05" not in listed and listed == _ids(plain.list_sessions(limit=None))
 
 
+class _CoarseClock:
+    """``os`` and ``time`` as ``session_index`` sees them on a filesystem whose timestamps
+    do not tick: once ``frozen`` is a dict, every path keeps the times of its first stat
+    after that (its inode and size stay real), and the wall clock reads ``now``."""
+
+    def __init__(self):
+        self.now = 0
+        self.frozen: dict[str, tuple[int, int]] | None = None
+        self.listings = self.opens = 0
+
+    def __getattr__(self, name):
+        return getattr(os, name)
+
+    def time_ns(self):
+        return self.now
+
+    def sleep(self, seconds):
+        time.sleep(seconds)
+
+    def stat(self, path, *args, **kwargs):
+        from types import SimpleNamespace
+
+        real = os.stat(path, *args, **kwargs)
+        if self.frozen is None:
+            return real
+        mtime, ctime = self.frozen.setdefault(os.fspath(path), (real.st_mtime_ns, real.st_ctime_ns))
+        return SimpleNamespace(st_mode=real.st_mode, st_ino=real.st_ino, st_size=real.st_size,
+                               st_mtime_ns=mtime, st_ctime_ns=ctime)
+
+    def listdir(self, path):
+        self.listings += 1
+        return os.listdir(path)
+
+    def open(self, *args, **kwargs):
+        self.opens += 1
+        return os.open(*args, **kwargs)
+
+    def in_the_tick_of(self, *paths):
+        """Read the clock as one millisecond after the newest time of ``paths``."""
+        self.now = max(max(os.stat(p).st_mtime_ns, os.stat(p).st_ctime_ns) for p in paths) + 10**6
+        self.frozen = {}
+
+
+@pytest.fixture
+def coarse_clock(monkeypatch):
+    from garuda.interfaces.web import session_index
+
+    clock = _CoarseClock()
+    monkeypatch.setattr(session_index, "os", clock)
+    monkeypatch.setattr(session_index, "time", clock)
+    return clock
+
+
+def test_a_session_created_in_the_tick_of_the_last_listing_is_listed(tmp_path, coarse_clock):
+    """#877: a directory's mtime comes from a coarse clock, so a session created in the
+    same tick as the previous listing leaves the root's stat unchanged."""
+    store = CachedSessionStore(root=tmp_path / "sessions")
+    _finished(store, "good-one")
+    coarse_clock.in_the_tick_of(store.root)
+    assert _ids(store.list_sessions(limit=None)) == ["good-one"]
+    _finished(store, "next-one")  # the root's (frozen) stat does not move
+    assert sorted(_ids(store.list_sessions(limit=None))) == ["good-one", "next-one"]
+
+    # Once a listing postdates the root by RACY_NS, the unchanged root is trusted again:
+    # a warm request lists nothing, opens nothing and parses nothing.
+    coarse_clock.now += 3600 * 10**9
+    store.list_sessions(limit=None)
+    listings, opens, reads = coarse_clock.listings, coarse_clock.opens, store.reads
+    for _ in range(3):
+        assert sorted(_ids(store.list_sessions(limit=None))) == ["good-one", "next-one"]
+    assert (coarse_clock.listings, coarse_clock.opens, store.reads) == (listings, opens, reads)
+
+
+def _task(meta):
+    return meta["task"]
+
+
+def test_a_record_rewritten_in_place_in_the_tick_of_its_read_is_reread(tmp_path, coarse_clock):
+    """#877's record half: same inode, same size, same tick — every stat the cache keys
+    on is unchanged, so only the bytes can tell."""
+    store = CachedSessionStore(root=tmp_path / "sessions")
+    _finished(store, "s1", task="aaaa")
+    meta = store.root / "s1" / "meta.json"
+    coarse_clock.in_the_tick_of(meta, meta.parent)
+    assert _ids(store.list_sessions(limit=None)) == ["s1"]
+    assert store.summaries(_task, unreadable=[]) == [("s1", "aaaa")]
+    reads = store.reads
+    # Unchanged, a racily clean record is confirmed from its bytes, not parsed again.
+    assert store.list_sessions(limit=None)[0]["task"] == "aaaa"
+    assert store.reads == reads
+
+    meta.write_text(meta.read_text().replace('"aaaa"', '"bbbb"'))  # in place, same size
+    assert store.list_sessions(limit=None)[0]["task"] == "bbbb"
+    assert store.summaries(_task, unreadable=[]) == [("s1", "bbbb")]
+    assert store.reads == reads + 1
+
+    # Checked again once its times are safely older, it is trusted on its stat alone.
+    coarse_clock.now += 3600 * 10**9
+    store.list_sessions(limit=None)
+    listings, opens = coarse_clock.listings, coarse_clock.opens
+    assert store.summaries(_task, unreadable=[]) == [("s1", "bbbb")]
+    assert store.list_sessions(limit=None)[0]["task"] == "bbbb"
+    assert (coarse_clock.listings, coarse_clock.opens, store.reads) == (listings, opens, reads + 1)
+
+
 def test_cached_listing_hands_out_copies(tmp_path):
     store = CachedSessionStore(root=tmp_path / "sessions")
     _finished(store, "one")
