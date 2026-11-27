@@ -1725,6 +1725,8 @@ def _flow_live_lines(live: dict | None) -> list[str]:
             detail.append(f"deadline {live['deadline_at']}")
         if detail:
             lines.append("    " + "; ".join(detail))
+        if live.get("silence_state"):
+            lines.append("    " + _flow_silence_line(live))
         if live.get("process") == "missing" and live.get("state") == "running":
             lines.append("    its flow process is gone: `garuda flow resume` continues a checked "
                          "flow when its step's process tree is proved gone")
@@ -1743,6 +1745,24 @@ def _flow_live_lines(live: dict | None) -> list[str]:
             line += f"; the limit resets at {reset_time_text(paused['reset_at'])}"
         lines.append(line)
     return lines
+
+
+def _flow_silence_line(live: dict) -> str:
+    """`flow show`'s one silence line for a running step (#856)."""
+    state = str(live["silence_state"])[:20]
+    tool = bool(live.get("tool_in_flight"))
+    limit = live.get("tool_silence_limit_sec") if tool else live.get("silence_limit_sec")
+    line = f"silence: {state}"
+    if state == "approval_parked":
+        return line + " (a parked approval never counts as silence)"
+    if type(limit) in (int, float) and live.get("idle_sec") is not None:
+        line += (f" (idle {live['idle_sec']}s of {limit:g}s"
+                 + (" tool-call limit" if tool else " limit") + ")")
+    elif tool:
+        line += " (a tool call is running; no silence limit)"
+    else:
+        line += " (no silence limit)" if limit is None else ""
+    return line
 
 
 def _flow_stop_line(stop) -> str | None:
