@@ -104,6 +104,33 @@ Keys do nothing while you are typing in a field or holding Cmd, Ctrl or Alt.
 Reload stays disabled after an edited field loses focus, until its inputs are
 successfully submitted or you navigate away.
 
+## How state is drawn
+
+Every page draws a state the same way: a small marker with its own colour
+**and** shape, and the word beside it, so a state reads without colour too.
+Pills (`working`), state chips (`outcome: completed`), the flow pipeline's step
+markers and the coloured stripe at the left of a list row all use it.
+
+| Marker | State | Means |
+|---|---|---|
+| blue dot with a halo | running, working, live | Work is in progress now |
+| orange dot with a halo | waiting | It is waiting on you: an approval to answer |
+| grey ring | queued | Waiting for a slot; nothing has run yet |
+| green dot | completed, done, passed | It finished, or its check passed |
+| red dot | failed, refused | It ended without succeeding, or its check failed |
+| crimson diamond | crashed, quarantined | Its worker is gone without recording an end |
+| violet two bars | paused | A flow stopped on a resumable pause; `garuda flow resume` (or quota recovery) continues it |
+| grey dot | cancelled, stopped | A known end that is neither success nor failure |
+| hollow grey ring | unknown, not recorded | Not known: never drawn as success, zero or blank |
+
+Outcome and verification are always two separate chips, and a review has its
+own chip that never uses verification's wording. Tags that say what something
+*is* rather than its state (flow, consult, example, other project) are outlined
+with no marker. A cost an adapter reported is labelled as reported, not
+metered. Light and dark themes follow the system setting; `t` or the ◑ button
+switches. On a phone each table row becomes a card of labelled values and no
+page scrolls sideways.
+
 ## Overview
 
 `#/` answers "what is happening, and does anything need me?" in four sections:
@@ -391,8 +418,13 @@ A session's page leads with the work, and keeps the evidence below:
   Result says why in one sentence and, for a resumable stop (a deadline,
   silence, no progress, the turn budget, a refusal, a failed step or missing
   output), that `garuda flow resume <id>` runs the step again; a usage-limit
-  pause says when the limit resets and that quota recovery resumes the flow; a
-  step killed
+  pause says when the limit resets and that quota recovery resumes the flow.
+  A flow paused on its own pause (a usage limit, a deadline, silence, no
+  progress, the turn budget or a refusal) says **paused** in its header with
+  the reason beside it, and its stopped step is drawn paused; its recorded
+  outcome stays as stored (`failed`) and the session row's `pause` field says
+  why, the same in `garuda sessions --json`. A failed step is a failure, not a
+  pause. A step killed
   by the supervisor's backstop (`flow.step_backstop`) is quarantined instead,
   and the page says to set `limits.deadline_min` for a step that runs that
   long.
@@ -653,7 +685,7 @@ Providers page discards it.
 | `GET /api/scenario-runs/<id>` | Shared selected-session evidence; `limit` 1–200 and non-negative `offset`, optional workspace index for names |
 | `GET /api/runs`, `GET /api/runs/<id>` | Runs (`q`, `status`, `agent`, `model`; `limit` up to 500 and `offset` page the whole store; the reply carries the true `total` and every `agents` name) and one run's trace |
 | `GET /api/runs/<id>/tail` | Poll a run for new events |
-| `GET /api/sessions` | Newest first: `limit` an integer >= 1 (default 100, capped at 500), `offset` >= 0, `q` (search) and `state` (a state label) filter across every session. `sessions` holds each row: the four facts, the derived `crashed` label, queue position, worker, approvals waiting (`approvals_pending`, of which `approvals_live` not expired), agent digest, resume provenance; with `total`, `matched`, `counts` (per state label, after the search), `next_offset` and `unreadable_sessions` |
+| `GET /api/sessions` | Newest first: `limit` an integer >= 1 (default 100, capped at 500), `offset` >= 0, `q` (search) and `state` (a state label) filter across every session. `sessions` holds each row: the four facts, the derived `crashed` label, `pause` (why a stopped flow is paused on a resumable stop, or `null`), queue position, worker, approvals waiting (`approvals_pending`, of which `approvals_live` not expired), agent digest, resume provenance; with `total`, `matched`, `counts` (per state label, after the search), `next_offset` and `unreadable_sessions` |
 | `GET /api/sessions/<id>` | One session, with pending approvals, its stored `final_message`, `files_changed`, `ended_at`/`duration_ms`, `starter_origin` and, for a flow, its steps, attempts, review outcome and `flow_progress` |
 | `GET /api/sessions/<id>/stream` | Live events as server-sent events (the session page polls `/api/runs/<id>/tail` instead) |
 | `GET /api/sessions/<id>/conversation` | The Models used, links and lanes data |

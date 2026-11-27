@@ -548,6 +548,17 @@ def seed_overview(root: Path, workspace: str) -> dict:
         store.update_meta(OVERVIEW[name], {
             "kind": "flow", "flow": steps, "flow_state": "stopped", "status": "failed",
             "state": session_state.finished(success=False), "flow_stop": stop, **extra})
+    # The deadline pause's step attempt, as the engine records a stop: its receipt says
+    # "stopped" with the stop code, so the pipeline draws that step as paused, not failed.
+    directory = engine.flow_dir(store, OVERVIEW["flow_deadline"])
+    (directory / "receipts").mkdir(parents=True, exist_ok=True)
+    engine._write_once(directory / "receipts" / "code-1.json", {
+        "index": 0, "step": "code", "role": "coder", "attempt": 1, "session_id": None,
+        "success": False, "inputs": [], "outputs": [], "status": "stopped",
+        "stop": {"code": engine.DEADLINE_STOP, "step": "code",
+                 "message": "code ran past its deadline of 30 min"},
+        "workspace_version_before": "v1", "workspace_version_after": "v1",
+        "recorded_at": "2026-11-01T00:30:00+00:00"})
     store.finish(OVERVIEW["verified"], AgentResult(
         success=True, final_message="ok", messages=[], turns=1,
         metadata={"completion_gate": {"authoritative_grader_verdict": True}}))
