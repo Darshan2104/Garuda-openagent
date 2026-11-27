@@ -12,6 +12,10 @@ reason; nothing is guessed. Shape (``version`` 1)::
 
     {"version": 1,
      "flow": NAME, "source": "packaged" | "user" | "project" | <raw label>,
+     "source_file": PATH | null,    # the garuda.yaml that defines it; null when packaged
+     "trusted": bool | null,        # project only: the file's exact bytes carry a trust
+                                    # grant (a project flow runs either way; its checks
+                                    # and native model ids wait for trust)
      "description": str | null,
      "resolution": "prepared" (resolved role plans) | "static" (configuration only),
      "isolation": {"configured": "shared" | "worktree" | "auto" | null,
@@ -78,17 +82,29 @@ def project(context) -> dict:
     """The pipeline of a compiled flow starter's resolved launch context."""
     return _project(context.target, context.flow or {"steps": []}, context.source,
                     context.resolved, context.role_plans, context.fallback_plans,
-                    context=context, resolution="prepared")
+                    context=context, resolution="prepared", origin=context.flow_origin)
 
 
-def project_static(name: str, flow: dict, source: str, resolved) -> dict:
-    """The pipeline of a flow from configuration alone (roles may be missing)."""
-    return _project(name, flow, source, resolved, {}, {}, context=None, resolution="static")
+def project_static(name: str, flow: dict, source: str, resolved, *,
+                   origin: dict | None = None) -> dict:
+    """The pipeline of a flow from configuration alone (roles may be missing).
+
+    ``origin`` is ``{"file", "trusted"}`` when the caller has read them; without
+    it both are ``null`` and listed as unknown.
+    """
+    return _project(name, flow, source, resolved, {}, {}, context=None, resolution="static",
+                    origin=origin)
 
 
 def _project(name, flow, source, resolved, role_plans, fallback_plans, *, context,
-             resolution) -> dict:
+             resolution, origin) -> dict:
     unknown: list[dict] = []
+    if source == gy.PACKAGE:
+        origin = {"file": None, "trusted": None}
+    elif origin is None:
+        origin = {"file": None, "trusted": None}
+        for key in ("source_file", "trusted"):
+            unknown.append({"path": key, "reason": "the defining file was not read here"})
     config = (resolved.config if resolved is not None else {}) or {}
     roles = config.get("roles", {})
     steps = _effective_steps(flow, unknown)
@@ -101,6 +117,7 @@ def _project(name, flow, source, resolved, role_plans, fallback_plans, *, contex
             if role and role not in required:
                 required.append(role)
     return {"version": VERSION, "flow": name, "source": _SOURCES.get(source, source),
+            "source_file": origin.get("file"), "trusted": origin.get("trusted"),
             "description": flow.get("description"), "resolution": resolution,
             "isolation": {"configured": flow.get("isolation", "shared"), "owned": "shared"},
             "missing_roles": [role for role in required if role not in roles],

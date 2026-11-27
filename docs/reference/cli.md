@@ -359,9 +359,13 @@ authorized configured checks; planning starters select none. The equivalent
 `garuda flow run` command accepts repeated `--check` arguments.
 
 `run-flow --flow NAME --goal TEXT` runs any flow `garuda flow list` shows: a
-packaged flow, one from your user `garuda.yaml`, or a project flow once the
-project file's exact bytes are trusted (`starter.project_flow_untrusted`
-otherwise). It is reachable by id but is not one of the five listed starters, so
+packaged flow, one from your user `garuda.yaml`, or one from the project's
+`garuda.yaml`. The preview names where the flow is defined
+(`provenance.flow_origin`: source, file, and whether the project file is
+trusted), and a project flow adds the warning `flow.project_source`: review its
+steps before starting. Untrusted project checks stay withheld. Its roles must be
+yours: a role whose harness, model, agent, harness mode or effort the project
+file chose refuses (`starter.project_role`). It is reachable by id but is not one of the five listed starters, so
 `starter list` and `starter show` leave it out. It accepts repeated `--source` and
 `--check`; like `build-review`, it runs the effective checks at flow
 finalization (Linux only). Its preview adds a `pipeline`: each step's roles with
@@ -369,8 +373,8 @@ their runtime, model, effort and effective permission, inputs, outputs, review,
 retries, limits, `long_run` and the owned one-hour backstop for a step without a
 deadline. The equivalent command is `garuda flow run NAME --task TASK --check …`
 with the same compiled task (the starter brief and the framed task field), so
-every step receives the same prompt. A dashboard start also refuses step retries
-(`starter.retries_unsupported`), a non-shared `isolation`
+every step receives the same prompt. A dashboard start of any flow starter also
+refuses step retries (`starter.retries_unsupported`), a non-shared `isolation`
 (`starter.isolation_unsupported`) and parallel groups; a `long_run` step on a
 non-ACP role refuses everywhere (`flow.long_run_unsupported`).
 

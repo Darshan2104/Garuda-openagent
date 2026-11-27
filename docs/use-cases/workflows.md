@@ -267,9 +267,15 @@ garuda starter run run-flow --flow plan-only --goal "Add reconnect status using 
 
 `--flow` takes any flow `garuda flow list` shows. The flow is looked up by name
 in the effective configuration; a definition is never supplied with the request.
-A project flow is selectable only once the project `garuda.yaml`'s exact bytes are
-trusted; otherwise copy it into your user file (`garuda config show --flow NAME`).
-The preview adds a `pipeline` with each step's roles and their runtime, model,
+A flow defined by the project's `garuda.yaml` (a repository that ships its own
+flow) is selectable, as `garuda flow run` runs it. The preview says so plainly:
+its origin, the defining file and whether that file is trusted, with the warning
+`flow.project_source` asking you to review its steps before starting. Editing the
+file after preview makes the start refuse until you preview again. What needs
+trust still waits for it: untrusted project checks never run. The roles stay
+yours: a step whose role's harness, model, agent, harness mode or effort the
+project file chose refuses (`starter.project_role`); a project may only narrow
+your roles. The preview adds a `pipeline` with each step's roles and their runtime, model,
 effort and effective permission, its inputs, outputs, review, limits and
 `long_run`, and the backstop an owned step gets (one hour when the step has no
 `limits.deadline_min`). Unknown values are `null` with a reason. Repeated `--check`

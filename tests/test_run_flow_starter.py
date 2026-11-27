@@ -182,25 +182,110 @@ def test_selected_flow_is_the_effective_definition_and_digest_tracks_it(ws):
     assert changed_role.digest != changed_flow.digest
 
 
-def test_a_project_flow_is_selectable_only_once_its_file_is_trusted(ws):
+TEAM = {"steps": [{"id": "only", "role": "coder", "outputs": ["plan"]}]}
+
+
+def test_a_project_flow_is_selectable_and_disclosed_with_its_trust_state(ws):
     from garuda.config import project_trust as pt
 
-    # Native model ids make the project file trust-bearing, so it can be trusted.
-    (ws / "garuda.yaml").write_text(gy.dump({
-        "version": 1, "checks": [{"run": "true"}],
-        "flows": {"team": {"steps": [{"id": "only", "role": "coder", "outputs": ["plan"]}]}}}))
-    resolved = gy.load_effective(ws)
-    assert resolved.provenance["flows.team"] == gy.PROJECT  # configuration applies it untrusted
-    with pytest.raises(StarterError) as caught:
-        compile_scenario("run-flow", {"flow": "team", "goal": "go"}, ws)
-    assert caught.value.code == "starter.project_flow_untrusted"
+    # Flows alone never need trust: configuration applies this flow untrusted.
+    project = ws / "garuda.yaml"
+    project.write_text(gy.dump({"version": 1, "flows": {"team": TEAM}}))
+    assert gy.load_effective(ws).provenance["flows.team"] == gy.PROJECT
+    for preview in (StarterService().preview("run-flow", {"flow": "team", "goal": "go"}, ws),
+                    _gateway(ws).preview("run-flow", {"flow": "team", "goal": "go"}, ws)):
+        origin = {"source": "project", "file": str(project), "trusted": False}
+        assert preview["plan"]["provenance"]["flow_origin"] == origin
+        assert preview["plan"]["provenance"]["flow_source"] == gy.PROJECT
+        pipeline = preview["pipeline"]
+        assert (pipeline["source"], pipeline["source_file"], pipeline["trusted"]) == (
+            "project", str(project), False)
+        state = preview["readiness"]
+        warning = [row for row in state["diagnostics"] if row["code"] == "flow.project_source"]
+        assert warning and warning[0]["level"] == "warning"
+        assert warning[0]["fix"] == "Review its steps before starting."
+        assert "not trusted" in warning[0]["message"]
+        assert state["can_run"], state["diagnostics"]  # informed, never blocked
+    untrusted = compile_scenario("run-flow", {"flow": "team", "goal": "go"}, ws)
+    # A trust-bearing file can be trusted; trust and every byte are in the digest.
+    project.write_text(gy.dump({"version": 1, "checks": [{"run": "true"}],
+                                "flows": {"team": TEAM}}))
     pt.grant(pt.read_project_file(ws))
-    plan = compile_scenario("run-flow", {"flow": "team", "goal": "go"}, ws)
-    assert plan.provenance["flow_source"] == gy.PROJECT
-    (ws / "garuda.yaml").write_text((ws / "garuda.yaml").read_text() + "# changed\n")
-    with pytest.raises(StarterError) as caught:
-        compile_scenario("run-flow", {"flow": "team", "goal": "go"}, ws)
-    assert caught.value.code == "starter.project_flow_untrusted"
+    trusted = compile_scenario("run-flow", {"flow": "team", "goal": "go"}, ws)
+    assert trusted.provenance["flow_origin"]["trusted"] is True
+    assert trusted.digest != untrusted.digest
+    user = compile_scenario("run-flow", {"flow": "mine", "goal": "go"}, ws)
+    assert user.provenance["flow_origin"] == {
+        "source": "user", "file": str(gy.user_path()), "trusted": None}
+    packaged = compile_scenario("run-flow", {"flow": "pair", "goal": "go"}, ws)
+    assert packaged.provenance["flow_origin"] == {
+        "source": "packaged", "file": None, "trusted": None}
+
+
+def test_a_project_flow_never_runs_untrusted_project_checks(ws, monkeypatch):
+    from garuda.core.acceptance import checks_with_authority
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    (ws / "garuda.yaml").write_text(gy.dump({
+        "version": 1, "checks": [{"run": "touch project-chose-this"}], "flows": {"team": TEAM}}))
+    plan, context = compile_with_context("run-flow", {"flow": "team", "goal": "go"}, ws)
+    assert plan.checks == [] and checks_with_authority(context.resolved) == []
+    assert "checks" in " ".join(context.resolved.withheld)
+    assert plan.provenance["verification"] == "unavailable"
+    state = StarterService().preview("run-flow", {"flow": "team", "goal": "go"}, ws)["readiness"]
+    assert "config.project_untrusted" in {row["code"] for row in state["diagnostics"]}
+    # The owned start freezes checks from this resolved configuration: there are none.
+    assert FlowExecutionService._freeze_checks(
+        context.resolved, plan.workspace, context.configuration_sources, None) is None
+    # An explicit check is the user's own request and is the only one that runs.
+    explicit, _context = compile_with_context(
+        "run-flow", {"flow": "team", "goal": "go", "options": {"checks": ["true"]}}, ws)
+    assert [c["definition"] for c in explicit.checks] == [{"run": "true"}]
+    assert [c["authority"] for c in explicit.checks] == [gy.CLI]
+
+
+ACP_CODER = {"harness": "claude", "model_id": "sonnet"}
+
+
+@pytest.mark.parametrize("user_coder,project_role,refused", [
+    # Narrowing the user's own role keeps it the user's.
+    (ACP_CODER, {**ACP_CODER, "permissions": "readonly"}, False),
+    (ACP_CODER, {**ACP_CODER, "write_policy": "no-edits"}, False),
+    # Choosing what runs does not.
+    (ACP_CODER, {"harness": "codex"}, True),
+    (ACP_CODER, {**ACP_CODER, "model_id": "opus"}, True),
+    (ACP_CODER, {**ACP_CODER, "effort": "high"}, True),
+    (ACP_CODER, {**ACP_CODER, "harness_mode": "plan"}, True),
+    (ACP_CODER, {**ACP_CODER, "agent": "project-agent"}, True),
+    # A project native model id is withheld untrusted, so the role's model changes.
+    ({"harness": "native", "model_id": "coder/model"},
+     {"harness": "native", "model_id": "coder/model", "permissions": "readonly"}, True),
+])
+def test_a_selected_flow_runs_only_roles_the_user_configured(ws, user_coder, project_role,
+                                                             refused):
+    roles = {role: {"harness": "native", "model_id": f"{role}/model"} for role in ROLES}
+    _write_config(roles={**roles, "coder": user_coder})
+    (ws / "garuda.yaml").write_text(gy.dump({"version": 1, "roles": {"coder": project_role}}))
+    if "agent" in project_role:
+        agents = ws / ".agent" / "agents"
+        agents.mkdir(parents=True)
+        (agents / "project-agent.yaml").write_text("name: project-agent\n")
+    state = StarterService().preview("run-flow", {"flow": "mine", "goal": "go"}, ws)["readiness"]
+    codes = {row["code"] for row in state["diagnostics"] if row["level"] == "error"}
+    assert ("starter.project_role" in codes) is refused
+    if refused:
+        assert state["can_run"] is False
+
+
+def test_a_project_role_unknown_to_the_user_is_refused(ws):
+    (ws / "garuda.yaml").write_text(gy.dump({
+        "version": 1, "roles": {"helper": {"harness": "native"}},
+        "flows": {"team": {"steps": [{"id": "only", "role": "helper", "outputs": ["plan"]}]}}}))
+    preview = _gateway(ws).preview("run-flow", {"flow": "team", "goal": "go"}, ws)
+    state = preview["readiness"]
+    assert state["can_run"] is False
+    (row,) = [r for r in state["diagnostics"] if r["code"] == "starter.project_role"]
+    assert row["message"].startswith("helper:") and "user garuda.yaml" in row["fix"]
 
 
 # -- equivalent command ----------------------------------------------------------------------
@@ -574,6 +659,50 @@ async def test_start_revalidates_and_refuses_before_any_intent(write_context, ch
     assert _body(response)["error"]["code"] == code
     assert not (ctx.store.root / "launch-intents").exists()
     assert ctx.store.list_sessions() == []
+
+
+async def test_an_edited_project_flow_is_refused_at_start_before_any_intent(
+        write_context, monkeypatch):
+    ctx = write_context
+    workspace = ctx.allowed_workspaces[0]
+    project = workspace / "garuda.yaml"
+    project.write_text(gy.dump({"version": 1, "flows": {"team": TEAM}}))
+    inputs = {"flow": "team", "goal": "go"}
+    preview = await _preview(ctx, inputs)
+    assert preview["pipeline"]["source"] == "project"
+    assert preview["authority"]["can_start"] and preview["readiness"]["can_run"]
+    started = []
+
+    async def never(*_args, **_kwargs):  # pragma: no cover - must not be reached
+        started.append(True)
+
+    monkeypatch.setattr(FlowExecutionService, "run_prepared", never)
+    edited = json.loads(json.dumps(TEAM))
+    edited["steps"][0]["write_policy"] = "no-edits"
+    project.write_text(gy.dump({"version": 1, "flows": {"team": edited}}))
+    response = await _call(ctx, "/api/scenarios/start", method="POST", body=_start_body(
+        preview, str(uuid.uuid4()), starter="run-flow", inputs=inputs))
+    assert response.status == 409, _body(response)
+    assert _body(response)["error"]["code"] == "starter.preview_changed"
+    assert not (ctx.store.root / "launch-intents").exists()
+    assert started == [] and ctx.store.list_sessions() == []
+
+
+@pytest.mark.parametrize("shape,code,where", [
+    ({"steps": [{"id": "build", "role": "coder", "outputs": ["patch"], "retries": 1}]},
+     "starter.retries_unsupported", "authority"),
+    ({"isolation": "worktree", "steps": [{"id": "build", "role": "coder", "outputs": ["patch"]}]},
+     "starter.isolation_unsupported", "authority"),
+    ({"steps": [{"id": "build", "role": "coder", "outputs": ["patch"], "long_run": {}}]},
+     "flow.long_run_unsupported", "readiness"),
+])
+def test_packaged_starters_refuse_the_same_shapes_in_an_override(ws, shape, code, where):
+    _write_config(flows={"plan-build-review": shape})
+    preview = _gateway(ws).preview("build-review", {"goal": "go"}, ws)
+    rows = preview[where]["diagnostics"]
+    assert code in {row["code"] for row in rows}
+    assert preview["authority" if where == "authority" else "readiness"][
+        "can_start" if where == "authority" else "can_run"] is False
 
 
 async def test_owned_start_and_equivalent_command_deliver_the_same_step_prompt(

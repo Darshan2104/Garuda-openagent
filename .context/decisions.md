@@ -12,13 +12,25 @@ shows, so the selection is bounded:
   garuda.yaml name (`starter.flow_invalid`) and `resolve_launch` resolves it
   against `packaged.available(resolved)` (`flow.unknown`); a definition is never
   accepted from the caller.
-- Configuration applies a project flow without trust (only checks and native
-  model ids are withheld). A flow selected by name is stricter: one whose
-  provenance is the project file is refused (`starter.project_flow_untrusted`)
-  unless that file's exact bytes carry a trust grant. `garuda config trust`
-  grants only files that ask for something needing trust, so a flows-only project
-  file must be copied into the user file to be selectable; making flows
-  trust-bearing is a separate configuration decision.
+- A project flow is selectable, with informed disclosure rather than a gate.
+  Configuration applies a project flow without trust everywhere (`garuda flow
+  run`, and the packaged starters when a project overrides their flow), and
+  `garuda config trust` grants nothing for a file that only defines flows, so a
+  trust gate here could never open. Instead the digested plan carries
+  `provenance.flow_origin` (`source`, the defining `file`, and `trusted` from
+  `project_trust.is_trusted`), the pipeline repeats it, and readiness adds the
+  non-blocking warning `flow.project_source`. The definition is in the preview
+  digest, so an edited project file is refused at start (`starter.preview_changed`)
+  before any intent is written.
+- What already needs trust still does: untrusted project checks and native
+  model ids stay withheld, so a run-flow of a project flow runs only the user's
+  and explicitly requested checks. Role definitions and the permission ceiling
+  stay the user's: a project may narrow a user role (permissions, write policy,
+  fallbacks, consults), but a selected flow whose role's harness, model, agent,
+  harness mode or effort the project chose (a project-only role, or one that
+  changes the user's) is refused (`starter.project_role`, readiness). Without
+  trust a project role could otherwise pick any registered harness and an ACP
+  model. The packaged starters keep their existing behaviour for project roles.
 - It uses the existing preview, start and status path unchanged: the same
   compile digest and authority digest revalidated at admission, the same
   operation id and duplicate protection, write-mode gating, the Linux-only owned
@@ -28,9 +40,10 @@ shows, so the selection is bounded:
   `starter.retries_unsupported` and `starter.isolation_unsupported` in the
   authority (outside the digested envelope), the existing
   `starter.parallel_ownership_unavailable`, and `flow.long_run_unsupported` in
-  readiness. They apply to `run-flow` only, so the five starters' previews,
-  digests, commands and refusals stay byte-identical (pinned in
-  `tests/test_starter_pins.py`).
+  readiness. They apply to every flow starter: packaged flows have none of these
+  shapes, so the five starters' previews, digests, commands and refusals stay
+  byte-identical for the packaged flows (pinned in `tests/test_starter_pins.py`);
+  a configured override with one now refuses at preview instead of at start.
 - `run-flow` is a checked flow starter like `build-review`
   (`CHECKED_FLOW_STARTERS`): its starts pass `checks` (explicit `options.checks`,
   else `()`), so its equivalent `garuda flow run NAME --task TASK --check …` runs

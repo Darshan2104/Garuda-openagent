@@ -47,7 +47,7 @@ def validate_inputs(entry: Starter, inputs: dict, *, require_fields: bool = True
             out[name] = validate_options(entry, value)
         elif kind == "flow-name":
             # A name only, never a definition: the flow resolves server-side
-            # against the effective configuration (a project flow once trusted).
+            # against the effective configuration (packaged, user or project).
             if not isinstance(value, str) or not FLOW_NAME.fullmatch(value):
                 raise StarterError("starter.flow_invalid",
                                    f"{name} must name a configured flow (lowercase letters, digits, '-', '_')")

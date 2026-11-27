@@ -124,10 +124,26 @@ def readiness(context: LaunchContext, *, starter_id: str, owned: bool = False) -
                                            "Name a mode that cannot write on this role, or "
                                            "remove its harness_mode.", level="error"))
 
+    for code, message, fix in long_run_blockers(context):
+        blockers.append(code)
+        diagnostics.append(_diagnostic(code, message, fix, level="error"))
     if selects_flow(entry):
-        for code, message, fix in long_run_blockers(context):
-            blockers.append(code)
-            diagnostics.append(_diagnostic(code, message, fix, level="error"))
+        for role in context.project_roles:
+            blockers.append("starter.project_role")
+            diagnostics.append(_diagnostic(
+                "starter.project_role",
+                f"{role}: the project's garuda.yaml chooses this role's harness, model, agent, "
+                "mode or effort; a selected flow runs only roles you configured",
+                f"Define {role} in your user garuda.yaml, or remove its definition from the "
+                "project file.", level="error"))
+        origin = context.flow_origin or {}
+        if origin.get("source") == "project":
+            diagnostics.append(_diagnostic(
+                "flow.project_source",
+                "This flow is defined by the project's garuda.yaml, not your own "
+                "configuration" + ("" if origin.get("trusted") else
+                                   ", and that file is not trusted") + ".",
+                "Review its steps before starting."))
 
     reviews = []
     for step in (context.flow or {}).get("steps", []):

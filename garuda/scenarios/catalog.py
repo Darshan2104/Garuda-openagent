@@ -14,7 +14,7 @@ VERSION = 1
 RUN_OPTIONS = frozenset({"name", "isolation", "bg", "checks"})
 FIELD_TYPES = frozenset({"text", "source-refs", "execution-options", "flow-name"})
 #: ``launch.select``: the flow target is the starter's one ``flow-name`` field,
-#: checked against the effective flows (packaged, user, trusted project).
+#: checked against the effective flows (packaged, user, project).
 SELECTIONS = frozenset({"configured"})
 #: The execution options a selecting flow starter may carry: explicit checks only.
 SELECT_OPTIONS = frozenset({"checks"})
