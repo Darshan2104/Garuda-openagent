@@ -82,6 +82,8 @@ function loadTrajectory(detailUrl, sources) {
     function (payload) {
       if (!marker.isConnected) return;
       STATE.run = payload;
+      // Drawn: a reconnect polls this page in place (below) instead of re-mounting it.
+      reconnectInPlace();
       if (isFlowParent(payload)) { loadFlowTrace(payload, sources, marker); return; }
       renderTrajectory(payload, sources);
     },
@@ -134,7 +136,7 @@ function loadFlowTrace(payload, sources, marker) {
       renderFlowTrace(payload, row, sources, sessionUrl);
     },
     function (err) {
-      if (!marker.isConnected) return;
+      if (isSuperseded(err) || !marker.isConnected) return;
       if (err.status === 401) { render(tokenRequiredPanel()); return; }
       render(loadErrorHtml(err));
     });
@@ -397,6 +399,8 @@ function syncFlowRefresh(row, urls) {
 }
 
 function flowPoll(state) {
+  // While the dashboard is unreachable the app's one probe asks (core.js); onReconnect polls.
+  if (CONNECTION.down) return Promise.resolve();
   return Promise.all([api(state.urls.detail), api(state.urls.session)])
     .catch(tagFetchError)
     .then(function (both) {
@@ -413,7 +417,7 @@ function flowPoll(state) {
       }
     })
     .catch(function (err) {
-      if (STATE.live !== state) return;
+      if (isSuperseded(err) || STATE.live !== state) return;
       if (!err || !err.fromApi) { surface(err); return; }
       if (err.status === 401) { stopLive(); render(tokenRequiredPanel()); return; }
       state.failures += 1;
@@ -903,6 +907,11 @@ function startLive(sources, payload) {
   if (state.rows.length) renderLiveRows(state);
 }
 
+// Back from an outage: a live trace (native tail or a running flow) polls at once.
+onReconnect(function () {
+  if (STATE.live && STATE.poller) STATE.poller.now();
+});
+
 /* Mark a rejection as the network's (or the server's), as opposed to a bug in the code that
  * handles the response — only the first kind is "can't reach the dashboard". */
 function tagFetchError(err) {
@@ -917,6 +926,7 @@ function surface(err) {
 }
 
 function livePoll(state) {
+  if (CONNECTION.down) return Promise.resolve();  // the app's probe asks; onReconnect polls
   var join = state.sources.tail.indexOf("?") === -1 ? "?" : "&";
   return api(state.sources.tail + join + "offset=" + state.offset)
     .catch(tagFetchError)
