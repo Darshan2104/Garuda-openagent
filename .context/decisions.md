@@ -5363,6 +5363,53 @@ becomes the step's error, `stop.cause.code` fallback and `stop.cause.stop_reason
 (`acp_stop_reason`) for that purpose. A checked step without a deadline still
 has the one-hour worker limit; long checked steps need `deadline_min`.
 
+## 2026-11-27: Configured flows can run in their own worktree, with checkpoints and rollback
+
+Every configured flow ran in the user's checkout: `service.py` forced
+`isolation = "shared"` unless a dashboard starter launched a role `run`. A
+12-hour unattended writer step there blocked the user's own work, and nothing
+could undo damage it did late in the run.
+
+A flow may set `isolation: worktree` (`garuda flow run --isolation` overrides
+it; `shared` stays the default and `auto` is not offered). The parser emits the
+key only when written, so a flow without it keeps its definition digest
+(pinned by a test). A new worktree flow pre-allocates its session id and enters
+the starter machinery, `run_workspace`, which creates the worktree from `HEAD`
+and discards it if the flow never began; the runner gets `execution_workspace`
+and `worktree_plan` exactly as a starter run does, so the lease, review
+packets, owned checks and evidence all bind to the worktree while
+configuration and the check request stay frozen against the source checkout.
+A resume rebuilds the execution workspace from the recorded metadata and
+refuses a missing or replaced worktree. Integration is the existing `sessions
+merge`; a checked flow merges only after its checks passed and no flow merges
+while running or quarantined. Dashboard flow starts refuse a flow with
+`isolation: worktree` (`flow.isolation_unsupported`): their admitted authority
+binds the shared checkout, and the dashboard path is otherwise unchanged.
+
+Checkpoints (`garuda/flows/checkpoints.py`) are taken after every step
+attempt's receipt and journal entry are durable (`_record_step_receipt` and the
+parallel group's receipt). `checkpoint(flow_dir, workspace, label, *, step,
+attempt)` copies the worktree's index to a temporary `GIT_INDEX_FILE`, runs
+`git add -A`, `write-tree`, `commit-tree` (parent: the worktree's `HEAD`, never
+the previous checkpoint, so a pruned one becomes unreachable) and a
+create-only `update-ref refs/garuda/<flow>/<n>`, all with the snapshot module's
+sanitized Git environment. It returns the ref, the previous ref for an
+unchanged tree, and `None` outside a Garuda worktree; a turn loop may call it at
+each turn end. Records go to `checkpoints.jsonl`, never the journal, which
+keeps two entries per attempt. Past 64 the oldest are pruned except the first
+and the last. A refused checkpoint is recorded and never fails a settled
+attempt. Unlike `snapshot_proto.capture`, `git add` honours the repository's
+own configured filters; global and system config are not read.
+
+`garuda flow rollback FLOW --to N` refuses a shared flow and a flow recorded
+running, takes the flow's own lease on the worktree (refused while any step or
+check holds it), checkpoints the current state, then switches a scratch index
+from the current tree to the checkpoint's with `read-tree --reset -u`, so the
+worktree's HEAD, branch and index are not changed and ignored files stay.
+Refs are pruned when `remove_worktree` removes the worktree and, when a new
+worktree flow starts, for flows whose newest checkpoint is older than
+`sessions.keep_days`.
+
 ## 2026-11-27: Review rounds get a round brief from flow memory (#816)
 
 Round 2+ of a reviewed step used to start fresh sessions told nothing of the
