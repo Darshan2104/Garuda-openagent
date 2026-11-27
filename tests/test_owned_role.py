@@ -630,3 +630,70 @@ async def test_owned_role_refuses_foreign_or_insufficient_authority_before_execu
             await readonly.release()
         server.shutdown()
         server.server_close()
+
+
+@linux
+async def test_an_owned_approval_answered_after_thirty_seconds_is_honoured(case, monkeypatch):
+    """The answer window is the broker's own park timeout, not the control socket's 10 s.
+
+    The wait is about 25 lease TTLs (the fixture's parent lease has a 1.2 s TTL).
+    The workspace lease stays fresh throughout, because the parent renews it on its
+    own loop, and the worker sends no other control call while the approval waits:
+    nothing time-critical sits behind the client's lock (#869).
+    """
+    workspace, parent, leases, store = case
+    settings = Path(os.environ["GARUDA_GLOBAL_SETTINGS"])
+    server, _requests = install_native(workspace, settings)
+    monkeypatch.setenv("OPENAI_API_KEY", "local-protocol-fixture")
+    profile = workspace / ".agent" / "agents" / "owned.yaml"
+    profile.write_text(profile.read_text() + "tool_rules: {bash: ask}\n")
+    asked, calls = [], []
+    dispatch = RoleControl._dispatch
+
+    async def record(control, operation, value):
+        calls.append((operation, time.monotonic()))
+        return await dispatch(control, operation, value)
+
+    monkeypatch.setattr(RoleControl, "_dispatch", record)
+
+    async def approve(action):
+        asked.append(time.monotonic())
+        ages = []
+        for _second in range(31):  # a person who answers after half a minute
+            await asyncio.sleep(1)
+            (holder,) = [lease for lease in leases.holders_of(str(workspace))
+                         if lease.session_id == parent.session_id]
+            assert not holder.is_stale()
+            ages.append(time.time() - holder.heartbeat_at)
+            parent._check_authority()
+        asked.append(max(ages))
+        return True
+
+    (workspace / "release").touch()
+    task = None
+    try:
+        role = role_agent.bind(RolePlan("builder", "native", "native", permissions="auto", profile="owned"), str(workspace))
+        capability = parent.delegate(f"{parent.session_id}:build:1")
+        request = prepare_owned_step(StepLaunch(parent.session_id, "build", "builder", role, "ask late",
+                                     str(workspace), capability, 1, False, store), timeout=120)
+        task = asyncio.create_task(execute_owned_role(request, capability, approval=approve))
+        result = await asyncio.wait_for(task, 110)
+        started, oldest = asked
+        assert oldest < parent._ttl  # renewed all along, never near expiry
+        assert result.success, result.error
+        waiting = [operation for operation, at in calls if started < at < started + 31]
+        assert waiting == []  # no lease or other call queued behind the approval
+        assert ("approve" in [operation for operation, _at in calls]
+                and calls[-1][0] in {"result", "release"})
+        parent._check_authority()
+        assert result.output == "native role completed"
+        assert (workspace / "writes").exists()  # the allowed command really ran
+        (record,) = [value for key, value in store.load_meta(request.session_id).items()
+                     if key.startswith("approval:")]
+        assert record["outcome"] == "allow" and record["via"] == "answerer"
+    finally:
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        server.shutdown()
+        server.server_close()
