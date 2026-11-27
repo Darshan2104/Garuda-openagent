@@ -30,7 +30,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from browser_support import NAV_TIMEOUT_MS, launch, settle, text_contains
+from browser_support import NAV_TIMEOUT_MS, launch, settle, text_contains, throttle
 from playwright.sync_api import sync_playwright
 
 BASE = os.environ.get("GARUDA_CHECK_BASE", "http://127.0.0.1:8897/")
@@ -71,7 +71,7 @@ with sync_playwright() as p:
     # --- 1. the token --------------------------------------------------------------------------
     context = browser.new_context(viewport={"width": 1440, "height": 900})
     context.set_default_navigation_timeout(NAV_TIMEOUT_MS)
-    page = context.new_page()
+    page = throttle(context.new_page())
     watch(page)
     expected_failures["on"] = True  # the 401s below are the point
     page.goto(BASE, wait_until="load")
@@ -268,7 +268,7 @@ with sync_playwright() as p:
         for theme in ("light", "dark"):
             context = browser.new_context(viewport={"width": width, "height": 900 if width > 400 else 844})
             context.set_default_navigation_timeout(NAV_TIMEOUT_MS)
-            page = context.new_page()
+            page = throttle(context.new_page())
             watch(page)
             page.goto(f"{BASE}#t={TOKEN}", wait_until="load")
             page.evaluate("t => localStorage.setItem('garuda_theme', t)", theme)

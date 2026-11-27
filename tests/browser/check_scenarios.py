@@ -9,7 +9,7 @@ import json
 import os
 from pathlib import Path
 
-from browser_support import launch
+from browser_support import NAV_TIMEOUT_MS, launch, throttle
 from playwright.sync_api import expect, sync_playwright
 
 BASE = os.environ["GARUDA_CHECK_BASE"]
@@ -48,7 +48,8 @@ def main():
         browser = launch(p)
         context = browser.new_context(viewport={"width": 1500, "height": 1100},
                                       permissions=["clipboard-read", "clipboard-write"])
-        page = context.new_page()
+        context.set_default_navigation_timeout(NAV_TIMEOUT_MS)
+        page = throttle(context.new_page())
         page.on("console", lambda m: errors.append(m.text) if m.type in {"error", "warning"} else None)
         page.on("pageerror", lambda e: errors.append(str(e)))
         open_dashboard(page, BASE, "#/starters")
@@ -204,7 +205,7 @@ def main():
         # Readiness labels and remedy order must survive the frontend transport.
         for profile, expected in [("single", "review needs setup"), ("missing", "needs-setup"),
                                   ("waived", "review not independent")]:
-            other = context.new_page()
+            other = throttle(context.new_page())
             other.on("pageerror", lambda e: errors.append(str(e)))
             other.on("console", lambda m: errors.append(m.text) if m.type in {"error", "warning"} else None)
             open_dashboard(other, PROFILES[profile], "#/starters/build-review")

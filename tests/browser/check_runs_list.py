@@ -21,7 +21,7 @@ import os
 import tempfile
 from pathlib import Path
 
-from browser_support import NAV_TIMEOUT_MS, launch, settle, text_contains
+from browser_support import NAV_TIMEOUT_MS, launch, settle, text_contains, throttle
 from playwright.sync_api import sync_playwright
 
 BASE = os.environ.get("GARUDA_CHECK_BASE", "http://127.0.0.1:8897/")
@@ -57,7 +57,7 @@ def settled(page):
 
 with sync_playwright() as p:
     browser = launch(p)
-    page = browser.new_page(viewport={"width": 1440, "height": 900})
+    page = throttle(browser.new_page(viewport={"width": 1440, "height": 900}))
     page.set_default_navigation_timeout(NAV_TIMEOUT_MS)
     page.on("console", lambda m: problems.append(f"console.{m.type}: {m.text}")
             if m.type in ("error", "warning") else None)
@@ -250,7 +250,7 @@ with sync_playwright() as p:
 
     # --- phone width: stacked, labelled, no sideways scroll -------------------------------------
     for theme in ("light", "dark"):
-        phone = browser.new_page(viewport={"width": 390, "height": 844})
+        phone = throttle(browser.new_page(viewport={"width": 390, "height": 844}))
         phone.set_default_navigation_timeout(NAV_TIMEOUT_MS)
         phone.on("pageerror", lambda e: problems.append(f"pageerror: {e}"))
         phone.goto(f"{BASE}#t={TOKEN}", wait_until="load")
