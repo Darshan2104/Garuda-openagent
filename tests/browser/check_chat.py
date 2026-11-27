@@ -27,7 +27,7 @@ import os
 import sys
 import tempfile
 
-from browser_support import count_at_least, launch, settle, text_contains
+from browser_support import count_at_least, launch, settle, text_contains, throttle
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
@@ -83,7 +83,7 @@ def pending_count(page):
 
 
 def open_dashboard(browser, width=1400, height=1000):
-    page = browser.new_page(viewport={"width": width, "height": height})
+    page = throttle(browser.new_page(viewport={"width": width, "height": height}))
     collect(page)
     page.goto(f"{BASE}#t={TOKEN}", wait_until="networkidle")
     settle(page, "() => !!STATE.health")
@@ -514,7 +514,7 @@ with sync_playwright() as p:
     page.close()
 
     # Nobody watching now: the tab is closed. The reaper must still deny within the grace.
-    watcher = browser.new_page()
+    watcher = throttle(browser.new_page())
     watcher.goto(f"{BASE}#t={TOKEN}", wait_until="domcontentloaded")
     waited, left = 0, parked
     deadline = (grace or 3) * 1000 + 5000
@@ -630,23 +630,43 @@ with sync_playwright() as p:
         page.wait_for_selector("#chat-form", timeout=10_000)
         settle(page, "() => STATE.chat && STATE.chat.info && STATE.chat.info.session_id")
 
-        def slow_delete(route):
-            if route.request.method == "DELETE":
-                page.wait_for_timeout(800)
-            route.continue_()
+        # The server ends the chat at once, but its answer reaches the page 2 s later — what a
+        # slow teardown on a loaded machine looks like. Anything the page asks about the chat
+        # in that window is a request for a chat that no longer exists: a 404, which Chrome
+        # logs as a console error whatever the page does with it. This was CI's flake.
+        ending = page.evaluate("STATE.chat.id")
+        ended = {"on": False}
+        after_end: list[str] = []
 
-        page.route("**/api/chat/*", slow_delete)
+        def note_request(request):
+            if ended["on"] and f"/api/chat/{ending}" in request.url and request.method == "GET":
+                after_end.append(request.url)
+
+        def held_delete(route):
+            if route.request.method != "DELETE":
+                route.continue_()
+                return
+            response = route.fetch()
+            ended["on"] = True
+            page.wait_for_timeout(2000)   # the answer is late; the page keeps running meanwhile
+            route.fulfill(response=response)
+
+        page.on("request", note_request)
+        page.route("**/api/chat/*", held_delete)
         before = len(dialogs)
         page.click("#chat-close")
-        page.wait_for_timeout(200)
-        in_flight = page.evaluate("(() => { const b = document.getElementById('chat-close');"
-                                  " return b ? b.disabled : null; })()")
+        in_flight = settle(page, "() => { const b = document.getElementById('chat-close');"
+                                 " return !b || b.disabled; }", timeout=2000)
         settle(page, "() => location.hash === '#/runs'")
         page.unroute("**/api/chat/*")
+        page.remove_listener("request", note_request)
         if len(dialogs) != before:
             problems.append("End chat asked for confirmation with nothing running")
-        if in_flight is False:
+        if not in_flight:
             problems.append("End chat stayed enabled while its request was in flight")
+        if after_end:
+            problems.append(f"the page kept asking about a chat it was ending ({len(after_end)} "
+                            f"requests after the server closed it, e.g. {after_end[0]})")
         if server(page, "/api/chat")["body"]["chats"]:
             problems.append("End chat did not end the chat")
 
@@ -745,7 +765,7 @@ with sync_playwright() as p:
     if pending_for(page, chat_b) != 1:
         problems.append("chat B's ask was reaped while the tab watching it was open")
     page.close()
-    page = browser.new_page()
+    page = throttle(browser.new_page())
     page.goto(f"{BASE}#t={TOKEN}", wait_until="domcontentloaded")
     left = wait_server(page, lambda pg: pending_for(pg, chat_b) == 0,
                        timeout_ms=int(grace * 1000) + 6000)

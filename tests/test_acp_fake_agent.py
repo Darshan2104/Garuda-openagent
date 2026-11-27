@@ -72,6 +72,7 @@ def test_public_profile_sets_are_pinned():
         "transient-then-done",
         "missing-then-repair",
         "malformed-on-repair",
+        "usage-rising",
     }
     assert set(PROFILES) == set(BASE_PROFILES) | {
         "capabilities-full",
