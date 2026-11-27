@@ -6,6 +6,7 @@ import stat
 import subprocess
 import sys
 import threading
+import time
 from contextlib import contextmanager
 
 import pytest
@@ -283,3 +284,97 @@ def test_validation_failures_are_identical_in_both_modes(protected, fault):
         failures.append((type(caught.value), str(caught.value)))
     assert failures[0] == failures[1]
     assert not issubclass(failures[1][0], publication.MetadataBusy)
+
+
+# --- same-process writers take turns (#878) ------------------------------------------------
+
+
+def test_same_process_writers_take_turns_instead_of_starving(protected, monkeypatch):
+    """Polling ``flock`` is unfair: with slow cycles, a thread can lose every poll until its
+    deadline. Same-process writers now queue in arrival order, and a waiter's patience
+    restarts whenever a writer ahead of it takes the lock."""
+    real_monotonic = time.monotonic
+    # The lock deadline passes five times faster: one real second, not five.
+    monkeypatch.setattr(publication, "time", type("Clock", (), {
+        "monotonic": staticmethod(lambda: real_monotonic() * 5),
+        "sleep": staticmethod(time.sleep)}))
+    real_write = publication.MetadataCycle.write
+
+    def slow_write(self, document):
+        time.sleep(0.2)  # a cycle under load: eight in a row outlast one deadline
+        return real_write(self, document)
+
+    monkeypatch.setattr(publication.MetadataCycle, "write", slow_write)
+    errors: list[BaseException] = []
+
+    def writer(i: int) -> None:
+        try:
+            protected.update_meta("flow", {f"field_{i}": i})
+        except BaseException as exc:  # noqa: BLE001 - collected, then asserted
+            errors.append(exc)
+
+    threads = [threading.Thread(target=writer, args=(i,)) for i in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert errors == []
+    meta = protected.load_meta("flow")
+    assert all(meta.get(f"field_{i}") == i for i in range(8))
+    assert publication._TURNSTILES == {}
+
+
+def test_a_stuck_holder_still_fails_every_queued_writer_within_one_wait(protected, monkeypatch):
+    monkeypatch.setattr(publication, "LOCK_WAIT", 0.3)
+    held = _hold_lock(protected)  # another process's writer that never finishes
+    failures: list[BaseException] = []
+
+    def writer() -> None:
+        try:
+            protected.update_meta("flow", {"lost": True})
+        except BaseException as exc:  # noqa: BLE001 - collected, then asserted
+            failures.append(exc)
+
+    try:
+        started = time.monotonic()
+        threads = [threading.Thread(target=writer) for _ in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        # Nobody took the lock, so nobody's patience restarted: one wait, not four.
+        assert time.monotonic() - started < 2
+    finally:
+        os.close(held)
+    assert len(failures) == 4
+    assert all(type(exc) is publication.StorageUnavailable for exc in failures)
+    assert "lost" not in protected.load_meta("flow")
+    assert publication._TURNSTILES == {}
+
+
+def test_a_queued_same_process_writer_makes_a_nonblocking_read_busy_at_once(protected,
+                                                                           monkeypatch):
+    monkeypatch.setattr(publication, "LOCK_WAIT", 0.3)
+    inside, release = threading.Event(), threading.Event()
+
+    def holder() -> None:
+        with publication.publication_cycle(protected.session_dir("flow") / "meta.json"):
+            inside.set()
+            release.wait(10)
+
+    thread = threading.Thread(target=holder)
+    thread.start()
+    try:
+        assert inside.wait(5)
+        started = time.monotonic()
+        with pytest.raises(publication.MetadataBusy):
+            protected.load_meta("flow", wait=False)
+        assert time.monotonic() - started < 0.2
+        with pytest.raises(publication.StorageUnavailable) as caught:
+            protected.load_meta("flow")  # a same-process holder that does not finish
+        assert type(caught.value) is publication.StorageUnavailable
+    finally:
+        release.set()
+        thread.join()
+    assert protected.load_meta("flow", wait=False)["task"] == "verify"
+    assert publication._TURNSTILES == {}
