@@ -96,10 +96,13 @@ function isSuperseded(err) {
   return !!err && err.code === "superseded";
 }
 
-// A superseded read nobody handled is not an error worth a console line.
-window.addEventListener("unhandledrejection", function (event) {
-  if (isSuperseded(event.reason)) event.preventDefault();
-});
+// A superseded read nobody handled is not an error worth a console line. (Guarded: the
+// static tests run this file in a bare VM context.)
+if (typeof window !== "undefined" && window.addEventListener) {
+  window.addEventListener("unhandledrejection", function (event) {
+    if (isSuperseded(event.reason)) event.preventDefault();
+  });
+}
 
 /* --- fetch ---------------------------------------------------------------- */
 
