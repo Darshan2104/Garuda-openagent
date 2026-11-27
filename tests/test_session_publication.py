@@ -222,3 +222,64 @@ def test_durability_failure_never_reports_success_or_uses_legacy_writer(protecte
             protected.load_meta("flow")
         with pytest.raises(StorageError):
             protected.update_meta("flow", {"status": "running"})
+
+
+# --- the non-blocking read (`wait=False`), for readers that must not stall ----------------
+
+
+def _hold_lock(store, session_id="flow"):
+    import fcntl
+
+    fd = os.open(store.session_dir(session_id) / "meta.json.lock", os.O_RDWR)
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    return fd
+
+
+def test_a_nonblocking_read_of_a_held_lock_is_busy_at_once(protected):
+    import time
+
+    held = _hold_lock(protected)
+    try:
+        started = time.monotonic()
+        with pytest.raises(publication.MetadataBusy):
+            protected.load_meta("flow", wait=False)
+        assert time.monotonic() - started < 0.2
+        # Busy is a StorageUnavailable, so callers that treat any storage failure as
+        # "not now" keep doing so; nothing on disk changed.
+        assert issubclass(publication.MetadataBusy, publication.StorageUnavailable)
+    finally:
+        os.close(held)
+
+
+def test_a_nonblocking_read_of_a_free_lock_matches_the_blocking_read(protected, tmp_path):
+    assert protected.load_meta("flow", wait=False) == protected.load_meta("flow")
+    legacy = SessionStore(tmp_path / "legacy")
+    legacy.begin("plain", task="t", model="m", agent="a", workspace=str(tmp_path))
+    assert legacy.load_meta("plain", wait=False) == legacy.load_meta("plain")
+
+
+@pytest.mark.parametrize("fault", ["marker", "initialized", "head", "corrupt-meta", "registry",
+                                   "replaced-lock"])
+def test_validation_failures_are_identical_in_both_modes(protected, fault):
+    store = protected
+    directory = store.session_dir("flow")
+    targets = {"marker": publication.MARKER, "initialized": publication.INITIALIZED,
+               "head": publication.HEAD}
+    if fault in targets:
+        (directory / targets[fault]).unlink()
+    elif fault == "corrupt-meta":
+        (directory / "meta.json").write_text('{"broken":')
+    elif fault == "registry":
+        shutil.rmtree(store.root / publication.REGISTRY)
+    else:
+        temporary = directory / "replacement"
+        temporary.write_bytes(b"")
+        temporary.chmod(0o600)
+        os.replace(temporary, directory / "meta.json.lock")
+    failures = []
+    for wait in (True, False):
+        with pytest.raises((StorageError, OSError)) as caught:
+            store.load_meta("flow", wait=wait)
+        failures.append((type(caught.value), str(caught.value)))
+    assert failures[0] == failures[1]
+    assert not issubclass(failures[1][0], publication.MetadataBusy)

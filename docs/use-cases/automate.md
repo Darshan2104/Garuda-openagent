@@ -564,6 +564,10 @@ The SDK runs the harness in the mode its default permission allows, so a
 `readonly` request is refused rather than run wider; `eval` and `rigorous`
 gates exist only in the native loop. For a confined readonly harness run, use
 `garuda run --runtime <id> --mode readonly`.
+The SDK starts the harness on this host against the local workspace, so a
+`workspace_kind=` other than `"local"`, a `docker_image=` or a `docker_host=`
+raises the same `OptionsUnsupportedOnRuntime` rather than being ignored; the
+CLI's `--mode readonly` run is the way to confine a harness in Docker.
 Each `SoftwareAgent.run` on an ACP runtime starts a fresh harness session, so
 `resume=`, `resume_all_projects=True` and `events=` raise the same
 `OptionsUnsupportedOnRuntime` instead of being dropped. For several turns in one
@@ -629,8 +633,11 @@ For workspace-policy refusals, raise `WorkspaceAccessDenied` from
 retain the permission engine's configured root.
 
 `SoftwareAgent` also accepts `model=`, `workspace_kind=` (for example
-`"docker"`), `docker_image=`, and `runtime=` to run one turn on an
-[external harness](advanced.md#run-a-task-with-claude-code-codex-or-another-harness).
+`"docker"`) and `docker_image=` for the native loop, and `runtime=` to run one
+turn on an
+[external harness](advanced.md#run-a-task-with-claude-code-codex-or-another-harness),
+which refuses the native-only model, agent and Docker options with
+`OptionsUnsupportedOnRuntime`.
 On a harness, `SoftwareAgent.run` denies every permission request the harness
 sends (shell commands, edits), the same as a headless `garuda run --runtime claude`;
 use `agent.conversation()` with `Conversation(approval_handler=...)` to answer

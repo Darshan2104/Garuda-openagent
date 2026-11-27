@@ -1846,6 +1846,11 @@ def run_flow(args) -> int:
             ran = "/".join(str(v) for v in (plan.get("runtime_id"), plan.get("model_id")) if v)
             took = receipt.get("duration_ms")
             extra = (f"; {ran}" if ran else "") + (f"; {took / 1000:.1f}s" if type(took) is int else "")
+            if type(receipt.get("turns")) is int:  # a long step's turns or a repair (#819)
+                repairs = receipt.get("repairs") if isinstance(receipt.get("repairs"), list) else []
+                extra += (f"; {receipt['turns']} turns, {receipt.get('rotations', 0)} rotations"
+                          + "".join(f", repair {r.get('outcome')}" for r in repairs
+                                    if isinstance(r, dict)))
             print(f"  {receipt['step']} (attempt {receipt['attempt']}): {receipt['status']}; "
                   f"outputs: {outs}{extra}")
         return 0
@@ -2796,6 +2801,25 @@ async def run_web(args) -> int:
     return 0
 
 
+def _run_web_until_interrupted(args) -> int:
+    """``garuda web`` until Ctrl-C, which ends it with one line and no traceback.
+
+    ``asyncio.run`` turns the first SIGINT into a cancellation of ``serve_dashboard``,
+    whose ``finally`` stops the HTTP server and drains the flow and chat operations it
+    owns; once that completes, ``asyncio.run`` re-raises ``KeyboardInterrupt``. A second
+    Ctrl-C during the drain interrupts it the same way. Either is the normal way to stop
+    a server, so it exits 0.
+    """
+    import asyncio
+    import sys
+
+    try:
+        return asyncio.run(run_web(args))
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        print("\nGaruda dashboard stopped.", file=sys.stderr, flush=True)
+        return 0
+
+
 def _enable_consults(args, config) -> None:
     """Give a role the user granted consult targets the ``consult`` tool (G.2).
 
@@ -3020,7 +3044,7 @@ def main() -> None:
     if args.command == "serve":
         raise SystemExit(asyncio.run(run_serve(args)))
     if args.command in ("web", "dashboard"):
-        raise SystemExit(asyncio.run(run_web(args)))
+        raise SystemExit(_run_web_until_interrupted(args))
     if args.command == "runtime":
         raise SystemExit(asyncio.run(run_runtime_command(args)))
     if args.command == "doctor":

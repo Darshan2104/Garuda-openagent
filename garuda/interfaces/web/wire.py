@@ -30,6 +30,15 @@ CODE_UNAVAILABLE = "unavailable"
 JSON_CONTENT_TYPE = "application/json; charset=utf-8"
 
 
+class BadRequest(ValueError):
+    """The request itself is invalid: the one exception ``dispatch`` answers with a 400.
+
+    A ``ValueError`` so existing ``except ValueError`` handlers keep catching it, but
+    distinct from one: a ``ValueError`` raised while *serving* a well-formed request is
+    an internal fault, a 500 with a server-side log, never the client's mistake.
+    """
+
+
 @dataclass(frozen=True)
 class Request:
     method: str
@@ -64,7 +73,10 @@ class Request:
     def json_body(self) -> Any:
         if not self.body:
             return {}
-        return json.loads(self.body.decode("utf-8"))
+        try:
+            return json.loads(self.body.decode("utf-8"))
+        except ValueError as exc:  # JSONDecodeError and UnicodeDecodeError both
+            raise BadRequest(f"The request body is not valid UTF-8 JSON: {exc}") from None
 
 
 @dataclass

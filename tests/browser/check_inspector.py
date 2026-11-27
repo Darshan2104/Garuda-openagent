@@ -15,6 +15,7 @@ import os
 import sys
 import tempfile
 
+from browser_support import count_at_least, count_is, launch, settle, text_contains
 from playwright.sync_api import sync_playwright
 
 BASE = os.environ.get("GARUDA_CHECK_BASE", "http://127.0.0.1:8891/")
@@ -42,7 +43,7 @@ EXPECT = {
 problems: list[str] = []
 
 with sync_playwright() as p:
-    browser = p.chromium.launch(channel="chrome")
+    browser = launch(p)
     page = browser.new_page(viewport={"width": 1500, "height": 1100})
     page.on("console", lambda m: problems.append(f"[{page.url[-28:]}] console.{m.type}: {m.text}")
             if m.type in ("error", "warning") else None)
@@ -51,7 +52,9 @@ with sync_playwright() as p:
             lambda r: problems.append(f"requestfailed: {r.url} {r.failure}"))
 
     page.goto(f"{BASE}#t={TOKEN}", wait_until="networkidle")
-    page.wait_for_timeout(600)
+    # The token URL lands on the Overview; the runs list is its own tab.
+    page.goto(f"{BASE}#/runs", wait_until="networkidle")
+    count_at_least(page, "#table-card tbody tr", len(EXPECT))
     rows = page.query_selector_all("#table-card tbody tr")
     print(f"runs list: {len(rows)} rows")
     if len(rows) != len(EXPECT):
@@ -59,7 +62,7 @@ with sync_playwright() as p:
 
     for sid, want in EXPECT.items():
         page.goto(f"{BASE}#/runs/{sid}", wait_until="networkidle")
-        page.wait_for_timeout(500)
+        count_at_least(page, ".turn", want["turns"])
 
         turns = page.query_selector_all(".turn")
         gates = page.query_selector_all(".gate")
@@ -135,11 +138,11 @@ with sync_playwright() as p:
         # is not one-way. `inner_text` skips hidden nodes, so anything inside a body must be
         # asserted only while it is open.
         page.click("#collapse-all")
-        page.wait_for_timeout(200)
+        count_is(page, ".turn.open", 0)
         if page.query_selector_all(".turn.open"):
             problems.append(f"{sid}: Collapse all left turns open")
         page.click("#expand-all")
-        page.wait_for_timeout(250)
+        count_is(page, ".turn.open", len(turns))
         opened = page.query_selector_all(".turn.open")
         if len(opened) != len(turns):
             problems.append(f"{sid}: {len(opened)} of {len(turns)} turns opened on expand-all")
@@ -168,9 +171,9 @@ with sync_playwright() as p:
 
     # The raw-event escape hatch, and the buffer link that expands a [buffer:…] stub.
     page.goto(f"{BASE}#/runs/b2-rejected-then-passed", wait_until="networkidle")
-    page.wait_for_timeout(400)
+    page.wait_for_selector("#raw-load")
     page.click("#raw-load")
-    page.wait_for_timeout(600)
+    count_at_least(page, ".raw-row")
     raw_rows = page.query_selector_all(".raw-row")
     print(f"\nraw events: {len(raw_rows)} rows")
     if not raw_rows:
@@ -179,7 +182,7 @@ with sync_playwright() as p:
     # also hits the task_complete calls that declare verification_commands. Assert on a
     # string that appears in exactly one event instead.
     page.fill("#raw-filter", "permission_ask")
-    page.wait_for_timeout(300)
+    count_is(page, ".raw-row", 1)
     filtered = page.query_selector_all(".raw-row")
     print(f"filtered to 'permission_ask': {len(filtered)} of {len(raw_rows)} rows")
     if len(filtered) != 1:
@@ -188,13 +191,13 @@ with sync_playwright() as p:
     # `Expand all`, not a click per head: the heads toggle, and a short run arrives already
     # open — so clicking each one *closed* it and hid the link this is looking for.
     page.click("#expand-all")
-    page.wait_for_timeout(300)
+    count_at_least(page, "[data-buffer]")
     buffer_link = page.query_selector("[data-buffer]")
     if not buffer_link:
         problems.append("no [buffer:…] stub was turned into a link")
     else:
         buffer_link.click()
-        page.wait_for_timeout(500)
+        text_contains(page, "#raw-body", "test_inclusive")
         if "test_inclusive" not in page.inner_text("#raw-body"):
             problems.append("the buffer link did not expand the archived output")
         print("buffer expansion: ok")
@@ -202,7 +205,7 @@ with sync_playwright() as p:
     # --- the overview strip, and the nested subagent trace --------------------
 
     page.goto(f"{BASE}#/runs/h8-subagent", wait_until="networkidle")
-    page.wait_for_timeout(500)
+    count_at_least(page, ".flow-row")
     flow_rows = page.query_selector_all(".flow-row")
     print(f"\noverview strip: {len(flow_rows)} rows")
     if len(flow_rows) != 2:
@@ -215,7 +218,8 @@ with sync_playwright() as p:
         problems.append("no button to open the subagent's own trace")
     else:
         opener.click()
-        page.wait_for_timeout(700)
+        settle(page, "() => document.querySelectorAll('.sub-turn').length > 0"
+                     " && !!document.querySelector('.sub-body')")
         sub_turns = page.query_selector_all(".sub-turn")
         print(f"nested subagent trace: {len(sub_turns)} turns")
         if len(sub_turns) != 2:
@@ -225,7 +229,7 @@ with sync_playwright() as p:
         page.screenshot(path=f"{SHOTS}/insp-subagent.png", full_page=True)
         # A second click closes it, rather than stacking a second copy underneath.
         opener.click()
-        page.wait_for_timeout(300)
+        count_is(page, ".sub-turn", 0)
         if page.query_selector_all(".sub-turn"):
             problems.append("clicking again did not close the nested trace")
 

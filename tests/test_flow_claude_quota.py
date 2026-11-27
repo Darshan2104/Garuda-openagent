@@ -207,3 +207,39 @@ def test_a_checked_flow_keeps_its_step_failed_contract():
     codex = RolePlan("coder", "codex", "acp", permissions="auto")
     assert FlowRunner._limit_pause(unchecked, codex, cause) is False
     assert FlowRunner._limit_pause(unchecked, plan, {"code": "acp.remote.internal_error"}) is False
+
+
+async def test_a_long_run_step_stopped_by_a_claude_limit_pauses_the_flow(repo, tmp_path, monkeypatch):
+    """A usage limit never reaches the turn hook (#842); the step still pauses."""
+    import asyncio
+    import json
+
+    from garuda.config import garuda_yaml as gy
+    from garuda.flows import engine
+    from garuda.flows.launch import _acp
+    from tests.test_long_step import _install
+
+    _install(tmp_path, monkeypatch, "claude-usage-limit-legacy")
+    config = {"version": 1, "roles": {"coder": {"harness": "claude"}},
+              "flows": {"one": {"steps": [{"id": "build", "role": "coder", "outputs": ["summary"],
+                                           "long_run": {}}]}}}
+    resolved = gy.resolve(gy.parse(config), None)
+    flow = json.loads(json.dumps(resolved.config["flows"]["one"]))
+    seen = []
+
+    async def launch(request):
+        assert request.role_plan.runtime_id == "claude" and request.turns is not None
+        seen.append(request.turns)
+        return await _acp(dataclasses.replace(
+            request, role_plan=RolePlan("coder", "fakeacp", "acp", permissions="auto")))
+
+    store = SessionStore()
+    result = await asyncio.wait_for(FlowRunner(store, repo, "one", flow, resolved, task="build it",
+                                               launcher=launch).run(), 90)
+    assert seen, "the step ran with its turn loop"
+    assert result.stopped is not None and result.stopped.code == "flow.quota_wait"
+    receipt, = engine.receipts(store, result.flow_session)
+    assert receipt["status"] == "stopped" and receipt["stop"]["code"] == "flow.quota_wait"
+    assert receipt["stop"]["cause"]["limit"] == {"resets_at": RESETS_AT,
+                                                 "rate_limit_type": "five_hour"}
+    assert store.load_meta(result.flow_session)["flow_stop"]["code"] == "flow.quota_wait"

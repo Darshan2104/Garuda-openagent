@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import stat
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -276,6 +277,14 @@ def session_limit_arg(text: str) -> int:
         return validate_session_limit(value)
     except SessionLimitError as exc:
         raise argparse.ArgumentTypeError(str(exc).removeprefix("limit ")) from None
+
+
+class UnreadableSession(Exception):
+    """A session directory whose ``meta.json`` exists but cannot be read or parsed.
+
+    Deliberately not a ``ValueError``: listing skips these quietly, while a
+    malformed-but-parsed record is a ``ValueError`` its strict callers refuse.
+    """
 
 
 class SessionStore:
@@ -622,12 +631,14 @@ class SessionStore:
             raise ValueError("saved messages must be a JSON list")
         return [message_from_dict(value) for value in values]
 
-    def load_meta(self, session_id: str) -> dict:
+    def load_meta(self, session_id: str, *, wait: bool = True) -> dict:
+        """The session's metadata. ``wait=False`` never waits on a protected session's
+        metadata lock: a held lock raises ``session_publication.MetadataBusy``."""
         path = self.session_dir(session_id) / "meta.json"
         from garuda.config_sources import record_source
         from garuda.core.session_publication import publication_cycle
 
-        with publication_cycle(path) as cycle:
+        with publication_cycle(path, wait=wait) as cycle:
             if cycle is not None:
                 document = cycle.read()
                 record_source(path, cycle.raw)
@@ -672,34 +683,76 @@ class SessionStore:
             )
         raise FileNotFoundError("No saved sessions to resume.")
 
-    def list_sessions(self, limit: int | None = 20) -> list[dict]:
+    def list_sessions(self, limit: int | None = 20, *,
+                      unreadable: list[str] | None = None) -> list[dict]:
         """Saved sessions, newest first; ``limit=None`` returns every session.
 
         A numeric ``limit`` must be an integer >= 1 (see ``validate_session_limit``):
         a negative slice would silently drop the oldest sessions and ``0`` would
         report that none exist.
-        """
-        from garuda.runtime.strict_store import StorageError
 
+        A session whose ``meta.json`` cannot be read is skipped. One that parses
+        but is malformed (not a mapping, or a non-string ``updated_at``) raises
+        ``ValueError`` by default, because callers that select by order
+        (``latest``, recovery) must not invent one. A display caller passes an
+        ``unreadable`` list instead: then every unreadable or malformed session
+        is skipped and its directory name appended, so one bad record cannot
+        hide the rest and the reader can still say how many were left out.
+        """
         if limit is not None:
             limit = validate_session_limit(limit)
         if not self.root.exists():
             return []
         metas: list[dict] = []
         for directory in self.root.iterdir():
-            meta_path = directory / "meta.json"
-            if meta_path.is_file():
-                try:
-                    meta = self.load_meta(directory.name)
-                except (OSError, ValueError, StorageError):
-                    continue
-                if not isinstance(meta, dict):
-                    raise ValueError(f"Session {directory.name} metadata must be a mapping")
-                if not isinstance(meta.get("updated_at", ""), str):
-                    raise ValueError(f"Session {directory.name} updated_at must be a string")
-                metas.append(meta)
+            try:
+                meta = self.listed_meta(directory.name)
+            except FileNotFoundError:
+                continue
+            except UnreadableSession:
+                if unreadable is not None:
+                    unreadable.append(directory.name)
+                continue
+            except ValueError:
+                if unreadable is None:
+                    raise
+                unreadable.append(directory.name)
+                continue
+            metas.append(meta)
         metas.sort(key=lambda m: m.get("updated_at", ""), reverse=True)
         return metas if limit is None else metas[:limit]
+
+    def listed_meta(self, session_id: str, *, wait: bool = True) -> dict:
+        """One session's metadata as ``list_sessions`` admits it.
+
+        ``FileNotFoundError`` when the directory holds no ``meta.json`` (not a
+        session), :class:`UnreadableSession` when it cannot be read or parsed,
+        and ``ValueError`` when it parses but is not a listable record. With
+        ``wait=False`` a held metadata lock raises ``MetadataBusy`` unchanged.
+        """
+        from garuda.core.session_publication import MetadataBusy
+        from garuda.runtime.strict_store import StorageError
+
+        try:
+            mode = os.stat(self.root / session_id / "meta.json").st_mode
+        except (FileNotFoundError, NotADirectoryError):
+            raise FileNotFoundError(session_id) from None
+        except OSError as exc:  # e.g. a session directory this user cannot enter
+            raise UnreadableSession(f"Session {session_id} metadata is unreadable") from exc
+        if not stat.S_ISREG(mode):
+            raise FileNotFoundError(session_id)
+        try:
+            # The keyword only when asked: subclasses with their own read keep working.
+            meta = self.load_meta(session_id) if wait else self.load_meta(session_id, wait=False)
+        except MetadataBusy:
+            raise
+        except (OSError, ValueError, StorageError) as exc:
+            raise UnreadableSession(f"Session {session_id} metadata is unreadable") from exc
+        if not isinstance(meta, dict):
+            raise ValueError(f"Session {session_id} metadata must be a mapping")
+        if not isinstance(meta.get("updated_at", ""), str):
+            raise ValueError(f"Session {session_id} updated_at must be a string")
+        return meta
 
     def resolve(
         self,

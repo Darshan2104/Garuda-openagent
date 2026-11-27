@@ -65,6 +65,10 @@ WRITE_POLICIES = ("edits", "no-edits")
 #: ``silence_min`` and ``tool_silence_min`` up to one day.
 STEP_LIMITS = {"deadline_min": (1, 7 * 24 * 60), "silence_min": (1, 24 * 60),
                "tool_silence_min": (1, 24 * 60)}
+#: A long step's turn loop (``long_run``): whole hours and turns, with their bounds.
+#: Absent keys take :data:`garuda.flows.long_step.DEFAULTS`.
+LONG_RUN = {"max_hours": (1, 24), "session_turns": (1, 200), "session_hours": (1, 24),
+            "max_turns": (1, 1000), "no_progress_turns": (1, 50)}
 ISOLATION = ("shared", "worktree", "auto")
 #: Bounds and default of `approvals.park_timeout_sec` (#834): 30 s to 24 h, 300 s.
 MIN_PARK_TIMEOUT_SEC = 30
@@ -274,7 +278,7 @@ def _step(value, path) -> dict:
     if isinstance(value, dict) and "flow" in value:
         _fail(f"{path}.flow", "a step cannot be a flow (nested flows are not supported)")
     data = _mapping(value, path, ("id", "role", "parallel", "write_policy", "inputs", "outputs",
-                                  "retries", "review", "limits"))
+                                  "retries", "review", "limits", "long_run"))
     out: dict[str, Any] = {}
     if "id" in data:
         out["id"] = _name(data["id"], f"{path}.id")
@@ -302,6 +306,11 @@ def _step(value, path) -> dict:
         out["retries"] = _int(data["retries"], f"{path}.retries", 0, MAX_RETRIES)
     if "limits" in data:
         out["limits"] = _limits(data["limits"], f"{path}.limits")
+    if "long_run" in data:
+        if "parallel" in out:
+            _fail(f"{path}.long_run", "a parallel group cannot run long; give a single role step "
+                  "long_run")
+        out["long_run"] = _long_run(data["long_run"], f"{path}.long_run")
     if "review" in data:
         review = _mapping(data["review"], f"{path}.review", ("by", "max_rounds", "independent"))
         out["review"] = {"by": _name(review.get("by"), f"{path}.review.by")}
@@ -329,6 +338,22 @@ def _limits(value, path) -> dict:
            for key in STEP_LIMITS if key in data}
     _check_silences(out, path)
     return out
+
+
+def _long_run(value, path) -> dict:
+    """A step's (or a flow's default) turn loop (``long_run``): present keys only,
+    so a flow without it parses and digests exactly as before. ``{}`` takes every
+    default."""
+    data = _mapping(value, path, tuple(LONG_RUN))
+    out = {key: _int(data[key], f"{path}.{key}", *LONG_RUN[key])
+           for key in LONG_RUN if key in data}
+    _check_long_run(out, path)
+    return out
+
+
+def _check_long_run(long_run: dict, path: str) -> None:
+    if long_run.get("session_hours", 0) > long_run.get("max_hours", 24):
+        _fail(f"{path}.session_hours", "must not be longer than max_hours")
 
 
 def _check_silences(limits: dict, path: str) -> None:
@@ -462,7 +487,7 @@ def validate_flow_retries(steps: list[dict], *, path: str) -> None:
 
 
 def _flow(value, path) -> dict:
-    data = _mapping(value, path, ("steps", "description", "limits"))
+    data = _mapping(value, path, ("steps", "description", "limits", "long_run"))
     steps = data.get("steps")
     if not isinstance(steps, list) or not steps:
         _fail(f"{path}.steps", "must be a non-empty list")
@@ -476,9 +501,13 @@ def _flow(value, path) -> dict:
     validate_flow_retries(steps, path=steps_path)
     if "limits" in data:
         out["limits"] = _limits(data["limits"], f"{path}.limits")
+    if "long_run" in data:
+        out["long_run"] = _long_run(data["long_run"], f"{path}.long_run")
     for i, step in enumerate(out["steps"]):
         if "limits" in step and "limits" in out:  # a step overrides the default per key
             _check_silences({**out["limits"], **step["limits"]}, f"{steps_path}[{i}].limits")
+        if "long_run" in step and "long_run" in out:
+            _check_long_run({**out["long_run"], **step["long_run"]}, f"{steps_path}[{i}].long_run")
     if "description" in data:
         out["description"] = _str(data["description"], f"{path}.description")
     return out
