@@ -652,7 +652,10 @@ default):
 - `max_hours` (1 to 24, default 12): the step's whole budget; it is also its
   deadline (the shorter of it and `limits.deadline_min`).
 - `session_turns` (1 to 200, default 20) and `session_hours` (1 to 24,
-  default 4, at most `max_hours`): when Garuda starts a fresh harness session.
+  at most `max_hours`): when Garuda starts a fresh harness session. Unset,
+  `session_hours` is 4 or `max_hours`, whichever is shorter; set longer than
+  `max_hours` (12 when unset), the flow is refused when it loads
+  (`config.invalid`).
 - `max_turns` (1 to 1000, default 200): the most turns the step sends.
 - `no_progress_turns` (1 to 50, default 3): turns without a change Garuda can
   measure before the step pauses.
