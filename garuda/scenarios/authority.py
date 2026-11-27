@@ -99,6 +99,33 @@ def _capabilities(backend_available: bool, approval_available: bool) -> dict:
     }
 
 
+def _owned_shape_blockers(name: str, flow: dict, block) -> None:
+    """Flow shapes the owned engine refuses after admission, refused before it.
+
+    The owned flow parent refuses step retries (``flow.retries_unsupported``)
+    and a non-shared ``isolation`` (``flow.isolation_unsupported``); parallel
+    groups are refused below. Packaged flows have neither, so the packaged
+    starters' authority is unchanged; a configured override that has them now
+    refuses at preview instead of at start. Blockers are not part of the
+    envelope or its digest.
+    """
+    from garuda.config.garuda_yaml import effective_flow_steps
+
+    for step in effective_flow_steps(flow):
+        if step.get("retries"):
+            block("starter.retries_unsupported",
+                  f"Step {step['id']} sets retries: {step['retries']}, "
+                  "which a dashboard-owned flow never runs.",
+                  f"Remove the step's retries, or run `garuda flow run {name}` from a terminal "
+                  "without checks.")
+    isolation = flow.get("isolation", "shared")
+    if isolation != "shared":
+        block("starter.isolation_unsupported",
+              f"Flow {name} sets isolation: {isolation}; a dashboard start runs only in the "
+              "shared checkout.",
+              f"Run `garuda flow run {name}` from a terminal, or remove the flow's isolation.")
+
+
 def start_authority(plan, context, **policy) -> dict:
     """The authority envelope for the plan's launch kind."""
     if plan.kind == "run" and context.kind == "run":
@@ -175,6 +202,7 @@ def flow_authority(plan, context, *, max_permission: str, server_epoch: str,
     roles = {}
     steps = []
     flow = context.flow or {"steps": []}
+    _owned_shape_blockers(plan.target, flow, block)
     for index, step in enumerate(flow.get("steps", [])):
         if step.get("parallel"):
             block("starter.parallel_ownership_unavailable",

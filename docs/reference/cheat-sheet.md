@@ -191,6 +191,7 @@ garuda starter run plan-feedback --feedback "Explain the unavailable state" --wo
 garuda starter run build-review --goal "Add reconnect status" --workspace . --preview
 garuda starter run run-with-role --goal "Add reconnect status" --role coder --check "pytest -q" --workspace . --preview
 garuda starter run ask-role --question "Where is reconnect behavior defined?" --workspace . --preview
+garuda starter run run-flow --flow plan-only --goal "Explain reconnect status" --workspace . --preview
 garuda starter result SESSION --workspace . --json
 ```
 

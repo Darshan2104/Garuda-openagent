@@ -1,0 +1,24 @@
+version: 1
+id: run-flow
+title: Run a configured flow
+launch:
+  kind: flow
+  select: configured
+  options:
+  - checks
+fields:
+  flow:
+    type: flow-name
+    required: true
+    label: Flow
+  goal:
+    type: text
+    required: true
+    label: Task
+  options:
+    type: execution-options
+  sources:
+    type: source-refs
+    label: Sources
+brief: run-flow
+example: reconnect-flow

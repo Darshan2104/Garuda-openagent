@@ -13,14 +13,14 @@ from garuda.context.tags import TagError
 from garuda.core.project_identity import ProjectIdentityError
 from garuda.flows.engine import FlowStopped
 from garuda.interfaces.bg_sessions import BackgroundRefused
-from garuda.scenarios.catalog import load_catalog
+from garuda.scenarios.catalog import load_catalog, selects_flow
 from garuda.scenarios.compile import compile_scenario
 from garuda.scenarios.service import RESOLUTION_ERRORS, StarterService
 from garuda.scenarios.types import StarterError
 from garuda.workspace.confined_acp import ConfinementRefused
 
 TEXT_FIELDS = ('goal', 'requirements', 'exclude', 'constraints', 'feedback', 'current',
-               'desired', 'question', 'role', 'variant', 'plan_artifact')
+               'desired', 'question', 'role', 'variant', 'plan_artifact', 'flow')
 
 
 def add_parser(subparsers):
@@ -109,7 +109,8 @@ def run(args):
             render(service.list(args.workspace), as_json=args.json)
         elif args.starter_command == 'show':
             entries = load_catalog()
-            if args.starter_id not in entries:
+            # A selecting starter (run-flow) is reachable by id through run, never listed.
+            if args.starter_id not in entries or selects_flow(entries[args.starter_id]):
                 raise StarterError('starter.unknown', 'select an installed starter')
             state = next(row['readiness'] for row in service.list(args.workspace) if row['id'] == args.starter_id)
             render({**asdict(entries[args.starter_id]), 'readiness': state}, as_json=args.json)
