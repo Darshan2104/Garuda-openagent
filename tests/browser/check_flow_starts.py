@@ -13,6 +13,8 @@ BASE = os.environ["GARUDA_CHECK_BASE"]
 TOKEN = os.environ["GARUDA_CHECK_TOKEN"]
 SOURCE = Path(os.environ["GARUDA_CHECK_FLOW_SOURCE"])
 SHOTS = Path(os.environ["GARUDA_CHECK_SHOTS"])
+#: serve_flow_starts.GRACE_SECONDS: the broker's heartbeat grace window there.
+SERVER_GRACE_SECONDS = 2.0
 
 
 def main() -> None:
@@ -111,20 +113,16 @@ def main() -> None:
         # that fails the step whatever the dashboard does (reported; not this page's code).
         operation = start_from_flows(page, "Wait while the user is on other pages")
         asked = time.monotonic()
-        grace = context.request.get(
-            BASE + "api/approvals?owner=" + operation,
-            headers={"X-Garuda-Token": TOKEN}).json()["grace_seconds"]
+        grace = SERVER_GRACE_SECONDS
         page.goto(BASE + "#/runs")
         page.wait_for_timeout(grace * 1000 * 0.6)  # observation windows, not waits: together
         page.goto(BASE + "#/usage")               # longer than the grace window
         page.wait_for_timeout(grace * 1000 * 0.6)
-        expect(page.locator("#nav-inbox-count")).to_have_text("1", timeout=30_000)
-        pending = live_asks(context, operation)
-        assert len(pending) == 1, pending
         page.goto(BASE + "#/inbox")
         item = page.locator('#inbox-list [data-live="1"]')
-        expect(item).to_have_count(1, timeout=20_000)
+        expect(item).to_have_count(1, timeout=5_000)
         expect(item).to_contain_text("dashboard flow")
+        expect(page.locator("#nav-inbox-count")).to_have_text("1", timeout=5_000)
         print(f"answered {time.monotonic() - asked:.1f}s after the approval appeared", flush=True)
         item.locator('[data-act="allow"]').click()
         expect(item).to_contain_text("allowed")
@@ -135,6 +133,8 @@ def main() -> None:
 
         # A closed tab stops watching: its waiting approval is denied as "stopped watching".
         operation = start_from_flows(page, "Abandon this flow's approval")
+        grace = approvals_for(context, operation)["grace_seconds"]
+        assert grace == SERVER_GRACE_SECONDS, grace
         page.close()
         # Watched only through GET /api/inbox, which refreshes no heartbeat (the operation
         # and approvals reads would keep it alive).
