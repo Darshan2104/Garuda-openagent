@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from garuda.core.spend import SPEND_OPTIONAL_COUNTERS, SPEND_REQUIRED_FIELDS
-from garuda.runtime.session_state import effective_state, is_crashed, summary_label
+from garuda.runtime.session_state import ACTIVE_WORK, effective_state, is_crashed, summary_label
 
 UNKNOWN = "unknown"
 
@@ -154,11 +154,84 @@ def _attempt(receipt: dict) -> dict:
         "delta": None if before is None or after is None else before != after,
         "no_edits": no_edits.get("result"),
         "stop": receipt.get("stop"),
+        # The pause kind when this attempt stopped on one of the engine's resumable pauses
+        # (deadline, silence, no progress, turn budget, refusal); ``None`` otherwise, so a
+        # failed step is never drawn as paused.
+        "pause": _attempt_pause(receipt),
         "turn_loop": _turn_loop(receipt),
         # What the attempt cost and how much context it used (#832); ``None`` for a
         # receipt written before it.
         "measure": receipt.get("measure") if isinstance(receipt.get("measure"), dict) else None,
     }
+
+
+#: The stop code a usage-limit pause records (``flows.quota_recovery`` and the engine raise
+#: it by this literal; neither exports a constant for it).
+QUOTA_STOP = "flow.quota_wait"
+QUOTA_WAIT = "waiting-for-quota"
+
+
+def pause_kinds() -> dict[str, str]:
+    """``{stop code: pause kind}`` for the stops a flow pauses on, from the engine's own
+    constants: its liveness stops and a long step's loop stops, each kept only while the
+    engine lists it in ``RESUMABLE_CHECKED_STOPS`` (so ``flow resume`` runs the step again).
+    An ordinary failed step is resumable too, but it is a failure, not a pause."""
+    from garuda.flows.engine import LIVENESS_STOPS, RESUMABLE_CHECKED_STOPS
+    from garuda.flows.long_step import LOOP_STOPS
+
+    kinds = {code: kind for kind, code in LIVENESS_STOPS.items()}
+    for code in LOOP_STOPS:
+        kinds.setdefault(code, code.removeprefix("flow.step_"))
+    return {code: kind for code, kind in kinds.items() if code in RESUMABLE_CHECKED_STOPS}
+
+
+def _attempt_pause(receipt: dict) -> str | None:
+    stop = receipt.get("stop")
+    code = stop.get("code") if isinstance(stop, dict) else None
+    if receipt.get("status") != "stopped" or not isinstance(code, str):
+        return None
+    return pause_kinds().get(code)
+
+
+def quota_limit(meta: dict) -> dict:
+    """When a usage-limit pause resets, from the quota-recovery record (``reset_at``) or the
+    stop's own cause (``cause.limit.resets_at``), with the limit window; ``None`` values
+    when neither recorded it."""
+    recovery = meta.get("quota_recovery") if isinstance(meta.get("quota_recovery"), dict) else {}
+    stop = meta.get("flow_stop") if isinstance(meta.get("flow_stop"), dict) else {}
+    cause = stop.get("cause") if isinstance(stop.get("cause"), dict) else {}
+    limit = cause.get("limit") if isinstance(cause.get("limit"), dict) else {}
+
+    def stamp(value):
+        return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+    reset = stamp(recovery.get("reset_at"))
+    if reset is None:
+        reset = stamp(limit.get("resets_at"))
+    window = recovery.get("rate_limit_type") or limit.get("rate_limit_type")
+    return {"reset_at": reset, "rate_limit_type": window if isinstance(window, str) else None,
+            "source": recovery.get("quota_source") if isinstance(recovery.get("quota_source"), str)
+            else None}
+
+
+def flow_pause(meta: dict) -> dict | None:
+    """Why a stopped flow is paused on a resumable stop, from its recorded fields, or ``None``:
+    ``{"kind": "quota", ...}`` (with the reset time and window when recorded) for a
+    usage-limit wait, else ``{"kind": <pause kind>}`` for a flow stopped on one of
+    :func:`pause_kinds`. The recorded ``outcome`` is left as stored: the run ended without
+    completing, and ``garuda flow resume`` continues it."""
+    if meta.get("kind") != "flow":
+        return None
+    recovery = meta.get("quota_recovery")
+    stop = meta.get("flow_stop")
+    code = stop.get("code") if isinstance(stop, dict) else None
+    if (isinstance(recovery, dict) and recovery.get("state") == QUOTA_WAIT) or code == QUOTA_STOP:
+        # The reset time and window only when recorded (a Codex wait records neither).
+        return {"kind": "quota", **{k: v for k, v in quota_limit(meta).items() if v is not None}}
+    kinds = pause_kinds()
+    if meta.get("flow_state") == "stopped" and code in kinds:
+        return {"kind": kinds[code]}
+    return None
 
 
 def _turn_loop(receipt: dict) -> dict | None:
@@ -256,7 +329,9 @@ def flow(store, session_id: str, meta: dict | None = None, *, receipts: list[dic
             "review_coverage": _review_coverage(meta.get("review_approvals")),
             # The receipts' per-attempt measures, totalled (#832): the same figure as
             # `flow show --json`'s summary.measure. Adapter-reported cost, never metered.
-            "measure": _measure_total(steps)}
+            "measure": _measure_total(steps),
+            # What the running (or paused) step is doing now; additive.
+            "in_flight": _in_flight_or_none(store, session_id, meta)}
 
 
 def _measure_total(steps: list[dict]) -> dict:
@@ -271,6 +346,209 @@ def _review_coverage(approvals) -> dict[str, str]:
     return {str(step): (record.get("coverage") if record.get("coverage") in
                         ("partial", "complete", "unknown") else "unknown")
             for step, record in approvals.items() if isinstance(record, dict)}
+
+
+def _in_flight_or_none(store, session_id: str, meta: dict) -> dict | None:
+    try:
+        return flow_in_flight(store, session_id, meta)
+    except Exception:  # noqa: BLE001 - a live view never fails the read model
+        return None
+
+
+#: Flow states a step is paused (or stopped) in, with a recorded ``flow_stop``.
+_PAUSED_STATES = frozenset({"stopped", "interrupted", "quarantined"})
+#: Bound on the part of a progress file the live view reads (its tail).
+_PROGRESS_TAIL = 256 * 1024
+
+
+def _iso(epoch: float | None) -> str | None:
+    import datetime as _dt
+
+    if epoch is None:
+        return None
+    return _dt.datetime.fromtimestamp(epoch, _dt.timezone.utc).isoformat(timespec="seconds")
+
+
+def _epoch(value) -> float | None:
+    import datetime as _dt
+
+    if not isinstance(value, str):
+        return None
+    try:
+        return _dt.datetime.fromisoformat(value).timestamp()
+    except ValueError:
+        return None
+
+
+def _mtime(path) -> float | None:
+    try:
+        return path.stat().st_mtime
+    except (OSError, ValueError):
+        return None
+
+
+def _progress_tail(path) -> list[dict]:
+    """A progress file's last records (``progress/<step>-<attempt>.jsonl``), read only."""
+    import json
+    import os
+
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(fd, "rb") as handle:
+            size = os.fstat(handle.fileno()).st_size
+            handle.seek(max(0, size - _PROGRESS_TAIL))
+            data = handle.read(_PROGRESS_TAIL)
+    except OSError:
+        return []
+    rows = []
+    for line in data.decode("utf-8", "replace").splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue  # a torn first or last line
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
+def flow_in_flight(store, flow_session: str, meta: dict | None = None) -> dict | None:
+    """What a flow's current step attempt is doing now, or ``None``.
+
+    Shared by ``garuda flow show`` (and its ``--json`` ``live``) and the
+    dashboard. Read only: it reads the flow journal's open intent, the
+    attempt's launch record and progress file, the step session's meta and the
+    modification times of its records; it takes no lease or lock and writes
+    nothing. ``None`` when no attempt is open and the flow is not paused.
+
+    Fields: ``state`` (the flow's), ``process`` (the flow's recorded process,
+    checked against its owner), ``step``, ``attempt``, ``started_at``,
+    ``session_id`` (the in-flight Garuda step session), ``harness_sessions``,
+    ``turns``, ``rotations``, ``continuations``, ``last_turn_at``,
+    ``last_decision``, ``last_stop_reason``, ``context_used``, ``context_size``,
+    ``last_note``, ``last_activity_at``, ``idle_sec``, ``deadline_at``,
+    ``progress`` (the progress file, relative to the flow directory),
+    ``last_checkpoint`` and ``paused`` (``{code, step, message, reset_at}`` when
+    the flow is stopped with a recorded reason: a quota wait, a step deadline,
+    silence or no progress, ...). Unknown facts are ``None``.
+    """
+    import json
+    import time
+
+    meta = meta if meta is not None else store.load_meta(flow_session)
+    if not isinstance(meta, dict) or meta.get("kind") != "flow":
+        return None
+    flow_dir = Path(store.session_dir(flow_session)) / "flow"
+    entries = []
+    try:
+        for line in (flow_dir / "journal.jsonl").read_text(encoding="utf-8").splitlines():
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(entry, dict):
+                entries.append(entry)
+    except OSError:
+        entries = []
+    settled = {(e.get("step"), e.get("attempt")) for e in entries if e.get("event") == "receipt"}
+    open_intent = None
+    for entry in entries:
+        key = (entry.get("step"), entry.get("attempt"))
+        if (entry.get("event") == "intent" and isinstance(key[0], str) and type(key[1]) is int
+                and key not in settled
+                and not (flow_dir / "receipts" / f"{key[0]}-{key[1]}.json").exists()):
+            open_intent = entry
+    state = meta.get("flow_state")
+    stop = meta.get("flow_stop") if isinstance(meta.get("flow_stop"), dict) else None
+    paused = None
+    if state in _PAUSED_STATES and stop and stop.get("code"):
+        cause = stop.get("cause") if isinstance(stop.get("cause"), dict) else {}
+        limit = cause.get("limit") if isinstance(cause.get("limit"), dict) else {}
+        recovery = meta.get("quota_recovery") if isinstance(meta.get("quota_recovery"), dict) else {}
+        reset = limit.get("resets_at") or recovery.get("reset_at")
+        paused = {**_bounded_fields(stop, (("code", 120), ("step", 80), ("message", 500))),
+                  "reset_at": reset if type(reset) is int else None,
+                  "next_check": (recovery.get("next_check")
+                                 if type(recovery.get("next_check")) in (int, float) else None)}
+    if open_intent is None and paused is None:
+        return None
+    step = open_intent.get("step") if open_intent else (stop or {}).get("step")
+    attempt = open_intent.get("attempt") if open_intent else None
+    if open_intent is None and isinstance(step, str):
+        tried = [e.get("attempt") for e in entries
+                 if e.get("event") == "intent" and e.get("step") == step and type(e.get("attempt")) is int]
+        attempt = max(tried) if tried else None
+    out: dict[str, Any] = {
+        "state": state, "process": effective_state(meta).get("process"),
+        "step": step if isinstance(step, str) else None, "attempt": attempt,
+        "started_at": open_intent.get("at") if open_intent else None,
+        "session_id": None, "harness_sessions": None, "turns": None, "rotations": None,
+        "continuations": None, "last_turn_at": None, "last_decision": None,
+        "last_stop_reason": None, "context_used": None, "context_size": None, "last_note": None,
+        "last_activity_at": None, "idle_sec": None, "deadline_at": None, "progress": None,
+        "last_checkpoint": None, "paused": paused}
+    activity = []
+    if isinstance(out["step"], str) and type(attempt) is int:
+        from garuda.flows import launches
+
+        launched = launches.read(flow_dir, out["step"], attempt) or {}
+        session_id = launched.get("session_id")
+        if isinstance(session_id, str):
+            out["session_id"] = session_id
+            out["started_at"] = out["started_at"] or launched.get("started_at")
+        progress = flow_dir / "progress" / f"{out['step']}-{attempt}.jsonl"
+        rows = _progress_tail(progress)
+        if rows:
+            out["progress"] = f"progress/{progress.name}"
+            activity.append(_mtime(progress))
+        turns = [r for r in rows if type(r.get("turn")) is int]
+        if out["session_id"] is None:
+            start = next((r for r in rows if r.get("event") == "start"), {})
+            if isinstance(start.get("session_id"), str):
+                out["session_id"] = start["session_id"]
+        if turns:
+            last = turns[-1]
+            out.update(turns=last["turn"],
+                       harness_sessions=last.get("session") if type(last.get("session")) is int else None,
+                       rotations=sum(1 for r in turns if r.get("decision") == "rotate"),
+                       continuations=sum(1 for r in turns if r.get("decision") == "next"),
+                       last_turn_at=last.get("at") if isinstance(last.get("at"), str)
+                       else _iso(_mtime(progress)),
+                       last_decision=last.get("decision"), last_stop_reason=last.get("stop_reason"),
+                       last_note=(" ".join(str(last["note"]).split())[:300]
+                                  if isinstance(last.get("note"), str) else None))
+            context = next((r["context"] for r in reversed(turns) if isinstance(r.get("context"), dict)), None)
+            if context:
+                out["context_used"] = context.get("used")
+                out["context_size"] = context.get("size")
+        if out["session_id"] is not None:
+            try:
+                step_dir = Path(store.session_dir(out["session_id"]))
+                child = store.load_meta(out["session_id"])
+            except Exception:  # noqa: BLE001 - a session not begun yet, or unreadable
+                step_dir, child = None, {}
+            if step_dir is not None:
+                for name in ("acp-events.jsonl", "events.jsonl", "meta.json"):
+                    activity.append(_mtime(step_dir / name))
+            limits = child.get("limits") if isinstance(child, dict) else None
+            deadline = limits.get("deadline_sec") if isinstance(limits, dict) else None
+            started = _epoch(out["started_at"])
+            if type(deadline) in (int, float) and started is not None and open_intent is not None:
+                out["deadline_at"] = _iso(started + deadline)
+    known = [t for t in activity if t is not None]
+    if known and open_intent is not None:
+        out["last_activity_at"] = _iso(max(known))
+        out["idle_sec"] = max(0, int(time.time() - max(known)))
+    try:
+        from garuda.flows.checkpoints import listing
+
+        rows = listing(flow_dir)
+    except Exception:  # noqa: BLE001 - a shared-checkout flow has none
+        rows = []
+    if rows:
+        last = rows[-1]
+        out["last_checkpoint"] = {key: last.get(key) for key in
+                                  ("n", "step", "attempt", "label", "at", "pruned")}
+    return out
 
 
 def _bounded_fields(record: dict, limits) -> dict:
@@ -396,6 +674,9 @@ def session_row(store, meta: dict, *, queue_index: dict | None = None, liveness=
         "state": {k: state.get(k) for k in ("process", "work", "outcome")},
         "label": summary_label(state),
         "crashed": is_crashed(state),
+        # A stopped flow on a resumable pause (``flow_pause``); ``None`` while work is
+        # active and for every other session. ``label`` and ``outcome`` stay as recorded.
+        "pause": None if state.get("work") in ACTIVE_WORK else flow_pause(meta),
         "verification": verification,
         "self_check": state.get("self_check"),
         "workspace": meta.get("workspace"),

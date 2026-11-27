@@ -14,8 +14,26 @@
 
 function chip(label, value, cls) {
   return '<span class="chip ' + (cls || "chip-off") + '" data-chip="' + esc(label) + '">' +
-         esc(label) + ": " + esc(value === null || value === undefined ? "unknown" : value) +
+         '<span class="chip-k">' + esc(label) + ":</span> " +
+         esc(value === null || value === undefined ? "unknown" : value) +
          "</span>";
+}
+
+/* A flow stopped on a resumable pause (the read model's `pause`), in a few words. Its recorded
+ * outcome stays as stored; this says why it stopped and that `flow resume` continues it. */
+var PAUSE_KINDS = {
+  deadline: "ran past its deadline", silence: "went silent past its limit",
+  no_progress: "made no measurable progress", max_turns: "used its whole turn budget",
+  refused: "was refused by its harness"
+};
+
+function pauseText(pause, stop) {
+  if (!pause) return "";
+  if (pause.kind === "quota") {
+    return typeof pause.reset_at === "number" ? "usage limit, resets " + untilEpochText(pause.reset_at)
+      : "waiting for its harness's usage limit";
+  }
+  return (stop && stop.step ? "step " + stop.step + " " : "a step ") + (PAUSE_KINDS[pause.kind] || "paused");
 }
 
 function outcomeClass(value) {
@@ -167,7 +185,8 @@ function sessionRowHtml(row) {
   var where = row.workspace ? fmt.tail(row.workspace, 30) : "—";
   var summary = spendSummaryText(row.spend);
   return (
-    '<tr class="session-row" data-session="' + esc(id) + '" data-label="' + esc(row.label) + '">' +
+    '<tr class="session-row" data-session="' + esc(id) + '" data-label="' + esc(row.label) + '"' +
+    (row.pause ? ' data-pause="' + esc(row.pause.kind) + '"' : "") + ">" +
     '<td class="s-name" data-th="Session"><a href="#/sessions/' + encodeURIComponent(id) + '">' +
     esc(row.name || id.slice(0, 8)) + "</a>" +
     (row.kind === "flow" ? ' <span class="pill unknown">flow</span>' : "") +
@@ -175,10 +194,11 @@ function sessionRowHtml(row) {
     ' <a class="session-trace stat-sub" href="#/runs/' + encodeURIComponent(id) + '" title="Trace and metrics on Runs">trace</a>' +
     // Two runs of one task have the same name; the id and the task's first words tell them apart.
     '<div class="s-sub"><code>' + esc(id.slice(0, 8)) + "</code>" + (task ? " · " + esc(task) : "") + "</div></td>" +
-    '<td data-th="State"><span class="pill ' + (row.crashed ? "failed" : (state.work === "working" ? "running" : "unknown")) + '">' +
-    esc(row.label) + "</span>" + (row.queue ? '<div class="s-sub">' + esc(queueText(row.queue)) + "</div>" : "") + "</td>" +
+    '<td data-th="State"><span class="pill ' + (row.pause ? "paused" : (row.crashed ? "failed" : (state.work === "working" ? "running" : "unknown"))) +
+    '" data-state="' + esc(row.pause ? "paused" : row.label) + '">' +
+    esc(row.pause ? "paused" : row.label) + "</span>" + (row.queue ? '<div class="s-sub">' + esc(queueText(row.queue)) + "</div>" : "") + "</td>" +
     '<td class="s-clip" data-th="Runtime · role · model" title="' + esc(identityText(row)) + '">' + esc(identityText(row)) + "</td>" +
-    '<td class="s-facts" data-th="Outcome / verification">' + chip("outcome", state.outcome || "—", outcomeClass(state.outcome)) + " " +
+    '<td class="s-facts" data-th="Outcome / verification">' + chip("outcome", state.outcome || "—", row.pause ? "chip-pause" : outcomeClass(state.outcome)) + " " +
     verificationChip(row.verification) + selfCheckChip(row.self_check) + "</td>" +
     '<td class="s-clip" data-th="Workspace" title="' + esc((row.workspace || "") + (row.branch ? " @ " + row.branch : "")) + '">' +
     esc(where) + (row.branch ? '<div class="s-sub">@ ' + esc(row.branch) + "</div>" : "") + "</td>" +
@@ -440,9 +460,10 @@ function reviewCoverageHtml(coverage) {
 function attemptHtml(attempt) {
   var delta = attempt.delta === null ? "unknown" : (attempt.delta ? "changed" : "unchanged");
   return (
-    '<li class="attempt" data-attempt="' + esc(attempt.attempt) + '" data-status="' + esc(attempt.status) + '">' +
+    '<li class="attempt" data-attempt="' + esc(attempt.attempt) + '" data-status="' + esc(attempt.status) + '"' +
+    (attempt.pause ? ' data-pause="' + esc(attempt.pause) + '"' : "") + ">" +
     '<div class="attempt-head">attempt ' + esc(attempt.attempt) + " · " + esc(ranText(attempt)) +
-    " " + chip("status", attempt.status, attempt.status === "done" ? "chip-on" : "chip-bad") +
+    " " + chip("status", attempt.status, attempt.status === "done" ? "chip-on" : (attempt.pause ? "chip-pause" : "chip-bad")) +
     " " + chip("workspace", delta, "chip-off") +
     (attempt.no_edits ? " " + chip("no-edits", attempt.no_edits, attempt.no_edits === "unchanged" ? "chip-on" : "chip-bad") : "") +
     ' <span class="stat-sub">' + esc(attempt.duration_ms === null || attempt.duration_ms === undefined ? "duration unknown" : fmt.duration(attempt.duration_ms)) + "</span>" +
@@ -464,6 +485,7 @@ function stepStatus(step, current) {
   if (!attempts.length) return { text: "not run yet", cls: "unknown", key: "pending" };
   var last = attempts[attempts.length - 1];
   if (last.status === "done") return { text: "done", cls: "success", key: "done" };
+  if (last.pause) return { text: last.status, cls: "paused", key: "failed" };
   return { text: last.status || "unknown", cls: last.status ? "failed" : "unknown", key: "failed" };
 }
 
@@ -495,7 +517,10 @@ function flowHtml(flow, progress) {
       var total = durations.length && durations.every(function (d) { return typeof d === "number"; })
         ? durations.reduce(function (s, d) { return s + d; }, 0) : null;
       var passes = edges.filter(function (e) { return e.from_step === step.id; });
-      return '<li class="pipe-step pipe-' + status.key + '" data-step="' + esc(step.id) + '"' + (status.key === "current" ? ' aria-current="step"' : "") + ">" +
+      return '<li class="pipe-step pipe-' + status.key + '" data-step="' + esc(step.id) + '"' +
+        (last && status.key !== "current" ? ' data-status="' + esc(last.status) + '"' : "") +
+        (last && last.pause && status.key !== "current" ? ' data-pause="' + esc(last.pause) + '"' : "") +
+        (status.key === "current" ? ' aria-current="step"' : "") + ">" +
         '<div class="pipe-head"><span class="pipe-no">' + (index + 1) + "</span><strong>" + esc(step.id) + "</strong> " +
         '<span class="pill ' + status.cls + '">' + esc(status.text) + "</span>" +
         (last ? ' <span class="stat-sub">' + esc(ranText(last)) + " · " + attempts.length + " attempt" + (attempts.length === 1 ? "" : "s") +
@@ -728,9 +753,11 @@ function sessionHeadHtml(page) {
   if (stop.message) {
     stopHtml += ' <span class="stat-sub' + (stop.phase === "error" ? " err-text" : "") + '" id="session-stop-result">' + esc(stop.message) + "</span>";
   }
-  var labelCls = row.crashed || sessionFailed(row) ? "failed" : (isActive(state) ? "running" : (state.outcome === "completed" ? "success" : "unknown"));
+  var labelCls = row.pause ? "paused" : (row.crashed || sessionFailed(row) ? "failed" : (isActive(state) ? "running" : (state.outcome === "completed" ? "success" : "unknown")));
+  var label = row.pause ? "paused" : row.label;
   return '<h1>' + esc(row.name || String(row.session_id).slice(0, 8)) + "</h1>" +
-    '<span class="pill ' + labelCls + '" id="session-label">' + esc(row.label) + "</span>" +
+    '<span class="pill ' + labelCls + '" id="session-label" data-state="' + esc(label) + '">' + esc(label) + "</span>" +
+    (row.pause ? '<span class="stat-sub" id="session-pause">' + esc(pauseText(row.pause, row.flow && row.flow.stop)) + "</span>" : "") +
     (row.kind === "flow" ? '<span class="pill unknown">flow</span>' : "") +
     '<a class="btn" href="#/runs/' + encodeURIComponent(row.session_id) + '">Trace</a>' +
     '<a class="btn" href="' + esc(sessionsHash(STATE.filters.sessions)) + '">All sessions</a>' +
@@ -802,12 +829,13 @@ function sessionResultHtml(row) {
   }
   if (sessionFailed(row)) {
     var why = failureSentence(row);
-    body += '<div class="session-cause" id="session-cause"><p class="err-text">' + esc(why.cause) + "</p>" +
+    body += '<div class="session-cause" id="session-cause"' + (row.pause ? ' data-state="paused"' : "") +
+      '><p class="' + (row.pause ? "pause-text" : "err-text") + '">' + esc(why.cause) + "</p>" +
       '<p class="stat-sub" id="session-next">' + esc(why.next) + "</p></div>";
   }
   return '<section class="card" id="session-result"><h2>Result</h2>' +
     // Outcome and verification are two facts: two chips, never one.
-    '<div class="chips" id="session-facts">' + chip("outcome", state.outcome || "—", outcomeClass(state.outcome)) +
+    '<div class="chips" id="session-facts">' + chip("outcome", state.outcome || "—", row.pause ? "chip-pause" : outcomeClass(state.outcome)) +
     verificationChip(row.verification) + selfCheckChip(row.self_check) +
     (row.flow && row.flow.review ? chip("review", reviewLabel(row.flow.review), "chip-off") : "") + "</div>" + body + "</section>";
 }
@@ -1452,11 +1480,11 @@ function conversationPanelHtml(c) {
   var used = c.models_used;
   var rows = used.rows.map(function (r) {
     return '<tr class="model-row" data-work="' + esc(r.work_type) + '" data-model="' + esc(r.model) + '" data-origin="' + esc(r.origin || "run") + '">' +
-      "<td>" + esc(r.work_type) + (r.origin && r.origin !== "run" ? ' <span class="pill unknown origin-pill">' + esc(r.origin) + "</span>" : "") + "</td><td>" + esc(r.harness) + "</td>" +
-      "<td>" + (r.model === "not reported" ? '<span class="pill unknown">not reported</span>' : esc(r.model)) + "</td>" +
-      '<td class="num">' + esc(r.calls) + "</td><td class=\"num\">" + esc(r.turns) + "</td>" +
-      '<td class="num">' + esc(fmt.tokens(r.total_tokens)) + "</td>" +
-      '<td class="num">' + (r.cost_unknown ? "unknown" : esc(fmt.cost(r.cost_usd))) +
+      '<td data-th="Work">' + esc(r.work_type) + (r.origin && r.origin !== "run" ? ' <span class="pill unknown origin-pill">' + esc(r.origin) + "</span>" : "") + '</td><td data-th="Harness">' + esc(r.harness) + "</td>" +
+      '<td data-th="Model">' + (r.model === "not reported" ? '<span class="pill unknown">not reported</span>' : esc(r.model)) + "</td>" +
+      '<td class="num" data-th="Calls">' + esc(r.calls) + '</td><td class="num" data-th="ACP turns">' + esc(r.turns) + "</td>" +
+      '<td class="num" data-th="Tokens">' + esc(fmt.tokens(r.total_tokens)) + "</td>" +
+      '<td class="num" data-th="Cost">' + (r.cost_unknown ? "unknown" : esc(fmt.cost(r.cost_usd))) +
       (r.cost_unknown && r.cost_usd ? " + " + esc(fmt.cost(r.cost_usd)) + " known" : "") + "</td></tr>";
   }).join("");
   function links(title, list, id) {
@@ -1475,7 +1503,7 @@ function conversationPanelHtml(c) {
     (used.label ? '<p class="stat-sub" id="models-label">' + esc(used.label) + "</p>" : "") +
     '<p class="stat-sub">Selected: ' + esc((c.selected.harness || c.session.runtime) + " · " + (c.selected.model_id || "—")) +
     ". Reported attribution is shown separately; ACP turns are not call counts.</p>" +
-    (rows ? '<div class="table-wrap"><table class="table" id="models-table"><thead><tr><th>Work</th><th>Harness</th><th>Model</th>' +
+    (rows ? '<div class="table-wrap"><table class="table table-stack" id="models-table"><thead><tr><th>Work</th><th>Harness</th><th>Model</th>' +
             "<th class=\"num\">Calls</th><th class=\"num\">ACP turns</th><th class=\"num\">Tokens</th><th class=\"num\">Cost</th></tr></thead><tbody>" + rows + "</tbody></table></div>"
           : '<p class="stat-sub">No model calls recorded.</p>') +
     (used.snapshots.length ? '<p class="stat-sub" id="snapshots-note">Context snapshots (occupancy, not billable usage): ' +
@@ -1526,9 +1554,9 @@ function setupAgentsHtml(agents) {
         }).join("") + '</ul>' : '') + "</td></tr>";
     }
     var sections = (a.sections || []).map(function (s) {
-      return esc(s.section) + " " + esc(fmt.tokens(s.bytes)) + " bytes / " + esc(fmt.tokens(s.chars)) +
-        " chars / " + esc(fmt.tokens(s.tokens)) + " estimated tokens";
-    }).join(", ");
+      return '<span class="agent-section">' + esc(s.section) + " " + esc(fmt.tokens(s.bytes)) + " bytes / " +
+        esc(fmt.tokens(s.chars)) + " chars / " + esc(fmt.tokens(s.tokens)) + " estimated tokens</span>";
+    }).join("");
     var fields = (a.fields || []).map(function (f) {
       return "<li><code>" + esc(f.path) + "</code> = " + esc(f.value) + ' <span class="stat-sub">(' + esc(f.source) + ")</span></li>";
     }).join("");
@@ -1536,7 +1564,7 @@ function setupAgentsHtml(agents) {
       (a.shadowed_by ? ' <span class="pill unknown">shadowed by ' + esc(a.shadowed_by) + "</span>" : "") +
       "</td><td>" + esc(a.source) + (a.extends ? " · extends " + esc(a.extends) : "") + '</td><td><code class="agent-digest">' +
       esc(String(a.digest).slice(0, 12)) + '</code></td><td><code class="agent-prompt-digest">' + esc(String(a.prompt_digest).slice(0, 12)) +
-      '</code></td><td class="num">' + esc(fmt.tokens(a.tokens)) + " tokens<br><span class=\"stat-sub\">" + sections + "</span></td>" +
+      '</code></td><td class="num agent-size">' + esc(fmt.tokens(a.tokens)) + ' tokens<span class="stat-sub agent-sections">' + sections + "</span></td>" +
       "<td><details><summary>" + esc((a.fields || []).length) + " declared</summary><ul class=\"agent-fields\">" + fields + "</ul></details>" +
       (a.warnings && a.warnings.length ? '<div class="stat-sub">' + a.warnings.map(esc).join("; ") + "</div>" : "") + "</td></tr>";
   }).join("");

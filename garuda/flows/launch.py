@@ -36,6 +36,30 @@ async def launch_step(launch: StepLaunch) -> StepResult:
     return await _native(launch)
 
 
+def _link(launch: StepLaunch, store, session_id: str) -> dict | None:
+    """Link the flow to this attempt's step session before its receipt exists.
+
+    Writes the attempt's launch record (:mod:`garuda.flows.launches`) and
+    returns the ``flow_step`` record the step session carries from its
+    creation. A parallel member (``step:role``) is linked by its receipt only.
+    """
+    import datetime as _dt
+
+    from garuda.flows import launches
+
+    if ":" in launch.step_id or not launch.flow_session:
+        return None
+    try:
+        flow_dir = store.session_dir(launch.flow_session) / "flow"
+    except (OSError, ValueError, AttributeError, TypeError):
+        return None  # a store without session directories (tests): nothing to link
+    launches.write(flow_dir, launch.step_id, launch.attempt, {
+        "session_id": session_id,
+        "started_at": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")})
+    return {"flow_step": {"flow_session": launch.flow_session, "step": launch.step_id,
+                          "attempt": launch.attempt}}
+
+
 async def _acp(launch: StepLaunch) -> StepResult:
     import uuid
 
@@ -48,6 +72,7 @@ async def _acp(launch: StepLaunch) -> StepResult:
     plan = launch.role_plan
     store = launch.store or SessionStore()
     session_id = str(uuid.uuid4())
+    linked = _link(launch, store, session_id)
     hook = None
     if launch.turns is not None:
         from garuda.flows.long_step import StepTurns
@@ -65,6 +90,7 @@ async def _acp(launch: StepLaunch) -> StepResult:
             before_prompt=launch.quota_guard,
             **acp_limits(launch.limits),
             **({"after_turn": hook} if hook is not None else {}),
+            **({"session_record": linked} if linked is not None else {}),
         )
     except RecoveryWaiting as exc:
         return StepResult(session_id, False, "", error=_redacted(exc), quota_wait=True,
@@ -130,13 +156,17 @@ async def _native(launch: StepLaunch) -> StepResult:
     if deadline:
         prepared.config.deadline_sec = min(prepared.config.deadline_sec or deadline, deadline)
     events = EventStore()
+    from garuda.core.sessions import SessionStore
+
+    linked = _link(launch, launch.store or SessionStore(), events.session_id)
     started = time.monotonic()
     result = await run_agent_task(
         task=launch.prompt, model=prepared.reasoning, agent=prepared.agent,
         tools=prepared.tools, config=prepared.config, permissions=prepared.permissions,
         workspace=launch.workspace, events=events, mcp_manager=prepared.mcp_manager,
         lease_capability=launch.capability, store=launch.store,
-        session_record={"role": plan.record()} if plan else None,
+        session_record=({**({"role": plan.record()} if plan else {}), **(linked or {})}
+                        or None),
         collection_model=prepared.collection, collection_policy=prepared.collection_policy,
     )
     return StepResult(events.session_id, bool(result.success), result.final_message or "",
