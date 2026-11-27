@@ -469,6 +469,14 @@ def session(store, session_id: str, *, queue=None) -> dict:
         from garuda.core.failure_evidence import unavailable_projection
 
         row["failure_evidence"] = unavailable_projection(str(exc))
+    from garuda.observability.lanes import ACP_EVENTS_FILE
+
+    # Which logs the session has: a flow has no native event log of its own and an
+    # external harness writes only its own trail, so "no events" is not "did nothing".
+    row["event_log"] = {
+        "native": Path(store.events_path(session_id)).is_file(),
+        "external": (Path(store.session_dir(session_id)) / ACP_EVENTS_FILE).is_file(),
+    }
     return row
 
 
