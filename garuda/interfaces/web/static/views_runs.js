@@ -26,7 +26,7 @@ function runFilters() {
 }
 
 function runsView() {
-  var state = { filters: runFilters(), runs: [], total: null, agents: [], seq: 0 };
+  var state = { filters: runFilters(), runs: [], total: null, agents: [], seq: 0, unreadable: "" };
   STATE.runsList = state;
   render(
     '<div class="page-head"><h1>Runs</h1>' +
@@ -76,6 +76,8 @@ function loadRuns(state, more) {
     });
     state.total = typeof payload.total === "number" ? payload.total : state.runs.length;
     state.agents = payload.agents || state.agents;
+    // Sessions the server could not read are counted, never silently missing (core.js).
+    state.unreadable = unreadableNote(payload);
     STATE.runs = state.runs;
     var firstNew = more && payload.runs && payload.runs[0] ? payload.runs[0].session_id : null;
     renderRunsBody(state);
@@ -119,7 +121,7 @@ function renderRunsBody(state) {
   var filters = el("runs-filters");
   if (!runs.length && !filtersActive(state.filters)) {
     filters.hidden = true;
-    body.innerHTML =
+    body.innerHTML = state.unreadable +
       '<div class="empty">' +
       "<p><strong>No runs yet.</strong></p>" +
       "<p>Start one with <code>garuda run -t &quot;your task&quot;</code> and reload.</p>" +
@@ -132,12 +134,12 @@ function renderRunsBody(state) {
   }
   filters.hidden = false;
   if (!runs.length) {
-    body.innerHTML = '<div class="filter-empty" id="runs-none">No run matches these filters.</div>';
+    body.innerHTML = state.unreadable + '<div class="filter-empty" id="runs-none">No run matches these filters.</div>';
     liveNote([]);
     return;
   }
   var partial = runs.length < state.total;
-  body.innerHTML =
+  body.innerHTML = state.unreadable +
     (partial
       ? '<p class="stat-sub runs-window" id="runs-window">Tiles and charts cover the ' + runs.length +
         " newest of " + state.total.toLocaleString("en-US") + " runs; load older ones below the table.</p>"

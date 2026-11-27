@@ -29,7 +29,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from garuda.interfaces.web.routes import DashboardContext, dispatch
+from garuda.interfaces.web.routes import CODE_INTERNAL, DashboardContext, dispatch, sse_error_frame
 from garuda.interfaces.web.security import (
     MAX_CONNECTIONS,
     MAX_REQUEST_BODY_BYTES,
@@ -38,7 +38,15 @@ from garuda.interfaces.web.security import (
     SECURITY_HEADERS,
     check_request,
 )
-from garuda.interfaces.web.wire import Request, Response, error
+from garuda.interfaces.web.wire import (
+    CODE_INVALID_REQUEST,
+    CODE_METHOD_NOT_ALLOWED,
+    CODE_PAYLOAD_TOO_LARGE,
+    CODE_UNAVAILABLE,
+    Request,
+    Response,
+    error,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +106,18 @@ class _Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args) -> None:  # noqa: A003
         logger.debug("dashboard %s", fmt % args)
 
+    def send_error(self, code: int, message: str | None = None, explain: str | None = None) -> None:
+        """The stdlib's own refusals — a malformed request line, an unsupported method, an
+        oversized header — in the dashboard's JSON envelope with its security headers,
+        instead of ``BaseHTTPRequestHandler``'s HTML page without them."""
+        short = self.responses.get(code, ("Error",))[0]
+        name = {400: CODE_INVALID_REQUEST, 413: CODE_PAYLOAD_TOO_LARGE,
+                414: CODE_PAYLOAD_TOO_LARGE, 431: CODE_PAYLOAD_TOO_LARGE,
+                501: CODE_METHOD_NOT_ALLOWED}.get(code, CODE_INVALID_REQUEST)
+        self.close_connection = True
+        self._send(error(name, message or short, status=code),
+                   include_body=self.command != "HEAD" and code >= 200 and code not in (204, 304))
+
     def _read(self) -> Request | None:
         parts = urlsplit(self.path)
         try:
@@ -142,11 +162,25 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_header(key, value)
         self.end_headers()
         self.close_connection = True
+        chunks = iter(response.stream)
         try:
-            for chunk in response.stream:
+            while True:
+                try:
+                    chunk = next(chunks)
+                except StopIteration:
+                    break
+                except Exception:
+                    # Producing the next frame failed (not the socket): log it, tell an
+                    # event-stream client in its own framing, and end the response
+                    # cleanly instead of dropping the connection mid-stream.
+                    logger.exception("dashboard stream for %s failed", self.path)
+                    if response.content_type.startswith("text/event-stream"):
+                        self.wfile.write(sse_error_frame("The live stream failed."))
+                        self.wfile.flush()
+                    break
                 self.wfile.write(chunk)
                 self.wfile.flush()
-        except (BrokenPipeError, ConnectionResetError, OSError):
+        except OSError:  # BrokenPipeError, ConnectionResetError: the client went away
             logger.debug("dashboard stream client disconnected")
         finally:
             close = getattr(response.stream, "close", None)
@@ -169,7 +203,7 @@ class _Handler(BaseHTTPRequestHandler):
         if include_body and response.body:
             try:
                 self.wfile.write(response.body)
-            except (BrokenPipeError, ConnectionResetError):
+            except OSError:  # BrokenPipeError, ConnectionResetError, a write timeout
                 # The browser navigated away mid-response. Not an error.
                 logger.debug("dashboard client disconnected during write")
 
@@ -177,7 +211,15 @@ class _Handler(BaseHTTPRequestHandler):
         request = self._read()
         if request is None:
             return
-        response = _route(request, self.ctx)
+        try:
+            response = _route(request, self.ctx)
+        except Exception:
+            # `dispatch` already contains route failures; this is the static path and
+            # anything outside a handler. The client still gets the JSON envelope and the
+            # security headers, never the stdlib's HTML error page or a dropped socket.
+            logger.exception("dashboard request %s %s failed", request.method, request.path)
+            response = error(CODE_INTERNAL, "The dashboard failed to handle this request; "
+                             "the server log has the details.", status=500)
         self._send(response, include_body=include_body)
 
     def do_GET(self) -> None:  # noqa: N802
@@ -225,6 +267,36 @@ def _gate_only(request: Request, ctx: DashboardContext) -> Response | None:
     return check_request(request, port=ctx.port, token=ctx.token)
 
 
+#: Seconds the accept loop may spend writing a refusal; it must not stall on one client.
+REFUSAL_WRITE_TIMEOUT = 1.0
+
+
+def refusal_bytes(response: Response) -> bytes:
+    """A complete ``Connection: close`` response, written without a handler thread.
+
+    Used where there is no handler to send through — the connection limit refuses before
+    a thread exists — so it carries the same security headers every handler response does.
+    """
+    reason = {503: "Service Unavailable"}.get(response.status, "Error")
+    headers = {
+        "Content-Type": response.content_type,
+        "Content-Length": str(len(response.body)),
+        "Connection": "close",
+        **SECURITY_HEADERS,
+        **response.headers,
+    }
+    head = f"HTTP/1.1 {response.status} {reason}\r\n" + "".join(
+        f"{key}: {value}\r\n" for key, value in headers.items()) + "\r\n"
+    return head.encode("latin-1") + response.body
+
+
+def _too_many_connections() -> bytes:
+    response = error(CODE_UNAVAILABLE,
+                     "too many open dashboard connections; close some tabs", status=503)
+    response.headers["Retry-After"] = "2"
+    return refusal_bytes(response)
+
+
 class _Server(ThreadingHTTPServer):
     daemon_threads = True
 
@@ -236,7 +308,11 @@ class _Server(ThreadingHTTPServer):
         if not self._slots.acquire(blocking=False):
             logger.warning("dashboard refused a connection: %d already in flight", MAX_CONNECTIONS)
             try:
-                request.sendall(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n")
+                # This runs on the accept loop: a client that never reads must not stall it.
+                settimeout = getattr(request, "settimeout", None)
+                if settimeout is not None:
+                    settimeout(REFUSAL_WRITE_TIMEOUT)
+                request.sendall(_too_many_connections())
             except OSError:
                 pass
             super().shutdown_request(request)

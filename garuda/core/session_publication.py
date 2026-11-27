@@ -250,9 +250,18 @@ class MetadataCycle:
         self.validate()
 
 
+class MetadataBusy(StorageUnavailable):
+    """``wait=False`` found the common metadata lock held; nothing was read or changed."""
+
+
 @contextmanager
-def publication_cycle(meta_path: Path, *, initializing=False):
-    """Yield a strict transaction, or None for an ordinary legacy session."""
+def publication_cycle(meta_path: Path, *, initializing=False, wait=True):
+    """Yield a strict transaction, or None for an ordinary legacy session.
+
+    ``wait=False`` makes one attempt at the common metadata lock and raises
+    :class:`MetadataBusy` if a writer holds it, instead of polling for up to five
+    seconds. Every other step, including validation, is the same in both modes.
+    """
     meta_path = meta_path.absolute()
     policy = _policy(meta_path)
     if policy is None:
@@ -274,6 +283,8 @@ def publication_cycle(meta_path: Path, *, initializing=False):
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
             except BlockingIOError:
+                if not wait:
+                    raise MetadataBusy("common metadata lock is held") from None
                 if time.monotonic() >= deadline:
                     raise StorageUnavailable("common metadata lock is unavailable") from None
                 time.sleep(.01)

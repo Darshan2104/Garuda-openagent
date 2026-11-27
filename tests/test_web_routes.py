@@ -151,7 +151,8 @@ def test_config_offers_models_this_machine_has_run(ctx, store):
 def test_the_run_list_is_empty_on_a_fresh_store(ctx):
     payload = body(call(ctx, "/api/runs"))
     assert payload == {"runs": [], "total": 0, "limit": reads.DEFAULT_LIMIT, "offset": 0,
-                       "agents": []}
+                       "agents": [],
+                       "unreadable_sessions": {"count": 0, "ids": [], "being_written": []}}
 
 
 def test_a_run_row_carries_what_the_table_renders(ctx, store):
@@ -369,7 +370,7 @@ DEAD_OWNER = {"pid": 2_000_000_000, "identity": "gone", "pgid": 1, "epoch": "e"}
 
 def _old_sessions_then_bulk(store, bulk=205):
     """A crashed and a waiting session, then ``bulk`` newer finished ones: more than the
-    200 rows /api/sessions returns, so the old two fall off its end."""
+    200 rows the test asks /api/sessions for, so the old two fall off its end."""
     import time
 
     from garuda.acp.approval_channel import FileApprovalChannel

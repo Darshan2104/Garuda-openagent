@@ -5362,3 +5362,48 @@ becomes the step's error, `stop.cause.code` fallback and `stop.cause.stop_reason
 `run_acp_task` attaches the last turn's raw stop reason to a raised error
 (`acp_stop_reason`) for that purpose. A checked step without a deadline still
 has the one-hour worker limit; long checked steps need `deadline_min`.
+
+## 2026-11-27: Review rounds get a round brief from flow memory (#816)
+
+Round 2+ of a reviewed step used to start fresh sessions told nothing of the
+earlier rounds. `garuda/flows/memory.py` now builds a bounded brief from
+Garuda's own records only: `facts()` gathers the step's receipts (attempt,
+status, stop code) and the review `history`; `coder_brief()` and
+`earlier_reviews()` render them within `BUDGET` (8,000 characters). It is a
+small general API so retries, crash continuation and session rotation can use
+it later; only what #816 needs is implemented. Check results are not in the
+brief: acceptance checks run after the review settles, so a review round has
+none to report.
+
+The reviewed step's round brief replaces the bare findings block (it renders
+the findings with `render_findings`) and adds the round, the "already in the
+workspace, inspect, do not redo" instruction, its attempts, its change list
+(each path JSON-quoted, so a file name cannot forge a line) and its previous
+artifacts of the reviewed candidate in a `flow-note` fence. The reviewer's
+earlier rounds go in the packet as `earlier_reviews` (round 2+ only) with a
+`[garuda]` line asking it to check each finding was addressed first.
+
+`PACKET_VERSION` stays 2: the field is additive, absent in round 1 (so round-1
+packets and digests are byte-identical), and `build_packet` adds it before
+hashing, so `packet_digest` covers it. Nothing else reads a packet's body:
+`_review_approved`, `trajectory.py`, `verification_records.py` and the
+dashboard read only the digest and the candidate, which are unchanged.
+
+Trimming is deterministic and in priority order: notes are shortened, then
+dropped; older rounds summarised (counts by severity), then dropped; the
+latest findings cut to their first lines; the file list last. Every cut is
+stated.
+
+Determinism across `flow resume` and quota continuation: each `history` entry
+now records `candidate` (`attempt`, up to 50 `changed` paths and
+`changed_total` from that round's packet). The brief takes its change list and
+notes from the latest round's candidate and ignores attempts after it, so an
+attempt stopped by a quota pause (with partial edits) does not change it; the
+continuation note already covers that. The checkpoint itself is unchanged
+(findings stay raw, the brief is rebuilt, never saved). A checkpoint from
+before this change has no `candidate`: its brief says the change list is
+unknown and takes the latest attempt with outputs as notes.
+
+Reuse: `garuda/context/brief.py` is session-shaped and HTML-escapes; only its
+redaction helper (`_redacted`) is reused. Fencing and rendering are
+`prompting.fence`/`render_findings`, so the brief shares the prompt's marker.
