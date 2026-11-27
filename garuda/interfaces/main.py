@@ -1684,6 +1684,67 @@ def _export_flow(store, flow_session: str, meta: dict, out: str) -> int:
     return 0
 
 
+def _flow_live_lines(live: dict | None) -> list[str]:
+    """`flow show`'s live status of the current step attempt (read model ``in_flight``)."""
+    if not isinstance(live, dict):
+        return []
+
+    def text(value, limit=200):
+        return " ".join(str(value).split())[:limit]
+
+    lines = []
+    if live.get("step") and (live.get("started_at") or live.get("session_id")):
+        head = f"  live: step {text(live['step'], 80)}"
+        if live.get("attempt") is not None:
+            head += f" (attempt {live['attempt']})"
+        if live.get("turns") is not None:
+            head += (f", turn {live['turns']} in {live.get('harness_sessions') or 1} harness "
+                     f"session(s), {live.get('rotations') or 0} rotation(s), "
+                     f"{live.get('continuations') or 0} continuation(s)")
+        else:
+            head += ", no turn finished yet"
+        lines.append(head)
+        detail = []
+        if live.get("session_id"):
+            detail.append(f"session {live['session_id']}")
+        if live.get("started_at"):
+            detail.append(f"started {live['started_at']}")
+        if live.get("idle_sec") is not None:
+            detail.append(f"last activity {live['idle_sec']}s ago ({live.get('last_activity_at')})")
+        if detail:
+            lines.append("    " + "; ".join(detail))
+        detail = []
+        if live.get("last_decision"):
+            why = f" (stop reason {text(live['last_stop_reason'], 40)})" if live.get("last_stop_reason") else ""
+            detail.append(f"last turn: {text(live['last_decision'], 20)}{why}")
+        if type(live.get("context_used")) is int and type(live.get("context_size")) is int \
+                and live["context_size"] > 0:
+            detail.append(f"context {live['context_used']}/{live['context_size']} "
+                          f"({100 * live['context_used'] // live['context_size']}%)")
+        if live.get("deadline_at"):
+            detail.append(f"deadline {live['deadline_at']}")
+        if detail:
+            lines.append("    " + "; ".join(detail))
+        if live.get("process") == "missing" and live.get("state") == "running":
+            lines.append("    its flow process is gone: `garuda flow resume` continues a checked "
+                         "flow when its step's process tree is proved gone")
+    checkpoint = live.get("last_checkpoint")
+    if isinstance(checkpoint, dict) and checkpoint.get("n") is not None:
+        lines.append(f"  last checkpoint: {checkpoint['n']} ({text(checkpoint.get('label') or '', 120)})"
+                     + (f" at {checkpoint['at']}" if checkpoint.get("at") else ""))
+    paused = live.get("paused")
+    if isinstance(paused, dict) and paused.get("code") and live.get("step") \
+            and live.get("attempt") is not None:
+        # The stop line above already gives the code and reason; say where it paused.
+        line = f"  paused after step {text(live['step'], 80)} (attempt {live['attempt']})"
+        if type(paused.get("reset_at")) is int:
+            from garuda.acp.protocol import reset_time_text
+
+            line += f"; the limit resets at {reset_time_text(paused['reset_at'])}"
+        lines.append(line)
+    return lines
+
+
 def _flow_stop_line(stop) -> str | None:
     """The recorded stop reason of a stopped flow (`meta.json` `flow_stop`), on one line."""
     if not isinstance(stop, dict) or not stop.get("code"):
@@ -1933,6 +1994,10 @@ def run_flow(args) -> int:
         from garuda.flows.trajectory import trajectory
 
         shown = trajectory(store, args.flow_session, meta)
+        from garuda.core.read_model import flow_in_flight
+
+        # The running (or paused) step's live status, read only (no lease).
+        shown = {**shown, "live": flow_in_flight(store, args.flow_session, meta)}
         if meta.get("isolation") == "worktree":
             shown = {**shown, "checkpoints": listing(engine.flow_dir(store, args.flow_session))}
         print(json.dumps(shown, indent=2, default=str))
@@ -1944,6 +2009,10 @@ def run_flow(args) -> int:
         stop_line = _flow_stop_line(meta.get("flow_stop"))
         if stop_line:
             print(stop_line)
+        from garuda.core.read_model import flow_in_flight
+
+        for line in _flow_live_lines(flow_in_flight(store, args.flow_session, meta)):
+            print(line)
         recovery = meta.get("quota_recovery")
         if recovery:
             print(f"  quota recovery: {recovery.get('state')}; {recovery.get('reason', '')}")

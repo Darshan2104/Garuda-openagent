@@ -1019,6 +1019,112 @@ class FlowRunner:
             raise FlowStopped("flow.verification_reconciliation_required",
                               "original check authority or stopped flow evidence could not be proved") from exc
 
+    def _crash_inputs(self, crash: dict):
+        """The settled history of a checked flow whose parent died mid-step, read only.
+
+        The original check request and flow definition must be unchanged, the
+        journal must hold exactly the settled attempts' intent/receipt pairs and
+        then the crashed attempt's intent, and every settled attempt must be
+        covered by its evidence boundary.
+        """
+        from garuda.core.acceptance_request import is_digest
+        from garuda.runtime.strict_store import CorruptRecord, StorageError
+
+        try:
+            prior = self.store.load_meta(self.flow_session)
+            if self._verification_records().saved_request(prior) != self._resume_request():
+                raise CorruptRecord("the original check authority or flow definition changed")
+            baseline = prior["flow_evidence_baseline"]["baseline_digest"]
+            entries, attempts = self._checked_history()
+            intent = entries[-1] if entries else {}
+            key = (crash["step"], crash["attempt"])
+            if (not is_digest(baseline) or intent.get("event") != "intent"
+                    or (intent.get("step"), intent.get("attempt")) != key
+                    or any((row["step"], row["attempt"]) == key for row in attempts)
+                    or prior["workspace"] != self.workspace or prior["task"] != self.task):
+                raise CorruptRecord("the crashed flow's history or workspace changed")
+            # Each settled receipt was verified by the owner that wrote it, before
+            # it wrote it; keep their closure bindings, as a checked resume does.
+            self._prior_attempts = {(row["step"], row["attempt"]): row for row in attempts}
+            coverage = self._evidence_coverage(entries[:-1], attempts)
+            existing = sorted(attempts, key=lambda row: (row["index"], row["attempt"]))
+            return prior, baseline, coverage, existing, intent
+        except (StorageError, OSError, ValueError, KeyError, TypeError) as exc:
+            raise FlowStopped("flow.verification_reconciliation_required",
+                              "the crashed flow's check authority or step history could not be "
+                              "proved; checks are never replayed past it") from exc
+
+    async def _settle_crashed(self, crash: dict, intent: dict, lease) -> dict:
+        """Write the receipt of the crashed attempt's open intent: stopped, ``flow.interrupted``.
+
+        Its evidence boundary is the workspace as the dead attempt left it, and
+        its ``crash`` record is the proof that attempt's process tree is gone.
+        The journal gets the attempt's receipt entry, so it keeps two entries
+        per attempt.
+        """
+        from garuda.runtime.process_supervision import CleanupUncertain
+
+        step_id, attempt = crash["step"], crash["attempt"]
+        step = next((s for s in self.steps if s["id"] == step_id), None)
+        if step is None or "parallel" in step:
+            raise FlowStopped("flow.verification_reconciliation_required",
+                              f"the crashed attempt's step {step_id} is not a plain step of this flow",
+                              step=step_id)
+        try:
+            boundary = await self._evidence.boundary(self._evidence_count, step_id, attempt)
+        except CleanupUncertain:
+            await lease.stop_heartbeat()
+            raise
+        except Exception as exc:
+            raise FlowStopped("flow.evidence_unavailable",
+                              "the crashed attempt's evidence could not be published",
+                              step=step_id) from exc
+        self._evidence_count += 1
+        stop = FlowStopped(
+            INTERRUPTED_STOP,
+            f"step {step_id} (attempt {attempt}) was interrupted: the flow's process died while it "
+            "ran, and `garuda flow resume` proved its owned worker, its subreaper supervisor and "
+            "every descendant gone before running the step again as a new attempt", step=step_id)
+        progress = self.dir / "progress" / f"{step_id}-{attempt}.jsonl"
+        receipt = {
+            "index": intent.get("index"), "step": step_id, "role": step.get("role"),
+            "attempt": attempt, "session_id": crash.get("session_id"), "success": False,
+            "inputs": [], "outputs": [], "recorded_at": _now(), "role_plan": None,
+            "evidence_boundary": boundary, "crash": dict(crash),
+            **({"progress": f"progress/{progress.name}"} if progress.is_file() else {}),
+            "status": "stopped", "stop": _stop_record(stop)}
+        await self._record_step_receipt(receipt)
+        self._prior_attempts[(step_id, attempt)] = receipt
+        return receipt
+
+    def _interrupted_brief(self, step: dict, previous: int) -> str | None:
+        """The rotation brief for a long step whose previous attempt was interrupted.
+
+        Built by :func:`garuda.flows.memory.rotation_brief` from that attempt's
+        progress file, so the new attempt starts where Garuda's records say the
+        interrupted one got to. None when the previous attempt was not interrupted.
+        """
+        from garuda.flows import long_step, memory
+        from garuda.flows.prompting import new_marker
+
+        try:
+            receipt = json.loads((self.dir / "receipts" / _receipt_name(step["id"], previous))
+                                 .read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        if not isinstance(receipt, dict) or (receipt.get("stop") or {}).get("code") != INTERRUPTED_STOP:
+            return None
+        rows = long_step.read_progress(self.dir / "progress" / f"{step['id']}-{previous}.jsonl")
+        try:
+            found = list(receipts(self.store, self.flow_session))
+        except (OSError, ValueError):
+            found = []
+        brief = memory.rotation_brief(
+            step=step["id"], attempt=previous, reason="interrupted", records=rows,
+            missing=list(step.get("outputs", [])),
+            earlier=memory.earlier_attempts(found, step=step["id"], before=previous))
+        return brief.render(new_marker(brief.bodies()))
+
     async def _stop_checkpoint(self, lease):
         from garuda.core.acceptance_records import digest
         from garuda.core.acceptance_work import AcceptanceWorkError
@@ -1110,12 +1216,25 @@ class FlowRunner:
             return "read-only"
         return "mutating"
 
-    async def run(self, *, resume: bool = False, checked_checkpoint: dict | None = None) -> FlowResult:
+    async def run(self, *, resume: bool = False, checked_checkpoint: dict | None = None,
+                  crash: dict | None = None) -> FlowResult:
+        """Run (or resume) the flow.
+
+        ``crash`` (:func:`garuda.flows.crash.prove`) continues a checked flow whose
+        parent died hard mid-step: that attempt's whole process tree was proved
+        gone, so it is settled here as a stopped ``flow.interrupted`` attempt (its
+        receipt and evidence boundary) and the flow continues with the next one.
+        """
         from garuda.interfaces.run_guard import WorkspaceLeaseGuard
         from garuda.runtime.process_supervision import CleanupUncertain
         from garuda.runtime.session_state import finished, interrupted
 
         checked_resume = resume and checked_checkpoint is not None and self.verification_cli_checks is not None
+        crash_resume = (resume and crash is not None and checked_checkpoint is None
+                        and self.verification_cli_checks is not None)
+        if crash is not None and not crash_resume:
+            raise FlowStopped("flow.verification_reconciliation_required",
+                              "crash continuation applies only to a checked flow's resume")
         if (self.require_owned or self.quota_recovery is not None) and any(
                 step.get("retries") for step in self.steps):
             # An owned or checked flow accounts for every attempt in its evidence
@@ -1124,7 +1243,7 @@ class FlowRunner:
             raise FlowStopped("flow.retries_unsupported",
                               "step retries are not supported in checked, dashboard-owned or "
                               "quota-recovered flows; remove retries or run the flow without them")
-        if resume and not checked_resume:
+        if resume and not checked_resume and not crash_resume:
             from garuda.runtime.strict_store import StorageError
 
             try:
@@ -1141,9 +1260,16 @@ class FlowRunner:
             held = [r["step"] for r in prior_receipts
                     if r.get("status") == "quarantined"]
             if held:
-                raise FlowStopped("flow.quarantined",
-                                  f"{', '.join(held)} was interrupted after launch; it is never "
-                                  "replayed", step=held[0])
+                attempt = next(r.get("attempt") for r in prior_receipts
+                               if r.get("status") == "quarantined")
+                raise FlowStopped(
+                    "flow.quarantined",
+                    f"{', '.join(held)} (attempt {attempt}) was launched but the flow's process "
+                    "stopped before it settled; it is never replayed. Uncertain: this flow ran "
+                    "without --check, so Garuda cannot prove that step's process tree is gone "
+                    "(its harness may still be running or editing the workspace). Next: make sure "
+                    "nothing from it still runs, inspect the workspace (`git status`), then start "
+                    f"a new flow: `garuda flow run {self.name}`", step=held[0])
         lease = WorkspaceLeaseGuard(self.workspace, self.flow_session, mode=self._lease_mode(),
                                     ttl_sec=self.lease_ttl,
                                     capacity_key=(self.background_admission.harness
@@ -1152,8 +1278,9 @@ class FlowRunner:
         lease.acquire()
         lease.start_heartbeat()
         result = FlowResult(self.flow_session)
-        begun = resume and not checked_resume
+        begun = resume and not checked_resume and not crash_resume
         prior = None
+        crash_intent = None
         confinement_stop = None
         try:
             if self.require_owned:
@@ -1183,6 +1310,9 @@ class FlowRunner:
             if checked_resume:
                 prior, baseline_digest, candidate, coverage, existing = await _settled_sync(
                     self._resume_inputs, checked_checkpoint)
+            elif crash_resume:
+                prior, baseline_digest, coverage, existing, crash_intent = await _settled_sync(
+                    self._crash_inputs, crash)
             if self.quota_recovery is not None:
                 from garuda.flows.quota_recovery import RecoveryWaiting
 
@@ -1192,7 +1322,7 @@ class FlowRunner:
                     raise FlowStopped("flow.quota_wait", str(exc)) from exc
                 except (OSError, ValueError) as exc:
                     raise FlowStopped("flow.recovery_changed", str(exc)) from exc
-            if resume and not checked_resume:
+            if resume and not checked_resume and not crash_resume:
                 from garuda.runtime.ownership import current_owner
                 from garuda.runtime.session_state import started
 
@@ -1226,8 +1356,32 @@ class FlowRunner:
                                       "check sources changed before step admission") from exc
                 self._evidence = OwnedFlowEvidence(
                     self.store.session_dir(self.flow_session), self.flow_session, self.workspace, lease,
-                    baseline_digest=baseline_digest if checked_resume else None)
-                if checked_resume:
+                    baseline_digest=baseline_digest if checked_resume or crash_resume else None)
+                if crash_resume:
+                    try:
+                        candidate = await self._evidence.version()
+                        await self._evidence.resume(candidate, coverage)
+                    except CleanupUncertain as exc:
+                        await lease.stop_heartbeat()
+                        raise FlowStopped("flow.cleanup_unproved",
+                                          "the resume evidence worker did not settle") from exc
+                    except AcceptanceWorkError as exc:
+                        raise FlowStopped(
+                            "flow.verification_reconciliation_required",
+                            "the crashed flow's evidence does not cover exactly its settled "
+                            "attempts (the parent may have died between an attempt's evidence and "
+                            "its receipt); checks are never replayed past it: start a new flow"
+                        ) from exc
+                    self._evidence_count = len(coverage)
+                    existing.append(await self._settle_crashed(crash, crash_intent, lease))
+                    from garuda.runtime.ownership import current_owner
+                    from garuda.runtime.session_state import started
+
+                    await self._publish(self.flow_session, {
+                        "flow_state": "running", "status": "running", "flow_stop": None,
+                        "state": started(current_owner().to_dict())})
+                    begun = True
+                elif checked_resume:
                     try:
                         await self._evidence.resume(candidate, coverage)
                     except CleanupUncertain as exc:
@@ -1256,7 +1410,7 @@ class FlowRunner:
                     await self._publish(self.flow_session, {"flow_evidence_baseline": baseline})
                     if confinement_stop is not None:
                         raise confinement_stop
-            if not checked_resume:
+            if not checked_resume and not crash_resume:
                 existing = receipts(self.store, self.flow_session)
             done = [r for r in existing if r.get("status") == "done"]
             completed_steps = {r["step"] for r in done}
@@ -2126,6 +2280,13 @@ class FlowRunner:
         if long is not None:
             prompt += "\n\n" + long_step.FIRST_TURN_LINE
             sizes.append({"part": "note", "chars": len(long_step.FIRST_TURN_LINE) + 2})
+            if attempt > 1:
+                # The previous attempt was interrupted (a signal, or a crash proved
+                # closed): start from Garuda's records of how far it got.
+                brief = await _settled_sync(self._interrupted_brief, step, attempt - 1)
+                if brief:
+                    prompt += "\n\n" + brief
+                    sizes.append({"part": "note", "chars": len(brief) + 2})
         guard = await _settled_sync(NoEditsGuard, self.workspace) if no_edits else None
         capability = lease.delegate(f"{self.flow_session}:{step['id']}:{attempt}")
         started: tuple[str, float] | None = None

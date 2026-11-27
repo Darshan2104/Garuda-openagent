@@ -486,6 +486,11 @@ async def test_a_killed_worker_never_repeats_a_mutation(repo, tmp_path, crash_at
         with pytest.raises(engine.FlowStopped) as caught:
             await runner.run(resume=True)
         assert caught.value.code == "flow.quarantined"
+        # The refusal says what is uncertain and what to run next (#856).
+        message = str(caught.value)
+        assert f"{quarantined[0]} (attempt 1) was launched" in message
+        assert "cannot prove that step's process tree is gone" in message
+        assert "`garuda flow run two`" in message
     else:
         assert (await runner.run(resume=True)).completed
     for step, n in counts.items():
