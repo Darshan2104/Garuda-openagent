@@ -9,7 +9,7 @@ only for the few it returns:
 
 * **attention**: sessions whose worker crashed, sessions waiting on an approval,
   and flows stopped on a resumable pause (a quota wait recorded by quota recovery,
-  or a step's own deadline or silence limit);
+  or a step's own deadline, silence, progress, turn or refusal limit);
 * **running**: queued, working and waiting sessions that did not crash, with a
   flow's in-flight step when its journal names one;
 * **recent**: the newest finished sessions.
@@ -43,7 +43,13 @@ QUOTA_WAIT = "waiting-for-quota"
 
 def _pause(meta: dict) -> dict | None:
     """Why a stopped flow is paused on a resumable stop, from its recorded fields, or ``None``."""
-    from garuda.flows.engine import DEADLINE_STOP, SILENT_STOP
+    from garuda.flows.engine import (
+        DEADLINE_STOP,
+        MAX_TURNS_STOP,
+        NO_PROGRESS_STOP,
+        REFUSED_STOP,
+        SILENT_STOP,
+    )
 
     if meta.get("kind") != "flow":
         return None
@@ -52,8 +58,12 @@ def _pause(meta: dict) -> dict | None:
         return {"kind": "quota"}
     stop = meta.get("flow_stop")
     code = stop.get("code") if isinstance(stop, dict) else None
-    if meta.get("flow_state") == "stopped" and code in (DEADLINE_STOP, SILENT_STOP):
-        return {"kind": "deadline" if code == DEADLINE_STOP else "silence"}
+    # A step's own liveness limits and a long step's own pauses (#828, #842): each is in
+    # the engine's RESUMABLE_CHECKED_STOPS, so flow resume runs the step again.
+    kinds = {DEADLINE_STOP: "deadline", SILENT_STOP: "silence", NO_PROGRESS_STOP: "no_progress",
+             MAX_TURNS_STOP: "max_turns", REFUSED_STOP: "refused"}
+    if meta.get("flow_state") == "stopped" and code in kinds:
+        return {"kind": kinds[code]}
     return None
 
 

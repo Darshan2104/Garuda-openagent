@@ -397,6 +397,31 @@ function ranText(attempt) {
   return (attempt.role ? attempt.role + " → " : "") + who;
 }
 
+/* A long step's turn loop as its receipt recorded it (#842); nothing for a one-turn step.
+ * A count the receipt did not record reads "unknown", never 0. */
+function turnLoopHtml(loop) {
+  if (!loop) return "";
+  var parts = [["turn", loop.turns], ["rotation", loop.rotations], ["continuation", loop.continuations],
+               ["repair", loop.repairs]].map(function (pair) {
+    return knownText(pair[1]) + " " + pair[0] + (pair[1] === 1 ? "" : "s");
+  });
+  var outcomes = (loop.repair_outcomes || []).filter(Boolean);
+  return '<div class="stat-sub turn-loop">' + esc(parts.join(" · ")) +
+    (outcomes.length ? " (" + esc(outcomes.join(", ")) + ")" : "") + "</div>";
+}
+
+/* How much of the change set the approving review saw (#851): "partial" is worth a look. */
+function reviewCoverageHtml(coverage) {
+  var steps = Object.keys(coverage || {});
+  if (!steps.length) return "";
+  return steps.map(function (step) {
+    var value = coverage[step];
+    return " " + chip("coverage" + (steps.length > 1 ? " (" + step + ")" : ""), value,
+      value === "partial" ? "chip-bad" : (value === "complete" ? "chip-on" : "chip-off"));
+  }).join("") + (steps.some(function (s) { return coverage[s] === "partial"; })
+    ? ' <span class="stat-sub">the reviewer saw only part of the change set</span>' : "");
+}
+
 function attemptHtml(attempt) {
   var delta = attempt.delta === null ? "unknown" : (attempt.delta ? "changed" : "unchanged");
   return (
@@ -407,7 +432,9 @@ function attemptHtml(attempt) {
     (attempt.no_edits ? " " + chip("no-edits", attempt.no_edits, attempt.no_edits === "unchanged" ? "chip-on" : "chip-bad") : "") +
     ' <span class="stat-sub">' + esc(attempt.duration_ms === null || attempt.duration_ms === undefined ? "duration unknown" : fmt.duration(attempt.duration_ms)) + "</span>" +
     (attempt.session_id ? ' · <a href="#/sessions/' + encodeURIComponent(attempt.session_id) + '">session</a>' : "") + "</div>" +
-    (attempt.stop ? '<div class="stat-sub">stopped: ' + esc(attempt.stop.code) + "</div>" : "") +
+    turnLoopHtml(attempt.turn_loop) +
+    (attempt.stop ? '<div class="stat-sub attempt-stop">stopped: ' + esc(attempt.stop.code) +
+      (FLOW_STOPS[attempt.stop.code] ? " — " + esc(FLOW_STOPS[attempt.stop.code].text) : "") + "</div>" : "") +
     ((attempt.inputs || []).length ? '<div class="stat-sub">in: ' + attempt.inputs.map(function (r) { return esc(artifactText(r)); }).join(", ") + "</div>" : "") +
     ((attempt.outputs || []).length ? '<div class="stat-sub">out: ' + attempt.outputs.map(function (r) { return esc(artifactText(r)); }).join(", ") + "</div>" : "") +
     ((attempt.members || []).length ? '<div class="stat-sub">reviewers: ' + attempt.members.map(function (m) { return esc(m.role) + (m.success ? " ✓" : " ✗"); }).join(", ") + "</div>" : "") +
@@ -438,6 +465,7 @@ function flowHtml(flow, progress) {
         esc(new Date(flow.quota_recovery.next_check * 1000).toLocaleString()) : "") + "</p>" : "") +
     // A review is advice about the work. It has its own badge and never says "verified".
     (review ? '<p id="flow-review">' + chip("review", reviewLabel(review), "chip-off") +
+              reviewCoverageHtml(flow.review_coverage) +
               ' <span class="stat-sub">a review is not verification</span></p>' : "") +
     '<ol class="pipeline steps">' + (flow.steps || []).map(function (step, index) {
       var status = stepStatus(step, progress);
@@ -589,12 +617,44 @@ function sessionStreamable(row) {
   return !row.event_log || row.event_log.native || isActive(row.state);
 }
 
+/* A flow step's stop code in one plain sentence. `resume`: the engine lists it among its
+ * resumable checked stops (RESUMABLE_CHECKED_STOPS), so `garuda flow resume` runs the step
+ * again. Codes not listed fall back to the recorded message. */
+var FLOW_STOPS = {
+  "flow.step_deadline": { text: "The step ran past its deadline (limits.deadline_min).", resume: true },
+  "flow.step_silent": { text: "The step's harness went silent for longer than its silence limit.", resume: true },
+  "flow.step_no_progress": { text: "The long step paused: its turns made no measurable progress.", resume: true },
+  "flow.step_max_turns": { text: "The long step paused: it used its whole turn budget.", resume: true },
+  "flow.step_refused": { text: "The long step paused: its harness refused to continue.", resume: true },
+  "flow.step_failed": { text: "The step failed.", resume: true },
+  "flow.output_missing": { text: "The step finished without a usable output.", resume: true },
+  "flow.interrupted": { text: "The step was interrupted by a signal after its workers were stopped.", resume: true },
+  "flow.step_backstop": { text: "The step's worker did not stop in time, so the supervisor's backstop killed it and the step is quarantined.",
+                          next: "Next: inspect the step's workspace; a step that runs this long must set limits.deadline_min." },
+  "flow.quota_wait": { text: "The flow is waiting for its harness's usage limit to reset.",
+                       next: "Next: nothing; quota recovery resumes it when the harness is available." }
+};
+
+function flowStopSentence(stop, sessionId) {
+  if (!stop || !stop.code) return null;
+  var known = FLOW_STOPS[stop.code];
+  var where = stop.step ? " (step " + stop.step + ")" : "";
+  if (!known) {
+    return { cause: "The flow stopped" + where + ": " + (stop.message || stop.code) + " (" + stop.code + ").",
+             next: "Next: open the stopped step's session below to see what it did." };
+  }
+  return { cause: known.text.replace(/\.$/, "") + where + ".",
+           next: known.resume ? "Next: garuda flow resume " + sessionId + " runs the step again." : known.next };
+}
+
 /* Why it failed, in one plain sentence from what was recorded, and what to do next. */
 function failureSentence(row) {
   var evidence = (row.failure_evidence || {}).original_cause || {};
   var value = evidence.status === "present" ? (evidence.value || {}) : {};
   var detail = value.detail && value.detail.value ? firstLine(value.detail.value) : "";
   var flowStop = row.flow && row.flow.stop;
+  var worded = row.kind === "flow" && flowStop && FLOW_STOPS[flowStop.code] ? flowStopSentence(flowStop, row.session_id) : null;
+  if (worded) return worded;
   if (row.crashed) {
     return { cause: "The worker process is gone, and it exited without recording an outcome.",
              next: (row.ownership && row.ownership.reconciliation && row.ownership.reconciliation.path)

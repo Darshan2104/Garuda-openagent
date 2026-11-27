@@ -76,6 +76,9 @@ with sync_playwright() as p:
         page.set_viewport_size({"width": 390, "height": 900})
         check(f"at 390 px the rows stack as cards without a horizontal scroll ({scheme})", page.evaluate(
             "document.documentElement.scrollWidth <= innerWidth && "
+            # ...and nothing scrolls sideways inside the list either: not its wrapper, not a row.
+            "[...document.querySelectorAll('.sessions-wrap, #sessions-table, tr.session-row')]"
+            ".every(e => e.scrollWidth <= e.clientWidth + 1) && "
             "getComputedStyle(document.querySelector('tr.session-row')).display !== 'table-row'"))
         page.screenshot(path=str(SHOTS / f"sessions-list-390-{scheme}.png"), full_page=True)
         page.set_viewport_size({"width": 1440, "height": 1000})
@@ -185,6 +188,15 @@ with sync_playwright() as p:
           and "coder →" in steps.nth(0).inner_text() and "passes on: diff → review" in steps.nth(0).inner_text(),
           steps.nth(0).inner_text() if steps.count() else "")
     check("each attempt links to its session", page.locator("#flow-detail li.attempt a[href^='#/sessions/']").count() == 2)
+    code_attempt = page.locator('#flow-detail .pipe-step[data-step="code"] li.attempt').inner_text()
+    check("a long step's turn loop is shown per attempt",
+          "7 turns · 1 rotation · 5 continuations · 1 repair (repaired)" in code_attempt, code_attempt)
+    check("a one-turn step shows no turn loop",
+          page.locator('#flow-detail .pipe-step[data-step="review"] .turn-loop').count() == 0)
+    check("a review that saw part of the change set says so",
+          "coverage: partial" in page.locator("#flow-review").inner_text()
+          and "saw only part" in page.locator("#flow-review").inner_text(),
+          page.locator("#flow-review").inner_text())
     page.screenshot(path=str(SHOTS / "sessions-flow.png"), full_page=True)
 
     page.goto(f"{BASE}#/sessions/00000000-0000-0000-0000-000000000008", wait_until="load")

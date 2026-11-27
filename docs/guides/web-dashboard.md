@@ -91,8 +91,10 @@ successfully submitted or you navigate away.
   where you act: approvals waiting (with expired ones counted apart, since they
   will be denied) → **Approvals**; sessions whose worker **crashed** and
   sessions **waiting** on an approval → the session; flows **paused** on a
-  resumable stop (a quota wait recorded by quota recovery, or a step's own
-  deadline or silence limit) → the session; configuration errors →
+  resumable stop (a quota wait recorded by quota recovery, a step's own
+  deadline or silence limit, or a long step's own pause: no measurable
+  progress, its turn budget used, or its harness refusing to continue) → the
+  session; configuration errors →
   **Setup**; a harness a role uses that is unavailable, logged out or not in
   the runtime catalog → **Providers**. With nothing to show it says
   **Nothing needs you right now**.
@@ -307,7 +309,17 @@ A session's page leads with the work, and keeps the evidence below:
   and model), its status, attempts with their duration, workspace change and
   a link to each attempt's session, the artifacts it passed on, and the review
   outcome with its rounds, such as **approved after 2 rounds** (never shown as
-  verification). The step in flight is highlighted.
+  verification), with **coverage: partial** when the reviewer saw only part of
+  the change set. A long step's attempt adds its turn loop as its receipt
+  recorded it (**7 turns · 1 rotation · 5 continuations · 1 repair**); a
+  one-turn step shows none. A stopped attempt names its stop code in a plain
+  sentence. The step in flight is highlighted. When the flow stopped, the
+  Result says why in one sentence and, for a resumable stop (a deadline,
+  silence, no progress, the turn budget, a refusal, a failed step or missing
+  output), that `garuda flow resume <id>` runs the step again; a step killed
+  by the supervisor's backstop (`flow.step_backstop`) is quarantined instead,
+  and the page says to set `limits.deadline_min` for a step that runs that
+  long.
 - For a session started from a Starter, its result and next action.
 - **Live events**: the session's event count and the last event's type. It
   polls the log every 2 seconds while the tab is visible and holds no

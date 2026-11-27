@@ -172,3 +172,155 @@ def test_a_running_flow_reports_its_in_flight_step(ctx, store):
                                                 "attempt": 1, "at": "2026-11-01T00:00:00Z"})
     row = body(call(ctx, "/api/sessions/flow"))
     assert row["flow_progress"] == {"step": "review", "attempt": 1, "index": 2, "total": 2}
+
+
+# --- the tolerant, memoized listing (#845) ---------------------------------------------
+
+
+def test_an_unreadable_session_is_counted_not_fatal(ctx, store):
+    _sessions(store, 3)
+    bad = store.root / "broken"
+    bad.mkdir()
+    (bad / "meta.json").write_text("[]")
+    payload = body(call(ctx, "/api/sessions"))
+    assert len(payload["sessions"]) == 3 and payload["total"] == 3
+    assert payload["unreadable_sessions"]["count"] == 1
+    assert payload["unreadable_sessions"]["ids"] == ["broken"]
+
+
+def test_a_warm_list_summarizes_only_records_that_changed(tmp_path, monkeypatch):
+    """On the cached store a warm request parses no record for its filters; a changed record
+    is summarized again, and a live owner's state is probed on every request."""
+    from garuda.interfaces.web import reads
+    from garuda.interfaces.web.session_index import CachedSessionStore
+
+    store = CachedSessionStore(root=tmp_path / "sessions")
+    _sessions(store, 6, working={"s-002"})
+    calls: list[str] = []
+    real = reads._list_summary
+
+    def counting(meta):
+        calls.append(meta["session_id"])
+        return real(meta)
+
+    monkeypatch.setattr(reads, "_list_summary", counting)
+    first = reads.session_page(store, limit=50, query="routine")
+    assert first["matched"] == 6 and len(calls) == 6
+    second = reads.session_page(store, limit=50, label="working")
+    assert [r["session_id"] for r in second["sessions"]] == ["s-002"]
+    assert len(calls) == 6  # nothing re-summarized
+    store.update_meta("s-004", {"task": "something else"})
+    third = reads.session_page(store, limit=50, query="routine")
+    assert calls[6:] == ["s-004"] and third["matched"] == 5
+
+
+def test_the_cached_and_plain_stores_page_alike(tmp_path):
+    from garuda.interfaces.web import reads
+    from garuda.interfaces.web.session_index import CachedSessionStore
+
+    _sessions(SessionStore(tmp_path / "sessions"), 9, working={"s-003"})
+    plain = reads.session_page(SessionStore(tmp_path / "sessions"), limit=4, offset=2, query="routine")
+    cached = reads.session_page(CachedSessionStore(root=tmp_path / "sessions"), limit=4, offset=2,
+                                query="routine")
+    assert plain == cached
+
+
+# --- turn-loop facts, review coverage and resumable pauses (#842, #851) -----------------
+
+
+def _flow_with_receipt(store, sid, receipt_extra, **meta):
+    from garuda.flows import engine
+
+    store.begin(sid, task="t", model="m", agent="build", workspace="/tmp", name=sid)
+    store.update_meta(sid, {"kind": "flow", "flow": {"name": "pair", "steps": ["code", "review"]},
+                            "flow_state": "running", "state": session_state.started(), **meta})
+    directory = engine.flow_dir(store, sid)
+    (directory / "receipts").mkdir(parents=True, exist_ok=True)
+    engine._write_once(directory / "receipts" / "code-1.json", {
+        "index": 0, "step": "code", "role": "coder", "attempt": 1, "success": True, "inputs": [],
+        "outputs": [], "status": "done", **receipt_extra})
+
+
+def test_a_long_steps_turn_loop_reaches_the_session_detail(ctx, store):
+    _flow_with_receipt(store, "long", {
+        "turns": 7, "rotations": 1, "continuations": 5, "harness_sessions": ["a", "b"],
+        "repairs": [{"turn": 3, "reason": "output_missing", "outcome": "repaired"}]},
+        review={"status": "review_approved", "rounds": 1},
+        review_approvals={"code": {"coverage": "partial"}})
+    _flow_with_receipt(store, "plain", {})
+    flow = body(call(ctx, "/api/sessions/long"))["flow"]
+    attempt = flow["steps"][0]["attempts"][0]
+    assert attempt["turn_loop"] == {"turns": 7, "rotations": 1, "continuations": 5, "repairs": 1,
+                                    "repair_outcomes": ["repaired"], "harness_sessions": 2}
+    assert flow["review_coverage"] == {"code": "partial"}
+    plain = body(call(ctx, "/api/sessions/plain"))["flow"]
+    assert plain["steps"][0]["attempts"][0]["turn_loop"] is None  # one plain turn: nothing
+    assert plain["review_coverage"] == {}
+
+
+def test_a_turn_count_of_the_wrong_type_reads_unknown(ctx, store):
+    _flow_with_receipt(store, "odd", {"turns": "7", "rotations": -1, "continuations": 2, "repairs": None})
+    loop = body(call(ctx, "/api/sessions/odd"))["flow"]["steps"][0]["attempts"][0]["turn_loop"]
+    assert loop["turns"] is None and loop["rotations"] is None and loop["repairs"] is None
+    assert loop["continuations"] == 2
+
+
+def test_a_long_steps_own_pauses_are_resumable_pauses_on_the_overview(ctx, store):
+    from garuda.flows import engine
+
+    for sid, code in (("no-progress", engine.NO_PROGRESS_STOP), ("max-turns", engine.MAX_TURNS_STOP),
+                      ("refused", engine.REFUSED_STOP), ("backstop", "flow.step_backstop")):
+        assert (code in engine.RESUMABLE_CHECKED_STOPS) == (sid != "backstop")
+        store.begin(sid, task=sid, model="m", agent="build", workspace="/tmp", name=sid)
+        store.update_meta(sid, {"kind": "flow", "flow": {"name": "pair", "steps": ["code"]},
+                                "flow_state": "stopped", "state": session_state.finished(success=False),
+                                "flow_stop": {"code": code, "step": "code", "message": "m"}})
+    paused = {r["session_id"]: r["pause"] for r in
+              body(call(ctx, "/api/overview"))["attention"]["paused"]["items"]}
+    # The backstop quarantines the step; it is not a resumable pause.
+    assert paused == {"no-progress": {"kind": "no_progress"}, "max-turns": {"kind": "max_turns"},
+                      "refused": {"kind": "refused"}}
+
+
+def test_stop_codes_are_worded_with_the_next_action():
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is required to execute the shipped session renderer")
+    from garuda.interfaces.web.http import STATIC_DIR
+
+    script = r"""
+const fs = require("fs"), vm = require("vm");
+const context = vm.createContext({sessionStorage: {getItem: () => ""}, location: {hash: ""}});
+for (const name of ["core.js", "views_sessions.js"]) {
+  vm.runInContext(fs.readFileSync(process.argv[1] + "/" + name, "utf8"), context);
+}
+const out = {};
+for (const code of ["flow.step_no_progress", "flow.step_max_turns", "flow.step_refused",
+                    "flow.step_deadline", "flow.step_silent", "flow.step_backstop", "flow.weird"]) {
+  out[code] = context.failureSentence({kind: "flow", session_id: "f1", state: {outcome: "failed"},
+    flow: {stop: {code: code, step: "code", message: "recorded <b>message</b>"}}});
+}
+out.flow = context.flowHtml({name: "pair", state: "stopped", edges: [], review: {status: "review_approved", rounds: 1},
+  review_coverage: {code: "partial"},
+  steps: [{id: "code", attempts: [{attempt: 1, status: "stopped", delta: null, inputs: [], outputs: [], members: [],
+    stop: {code: "flow.step_max_turns"}, turn_loop: {turns: 40, rotations: 0, continuations: 39, repairs: 0, repair_outcomes: []}}]}]}, null);
+console.log(JSON.stringify(out));
+"""
+    result = subprocess.run([node, "-e", script, str(STATIC_DIR)], capture_output=True, text=True, timeout=20)
+    assert result.returncode == 0, result.stderr
+    out = json.loads(result.stdout)
+    for code in ("flow.step_no_progress", "flow.step_max_turns", "flow.step_refused",
+                 "flow.step_deadline", "flow.step_silent"):
+        assert "(step code)" in out[code]["cause"], out[code]
+        assert out[code]["next"] == "Next: garuda flow resume f1 runs the step again."
+    assert "turn budget" in out["flow.step_max_turns"]["cause"]
+    assert "no measurable progress" in out["flow.step_no_progress"]["cause"]
+    assert "quarantined" in out["flow.step_backstop"]["cause"]
+    assert "flow resume" not in out["flow.step_backstop"]["next"]
+    assert "recorded <b>message</b>" in out["flow.weird"]["cause"]  # escaped at render time
+    assert "40 turns · 0 rotations · 39 continuations · 0 repairs" in out["flow"]
+    assert "stopped: flow.step_max_turns — The long step paused: it used its whole turn budget." in out["flow"]
+    assert 'data-chip="coverage">coverage: partial' in out["flow"]

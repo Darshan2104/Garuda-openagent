@@ -267,7 +267,9 @@ function homeSessionAttention(o) {
       ? "waiting for quota" + (q.reason ? ": " + esc(q.reason) : "") +
         (q.next_check ? " · next check " + esc(new Date(q.next_check * 1000).toLocaleString()) : "")
       : (stop.step ? "step " + esc(stop.step) + " " : "a step ") +
-        (r.pause.kind === "deadline" ? "ran past its deadline" : "went silent past its limit") +
+        ({ deadline: "ran past its deadline", silence: "went silent past its limit",
+           no_progress: "made no measurable progress", max_turns: "used its whole turn budget",
+           refused: "was refused by its harness" }[r.pause.kind] || "paused") +
         (stop.code ? " (<code>" + esc(stop.code) + "</code>)" : "") +
         " · resume with <code>garuda flow resume</code>";
     items.push(homeRow("paused:" + r.session_id, "paused",

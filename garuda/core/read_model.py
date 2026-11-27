@@ -154,7 +154,27 @@ def _attempt(receipt: dict) -> dict:
         "delta": None if before is None or after is None else before != after,
         "no_edits": no_edits.get("result"),
         "stop": receipt.get("stop"),
+        "turn_loop": _turn_loop(receipt),
     }
+
+
+def _turn_loop(receipt: dict) -> dict | None:
+    """A long step's turn-loop facts as its receipt recorded them (#842), or ``None`` when
+    it ran one plain turn. A count of the wrong type reads ``None`` (unknown), never 0."""
+    if not any(key in receipt for key in ("turns", "rotations", "continuations", "repairs")):
+        return None
+
+    def count(value):
+        return value if type(value) is int and value >= 0 else None
+
+    repairs = receipt.get("repairs")
+    natives = receipt.get("harness_sessions")
+    return {"turns": count(receipt.get("turns")), "rotations": count(receipt.get("rotations")),
+            "continuations": count(receipt.get("continuations")),
+            "repairs": len(repairs) if isinstance(repairs, list) else None,
+            "repair_outcomes": [r.get("outcome") for r in repairs if isinstance(r, dict)]
+            if isinstance(repairs, list) else [],
+            "harness_sessions": len(natives) if isinstance(natives, list) else None}
 
 
 def inbox(store, *, limit: int = 200) -> list[dict]:
@@ -223,7 +243,18 @@ def flow(store, session_id: str, meta: dict | None = None, *, receipts: list[dic
                          "journal": journal_coverage},
             "stop": _flow_stop(meta.get("flow_stop")),
             # Own field: a review verdict is advice about the work, not verification of it.
-            "review": meta.get("review"), "quota_recovery": meta.get("quota_recovery")}
+            "review": meta.get("review"), "quota_recovery": meta.get("quota_recovery"),
+            # How much of the change set each approving review saw (#851): partial, complete
+            # or unknown, by reviewed step.
+            "review_coverage": _review_coverage(meta.get("review_approvals"))}
+
+
+def _review_coverage(approvals) -> dict[str, str]:
+    if not isinstance(approvals, dict):
+        return {}
+    return {str(step): (record.get("coverage") if record.get("coverage") in
+                        ("partial", "complete", "unknown") else "unknown")
+            for step, record in approvals.items() if isinstance(record, dict)}
 
 
 def _bounded_fields(record: dict, limits) -> dict:
