@@ -154,35 +154,36 @@ const spend = {state: "recorded", scope: hostile, max_tokens: 400000, max_cost_u
 const row = {session_id: "s", label: "completed", state: {}, workspace: null,
   usage: "unknown", cost: "unknown", spend: spend, self_check: {status: "no_evidence"}};
 const html = context.sessionRowHtml(row);
+const detailHtml = context.sessionResultHtml(row) + context.sessionUsageHtml(row, true);
 // Every projected value goes through the same escaping boundary, including counters/caps.
 for (const key of Object.keys(spend)) {
   if (!["state", "cost_status", "inherited"].includes(key)) spend[key] = hostile;
 }
 spend.inherited.inherited_tokens = hostile;
+row.task = hostile;
+row.name = hostile;
 const hostileHtml = context.sessionRowHtml(row);
-let detailHtml = "";
-context.document = {getElementById: () => null};
-context.render = html => { detailHtml = html; };
-context.api = () => Promise.resolve({...row, approvals: []});
-context.startSessionStream = () => {};
-context.loadStarterResult = () => {};
-context.sessionDetailView("s").then(() => {
-  console.log(JSON.stringify({html, hostileHtml, detailHtml}));
-});
+const hostileDetail = context.sessionUsageHtml(row, true) + context.sessionOverviewHtml(row);
+console.log(JSON.stringify({html, hostileHtml, detailHtml, hostileDetail}));
 """
     result = subprocess.run([node, "-e", script, str(STATIC_DIR)], capture_output=True, text=True, timeout=20)
     assert result.returncode == 0, result.stderr
     rendered = json.loads(result.stdout)
-    html = rendered["html"]
+    html, detail = rendered["html"], rendered["detailHtml"]
     assert 'data-chip="self-check">self-check: no_evidence' in html
-    assert 'data-chip="self-check">self-check: no_evidence' in rendered["detailHtml"]
-    assert 'data-chip="token cap">token cap: 400000' in html
-    assert 'data-chip="scope">scope: &lt;img' in html
-    assert 'data-chip="cost">cost: unknown' in html
-    assert "known settled USD (lower bound): 0.03" in html
-    assert "inherited tokens: unknown" in html
-    assert "&lt;img" in rendered["hostileHtml"]
-    assert "<img" not in html and "<img" not in rendered["hostileHtml"]
+    assert 'data-chip="self-check">self-check: no_evidence' in detail
+    # The list carries the spend gate as one line; every chip stays on the session page.
+    assert "spend 80 / 400.0k tokens · ≥ $0.0300 (lower bound) of $2.0000 cap" in html
+    assert "data-chip=\"token cap\"" not in html
+    assert 'data-chip="token cap">token cap: 400000' in detail
+    assert 'data-chip="scope">scope: &lt;img' in detail
+    assert 'data-chip="cost">cost: unknown' in detail
+    assert "known settled USD (lower bound): 0.03" in detail
+    assert "inherited tokens: unknown" in detail
+    for hostile in (rendered["hostileHtml"], rendered["hostileDetail"]):
+        assert "&lt;img" in hostile
+        assert "<img" not in hostile
+    assert "<img" not in html and "<img" not in detail
 
 
 def test_usage_ledger_renders_when_session_snapshots_are_unavailable():

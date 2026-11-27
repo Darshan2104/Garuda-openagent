@@ -645,3 +645,119 @@ def _load_json(path: Path) -> Any | None:
     except (OSError, ValueError):
         logger.debug("Unreadable JSON at %s", path, exc_info=True)
         return None
+
+
+# --- the Sessions page: one page of the list -------------------------------------------
+
+def _session_haystack(meta: dict[str, Any]) -> str:
+    """The text the Sessions search matches: id, name, task, model, agent, role, runtime,
+    workspace and branch, as recorded."""
+    parts = [meta.get(key) for key in ("session_id", "name", "task", "model", "agent",
+                                        "workspace", "branch", "kind", "origin")]
+    role = meta.get("role")
+    if isinstance(role, dict):
+        parts.append(role.get("name"))
+    segments = meta.get("runtime_segments")
+    if isinstance(segments, list):
+        parts.extend(s.get("runtime_id") for s in segments if isinstance(s, dict))
+    return "\n".join(str(part) for part in parts if part).lower()
+
+
+def _list_summary(meta: dict[str, Any]) -> tuple[str, str | None, bool]:
+    """What the Sessions list filters on, from the record alone: ``(search text, state
+    label, readable)``. The label is ``None`` when it depends on a live owner probe (a
+    session whose process was last recorded starting or live), which is never memoized.
+    A pure function of the record, so :meth:`CachedSessionStore.summaries` reuses it
+    until the record changes."""
+    from garuda.runtime.session_state import effective_state, summary_label
+
+    probed = []
+
+    def no_probe(_owner):
+        probed.append(True)
+        return None
+
+    try:
+        state_label = summary_label(effective_state(meta, liveness=no_probe))
+    except Exception:  # a field of the wrong type: reported unreadable, not a 500
+        return "", None, False
+    return _session_haystack(meta), (None if probed else state_label), True
+
+
+def _live_label(meta: dict[str, Any]) -> str:
+    from garuda.runtime.session_state import effective_state, summary_label
+
+    return summary_label(effective_state(meta))
+
+
+def session_page(store: SessionStore, *, limit: int, offset: int = 0, query: str | None = None,
+                 label: str | None = None, queue=None) -> dict[str, Any]:
+    """One page of the Sessions list, newest first, filtered across *every* session.
+
+    The rows are the shared read model's (``read_model.listed_row``), the same ones
+    ``read_model.sessions`` and ``garuda sessions --json`` build; this only selects which.
+    ``total`` counts every readable session, ``matched`` those the search and state filter
+    keep, and ``counts`` the state labels among the sessions the search keeps, so a state
+    chip can say how many it would show. Full rows are built only for the page returned.
+
+    The listing is the dashboard's tolerant one (a record that cannot be read is skipped
+    and counted in ``unreadable_sessions``). On :class:`CachedSessionStore` the search text
+    and state of each session are memoized per record, so a warm request parses only the
+    page it returns and the sessions whose state needs a live owner probe.
+    """
+    from garuda.core import read_model
+    from garuda.interfaces.web.resilience import rows_isolating
+    from garuda.interfaces.web.session_index import unreadable_report
+
+    unreadable: list[str] = []
+    if hasattr(store, "summaries"):
+        summaries = store.summaries(_list_summary, unreadable=unreadable)
+        probe = [name for name, (_text, state_label, ok) in summaries if ok and state_label is None]
+        live = {}
+        for meta in store.listed(probe, unreadable=unreadable):
+            try:
+                live[meta.get("session_id")] = _live_label(meta)
+            except Exception:
+                live[meta.get("session_id")] = None
+        entries = [(name, text, state_label if state_label is not None else live.get(name), ok)
+                   for name, (text, state_label, ok) in summaries]
+    else:
+        metas = store.list_sessions(limit=None, unreadable=unreadable)
+        entries = []
+        for meta in metas:
+            text, state_label, ok = _list_summary(meta)
+            if ok and state_label is None:
+                state_label = _live_label(meta)
+            # Keyed by position: a damaged record's session_id need not be a string.
+            entries.append((len(entries), text, state_label, ok))
+    needle = (query or "").strip().lower()
+    counts: dict[str, int] = {}
+    matched: list = []
+    total = 0
+    for key, text, state_label, ok in entries:
+        if not ok or state_label is None:
+            name = key if isinstance(key, str) else metas[key].get("session_id")
+            logger.warning("Dashboard could not read the state of session %r", name)
+            unreadable.append(name if isinstance(name, str) else "?")
+            continue
+        total += 1
+        if needle and needle not in text:
+            continue
+        counts[state_label] = counts.get(state_label, 0) + 1
+        if label and state_label != label:
+            continue
+        matched.append(key)
+    selected = matched[offset:offset + limit]
+    if hasattr(store, "listed"):
+        page = store.listed(selected, unreadable=unreadable)
+    else:
+        page = [metas[key] for key in selected]
+    index = read_model._queue_index(queue)
+    rows = rows_isolating(
+        lambda chunk: [read_model.listed_row(store, meta, queue_index=index) for meta in chunk],
+        page, unreadable)
+    end = offset + len(selected)
+    return {"sessions": rows, "total": total, "matched": len(matched), "counts": counts,
+            "offset": offset, "limit": limit,
+            "next_offset": end if end < len(matched) else None,
+            "unreadable_sessions": unreadable_report(unreadable)}

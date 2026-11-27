@@ -268,6 +268,13 @@ function ageText(seconds) {
   return Math.floor(seconds / 86400) + "d ago";
 }
 
+/* A future epoch-seconds time as "in 3h"; a past one as "3h ago" (via ageText). */
+function untilEpochText(epochSeconds) {
+  var seconds = epochSeconds - Date.now() / 1000;
+  if (seconds <= 0) return ageText(-seconds);
+  return seconds < 60 ? "in under a minute" : "in " + ageText(seconds).replace(/ ago$/, "");
+}
+
 function loginAge(check) {
   if (check && check.state === "no_probe") return "no documented status command";
   if (!check || typeof check.age_seconds !== "number") return "never checked";

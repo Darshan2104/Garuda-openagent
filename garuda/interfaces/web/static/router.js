@@ -35,6 +35,7 @@ function navigate() {
   // way, and stopping here denied the user's own approval. Closing the tab still stops it.
   // A new generation first: reads the old view still has in flight reject as Superseded.
   beginNavigation();
+  VIEW_RECONNECTS_IN_PLACE = false;
   stopLive();
   leaveChat();
   if (typeof stopSessionStream === "function") stopSessionStream();
@@ -237,6 +238,12 @@ function boot() {
     });
 }
 
+/* A view that refreshes itself in place when the dashboard comes back (its own onReconnect
+ * handler polls now) calls this while mounting, so a reconnect does not re-mount it. */
+var VIEW_RECONNECTS_IN_PLACE = false;
+
+function reconnectInPlace() { VIEW_RECONNECTS_IN_PLACE = true; }
+
 /* Re-mounting would discard unsubmitted edits (including after a field loses focus), and
  * the chat keeps its own poll. */
 function canRemountView() {
@@ -247,7 +254,7 @@ function canRemountView() {
 onReconnect(function () {
   if (el("boot-error") || !STATE.health) { boot(); return; }
   if (el("token-panel")) return;
-  if (canRemountView()) navigate();
+  if (canRemountView() && !VIEW_RECONNECTS_IN_PLACE) navigate();
   refreshInboxBadge();
 });
 

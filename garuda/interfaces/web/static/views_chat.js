@@ -348,7 +348,7 @@ function showChatStart() {
   render('<div class="loading">Loading…</div>');
   return api("/api/chat")
     .then(function (payload) { renderChatStart({ chats: payload.chats || [] }); })
-    .catch(function () { renderChatStart({ chats: [] }); });
+    .catch(function (err) { if (isSuperseded(err)) return; renderChatStart({ chats: [] }); });
 }
 
 /* Every chat this tab watches. Ends with the tab: a closed tab still leads to denial. */
@@ -811,7 +811,7 @@ function chatGone(chat) {
   if (mounted && (location.hash || "") === "#/chat") {
     api("/api/chat")
       .then(function (payload) { renderChatStart({ gone: chat.id, chats: payload.chats || [] }); })
-      .catch(function () { renderChatStart({ gone: chat.id, chats: [] }); });
+      .catch(function (err) { if (isSuperseded(err)) return; renderChatStart({ gone: chat.id, chats: [] }); });
   } else {
     toast("Your chat " + chat.id.slice(0, 8) + " is no longer open on the server.");
   }
