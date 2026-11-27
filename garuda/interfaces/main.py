@@ -709,6 +709,10 @@ def build_parser():
         help="An acceptance check to run under the flow's retained workspace owner "
              "(repeatable; Linux only)",
     )
+    flow_run.add_argument(
+        "--isolation", choices=("shared", "worktree"), default=None,
+        help="Run in your checkout (shared) or in the flow's own Git worktree from HEAD; "
+             "default: the flow's `isolation`, else shared")
     flow_show = flow_sub.add_parser("show", help="A flow session's steps and receipts")
     flow_show.add_argument("flow_session", help="Flow session id, unique prefix, name or 'latest'")
     flow_show.add_argument("--workspace", default=".",
@@ -729,6 +733,13 @@ def build_parser():
     )
     flow_resume.add_argument("flow_session", help="Flow session id, unique prefix, name or 'latest'")
     flow_resume.add_argument("--workspace", default=".")
+    flow_rollback = flow_sub.add_parser(
+        "rollback", help="Restore a stopped worktree flow's files to one of its checkpoints")
+    flow_rollback.add_argument("flow_session", help="Flow session id, unique prefix, name or 'latest'")
+    flow_rollback.add_argument("--to", dest="to", type=int, required=True, metavar="N",
+                               help="Checkpoint number, as `garuda flow show` lists it")
+    flow_rollback.add_argument("--workspace", default=".",
+                               help="Project whose sessions a prefix, name or 'latest' is looked up in")
 
     recovery_parser = subparsers.add_parser(
         "recovery", help="Automatically continue Codex flows after a quota reset")
@@ -1765,8 +1776,82 @@ def _list_flows(args) -> int:
     return 0
 
 
+def _flow_worktree_lines(store, flow_session: str, meta: dict) -> list[str]:
+    """A worktree flow's worktree and checkpoints for `flow show`; none for shared flows."""
+    from garuda.flows import engine
+    from garuda.flows.checkpoints import listing
+
+    if meta.get("isolation") != "worktree":
+        return []
+    lines = [f"  worktree: {meta.get('worktree')} (branch {meta.get('branch')})"]
+    rows = listing(engine.flow_dir(store, flow_session))
+    if not rows:
+        lines.append("  checkpoints: none")
+    for row in rows:
+        where = (f"{row['step']} attempt {row['attempt']}" if row.get("step") is not None
+                 else str(row.get("label") or "-"))
+        state = "; pruned" if row["pruned"] else ""
+        back = (f"; rolled back to {row['rolled_back_to']}" if row.get("rolled_back_to") is not None
+                else "")
+        lines.append(f"  checkpoint {row['n']}: {where}; {str(row['commit'])[:12]}; "
+                     f"{row.get('at')}{state}{back}")
+    return lines
+
+
+def _print_flow_worktree_note(store, flow_session: str) -> None:
+    """Where a worktree flow worked and the existing merge step that integrates it."""
+    try:
+        meta = store.load_meta(flow_session)
+    except Exception:
+        return
+    if meta.get("isolation") != "worktree":
+        return
+    print(f"[garuda] flow worked in worktree {meta.get('worktree')} on branch "
+          f"{meta.get('branch')}; your checkout is unchanged (a separate checkout, not a sandbox)")
+    if meta.get("dirty_source"):
+        print("[garuda] uncommitted changes in the source checkout were not carried over")
+    print(f"[garuda] to integrate: garuda sessions merge {flow_session[:8]} --check 'COMMAND'")
+
+
+def _rollback_flow(store, flow_session: str, meta: dict, n: int) -> int:
+    """`garuda flow rollback FLOW --to N`: only a worktree flow that is not running."""
+    import sys
+
+    from garuda.flows import engine
+    from garuda.flows.checkpoints import CheckpointError, rollback
+    from garuda.workspace.lease import LeaseError, LeaseStore
+
+    if meta.get("isolation") != "worktree" or not meta.get("worktree"):
+        print("Error: flow.rollback_shared: this flow ran in your checkout (shared isolation); "
+              "rollback restores only a flow's own worktree", file=sys.stderr)
+        return 2
+    if meta.get("flow_state") == "running":
+        print(f"Error: flow.running: flow {flow_session} is running; stop it first (if its "
+              f"process was killed, `garuda runtime recover --session {flow_session}`)",
+              file=sys.stderr)
+        return 2
+    leases = LeaseStore()
+    try:
+        # The flow's own lease: refused while any step or check still holds it.
+        leases.acquire(meta["worktree"], flow_session, "mutating")
+    except LeaseError as exc:
+        print(f"Error: flow.running: the flow's worktree is held: {exc}", file=sys.stderr)
+        return 2
+    try:
+        record = rollback(engine.flow_dir(store, flow_session), meta["worktree"], n)
+    except CheckpointError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
+    finally:
+        leases.release(meta["worktree"], flow_session)
+    print(f"[garuda] restored {meta['worktree']} to checkpoint {n}; the state before it is "
+          f"checkpoint {record['before']} (`garuda flow rollback {flow_session[:8]} "
+          f"--to {record['before']}` undoes this)")
+    return 0
+
+
 def run_flow(args) -> int:
-    """`garuda flow list|run|show|resume|export` (C.6a)."""
+    """`garuda flow list|run|show|resume|export|rollback` (C.6a)."""
     if args.flow_command == "list":
         return _list_flows(args)
     import asyncio
@@ -1797,7 +1882,7 @@ def run_flow(args) -> int:
             print(f"Error: {refusal}", file=sys.stderr)
             return 2
     store = SessionStore()
-    if args.flow_command in ("show", "resume", "export"):
+    if args.flow_command in ("show", "resume", "export", "rollback"):
         flow_session, meta = _resolve_flow_session(
             store, args.flow_session, getattr(args, "workspace", "."),
             protected_meta=args.flow_command == "resume")
@@ -1806,10 +1891,16 @@ def run_flow(args) -> int:
         args.flow_session = flow_session
     if args.flow_command == "export":
         return _export_flow(store, args.flow_session, meta, args.out)
+    if args.flow_command == "rollback":
+        return _rollback_flow(store, args.flow_session, meta, args.to)
     if args.flow_command == "show" and getattr(args, "json", False):
+        from garuda.flows.checkpoints import listing
         from garuda.flows.trajectory import trajectory
 
-        print(json.dumps(trajectory(store, args.flow_session, meta), indent=2, default=str))
+        shown = trajectory(store, args.flow_session, meta)
+        if meta.get("isolation") == "worktree":
+            shown = {**shown, "checkpoints": listing(engine.flow_dir(store, args.flow_session))}
+        print(json.dumps(shown, indent=2, default=str))
         return 0
     if args.flow_command == "show":
         flow_meta = meta.get("flow")
@@ -1831,8 +1922,15 @@ def run_flow(args) -> int:
             ran = "/".join(str(v) for v in (plan.get("runtime_id"), plan.get("model_id")) if v)
             took = receipt.get("duration_ms")
             extra = (f"; {ran}" if ran else "") + (f"; {took / 1000:.1f}s" if type(took) is int else "")
+            if type(receipt.get("turns")) is int:  # a long step's turns or a repair (#819)
+                repairs = receipt.get("repairs") if isinstance(receipt.get("repairs"), list) else []
+                extra += (f"; {receipt['turns']} turns, {receipt.get('rotations', 0)} rotations"
+                          + "".join(f", repair {r.get('outcome')}" for r in repairs
+                                    if isinstance(r, dict)))
             print(f"  {receipt['step']} (attempt {receipt['attempt']}): {receipt['status']}; "
                   f"outputs: {outs}{extra}")
+        for line in _flow_worktree_lines(store, args.flow_session, meta):
+            print(line)
         return 0
     terminated: list[bool] = []
     try:
@@ -1841,7 +1939,10 @@ def run_flow(args) -> int:
             outcome = asyncio.run(_terminable(lambda: service.resume(args.flow_session), terminated))
         else:
             outcome = asyncio.run(_terminable(lambda: service.run(
-                args.name, args.task, args.workspace, checks=tuple(args.checks)), terminated))
+                args.name, args.task, args.workspace, checks=tuple(args.checks),
+                # Only when asked: without the flag the call is the one it always was.
+                **({"isolation": args.isolation} if getattr(args, "isolation", None) else {})),
+                terminated))
     except asyncio.CancelledError:
         # SIGTERM reached a point with no settled stop: the engine recorded the
         # flow `interrupted` and released what it proved closed (#760).
@@ -1870,6 +1971,7 @@ def run_flow(args) -> int:
         verification = outcome.state.get("verification") or {"status": "unavailable"}
         authority = f" ({verification['authority']})" if verification.get("authority") else ""
         print(f"[garuda] verification: {verification.get('status', 'unavailable')}{authority}")
+    _print_flow_worktree_note(store, result.flow_session)
     if result.stopped:
         print(f"[garuda] flow stopped: {result.stopped}", file=sys.stderr)
         # The id `garuda flow show` and `garuda flow resume` need.
@@ -2042,6 +2144,26 @@ def run_sessions_workers(args) -> int:
         return 2
 
 
+def _refuse_unsettled_flow_merge(meta: dict) -> None:
+    """A worktree flow merges only once it stopped running, and a checked one once its checks passed."""
+    from garuda.workspace.worktrees import WorktreeError
+
+    if meta.get("kind") != "flow":
+        return
+    if meta.get("flow_state") in {"running", "quarantined"}:
+        raise WorktreeError("integration.flow_unsettled",
+                            f"the flow is {meta.get('flow_state')}; merge it once it has settled")
+    policy = meta.get("publication_policy")
+    if isinstance(policy, dict) and policy.get("kind") == "flow-verification":
+        verification = (meta.get("state") or {}).get("verification") or {}
+        if meta.get("flow_state") != "completed" or verification.get("status") != "passed":
+            raise WorktreeError(
+                "integration.flow_unverified",
+                "this checked flow's checks have not passed "
+                f"(verification: {verification.get('status', 'unavailable')}); "
+                "merge it only after `garuda flow resume` completes them")
+
+
 def run_sessions_merge(args) -> int:
     """`garuda sessions merge` and `remove-worktree`."""
     import os
@@ -2059,8 +2181,10 @@ def run_sessions_merge(args) -> int:
             remove_worktree(meta, force=args.force)
             print(f"[garuda] removed {meta.get('worktree') or 'nothing (shared session)'}")
             return 0
+        meta = store.load_meta(session_id)
+        _refuse_unsettled_flow_merge(meta)
         result = merge_session(
-            store.load_meta(session_id),
+            meta,
             checks=args.check,
             image=args.image,
             destination=args.into,
@@ -2781,6 +2905,25 @@ async def run_web(args) -> int:
     return 0
 
 
+def _run_web_until_interrupted(args) -> int:
+    """``garuda web`` until Ctrl-C, which ends it with one line and no traceback.
+
+    ``asyncio.run`` turns the first SIGINT into a cancellation of ``serve_dashboard``,
+    whose ``finally`` stops the HTTP server and drains the flow and chat operations it
+    owns; once that completes, ``asyncio.run`` re-raises ``KeyboardInterrupt``. A second
+    Ctrl-C during the drain interrupts it the same way. Either is the normal way to stop
+    a server, so it exits 0.
+    """
+    import asyncio
+    import sys
+
+    try:
+        return asyncio.run(run_web(args))
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        print("\nGaruda dashboard stopped.", file=sys.stderr, flush=True)
+        return 0
+
+
 def _enable_consults(args, config) -> None:
     """Give a role the user granted consult targets the ``consult`` tool (G.2).
 
@@ -3005,7 +3148,7 @@ def main() -> None:
     if args.command == "serve":
         raise SystemExit(asyncio.run(run_serve(args)))
     if args.command in ("web", "dashboard"):
-        raise SystemExit(asyncio.run(run_web(args)))
+        raise SystemExit(_run_web_until_interrupted(args))
     if args.command == "runtime":
         raise SystemExit(asyncio.run(run_runtime_command(args)))
     if args.command == "doctor":

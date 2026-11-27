@@ -76,8 +76,35 @@ def tile_text(page, label):
     return ""
 
 
+def mounts_once(browser):
+    """A view opened while /api/health is still in flight mounts once, not twice.
+
+    The router listened for hash changes before boot finished, so a navigation made before
+    health answered mounted the view, and boot's own navigate() then mounted it again: the
+    second mount's "Loading…" replaced the first one's table, which a slow runner caught as
+    an empty sessions list. Health is held here until the navigation has happened."""
+    page = browser.new_page()
+    held, listed = [], []
+    page.on("request", lambda r: listed.append(r.url) if r.url.split("?")[0].endswith("/api/sessions") else None)
+    page.route("**/api/health", lambda route: held.append(route))
+    page.goto(f"{BASE}#t={TOKEN}", wait_until="load")
+    page.goto(f"{BASE}#/sessions", wait_until="load")
+    page.wait_for_timeout(800)  # observation window: an early mount would request now
+    early = len(listed)
+    for route in held:
+        route.continue_()
+    page.unroute("**/api/health")
+    page.wait_for_selector("#sessions-table tr.session-row")
+    page.wait_for_timeout(800)  # observation window: a second mount would request now
+    rows = page.locator("#sessions-table tr.session-row").count()
+    check("a view opened before health answered mounts once",
+          early == 0 and len(listed) == 1 and rows == 4, f"early={early} requests={len(listed)} rows={rows}")
+    page.close()
+
+
 with sync_playwright() as p:
     browser = launch(p)
+    mounts_once(browser)
     page = browser.new_page(viewport={"width": 1600, "height": 1000})
     page.on("console", lambda m: problems.append(f"console.{m.type}: {m.text}")
             if m.type in ("error", "warning") else None)

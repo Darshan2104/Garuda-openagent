@@ -44,7 +44,8 @@ def harness(repo, monkeypatch):
     monkeypatch.setattr("garuda.flows.quota_recovery.time", SimpleNamespace(time=lambda: clock.now))
     script = SimpleNamespace(sequence=[], fail=("review", 1), failures=1,
                              exhausted=False, reviews=[APPROVE], error="usage limit reached",
-                             account="acct:test", version="0.163.0", closure="closed")
+                             account="acct:test", version="0.163.0", closure="closed",
+                             prompts={})
 
     async def probe(_recovery):
         return LimitObservation("codex", script.version, clock.now,
@@ -57,6 +58,7 @@ def harness(repo, monkeypatch):
     async def launch(request):
         pair = (request.step_id, request.attempt)
         script.sequence.append(pair)
+        script.prompts[pair] = request.prompt
         if pair == script.fail and script.failures:
             script.failures -= 1
             script.exhausted = True
@@ -559,3 +561,31 @@ async def test_unreadable_tick_health_neither_stops_ticks_nor_hides_status(harne
     assert "unreadable" in status["tick_health"]["reason"]
     assert status["schedule"]["installed"] is True
     assert [row["flow_session"] for row in status["flows"]] == [sid]
+
+
+async def test_a_quota_continuation_gives_the_reviewed_step_the_same_round_brief(harness):
+    # #816: the round brief comes from the records the checkpoint keeps, so the
+    # attempt that runs after the pause is told exactly what the paused one was.
+    import re
+
+    h = harness
+    h.script.fail = ("build", 2)
+    h.script.reviews = [CHANGES, APPROVE]
+    first = await h.service.run("pbr", "ship it", str(h.repo))
+    sid = first.flow.flow_session
+    h.script.exhausted = False
+    h.clock.now += 3601
+    await FlowRecovery().tick()
+    assert SessionStore().load_meta(sid)["status"] == "completed"
+    builds = sorted(k for k in h.script.prompts if k[0] == "build")
+    assert builds == [("build", 1), ("build", 2), ("build", 3)]
+
+    def brief(prompt):
+        prompt = prompt.split("\n\n[garuda] Continue from the retained workflow", 1)[0]
+        return re.sub(r'fence="[0-9a-f]{16}"', 'fence="M"',
+                      prompt[prompt.index("[garuda] This is round 2 "):])
+
+    paused, continued = (brief(h.script.prompts[k]) for k in builds[1:])
+    assert paused == continued
+    assert "attempt 1 done" in paused and "attempt 2" not in paused
+    assert '<flow-note type="patch" from="build" attempt="1"' in paused

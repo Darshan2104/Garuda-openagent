@@ -5362,3 +5362,95 @@ becomes the step's error, `stop.cause.code` fallback and `stop.cause.stop_reason
 `run_acp_task` attaches the last turn's raw stop reason to a raised error
 (`acp_stop_reason`) for that purpose. A checked step without a deadline still
 has the one-hour worker limit; long checked steps need `deadline_min`.
+
+## 2026-11-27: Configured flows can run in their own worktree, with checkpoints and rollback
+
+Every configured flow ran in the user's checkout: `service.py` forced
+`isolation = "shared"` unless a dashboard starter launched a role `run`. A
+12-hour unattended writer step there blocked the user's own work, and nothing
+could undo damage it did late in the run.
+
+A flow may set `isolation: worktree` (`garuda flow run --isolation` overrides
+it; `shared` stays the default and `auto` is not offered). The parser emits the
+key only when written, so a flow without it keeps its definition digest
+(pinned by a test). A new worktree flow pre-allocates its session id and enters
+the starter machinery, `run_workspace`, which creates the worktree from `HEAD`
+and discards it if the flow never began; the runner gets `execution_workspace`
+and `worktree_plan` exactly as a starter run does, so the lease, review
+packets, owned checks and evidence all bind to the worktree while
+configuration and the check request stay frozen against the source checkout.
+A resume rebuilds the execution workspace from the recorded metadata and
+refuses a missing or replaced worktree. Integration is the existing `sessions
+merge`; a checked flow merges only after its checks passed and no flow merges
+while running or quarantined. Dashboard flow starts refuse a flow with
+`isolation: worktree` (`flow.isolation_unsupported`): their admitted authority
+binds the shared checkout, and the dashboard path is otherwise unchanged.
+
+Checkpoints (`garuda/flows/checkpoints.py`) are taken after every step
+attempt's receipt and journal entry are durable (`_record_step_receipt` and the
+parallel group's receipt). `checkpoint(flow_dir, workspace, label, *, step,
+attempt)` copies the worktree's index to a temporary `GIT_INDEX_FILE`, runs
+`git add -A`, `write-tree`, `commit-tree` (parent: the worktree's `HEAD`, never
+the previous checkpoint, so a pruned one becomes unreachable) and a
+create-only `update-ref refs/garuda/<flow>/<n>`, all with the snapshot module's
+sanitized Git environment. It returns the ref, the previous ref for an
+unchanged tree, and `None` outside a Garuda worktree; a turn loop may call it at
+each turn end. Records go to `checkpoints.jsonl`, never the journal, which
+keeps two entries per attempt. Past 64 the oldest are pruned except the first
+and the last. A refused checkpoint is recorded and never fails a settled
+attempt. Unlike `snapshot_proto.capture`, `git add` honours the repository's
+own configured filters; global and system config are not read.
+
+`garuda flow rollback FLOW --to N` refuses a shared flow and a flow recorded
+running, takes the flow's own lease on the worktree (refused while any step or
+check holds it), checkpoints the current state, then switches a scratch index
+from the current tree to the checkpoint's with `read-tree --reset -u`, so the
+worktree's HEAD, branch and index are not changed and ignored files stay.
+Refs are pruned when `remove_worktree` removes the worktree and, when a new
+worktree flow starts, for flows whose newest checkpoint is older than
+`sessions.keep_days`.
+
+## 2026-11-27: Review rounds get a round brief from flow memory (#816)
+
+Round 2+ of a reviewed step used to start fresh sessions told nothing of the
+earlier rounds. `garuda/flows/memory.py` now builds a bounded brief from
+Garuda's own records only: `facts()` gathers the step's receipts (attempt,
+status, stop code) and the review `history`; `coder_brief()` and
+`earlier_reviews()` render them within `BUDGET` (8,000 characters). It is a
+small general API so retries, crash continuation and session rotation can use
+it later; only what #816 needs is implemented. Check results are not in the
+brief: acceptance checks run after the review settles, so a review round has
+none to report.
+
+The reviewed step's round brief replaces the bare findings block (it renders
+the findings with `render_findings`) and adds the round, the "already in the
+workspace, inspect, do not redo" instruction, its attempts, its change list
+(each path JSON-quoted, so a file name cannot forge a line) and its previous
+artifacts of the reviewed candidate in a `flow-note` fence. The reviewer's
+earlier rounds go in the packet as `earlier_reviews` (round 2+ only) with a
+`[garuda]` line asking it to check each finding was addressed first.
+
+`PACKET_VERSION` stays 2: the field is additive, absent in round 1 (so round-1
+packets and digests are byte-identical), and `build_packet` adds it before
+hashing, so `packet_digest` covers it. Nothing else reads a packet's body:
+`_review_approved`, `trajectory.py`, `verification_records.py` and the
+dashboard read only the digest and the candidate, which are unchanged.
+
+Trimming is deterministic and in priority order: notes are shortened, then
+dropped; older rounds summarised (counts by severity), then dropped; the
+latest findings cut to their first lines; the file list last. Every cut is
+stated.
+
+Determinism across `flow resume` and quota continuation: each `history` entry
+now records `candidate` (`attempt`, up to 50 `changed` paths and
+`changed_total` from that round's packet). The brief takes its change list and
+notes from the latest round's candidate and ignores attempts after it, so an
+attempt stopped by a quota pause (with partial edits) does not change it; the
+continuation note already covers that. The checkpoint itself is unchanged
+(findings stay raw, the brief is rebuilt, never saved). A checkpoint from
+before this change has no `candidate`: its brief says the change list is
+unknown and takes the latest attempt with outputs as notes.
+
+Reuse: `garuda/context/brief.py` is session-shaped and HTML-escapes; only its
+redaction helper (`_redacted`) is reused. Fencing and rendering are
+`prompting.fence`/`render_findings`, so the brief shares the prompt's marker.

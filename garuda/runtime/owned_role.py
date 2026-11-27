@@ -120,6 +120,8 @@ def _prepare_owned_step(launch, *, timeout) -> OwnedRoleRequest:
                         "attempt": launch.attempt}}
     if getattr(launch, "limits", None) is not None:  # absent: the request as before (#828)
         payload["limits"] = launch.limits.record()
+    if getattr(launch, "turns", None) is not None:  # an ACP step's repair turn / turn loop
+        payload["turns"] = launch.turns
     if launch.worktree_plan is not None:
         from garuda.interfaces.session_service import plan_meta
 
@@ -264,7 +266,8 @@ async def execute_owned_role(request: OwnedRoleRequest, capability, *, approval=
                               error=failure.get("detail") or "",
                               error_code=failure.get("code") or "",
                               stop_reason=failure.get("stop_reason"),
-                              liveness=failure.get("liveness") if payload.get("limits") else None)
+                              liveness=failure.get("liveness") if payload.get("limits") else None,
+                              turns=result.get("turns") if payload.get("turns") else None)
         except asyncio.CancelledError:
             await process.close()
             # Local closure and the separate Docker cleanup below must both settle;

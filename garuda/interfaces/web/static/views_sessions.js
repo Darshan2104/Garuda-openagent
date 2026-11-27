@@ -197,9 +197,9 @@ function sessionsView(rawQuery) {
   render(
     '<div class="page-head"><h1>Sessions</h1><span class="meta" id="sessions-count">loading…</span>' +
     '<button type="button" class="btn" id="sessions-refresh">Refresh</button></div>' +
-    '<div class="filters"><input type="search" id="sessions-search" placeholder="Search name, id, task, model, workspace…  ( / )" value="' + esc(filter.q) + '">' +
+    '<div class="filters"><input type="search" id="sessions-search" aria-label="Search sessions" placeholder="Search name, id, task, model, workspace…  ( / )" value="' + esc(filter.q) + '">' +
     '<div class="state-chips" id="sessions-states"></div></div>' +
-    '<div class="notice err" id="sessions-error" hidden></div>' +
+    '<div class="notice err" id="sessions-error" hidden></div><div id="sessions-unreadable"></div>' +
     '<div class="table-wrap sessions-wrap"><table class="table sessions-table" id="sessions-table"><thead><tr>' +
     "<th>Session</th><th>State</th><th>Runtime · role · model</th><th>Outcome / verification</th>" +
     "<th>Workspace</th><th>Usage / cost</th><th class=\"num\">Approvals</th><th>Updated</th><th>Started</th>" +
@@ -294,6 +294,8 @@ function acceptSessionPage(list, payload) {
   list.matched = payload.matched;
   list.counts = payload.counts || {};
   list.error = null;
+  // Sessions whose record could not be read are left out and counted (the server says which).
+  paintHost("sessions-unreadable", unreadableNote(payload));
   list.painted = true;
   paintSessionList(list);
 }
@@ -1059,7 +1061,7 @@ function inboxView() {
   render(
     '<div id="inbox-root"><div class="page-head"><h1>Approvals</h1><span class="meta" id="inbox-count">loading…</span>' +
     '<button type="button" class="btn" id="inbox-refresh">Refresh</button></div>' +
-    '<div class="notice err" id="inbox-error" hidden></div>' +
+    '<div class="notice err" id="inbox-error" hidden></div><div id="inbox-unreadable"></div>' +
     '<ul class="approvals" id="inbox-list"></ul>' +
     '<div class="empty" id="inbox-empty" hidden><p>Nothing is waiting for you.</p></div>' +
     '<section class="inbox-expired" id="inbox-expired-section" hidden><h2>Expired</h2>' +
@@ -1110,6 +1112,7 @@ function refreshInbox(inbox) {
     var all = (payload.approvals || []).filter(function (a) { return !inbox.answered[approvalKey(a)]; });
     inbox.items = all;
     inbox.loaded = true;
+    paintHost("inbox-unreadable", unreadableNote(payload));
     inbox.error = null;
     paintInbox(inbox);
   }).catch(function (err) {

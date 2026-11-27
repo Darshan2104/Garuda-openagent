@@ -593,6 +593,14 @@ input[type="text"], input[type="url"] {
 /* --- chat --- */
 
 .chat-log { max-height: 60vh; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+/* Appended rows and the redrawn live preview are separate containers, laid out as one log. */
+.chat-rows { display: flex; flex-direction: column; gap: 8px; }
+.chat-rows:empty, #chat-empty[hidden] { display: none; }
+.chat-new-fields label { display: inline-flex; gap: 6px; align-items: center; max-width: 100%; min-width: 0; }
+.chat-new-fields select, .chat-new-fields input { min-width: 0; max-width: 100%; flex: 1 1 auto; }
+.approval-status:empty { display: none; }
+/* The state line carries the workspace path, which on a narrow screen is wider than the page. */
+#chat-state { min-width: 0; overflow-wrap: anywhere; }
 .chat-row { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 10px; }
 .chat-who {
   font: 10px/1.8 var(--mono); text-transform: uppercase; letter-spacing: 0.05em;

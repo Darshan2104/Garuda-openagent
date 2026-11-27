@@ -31,7 +31,9 @@ native Garuda agent.
     the `--max-permission` posture or a stricter one.
 
 The command prints a URL with a one-time token (`http://127.0.0.1:8787/#t=…`);
-open that exact URL. It opens on the **Overview**.
+open that exact URL. It opens on the **Overview**. Press Ctrl-C to stop it: the
+dashboard finishes the flow and chat operations it owns, prints
+`Garuda dashboard stopped.` and exits 0.
 
 | Flag | Default | Use |
 |---|---|---|
@@ -104,7 +106,7 @@ successfully submitted or you navigate away.
   not checked` until one exists).
 
 The session sections come from one fast read, `GET /api/overview`, which
-selects from every session rather than the newest 200, so an old crashed or
+selects from every session rather than the newest page of the Sessions list, so an old crashed or
 waiting session is never missed. Configuration and harness rows come from
 the slower Setup and Providers reads, load separately with a placeholder, and
 show an inline error with **Retry** if they fail; the rest of the page stays
@@ -334,10 +336,43 @@ answer: the session leaves the queue, or its worker is stopped once its
 recorded process identity matches.
 
 `garuda sessions --json` prints the same rows: the CLI and the dashboard read
-one model. A queue that can't be read shows as `unknown`, not as empty. A
+one model. A session whose record is damaged (a `meta.json` that isn't a JSON
+object, a field of the wrong type, a file the dashboard can't read) is left out
+of the Runs, Sessions and Approvals lists, and each page says **N sessions could
+not be read** (the ids are in its tooltip, the reason in the server log); the
+session's own page answers `session_unreadable` instead of failing. A queue that can't be read shows as `unknown`, not as empty. A
 session row's own usage and cost still read `unknown`; the Usage page has the
 totals, and a session's detail adds `reported_usage`, what an external harness's
 adapter reported (see [Sessions](sessions-and-flows.md)).
+
+## Chat
+
+`#/chat` starts nothing on its own. It resumes the chat this tab was using (or
+the newest open one), and otherwise shows **New chat** with the workspace,
+agent, model and permission choices the server accepts. If the previous chat is
+no longer open on the server (ended, reclaimed after sitting unwatched, or the
+dashboard restarted), the page says so instead of opening a new one; its
+transcript stays in Runs.
+
+- A typed message is kept per chat while you visit other pages.
+- **End chat** asks first when a turn is running or an approval is waiting.
+- If the dashboard stops answering, the page says so, retries with backoff (up
+  to 30 seconds between tries) and recovers by itself.
+
+A tool call that needs approval shows a card in the chat. The chat's poll is
+also its heartbeat: while a turn runs or an approval waits, it keeps going when
+the tab is in the background or you are on another dashboard page (the Chat
+tab then shows a count). The same holds for every chat the tab has open:
+**New chat** inside a chat starts another without dropping the first, and while
+you work in one, the others that wait for an answer are listed above it with a
+link back (and marked in the New chat page's list of open chats). Once the tab is closed, the server denies the waiting
+approval after a 90-second grace window, so the run is not blocked for the full
+five-minute timeout. 90 seconds is longer than the slowest heartbeat a
+background tab can send (browsers may wake a long-hidden tab's timers only once
+a minute). The transcript says who decided each denial: **denied by you**,
+**the dashboard stopped watching**, **nobody answered** within the timeout, or
+**the chat was closed**. A second answer to the same approval gets a 409 that
+names the first outcome.
 
 ## Approvals
 
@@ -489,7 +524,37 @@ The HTTP transport checks Host, Origin and token before reading request bodies.
 duplicate lengths and any `Transfer-Encoding` receive HTTP 400; lengths
 above 12 MiB receive HTTP 413, without reading the body. Header refusals close
 the connection so an unread body cannot become another request. The dashboard
-allows up to 32 simultaneous connections, each with a 30-second read timeout.
+allows up to 32 simultaneous connections, each with a 30-second read timeout;
+one more is answered `503` with `Retry-After` and the message *too many open
+dashboard connections; close some tabs*.
+
+**Errors.** Every API error is JSON, `{"error": {"code", "message"}}`, with the
+same security headers as any response. `400 invalid_request` means the request
+itself was wrong (a malformed session id, query parameter or JSON body). A
+fault while serving a valid request is `500 internal_error`, logged with its
+traceback on the server; the response carries no internal detail. One damaged
+session is `409 session_unreadable` on its own routes; one still being written
+by a non-atomic writer is `503 session_being_written` with `Retry-After`. An
+agent loop that does not answer in time is `504 unavailable`.
+
+**List responses.** `/api/runs`, `/api/sessions`, `/api/inbox` and `/api/overview` carry
+`unreadable_sessions: {"count", "ids", "being_written"}` (at most 50 ids; the
+count is exact). The lists are served from an in-memory index of session
+records only: queue positions, approvals, leases and flow journals are read on
+every request. A record is re-read when its `meta.json`, its session directory
+or its publication policy record changes, and sessions created or deleted since
+the last request are noticed. Listing never waits on a writer: a record locked
+mid-publication shows its previous version, or with none is listed under
+`being_written` and read again on the next request. Records over 1 MiB are
+reported unreadable rather than read. `/api/runs/<id>/buffers` and
+`/api/memory/proposals` take `limit` (default 200, at most 1000) and report
+`total`; `/api/runs/<id>/raw` refuses a document over 16 MiB with `413 too_large`.
+
+**Runtime discovery.** `/api/runtimes`, `/api/runtimes/<id>` and
+`/api/providers` share one harness discovery for 30 seconds, so moving between
+those pages doesn't re-run every harness's version and status checks. A
+runtime's detail on its own checks only that runtime. **Refresh** on the
+Providers page discards it.
 
 | Route | Purpose |
 |---|---|
@@ -500,7 +565,7 @@ allows up to 32 simultaneous connections, each with a 30-second read timeout.
 | `GET /api/scenario-runs/<id>` | Shared selected-session evidence; `limit` 1–200 and non-negative `offset`, optional workspace index for names |
 | `GET /api/runs`, `GET /api/runs/<id>` | Runs and one run's trace |
 | `GET /api/runs/<id>/tail` | Poll a run for new events |
-| `GET /api/sessions` | Newest first: `limit` an integer >= 1 (default 100, capped at 500), `offset` >= 0, `q` (search) and `state` (a state label) filter across every session. `sessions` holds each row: the four facts, the derived `crashed` label, queue position, worker, approvals waiting (`approvals_pending`, of which `approvals_live` not expired), agent digest, resume provenance; with `total`, `matched`, `counts` (per state label, after the search) and `next_offset` |
+| `GET /api/sessions` | Newest first: `limit` an integer >= 1 (default 100, capped at 500), `offset` >= 0, `q` (search) and `state` (a state label) filter across every session. `sessions` holds each row: the four facts, the derived `crashed` label, queue position, worker, approvals waiting (`approvals_pending`, of which `approvals_live` not expired), agent digest, resume provenance; with `total`, `matched`, `counts` (per state label, after the search), `next_offset` and `unreadable_sessions` |
 | `GET /api/sessions/<id>` | One session, with pending approvals, its stored `final_message`, `files_changed`, `ended_at`/`duration_ms`, `starter_origin` and, for a flow, its steps, attempts, review outcome and `flow_progress` |
 | `GET /api/sessions/<id>/stream` | Live events as server-sent events (the session page polls `/api/runs/<id>/tail` instead) |
 | `GET /api/sessions/<id>/conversation` | The Models used, links and lanes data |
@@ -537,6 +602,9 @@ The tail counts these records in `malformed`; the stream reports a `skipped`
 event with a `malformed` count. Later events remain available,
 and the persisted log is unchanged. A torn final record keeps its cursor until
 its newline arrives, including when it is oversized.
+If reading the session fails mid-stream (its record is locked or damaged), the
+stream sends an `error` event, `{"error": {"code": "stream_failed", …}}`, whose
+`id` is the last delivered offset, and closes cleanly for the client to reconnect.
 The stream sends a heartbeat every 15 seconds,
 ends with an `end` event once the session is finished and a poll delivers no
 records and makes no cursor progress, including a torn final append, and closes

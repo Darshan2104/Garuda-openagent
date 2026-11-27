@@ -54,6 +54,9 @@ LIVE_WINDOW_SECONDS = 90.0
 #: run to tens of thousands of events and no browser wants them in one response.
 MAX_EVENT_WINDOW = 500
 
+#: The largest session JSON document (meta, messages, state) a read will parse.
+MAX_DOCUMENT_BYTES = 16 * 1024 * 1024
+
 #: How many open runs keep a warm reader. Each holds its session's events in memory,
 #: so this is a memory ceiling as much as a cache size.
 READER_CACHE_SIZE = 8
@@ -68,29 +71,31 @@ class ReaderCache:
     And ``build_run`` is re-run over the accumulated events, so its cost is paid on
     new data only.
 
-    **The lock is held across ``refresh()``, deliberately.** A reader is not
-    thread-safe: ``refresh`` reads its tail then extends its own event list, so two
+    **Each reader's own lock is held across ``refresh()``, deliberately.** A reader is
+    not thread-safe: ``refresh`` reads its tail then extends its own event list, so two
     HTTP threads landing on one run would interleave those steps and append the same
-    events twice — silently doubling every turn. Serializing the parse costs a few
-    milliseconds on a large log and removes the entire class of bug. It also means the
-    returned ``Run`` and event count are read from one consistent state; fetching them
-    under separate locks could report a count from a later parse than the run.
+    events twice — silently doubling every turn. Serializing the parse removes the
+    entire class of bug, and the returned ``Run`` and event count are read from one
+    consistent state. The lock is per reader, not the cache's: the first parse of a
+    very large log must not stall every *other* run's detail view behind it.
     """
 
     def __init__(self, capacity: int = READER_CACHE_SIZE) -> None:
         self._capacity = max(1, capacity)
-        self._readers: OrderedDict[Path, TrajectoryReader] = OrderedDict()
+        self._readers: OrderedDict[Path, tuple[TrajectoryReader, threading.Lock]] = OrderedDict()
         self._lock = threading.Lock()
 
     def read(self, path: Path) -> tuple[Run, int]:
         """The current ``Run`` for a session or trial directory, and its event count."""
         with self._lock:
-            reader = self._readers.pop(path, None)
-            if reader is None:
-                reader = TrajectoryReader(path)
-            self._readers[path] = reader
+            entry = self._readers.pop(path, None)
+            if entry is None:
+                entry = (TrajectoryReader(path), threading.Lock())
+            self._readers[path] = entry
             while len(self._readers) > self._capacity:
                 self._readers.popitem(last=False)
+        reader, lock = entry
+        with lock:
             return reader.refresh(), reader.event_count
 
     def forget(self, path: Path) -> None:
@@ -189,25 +194,44 @@ def list_runs(
     knows how to sort and how to skip an unreadable session; re-implementing that here
     to push filters down would duplicate its defensive behaviour.
     """
+    from garuda.interfaces.web.session_index import unreadable_report
+
     limit = max(0, min(limit, MAX_LIMIT))
     # Read a wider window than requested so filters do not silently return fewer rows
-    # than exist. Still bounded.
-    metas = store.list_sessions(limit=MAX_LIMIT)
-    rows = []
+    # than exist. Still bounded. A session that cannot be read is skipped and counted
+    # rather than failing the whole list.
+    unreadable: list[str] = []
+    metas = store.list_sessions(limit=MAX_LIMIT, unreadable=unreadable)
+    matched = []
     for meta in metas:
         if agent and meta.get("agent") != agent:
             continue
-        if model and model not in (meta.get("model") or ""):
+        if model and model not in _text(meta.get("model")):
             continue
         if query:
-            haystack = f"{meta.get('task') or ''}\n{meta.get('session_id') or ''}".lower()
+            haystack = f"{_text(meta.get('task'))}\n{_text(meta.get('session_id'))}".lower()
             if query.lower() not in haystack:
                 continue
-        row = summarize_session(meta, store)
-        if status and not _matches_status(meta, row, status):
+        if status and not _matches_status(meta, status):
             continue
-        rows.append(row)
-    return {"runs": rows[:limit], "total": len(rows), "limit": limit}
+        matched.append(meta)
+    # Only the rows the response carries are summarized (each one stats its log).
+    rows = []
+    for meta in matched[:limit]:
+        try:
+            rows.append(summarize_session(meta, store))
+        except Exception:
+            name = meta.get("session_id")
+            logger.exception("Dashboard could not summarize session %r", name)
+            unreadable.append(name if isinstance(name, str) else "?")
+    failed = len(matched[:limit]) - len(rows)
+    return {"runs": rows, "total": len(matched) - failed, "limit": limit,
+            "unreadable_sessions": unreadable_report(unreadable)}
+
+
+def _text(value: Any) -> str:
+    """A field filters match against: a recorded string, or nothing."""
+    return value if isinstance(value, str) else ""
 
 
 #: Token fields a run's ``usage`` may carry; each is read only when it was recorded.
@@ -299,15 +323,23 @@ def _duration_ms(meta: dict[str, Any], store: SessionStore, session_id: str) -> 
     return int((end - start).total_seconds() * 1000)
 
 
-def _matches_status(meta: dict[str, Any], row: dict[str, Any], status: str) -> bool:
+def _matches_status(meta: dict[str, Any], status: str) -> bool:
     """The status filter matches the legacy ``status`` word or the session's state label.
 
     Native runs record ``success`` and external harnesses and flows ``completed`` for the
-    same outcome, so filtering on the stored word alone hid half the finished runs.
+    same outcome, so filtering on the stored word alone hid half the finished runs. Read
+    from the meta alone, so only the rows the response carries are summarized. A record
+    whose state cannot be read is kept, so the summary step reports it as unreadable.
     """
-    if meta.get("status") == status or row.get("state_label") == status:
+    if meta.get("status") == status:
         return True
-    return status == "success" and (row.get("state") or {}).get("outcome") == "completed"
+    try:
+        fields = _state_fields(meta)
+    except Exception:
+        return True
+    if fields["state_label"] == status:
+        return True
+    return status == "success" and (fields["state"] or {}).get("outcome") == "completed"
 
 
 def condenser_threshold(name: str | None) -> float | None:
@@ -343,7 +375,8 @@ def read_run(
     directory = store.session_dir(session_id)
     if not directory.is_dir():
         return None
-    meta = _load_json(directory / "meta.json") or {}
+    meta = _load_json(directory / "meta.json")
+    meta = meta if isinstance(meta, dict) else {}
     run, event_count = _cache(readers).read(directory)
     return {
         "run": summarize_session({**meta, "session_id": session_id}, store),
@@ -547,7 +580,8 @@ def tail_run(
         return None
     events_path = store.events_path(session_id)
     result = tail_jsonl(events_path, offset)
-    meta = _load_json(directory / "meta.json") or {}
+    meta = _load_json(directory / "meta.json")
+    meta = meta if isinstance(meta, dict) else {}
     written_ago = _seconds_since_write(events_path)
     claims_running = meta.get("status") == "running"
     # Same definition as the run list uses, and for the same reason: `meta.json` says
@@ -591,6 +625,10 @@ def _load_json(path: Path) -> Any | None:
     raises on the partial ``meta.json`` a still-running session can have on disk.
     """
     try:
+        if path.stat().st_size > MAX_DOCUMENT_BYTES:
+            # Bounded: one oversized record must not be read whole into memory per request.
+            logger.warning("Not reading %s: over %d bytes", path.name, MAX_DOCUMENT_BYTES)
+            return None
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         logger.debug("Unreadable JSON at %s", path, exc_info=True)
@@ -624,24 +662,39 @@ def session_page(store: SessionStore, *, limit: int, offset: int = 0, query: str
     chip can say how many it would show. Full rows are built only for the page returned.
     """
     from garuda.core import read_model
+    from garuda.interfaces.web.resilience import rows_isolating
+    from garuda.interfaces.web.session_index import unreadable_report
     from garuda.runtime.session_state import effective_state, summary_label
 
-    metas = store.list_sessions(limit=None)
+    # The dashboard's tolerant listing (cached on ``CachedSessionStore``): a record that
+    # cannot be read is skipped and counted instead of failing the list.
+    unreadable: list[str] = []
+    metas = store.list_sessions(limit=None, unreadable=unreadable)
     needle = (query or "").strip().lower()
     counts: dict[str, int] = {}
     matched: list[dict] = []
     for meta in metas:
         if needle and needle not in _session_haystack(meta):
             continue
-        state_label = summary_label(effective_state(meta))
+        try:
+            state_label = summary_label(effective_state(meta))
+        except Exception:  # a field of the wrong type: counted as unreadable, not a 500
+            name = meta.get("session_id")
+            logger.warning("Dashboard could not read the state of session %r", name,
+                           exc_info=True)
+            unreadable.append(name if isinstance(name, str) else "?")
+            continue
         counts[state_label] = counts.get(state_label, 0) + 1
         if label and state_label != label:
             continue
         matched.append(meta)
     index = read_model._queue_index(queue)
-    rows = [read_model.listed_row(store, meta, queue_index=index)
-            for meta in matched[offset:offset + limit]]
-    end = offset + len(rows)
+    page = matched[offset:offset + limit]
+    rows = rows_isolating(
+        lambda chunk: [read_model.listed_row(store, meta, queue_index=index) for meta in chunk],
+        page, unreadable)
+    end = offset + len(page)
     return {"sessions": rows, "total": len(metas), "matched": len(matched), "counts": counts,
             "offset": offset, "limit": limit,
-            "next_offset": end if end < len(matched) else None}
+            "next_offset": end if end < len(matched) else None,
+            "unreadable_sessions": unreadable_report(unreadable)}

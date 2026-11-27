@@ -85,6 +85,15 @@ async def _execute(payload, control):
         from garuda.workspace.no_edits import deny_all
 
         watchdog = {key: limits.get(key) for key in ("silence_sec", "tool_silence_sec")}
+        hook = None
+        if request.get("turns") is not None:
+            from garuda.flows.long_step import StepTurns
+
+            # A prepared confinement container is one harness process: its step
+            # repairs and continues in that session but never rotates.
+            hook = StepTurns(request["turns"], step_prompt=request["prompt"], store=store,
+                             workspace=request["workspace"], session_id=session_id,
+                             can_rotate=request.get("owned_container") is None)
         try:
             summary = await run_acp_task(
                 request["prompt"], runtime_id=request["manifest"]["runtime_id"],
@@ -99,7 +108,8 @@ async def _execute(payload, control):
                 approval=deny_all if request["no_edits"] else control.approve,
                 emit=lambda *_a: None, no_edits=request["no_edits"],
                 **({"deadline_sec": limits["deadline_sec"]} if limits.get("deadline_sec") else {}),
-                **({"silence_watchdog": watchdog} if any(watchdog.values()) else {}))
+                **({"silence_watchdog": watchdog} if any(watchdog.values()) else {}),
+                **({"after_turn": hook} if hook is not None else {}))
         except RuntimeStartError:
             raise  # a refusal before launch keeps its own code
         except AgentRuntimeError as exc:
@@ -112,16 +122,28 @@ async def _execute(payload, control):
                 except (OSError, ValueError):
                     pass  # the session may not have begun; the result still closes the step
             return {"session_id": session_id, "success": False, "output": "",
-                    "failure": failure_of(exc, limited=bool(limits))}
+                    "failure": failure_of(exc, limited=bool(limits)), **_turns(hook)}
         if workspace_record:
             store.update_meta(session_id, workspace_record)
         success = summary.get("status") == "completed"
         stop_reason = summary.get("stop_reason")
+        output = str(summary.get("reply") or "")
+        if hook is not None:
+            output = hook.output
+            if hook.stop is not None:
+                success = False  # the step's own turn loop paused it; the code rides in `turns`
         return {"session_id": session_id, "success": success,
-                "output": bounded_output(str(summary.get("reply") or "")),
+                "output": bounded_output(output),
                 **({"failure": {"stop_reason": stop_reason[:64]}}
-                   if not success and isinstance(stop_reason, str) else {})}
+                   if not success and isinstance(stop_reason, str) else {}),
+                **_turns(hook)}
     raise ValueError("unsupported role kind")
+
+
+def _turns(hook) -> dict:
+    """The result's ``turns`` record, when the step's turns did more than one plain turn."""
+    record = hook.record() if hook is not None else None
+    return {"turns": record} if record is not None else {}
 
 
 def failure_of(exc: BaseException, *, limited: bool) -> dict:
