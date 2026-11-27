@@ -96,7 +96,7 @@ html[data-theme="dark"] {
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
 body {
-  margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 var(--sans);
+  margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 var(--sans); overflow-wrap: break-word;
   -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
 }
 h1 { font-size: 22px; line-height: 1.25; margin: 0; font-weight: 650; letter-spacing: -0.015em; }
@@ -721,8 +721,10 @@ a.attempt-trace { margin-left: 4px; }
 .home-calm, .home-pending, .home-more { color: var(--muted); font-size: 13px; padding: 4px 0; }
 .home-calm::before {
   content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 8px;
-  background: var(--st-done-dot); vertical-align: 1px;
+  background: var(--st-unknown-dot); vertical-align: 1px;
 }
+/* Only "nothing needs you" is good news; an empty list is just empty. */
+#home-attention .home-calm::before { background: var(--st-done-dot); }
 .home-status > div + div { margin-top: 6px; }
 .home-list:not(:empty) + .home-status:not(:empty) { margin-top: var(--s3); }
 .home-error { font-size: 13px; overflow-wrap: anywhere; }
@@ -1011,7 +1013,7 @@ tr.session-row[data-pause] { --row-c: var(--st-pause-dot); }
 .source-origin { overflow-wrap: anywhere; }
 
 /* --- Starters: cards, a form and its preview (any page with .starter-form / .starter-result) --- */
-.starter-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); }
+.starter-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); margin-top: var(--s4); }
 .starter-grid .card { display: flex; flex-direction: column; }
 .starter-grid .card > a.btn { margin-top: auto; align-self: flex-start; }
 .starter-grid .card h2 { font-size: 16px; }
@@ -1046,6 +1048,7 @@ tr.session-row[data-pause] { --row-c: var(--st-pause-dot); }
 .diag-group-body { margin: var(--s2) 0 0 22px; max-height: 360px; overflow-y: auto; }
 #setup-logins { margin-top: var(--s4); line-height: 2.1; }
 #provenance-table td:first-child { font-family: var(--mono); font-size: 12px; }
+#setup-root #provenance-table td { white-space: normal; overflow-wrap: anywhere; }
 /* Setup's tables carry sentences (sizes, reasons, declared fields): they wrap. */
 #setup-root td { white-space: normal; overflow-wrap: break-word; vertical-align: top; }
 #setup-root td code { white-space: nowrap; }

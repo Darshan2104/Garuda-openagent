@@ -60,8 +60,28 @@ INSPECT = """() => {
   document.querySelectorAll('#view .chip[data-chip]').forEach(el => {
     if (visible(el) && el.innerText.includes('\\n')) chips.push(JSON.stringify(el.innerText));
   });
+  // What sticks out past the window without a scrolling box to hold it (for the report):
+  // an element, or a run of text wider than its box (a long path with no break).
+  const wide = [];
+  const held = el => {
+    for (let p = el; p; p = p.parentElement) {
+      if (['auto', 'scroll', 'hidden'].includes(getComputedStyle(p).overflowX)
+          && p.getBoundingClientRect().right <= window.innerWidth + 1) return true;
+    }
+    return false;
+  };
+  if (document.documentElement.scrollWidth > window.innerWidth) {
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node && wide.length < 3; node = walker.nextNode()) {
+      const box = node.nodeType === 3 ? (() => { const r = document.createRange(); r.selectNodeContents(node); return r; })() : node;
+      const owner = node.nodeType === 3 ? node.parentElement : node;
+      if (box.getBoundingClientRect().right > window.innerWidth + 1 && !held(owner.parentElement)) {
+        wide.push(name(owner) + (node.nodeType === 3 ? ' text "' + node.textContent.slice(0, 40) + '"' : ''));
+      }
+    }
+  }
   return {
-    width: document.documentElement.scrollWidth, window: window.innerWidth, pills, chips,
+    width: document.documentElement.scrollWidth, window: window.innerWidth, pills, chips, wide,
   };
 }"""
 
@@ -108,7 +128,7 @@ def main() -> int:
                 check(f"{where}: loaded", loaded)
                 if width == 390:
                     check(f"{where}: no sideways page scroll", found["width"] <= found["window"],
-                          f"(page {found['width']}px wide)")
+                          f"(page {found['width']}px wide: {found['wide']})")
                 check(f"{where}: every state pill is styled", not found["pills"], str(found["pills"][:3]))
                 check(f"{where}: chips keep key: value on one line", not found["chips"],
                       str(found["chips"][:3]))
