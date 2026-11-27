@@ -324,3 +324,57 @@ console.log(JSON.stringify(out));
     assert "40 turns · 0 rotations · 39 continuations · 0 repairs" in out["flow"]
     assert "stopped: flow.step_max_turns — The long step paused: it used its whole turn budget." in out["flow"]
     assert 'data-chip="coverage">coverage: partial' in out["flow"]
+
+
+def test_a_usage_limit_pause_reports_when_it_resets(ctx, store):
+    """A Claude usage-limit pause (flow.quota_wait with cause.limit) is a paused flow on the
+    Overview with its reset time, and the session detail carries the same limit."""
+    store.begin("limit", task="t", model="m", agent="build", workspace="/tmp", name="limit")
+    store.update_meta("limit", {
+        "kind": "flow", "flow": {"name": "pair", "steps": ["code"]}, "flow_state": "stopped",
+        "state": session_state.finished(success=False),
+        "flow_stop": {"code": "flow.quota_wait", "step": "code", "message": "usage limit",
+                      "cause": {"code": "harness.limit_reached",
+                                "limit": {"resets_at": 1_900_000_000, "rate_limit_type": "five_hour"}}}})
+    paused = {r["session_id"]: r["pause"] for r in
+              body(call(ctx, "/api/overview"))["attention"]["paused"]["items"]}
+    assert paused["limit"] == {"kind": "quota", "reset_at": 1_900_000_000,
+                               "rate_limit_type": "five_hour"}
+    stop = body(call(ctx, "/api/sessions/limit"))["flow"]["stop"]
+    assert stop["limit"] == {"resets_at": 1_900_000_000, "rate_limit_type": "five_hour"}
+
+
+def test_the_pause_kinds_come_from_the_engines_constants():
+    from garuda.flows.engine import LIVENESS_STOPS, RESUMABLE_CHECKED_STOPS
+    from garuda.flows.long_step import LOOP_STOPS
+    from garuda.interfaces.web.overview import _pause_kinds
+
+    kinds = _pause_kinds()
+    assert set(kinds) == ({*LIVENESS_STOPS.values(), *LOOP_STOPS} & RESUMABLE_CHECKED_STOPS)
+    assert "flow.step_failed" not in kinds  # resumable, but a failure rather than a pause
+
+
+def test_a_usage_limit_pause_is_worded_with_its_reset():
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node is required to execute the shipped session renderer")
+    from garuda.interfaces.web.http import STATIC_DIR
+
+    script = r"""
+const fs = require("fs"), vm = require("vm");
+const context = vm.createContext({sessionStorage: {getItem: () => ""}, location: {hash: ""}});
+for (const name of ["core.js", "views_sessions.js"]) {
+  vm.runInContext(fs.readFileSync(process.argv[1] + "/" + name, "utf8"), context);
+}
+const reset = Math.floor(Date.now() / 1000) + 3 * 3600 + 120;
+console.log(JSON.stringify(context.failureSentence({kind: "flow", session_id: "f1", state: {outcome: "failed"},
+  flow: {stop: {code: "flow.quota_wait", step: "code", limit: {resets_at: reset, rate_limit_type: "five_hour"}}}})));
+"""
+    result = subprocess.run([node, "-e", script, str(STATIC_DIR)], capture_output=True, text=True, timeout=20)
+    assert result.returncode == 0, result.stderr
+    worded = json.loads(result.stdout)
+    assert worded["cause"].startswith("Paused: usage limit, resets in 3h (")
+    assert "quota recovery resumes" in worded["next"]

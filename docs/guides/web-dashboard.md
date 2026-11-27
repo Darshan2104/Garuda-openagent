@@ -91,7 +91,9 @@ successfully submitted or you navigate away.
   where you act: approvals waiting (with expired ones counted apart, since they
   will be denied) → **Approvals**; sessions whose worker **crashed** and
   sessions **waiting** on an approval → the session; flows **paused** on a
-  resumable stop (a quota wait recorded by quota recovery, a step's own
+  resumable stop (a usage-limit pause, shown as **paused: usage limit, resets
+  in 3h** with the absolute time when the harness reported its reset; a quota
+  wait recorded by quota recovery; a step's own
   deadline or silence limit, or a long step's own pause: no measurable
   progress, its turn budget used, or its harness refusing to continue) → the
   session; configuration errors →
@@ -316,7 +318,9 @@ A session's page leads with the work, and keeps the evidence below:
   sentence. The step in flight is highlighted. When the flow stopped, the
   Result says why in one sentence and, for a resumable stop (a deadline,
   silence, no progress, the turn budget, a refusal, a failed step or missing
-  output), that `garuda flow resume <id>` runs the step again; a step killed
+  output), that `garuda flow resume <id>` runs the step again; a usage-limit
+  pause says when the limit resets and that quota recovery resumes the flow; a
+  step killed
   by the supervisor's backstop (`flow.step_backstop`) is quarantined instead,
   and the page says to set `limits.deadline_min` for a step that runs that
   long.

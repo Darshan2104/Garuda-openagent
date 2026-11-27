@@ -268,10 +268,18 @@ def _flow_stop(stop) -> dict | None:
     if not isinstance(stop, dict) or not stop.get("code"):
         return None
     cause = stop.get("cause")
+    limit = cause.get("limit") if isinstance(cause, dict) else None
     return {**_bounded_fields(stop, (("code", 120), ("step", 80), ("message", 500))),
             "cause": (_bounded_fields(cause, (("code", 120), ("detail", 500)))
                       if isinstance(cause, dict) and any(cause.get(k) for k in ("code", "detail"))
-                      else None)}
+                      else None),
+            # A usage-limit pause (flow.quota_wait): when the limit resets and its window.
+            "limit": ({"resets_at": limit.get("resets_at")
+                       if isinstance(limit.get("resets_at"), (int, float))
+                       and not isinstance(limit.get("resets_at"), bool) else None,
+                       "rate_limit_type": limit.get("rate_limit_type")
+                       if isinstance(limit.get("rate_limit_type"), str) else None}
+                      if isinstance(limit, dict) else None)}
 
 
 def _spend(meta: dict) -> dict | None:

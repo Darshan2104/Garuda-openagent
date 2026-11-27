@@ -264,7 +264,11 @@ function homeSessionAttention(o) {
     var stop = (r.flow && r.flow.stop) || {};
     var q = r.quota_recovery || {};
     var what = r.pause.kind === "quota"
-      ? "waiting for quota" + (q.reason ? ": " + esc(q.reason) : "") +
+      ? (typeof r.pause.reset_at === "number"
+          // A usage-limit pause whose reset was recorded (a Claude limit): when it resets.
+          ? "paused: usage limit, resets " + esc(untilEpochText(r.pause.reset_at)) +
+            " (" + esc(new Date(r.pause.reset_at * 1000).toLocaleString()) + ")"
+          : "waiting for quota" + (q.reason ? ": " + esc(q.reason) : "")) +
         (q.next_check ? " · next check " + esc(new Date(q.next_check * 1000).toLocaleString()) : "")
       : (stop.step ? "step " + esc(stop.step) + " " : "a step ") +
         ({ deadline: "ran past its deadline", silence: "went silent past its limit",

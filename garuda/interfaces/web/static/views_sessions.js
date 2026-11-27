@@ -635,8 +635,22 @@ var FLOW_STOPS = {
                        next: "Next: nothing; quota recovery resumes it when the harness is available." }
 };
 
-function flowStopSentence(stop, sessionId) {
+/* When a usage-limit pause resets: the quota-recovery record's reset_at, or the stop's own
+ * cause.limit.resets_at (epoch seconds); null when neither was recorded. */
+function quotaResetAt(flow) {
+  var recovery = (flow && flow.quota_recovery) || {};
+  var limit = (flow && flow.stop && flow.stop.limit) || {};
+  if (typeof recovery.reset_at === "number") return recovery.reset_at;
+  return typeof limit.resets_at === "number" ? limit.resets_at : null;
+}
+
+function flowStopSentence(stop, sessionId, flow) {
   if (!stop || !stop.code) return null;
+  var reset = stop.code === "flow.quota_wait" ? quotaResetAt(flow) : null;
+  if (reset !== null) {
+    return { cause: "Paused: usage limit, resets " + untilEpochText(reset) + " (" + new Date(reset * 1000).toLocaleString() + ").",
+             next: "Next: nothing; quota recovery resumes the flow once the limit has reset." };
+  }
   var known = FLOW_STOPS[stop.code];
   var where = stop.step ? " (step " + stop.step + ")" : "";
   if (!known) {
@@ -653,7 +667,7 @@ function failureSentence(row) {
   var value = evidence.status === "present" ? (evidence.value || {}) : {};
   var detail = value.detail && value.detail.value ? firstLine(value.detail.value) : "";
   var flowStop = row.flow && row.flow.stop;
-  var worded = row.kind === "flow" && flowStop && FLOW_STOPS[flowStop.code] ? flowStopSentence(flowStop, row.session_id) : null;
+  var worded = row.kind === "flow" && flowStop && FLOW_STOPS[flowStop.code] ? flowStopSentence(flowStop, row.session_id, row.flow) : null;
   if (worded) return worded;
   if (row.crashed) {
     return { cause: "The worker process is gone, and it exited without recording an outcome.",
