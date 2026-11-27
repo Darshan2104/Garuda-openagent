@@ -182,7 +182,8 @@ function updateFlowTrace(payload, row, first) {
   TRACE_DEFERRED = false;
   keepScrollPosition(function () {
     patchRegion(el("trace-status"),
-      '<span class="pill ' + flowPillClass(row) + '">' + esc(row.pause ? "paused" : (row.label || "unknown")) + "</span>", first);
+      '<span class="pill ' + flowPillClass(row) + '">' + esc(row.pause ? "paused" : (row.label || "unknown")) + "</span>" +
+      tracePauseHtml(row.pause, row.flow && row.flow.stop, row.session_id), first);
     patchRegion(el("flow-progress"), active ? flowProgressHtml(row) : "", first);
     patchRegion(el("trace-tiles"), flowTilesHtml(payload.run, row, ctx), first);
     patchRegion(el("flow-summary"), flowSummaryHtml(payload.run, row, ctx), first);
@@ -191,6 +192,13 @@ function updateFlowTrace(payload, row, first) {
     patchRegion(el("flow-measured"), flowMeasuredHtml(row.flow), first);
   });
   if (TRACE_DEFERRED) retryWhenSelectionClears(root);
+}
+
+/* The trace header's pause: why, and how it resumes, as the Sessions list says it. */
+function tracePauseHtml(pause, stop, id) {
+  if (!pause) return "";
+  return ' <span class="stat-sub" id="trace-pause" data-resume="' + esc(pauseResume(pause, id).resume) + '">' +
+    esc(pauseText(pause, stop) + " · resume: " + pauseResume(pause, id).resume) + "</span>";
 }
 
 function flowPillClass(row) {
@@ -522,7 +530,8 @@ function updateTrajectory(payload, sources, first) {
 
   TRACE_DEFERRED = false;
   keepScrollPosition(function () {
-    patchRegion(el("trace-status"), statusPill(payload.run.status) +
+    patchRegion(el("trace-status"), (payload.run.pause ? '<span class="pill paused" data-state="paused">paused</span>' +
+        tracePauseHtml(payload.run.pause, null, payload.run.session_id) : statusPill(payload.run.status)) +
       (ctx.live ? '<span class="pill live" id="live-badge">live</span>' : ""), first);
     patchRegion(el("trace-live"), ctx.live && sources.tail ? liveStreamHtml() : "", first);
     patchRegion(el("trace-tiles"), detailTilesHtml(payload, ctx), first);

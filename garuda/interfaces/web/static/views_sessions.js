@@ -36,6 +36,14 @@ function pauseText(pause, stop) {
   return (stop && stop.step ? "step " + stop.step + " " : "a step ") + (PAUSE_KINDS[pause.kind] || "paused");
 }
 
+/* A list row's pause line (Sessions, Runs): why, and how it resumes (automatic | manual). */
+function pauseLineHtml(pause, id) {
+  if (!pause) return "";
+  var how = pauseResume(pause, id);
+  return '<div class="s-sub s-pause" data-resume="' + esc(how.resume) + '">' +
+    esc(pauseText(pause, null) + " · resume: " + how.resume) + "</div>";
+}
+
 /* The pause in a few words, for a marker that points to the Result. */
 function pauseShortText(pause) {
   return pause.kind === "quota" ? "usage limit" : (PAUSE_KINDS[pause.kind] || "paused");
@@ -300,8 +308,7 @@ function sessionRowHtml(row) {
     '<td data-th="State"><span class="pill ' + (row.pause ? "paused" : (row.crashed ? "failed" : (state.work === "working" ? "running" : "unknown"))) +
     '" data-state="' + esc(row.pause ? "paused" : row.label) + '">' +
     esc(row.pause ? "paused" : row.label) + "</span>" + (row.queue ? '<div class="s-sub">' + esc(queueText(row.queue)) + "</div>" : "") +
-    (row.pause ? '<div class="s-sub s-pause" data-resume="' + esc(pauseResume(row.pause, id).resume) + '">' +
-      esc(pauseText(row.pause, null) + " · resume: " + pauseResume(row.pause, id).resume) + "</div>" : "") + "</td>" +
+    pauseLineHtml(row.pause, id) + "</td>" +
     '<td class="s-clip" data-th="Runtime · role · model" title="' + esc(identityText(row)) + '">' + esc(identityText(row)) + "</td>" +
     '<td class="s-facts" data-th="Outcome / verification">' + chip("outcome", state.outcome || "—", row.pause ? "chip-pause" : outcomeClass(state.outcome)) + " " +
     verificationChip(row.verification) + selfCheckChip(row.self_check) + "</td>" +

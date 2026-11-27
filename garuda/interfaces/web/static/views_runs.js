@@ -403,6 +403,11 @@ function wireFilters(state) {
  * started, it stopped talking, nobody wrote down how it ended. */
 function runStatusPill(run) {
   if (run.live) return '<span class="pill running">running</span>';
+  // A flow paused on a resumable stop (the read model's `pause`), drawn as the Sessions list
+  // draws it; its recorded outcome (failed) still answers the status filter and counts.
+  if (run.pause) {
+    return '<span class="pill paused" data-state="paused">paused</span>' + pauseLineHtml(run.pause, run.session_id);
+  }
   if (run.stale) {
     return '<span class="pill unknown" title="meta.json still says running, but the log ' +
            'stopped being written ' + esc(fmt.duration((run.written_ago_seconds || 0) * 1000)) +

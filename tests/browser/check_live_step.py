@@ -518,6 +518,32 @@ def main() -> int:
         page.wait_for_selector(f'tr.session-row[data-session="{FLOW_LIMIT}"]')
         bad = failure_styled(page, f'tr.session-row[data-session="{FLOW_LIMIT}"], tr.session-row[data-session="{FLOW_LIMIT_PASSED}"]')
         check("the Sessions list's paused rows have nothing failure-styled", not bad, str(bad))
+
+        # --- the Runs list and a run's header say the same pause -----------------------------
+        page.goto(f"{BASE}#/runs", wait_until="load")
+        page.wait_for_selector(f'tr.run-row[data-sid="{FLOW_LIMIT}"]')
+        run_row = page.locator(f'tr.run-row[data-sid="{FLOW_LIMIT}"] td.col-status')
+        check("a paused flow's Runs row is paused, with its reason and resume kind",
+              run_row.locator('.pill.paused[data-state="paused"]').count() == 1
+              and run_row.locator('.s-pause[data-resume="manual"]').count() == 1
+              and "usage limit, resets" in run_row.inner_text() and "resume: manual" in run_row.inner_text(),
+              run_row.inner_text())
+        auto_run = page.locator(f'tr.run-row[data-sid="{FLOW_PAUSED}"] td.col-status')
+        check("an automatic one says so", "resume: automatic" in auto_run.inner_text(), auto_run.inner_text())
+        bad = failure_styled(page, f'tr.run-row[data-sid="{FLOW_LIMIT}"], tr.run-row[data-sid="{FLOW_PAUSED}"]')
+        check("the Runs list's paused rows have nothing failure-styled", not bad, str(bad))
+        page.goto(f"{BASE}#/runs?status=failed", wait_until="load")
+        page.wait_for_selector("tr.run-row")
+        check("the failed filter keeps a paused flow, as its recorded outcome and the Sessions list do",
+              page.locator(f'tr.run-row[data-sid="{FLOW_LIMIT}"]').count() == 1)
+        page.goto(f"{BASE}#/runs/{FLOW_LIMIT}", wait_until="load")
+        page.wait_for_selector("#trace-pause")
+        check("the run's header says paused, why and how it resumes",
+              page.locator("#trace-status .pill.paused").count() == 1
+              and "resume: manual" in page.locator("#trace-pause").inner_text(),
+              page.locator("#trace-status").inner_text())
+        page.goto(f"{BASE}#/sessions", wait_until="load")
+        page.wait_for_selector(f'tr.session-row[data-session="{CHILD}"]')
         child_row = page.locator(f'tr.session-row[data-session="{CHILD}"]')
         check("a step session names its flow and step", count_is(page, f'tr.session-row[data-session="{CHILD}"]', 1)
               and "step build (attempt 1) of flow" in child_row.inner_text()

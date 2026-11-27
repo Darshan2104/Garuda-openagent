@@ -341,3 +341,36 @@ console.log(JSON.stringify({html: context.flowHtml(flow, null, {})}));
     assert 'data-state="replaced"' in first and "interrupted · replaced by attempt 2 — The step was interrupted" in first
     # No later success in review: both stops stand.
     assert review.count("chip-bad") == 2 and "replaced" not in review
+
+
+# --- the Runs list carries the same pause -----------------------------------------------------
+
+
+def test_a_runs_row_carries_the_sessions_pause_and_filters_by_its_recorded_outcome(ctx, store):
+    """One fact, two lists: a Runs row's `pause` is the Sessions row's (read_model.flow_pause),
+    and a paused flow answers the "failed" filter in both, as its recorded outcome says."""
+    flow_id = _limit_flow(store)
+    store.begin("plain", task="t", model="m", agent="build", workspace="/tmp")
+    pause = body(call(ctx, f"/api/sessions/{flow_id}"))["pause"]
+    runs = {r["session_id"]: r for r in body(call(ctx, "/api/runs"))["runs"]}
+    assert runs[flow_id]["pause"] == pause and pause["resume"] == "manual"
+    assert runs["plain"]["pause"] is None
+    assert body(call(ctx, f"/api/runs/{flow_id}"))["run"]["pause"] == pause
+    failed_runs = [r["session_id"] for r in body(call(ctx, "/api/runs", query="status=failed"))["runs"]]
+    failed_sessions = [r["session_id"] for r in body(call(ctx, "/api/sessions", query="state=failed"))["sessions"]]
+    assert failed_runs == failed_sessions == [flow_id]
+    assert body(call(ctx, "/api/sessions"))["counts"].get("failed") == 1
+
+
+def test_the_runs_list_draws_a_paused_run_as_the_sessions_list_does():
+    out = _node(r"""
+vm.runInContext(fs.readFileSync(process.argv[1] + "/views_runs.js", "utf8"), context);
+const pause = {kind: "quota", reset_at: Math.floor(Date.now() / 1000) + 600, resume: "manual"};
+console.log(JSON.stringify({
+  paused: context.runStatusPill({session_id: "f-1", status: "failed", pause: pause}),
+  failed: context.runStatusPill({session_id: "f-2", status: "failed", pause: null}),
+  line: context.pauseLineHtml(pause, "f-1")}));
+""")
+    assert out["paused"].startswith('<span class="pill paused" data-state="paused">paused</span>')
+    assert out["line"] in out["paused"] and "resume: manual" in out["paused"] and "usage limit, resets" in out["paused"]
+    assert "paused" not in out["failed"] and 'data-status="failed"' in out["failed"]

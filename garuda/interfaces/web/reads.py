@@ -128,6 +128,18 @@ def _cache(readers: ReaderCache | None) -> ReaderCache:
     return readers if readers is not None else ReaderCache()
 
 
+def _pause(meta: dict[str, Any]) -> dict | None:
+    """Why a stopped flow is paused, from the shared read model (``read_model.flow_pause``,
+    the same fact the Sessions rows and ``garuda sessions --json`` carry), or ``None``."""
+    from garuda.core.read_model import flow_pause
+
+    try:
+        return flow_pause(meta)
+    except Exception:  # noqa: BLE001 - a pause that cannot be read leaves the row as recorded
+        logger.exception("Dashboard could not read the pause of session %r", meta.get("session_id"))
+        return None
+
+
 def summarize_session(meta: dict[str, Any], store: SessionStore) -> dict[str, Any]:
     """One row for the run list.
 
@@ -176,6 +188,9 @@ def summarize_session(meta: dict[str, Any], store: SessionStore) -> dict[str, An
         "acceptance": meta.get("acceptance"),
         # The four independent facts (B.2); `crashed` is derived, never stored.
         **_state_fields(meta),
+        # A flow paused on a resumable stop: drawn paused, its recorded outcome unchanged
+        # (the status filter and outcome counts read the outcome, as the Sessions list does).
+        "pause": _pause(meta),
         "has_events": has_events,
         "events_bytes": events_path.stat().st_size if has_events else 0,
         "has_external_events": has_external,
