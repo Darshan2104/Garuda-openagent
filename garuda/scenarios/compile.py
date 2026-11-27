@@ -91,9 +91,9 @@ def _display(value):
 #: generic starter got the brief's name ("carry-out-the-supplied-task", "-2", ...). The title is
 #: the field's slug words only (lowercase letters and digits, at most five words and 40
 #: characters, `project_identity.slugify`), so it carries no markup or instructions; the field
-#: itself stays fenced below. run-with-role is not listed: its task is pinned
-#: (tests/test_starter_pins.py) and adding it moves that pin.
-TITLE_FIELDS = {"run-flow": "goal"}
+#: itself stays fenced below. Adding run-with-role moved its two pinned fingerprints in
+#: tests/test_starter_pins.py on purpose (#886).
+TITLE_FIELDS = {"run-flow": "goal", "run-with-role": "goal"}
 
 
 def _title(entry, inputs) -> str | None:

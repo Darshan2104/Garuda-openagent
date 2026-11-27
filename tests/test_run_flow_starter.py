@@ -836,3 +836,22 @@ def test_a_run_flow_session_is_named_after_the_users_task_not_the_brief(ws, tmp_
 def test_a_task_with_no_slug_words_keeps_the_brief_first(ws):
     plan, _context = compile_with_context("run-flow", {"flow": "mine", "goal": "¿¡ — ✓"}, ws)
     assert plan.task.startswith(catalog.brief_text(catalog.load_catalog()["run-flow"]).strip())
+
+
+def test_a_role_run_session_is_named_after_the_users_goal_not_the_brief(ws, tmp_path):
+    """Role runs from Starters were `carry-out-the-supplied-task[-N]` too."""
+    from garuda.core.project_identity import slugify
+    from garuda.core.sessions import SessionStore
+
+    goal = "Create forty notes files one per call"
+    plan, _context = compile_with_context("run-with-role", {"goal": goal, "role": "coder"}, ws)
+    assert plan.task.split("\n", 1)[0] == "create forty notes files one"
+    assert plan.task.split("\n", 2)[2].startswith(
+        catalog.brief_text(catalog.load_catalog()["run-with-role"]).strip())
+    store = SessionStore(tmp_path / "sessions")
+    names = []
+    for sid in ("00000000-0000-4000-8000-000000000003", "00000000-0000-4000-8000-000000000004"):
+        store.begin(sid, task=plan.task, model="flow", agent="flow:run:coder", workspace=str(ws))
+        names.append(store.load_meta(sid)["name"])
+    assert names == [slugify(goal), slugify(goal) + "-2"] == [
+        "create-forty-notes-files-one", "create-forty-notes-files-one-2"]
