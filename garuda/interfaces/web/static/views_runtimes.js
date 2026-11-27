@@ -25,6 +25,7 @@ function runtimesView() {
       renderRuntimes(both[0], null, null);
     })
     .catch(function (err) {
+      if (isSuperseded(err)) return;
       if (err.status === 401) { render(tokenRequiredPanel()); return; }
       render('<div class="notice err"><div class="notice-title">Could not load runtimes</div>' +
              '<div class="notice-body">' + esc(err.message) + "</div></div>");
@@ -98,7 +99,7 @@ function renderRuntimes(runtimes, detail, detailId) {
     el("rt-login-note").textContent = "refreshing…";
     api("/api/providers/refresh", { method: "POST", body: {} })
       .then(function () { return runtimesView(); })
-      .catch(function (err) { el("rt-login-note").textContent = err.message; refresh.disabled = false; });
+      .catch(function (err) { if (isSuperseded(err)) return; el("rt-login-note").textContent = err.message; refresh.disabled = false; });
   });
 }
 
@@ -134,6 +135,7 @@ function selectRuntime(runtimeId) {
       renderRuntimes(STATE.runtimes || [], detail, runtimeId);
     })
     .catch(function (err) {
+      if (isSuperseded(err)) return;
       renderRuntimes(STATE.runtimes || [], null, null);
       var box = el("rt-select-error");
       if (box) {
@@ -197,7 +199,7 @@ function wireRtOps() {
           '<div class="meta">handoff state: ' + esc(preview.handoff_state) + "</div>" +
           '<div class="meta">requires confirm: ' + esc(String(preview.requires_confirm)) + "</div>");
       })
-      .catch(function (err) { rtResult("rt-handoff-result", rtError(err)); });
+      .catch(function (err) { if (isSuperseded(err)) return; rtResult("rt-handoff-result", rtError(err)); });
   });
   el("rt-handoff-prepare").addEventListener("click", function () {
     var sid = el("rt-handoff-session").value.trim();
@@ -245,7 +247,7 @@ function wireRtOps() {
           '<div class="table-wrap"><table><thead><tr><th>Path</th><th>Kind</th><th>Whose</th>' +
           "</tr></thead><tbody>" + rows + "</tbody></table></div>");
       })
-      .catch(function (err) { rtResult("rt-diff-result", rtError(err)); });
+      .catch(function (err) { if (isSuperseded(err)) return; rtResult("rt-diff-result", rtError(err)); });
   });
   function recover(method, button) {
     var sid = el("rt-recover-session").value.trim();
@@ -376,6 +378,7 @@ function providersView() {
       }, { busy: "refreshing…", errorTarget: "providers-error" });
     });
   }).catch(function (err) {
+    if (isSuperseded(err)) return;
     if (err.status === 401) { render(tokenRequiredPanel()); return; }
     render('<div class="notice err"><div class="notice-title">Could not load providers</div>' +
            '<div class="notice-body">' + esc(err.message) + "</div></div>");

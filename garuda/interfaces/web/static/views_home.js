@@ -83,6 +83,7 @@ function homeLoad(state, path, key) {
     state[key + "At"] = Date.now();
     homeRenderAll(state);
   }, function (err) {
+    if (isSuperseded(err)) return;
     if (HOME !== state) return;
     if (err.status === 401) { stopHomeView(); render(tokenRequiredPanel()); return; }
     // A failed read clears its slot: showing the last answer under an error would let a

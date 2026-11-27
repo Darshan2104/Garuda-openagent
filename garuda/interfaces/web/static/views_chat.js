@@ -103,6 +103,7 @@ function chatView() {
       }
     })
     .catch(function (err) {
+      if (isSuperseded(err)) return;
       if (err.status === 401) { render(tokenRequiredPanel()); return; }
       render('<div class="page-head"><h1>Chat</h1></div>' +
              '<div class="notice err"><div class="notice-title">Can\'t reach the dashboard</div>' +
@@ -203,6 +204,7 @@ function startChat() {
       if ((location.hash || "") === "#/chat") return openChat(chat.chat_id, chat);
     })
     .catch(function (err) {
+      if (isSuperseded(err)) return;
       if (err.status === 401) { render(tokenRequiredPanel()); return; }
       var node = el("chat-new-state");
       if (node) node.textContent = "Could not start the chat — " + err.code + ": " + err.message;
@@ -470,6 +472,7 @@ function refreshSources() {
       renderSources();
     })
     .catch(function (err) {
+      if (isSuperseded(err)) return;
       // Not worth a banner, but not silence either: a stale list reads as the truth.
       var meta = el("sources-meta");
       if (meta && STATE.chat === chat) meta.textContent = "could not refresh the list — " + err.message;
@@ -589,7 +592,7 @@ function uploadOne(chat, file) {
     .then(function (payload) {
       toast("Added " + payload.source.path);
     })
-    .catch(function (err) { toast(file.name + ": " + err.message); });
+    .catch(function (err) { if (isSuperseded(err)) return; toast(file.name + ": " + err.message); });
 }
 
 /* FileReader, and its base64 taken off the data URL. Reading as an ArrayBuffer and encoding
@@ -627,7 +630,7 @@ function addUrlSource() {
       toast("Saved as " + payload.source.path);
       return refreshSources();
     })
-    .catch(function (err) { toast(url + ": " + err.message); })
+    .catch(function (err) { if (isSuperseded(err)) return; toast(url + ": " + err.message); })
     .then(function () {
       chat.fetchingUrl = false;
       var again = el("src-add-url");
@@ -666,6 +669,7 @@ function sendChatTurn() {
       return refreshSources();
     })
     .catch(function (err) {
+      if (isSuperseded(err)) return;
       if (err.status === 404) { chatGone(chat); return; }
       if (err.status === 401) { stopChat(); render(tokenRequiredPanel()); return; }
       toast(err.status === 409
@@ -691,6 +695,7 @@ function stopChatTurn() {
       chatPollNow();
     })
     .catch(function (err) {
+      if (isSuperseded(err)) return;
       if (err.status === 404) { chatGone(chat); return; }
       toast("Could not stop — " + err.code + ": " + err.message);
     })
@@ -709,7 +714,7 @@ function pollChat(chat) {
   if (!chat || CHAT_OPEN[chat.id] !== chat) return Promise.resolve();
   var info, tail;
   // {keep: true}: this poll is the heartbeat and outlives the page that started it, so a
-  // navigation must not drop it (core.js api(): a dropped read never settles).
+  // navigation should not abort it mid-request (it would only be retried next tick).
   var keep = { keep: true };
   return api("/api/chat/" + encodeURIComponent(chat.id), keep)
     .then(function (payload) {
@@ -756,6 +761,7 @@ function pollChat(chat) {
       renderOtherChats();
     })
     .catch(function (err) {
+      if (isSuperseded(err)) return;
       if (CHAT_OPEN[chat.id] !== chat) return;
       if (err.status === 401) { stopChat(); render(tokenRequiredPanel()); return; }
       if (err.status === 404 && info === undefined) { chatGone(chat); return; }
@@ -1037,6 +1043,7 @@ function answerApproval(card, ask, approved) {
       chatPollNow();
     })
     .catch(function (err) {
+      if (isSuperseded(err)) return;
       var settled = err.status === 409 || err.status === 404 || err.status === 410;
       // The server's own words: it knows whether this was a timeout, the reaper, another tab
       // or a stale card, and one fixed sentence for all of them was a guess.
@@ -1080,6 +1087,7 @@ function endChat() {
       location.hash = "#/runs";
     })
     .catch(function (err) {
+      if (isSuperseded(err)) return;
       chat.ending = false;
       if (err.status === 404) { chatGone(chat); return; }
       toast("Could not end the chat — " + err.code + ": " + err.message);

@@ -78,6 +78,7 @@ function loadTrajectory(detailUrl, sources) {
       renderTrajectory(payload, sources);
     })
     .catch(function (err) {
+      if (isSuperseded(err)) return;
       if (err.status === 401) { render(tokenRequiredPanel()); return; }
       render('<div class="notice err"><div class="notice-title">Could not load run</div>' +
              '<div class="notice-body">' + esc(err.message) + "</div></div>");
@@ -317,6 +318,7 @@ function livePoll(state) {
       setLiveMeta(liveMetaText(state, payload));
     })
     .catch(function (err) {
+      if (isSuperseded(err)) return;
       if (err.status === 401) { stopLive(); render(tokenRequiredPanel()); return; }
       setLiveMeta("poll failed: " + err.message);
     });
@@ -958,6 +960,7 @@ function openSubagent(subSessionId) {
       node.innerHTML = subTraceHtml(payload);
     })
     .catch(function (err) {
+      if (isSuperseded(err)) return;
       node.innerHTML = '<div class="notice"><div class="notice-body">' +
                        esc(err.status === 404
                          ? "No trace was kept for this subagent. Runs from before subagent " +
@@ -1260,7 +1263,7 @@ function showBuffer(bufferId) {
         (payload.truncated ? " (clipped)" : "") + "</div><pre>" + esc(payload.content) + "</pre>";
       el("raw-card").scrollIntoView({ block: "start" });
     })
-    .catch(function (err) { toast(err.message); });
+    .catch(function (err) { if (isSuperseded(err)) return; toast(err.message); });
 }
 
 /* --- the raw-event escape hatch ------------------------------------------ */
@@ -1298,6 +1301,7 @@ function loadRawEvents(start) {
       el("raw-card").scrollIntoView({ block: "start" });
     })
     .catch(function (err) {
+      if (isSuperseded(err)) return;
       el("raw-body").innerHTML = '<div class="notice err"><div class="notice-body">' +
                                  esc(err.message) + "</div></div>";
     });

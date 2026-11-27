@@ -21,7 +21,7 @@ import os
 import tempfile
 from pathlib import Path
 
-from browser_support import launch, settle, text_contains
+from browser_support import NAV_TIMEOUT_MS, launch, settle, text_contains
 from playwright.sync_api import sync_playwright
 
 BASE = os.environ.get("GARUDA_CHECK_BASE", "http://127.0.0.1:8897/")
@@ -58,6 +58,7 @@ def settled(page):
 with sync_playwright() as p:
     browser = launch(p)
     page = browser.new_page(viewport={"width": 1440, "height": 900})
+    page.set_default_navigation_timeout(NAV_TIMEOUT_MS)
     page.on("console", lambda m: problems.append(f"console.{m.type}: {m.text}")
             if m.type in ("error", "warning") else None)
     page.on("pageerror", lambda e: problems.append(f"pageerror: {e}"))
@@ -99,6 +100,39 @@ with sync_playwright() as p:
               len(held) >= 1 and page.locator(intact).count() >= 1
               and page.evaluate("location.hash") == away
               and page.locator("#runs-body, #rt-table").count() == 0, f"held={len(held)}")
+
+    # --- a poller started without {keep: true} survives a navigation mid-request -----------
+    # The navigation aborts its read, which must reject as Superseded (not hang): the Poller
+    # releases its in-flight flag and keeps ticking on the next page.
+    page.goto(f"{BASE}#/setup", wait_until="load")
+    held_health = []
+
+    def health(url):
+        return url.endswith("/api/health")
+
+    page.route(health, lambda route: held_health.append(route))
+    with page.expect_request(lambda request: request.url.endswith("/api/health")):
+        page.evaluate("""() => {
+            window.__ticks = 0; window.__failures = 0; window.__superseded = 0;
+            window.__probe = new Poller(function () {
+                return api('/api/health').then(function () { window.__ticks += 1; }, function (err) {
+                    if (isSuperseded(err)) { window.__superseded += 1; return; }
+                    window.__failures += 1;
+                });
+            }, 250).start();
+        }""")
+    page.goto(f"{BASE}#/usage", wait_until="load")  # lands while the probe's read is held
+    page.unroute(health)
+    for route in held_health:
+        try:
+            route.continue_()
+        except Exception:  # aborted by the navigation, which is the point
+            pass
+    kept = settle(page, "() => window.__ticks >= 2", timeout=10_000)
+    probe = page.evaluate("[window.__ticks, window.__superseded, window.__failures]")
+    page.evaluate("window.__probe.stop()")
+    check("a poller without keep keeps ticking after a navigation lands mid-request",
+          bool(held_health) and kept and probe[1] >= 1 and probe[2] == 0, f"ticks/superseded/failures={probe}")
 
     # --- search keeps every keystroke, the focus and the caret -------------------------------
     page.goto(f"{BASE}#/runs", wait_until="load")
@@ -217,6 +251,7 @@ with sync_playwright() as p:
     # --- phone width: stacked, labelled, no sideways scroll -------------------------------------
     for theme in ("light", "dark"):
         phone = browser.new_page(viewport={"width": 390, "height": 844})
+        phone.set_default_navigation_timeout(NAV_TIMEOUT_MS)
         phone.on("pageerror", lambda e: problems.append(f"pageerror: {e}"))
         phone.goto(f"{BASE}#t={TOKEN}", wait_until="load")
         phone.evaluate("t => localStorage.setItem('garuda_theme', t)", theme)

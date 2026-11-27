@@ -19,6 +19,9 @@ import os
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 DEFAULT_TIMEOUT_MS = 15_000
+#: A page load may take as long as the runner allows a dashboard to start: on a cold or
+#: throttled machine the first load of a busy dashboard can pass Playwright's 30 s default.
+NAV_TIMEOUT_MS = float(os.environ.get("GARUDA_CHECK_START_TIMEOUT", "120")) * 1000
 
 
 def launch(playwright, **kwargs):

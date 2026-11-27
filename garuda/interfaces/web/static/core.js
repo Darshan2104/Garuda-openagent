@@ -56,14 +56,15 @@ var STATE = {
 
 /* --- navigation generation ------------------------------------------------
  * Every navigation (router.js navigate()) starts a new generation and aborts the GETs the
- * previous view still had in flight. A view's read therefore cannot render into the view
- * that replaced it: api() leaves a GET from an older generation unsettled — neither its
- * success nor its failure handler runs — instead of rejecting, which would only paint an
- * error over the new page. Writes (any non-GET) are never aborted and always settle.
+ * previous view still had in flight. Such a GET — aborted, or answered after the view that
+ * asked is gone — rejects with a `Superseded` error (code "superseded"). Every promise
+ * settles: a Poller's call returns and its next tick runs, a chain's cleanup runs. What must
+ * not happen is the old view painting over the new one, so every error path starts with
+ * `if (isSuperseded(err)) return;` and success paths never see a superseded read. Writes
+ * (any non-GET) are never aborted and settle normally.
  *
- * A read that must outlive the view (the nav badge, anything app-wide) passes {keep: true}.
- * A Poller whose request was dropped this way stops, which is right for a view's poller
- * (navigate() stops those anyway) and why an app-wide poller must use `keep`.
+ * {keep: true} keeps a GET out of this (the nav badge, boot, a chat's heartbeat): an
+ * optimisation for reads that truly outlive their view, not something correctness needs.
  *
  * viewGuard() returns a function that stays true while the view that called it is the one
  * on screen; check it before touching the DOM after anything asynchronous that is not a
@@ -82,7 +83,23 @@ function viewGuard() {
   return function () { return generation === NAVIGATION.generation; };
 }
 
-function never() { return new Promise(function () { /* the view that asked is gone */ }); }
+function supersededError() {
+  var err = new Error("Superseded by a navigation");
+  err.name = "Superseded";
+  err.code = "superseded";
+  err.status = 0;
+  return err;
+}
+
+/* True for a read the user navigated away from: ignore it, silently. */
+function isSuperseded(err) {
+  return !!err && err.code === "superseded";
+}
+
+// A superseded read nobody handled is not an error worth a console line.
+window.addEventListener("unhandledrejection", function (event) {
+  if (isSuperseded(event.reason)) event.preventDefault();
+});
 
 /* --- fetch ---------------------------------------------------------------- */
 
@@ -99,9 +116,9 @@ function api(path, opts) {
     body: opts.body ? JSON.stringify(opts.body) : undefined,
     signal: tied && NAVIGATION.controller ? NAVIGATION.controller.signal : undefined
   }).then(function (response) {
-    if (!current()) return never();
+    if (!current()) throw supersededError();
     return response.text().then(function (text) {
-      if (!current()) return never();
+      if (!current()) throw supersededError();
       var payload = null;
       try { payload = text ? JSON.parse(text) : null; } catch (e) { payload = null; }
       if (response.ok) {
@@ -122,11 +139,11 @@ function api(path, opts) {
       }
       throw err;
     }, function () {
-      return current() ? Promise.reject(unreachableError()) : never();
+      throw current() ? unreachableError() : supersededError();
     });
   }, function () {
-    // Aborted by a navigation, or answered after one: nobody is waiting for it.
-    if (!current()) return never();
+    // Aborted by a navigation, or answered after one: the view that asked is gone.
+    if (!current()) throw supersededError();
     // fetch() rejects only when no response arrived: the server is down or unreachable. The
     // browser's own words ("Failed to fetch", "Load failed") say nothing a user can act on.
     throw unreachableError();
@@ -520,6 +537,7 @@ function guardAction(button, fn, options) {
     return value;
   }, function (err) {
     restore();
+    if (isSuperseded(err)) return undefined;  // the page moved on; nothing to report
     var text = apiErrorText(err);
     var target = typeof options.errorTarget === "string" ? el(options.errorTarget) : options.errorTarget;
     if (target) {

@@ -89,6 +89,7 @@ function startersView(starterId, query) {
         applyStarterInputs(state, initial);
       }
     }).catch(function (err) {
+      if (isSuperseded(err)) return;
       if (STATE.starterView === state) render(err.status === 401 ? tokenRequiredPanel() : starterErrorHtml(err));
     });
 }
@@ -212,6 +213,7 @@ function requestStarterPreview(state, remedy) {
     var start = el("starter-start");
     if (start) start.addEventListener("click", function () { requestStarterStart(state); });
   }).catch(function (err) {
+    if (isSuperseded(err)) return;
     if (STATE.starterView === state && revision === state.revision) el("starter-preview").innerHTML = starterErrorHtml(err);
   });
 }
@@ -265,6 +267,7 @@ function requestStarterStart(state) {
     renderStarterOperation(state, row, []);
     pollStarterOperation(state);
   }).catch(function (err) {
+    if (isSuperseded(err)) return;
     if (STATE.starterView !== state || state.operation !== operation) return;
     if (err.code === "starter.preview_changed" || err.code === "starter.authority_changed") {
       state.preview = null;
@@ -299,6 +302,7 @@ function pollStarterOperation(state) {
       scheduleStarterOperation(state, 900);
     }
   }).catch(function (err) {
+    if (isSuperseded(err)) return;
     if (STATE.starterView !== state || state.operation !== operation) return;
     el("starter-operation").innerHTML = starterErrorHtml(err);
     // Polling also keeps waiting approvals alive, so a transient failure
@@ -337,7 +341,7 @@ function renderStarterOperation(state, row, approvals) {
       api("/api/approvals/" + encodeURIComponent(ask), { method: "POST", body: {
         approved: this.getAttribute("data-approved") === "true",
         owner: this.getAttribute("data-owner"), digest: this.getAttribute("data-digest")
-      }}).then(function () { pollStarterOperation(state); }).catch(function (err) { toast(err.message); });
+      }}).then(function () { pollStarterOperation(state); }).catch(function (err) { if (isSuperseded(err)) return; toast(err.message); });
     });
   });
 }
@@ -390,6 +394,7 @@ function loadStarterResult(sessionId, offset) {
     var next = el("starter-next-page");
     if (next) next.addEventListener("click", function () { loadStarterResult(sessionId, row.coverage.next_offset); });
   }).catch(function (err) {
+    if (isSuperseded(err)) return;
     if (STATE.starterResult === request && host.isConnected && el("starter-result-host") === host) host.innerHTML = starterErrorHtml(err);
   });
 }

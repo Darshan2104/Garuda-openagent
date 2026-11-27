@@ -138,6 +138,7 @@ function sessionsView() {
       filter.label = button.getAttribute("data-label"); applySessionFilter();
     });
   }).catch(function (err) {
+    if (isSuperseded(err)) return;
     if (err.status === 401) { render(tokenRequiredPanel()); return; }
     render('<div class="notice err"><div class="notice-title">Could not load sessions</div>' +
            '<div class="notice-body">' + esc(err.message) + "</div></div>");
@@ -367,11 +368,12 @@ function sessionDetailView(id) {
       stop.disabled = true;
       api("/api/sessions/" + encodeURIComponent(row.session_id) + "/cancel", { method: "POST", body: {} })
         .then(function (r) { toast(r.result); return sessionDetailView(row.session_id); })
-        .catch(function (err) { toast(err.message); stop.disabled = false; });
+        .catch(function (err) { if (isSuperseded(err)) return; toast(err.message); stop.disabled = false; });
     });
     if (streamable) startSessionStream(row.session_id); else stopSessionStream();
     loadStarterResult(row.session_id);
   }).catch(function (err) {
+    if (isSuperseded(err)) return;
     if (err.status === 401) { render(tokenRequiredPanel()); return; }
     render('<div class="notice err"><div class="notice-title">Could not load the session</div>' +
            '<div class="notice-body">' + esc(err.message) + "</div></div>");
@@ -423,6 +425,7 @@ function inboxView() {
       answerInboxApproval(item, button.getAttribute("data-act") === "allow");
     });
   }).catch(function (err) {
+    if (isSuperseded(err)) return;
     if (err.status === 401) { render(tokenRequiredPanel()); return; }
     render('<div class="notice err"><div class="notice-title">Could not load approvals</div>' +
            '<div class="notice-body">' + esc(err.message) + "</div></div>");
@@ -441,6 +444,7 @@ function answerInboxApproval(item, allow) {
     item.setAttribute("data-state", "recorded");
     if (typeof refreshInboxBadge === "function") refreshInboxBadge();
   }).catch(function (err) {
+    if (isSuperseded(err)) return;
     // Stale page, an earlier answer, an expired request: say so and let them reload.
     result.textContent = err.message + " (" + (err.code || err.status) + ")";
     item.setAttribute("data-state", err.code || "error");
@@ -800,6 +804,7 @@ function setupView() {
         function () { toast("Copy is not available here; select the text"); });
     });
   }).catch(function (err) {
+    if (isSuperseded(err)) return;
     if (err.status === 401) { render(tokenRequiredPanel()); return; }
     render('<div class="notice err"><div class="notice-title">Could not load setup</div><div class="notice-body">' + esc(err.message) + "</div></div>");
   });

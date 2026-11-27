@@ -86,6 +86,7 @@ function loadRuns(state, more) {
       if (link) link.focus();
     }
   }, function (err) {
+    if (isSuperseded(err)) return;
     if (STATE.runsList !== state || seq !== state.seq) return;
     var current = el("runs-body");
     if (current) current.removeAttribute("aria-busy");
