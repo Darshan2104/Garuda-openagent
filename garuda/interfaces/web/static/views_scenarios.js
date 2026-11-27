@@ -71,7 +71,7 @@ function startersView(starterId, query) {
         (state.entry ? '<a href="#/starters?workspace=' + workspace + '">← All starters</a>' + starterFormHtml(state) :
           '<div class="grid starter-grid" id="starter-cards">' + library.starters.map(function (r) {
             return '<section class="card" data-starter="' + esc(r.id) + '"><h2>' + esc(r.title) + '</h2>' + starterReadinessHtml(r.readiness) +
-              '<p class="stat-sub">' + esc(r.launch.kind === "flow" ? "Flow checks unavailable in this release" : "Verification comes from acceptance receipts") +
+              '<p class="stat-sub">' + esc(r.launch.kind !== "flow" ? "Verification comes from acceptance receipts" : r.id === "build-review" ? "Verification comes from acceptance receipts at flow finalization, when checks are configured" : "Flow checks unavailable for this flow") +
               '</p><a class="btn" href="#/starters/' + encodeURIComponent(r.id) + '?workspace=' + workspace + '">Choose starter</a></section>';
           }).join("") + "</div>")
       );

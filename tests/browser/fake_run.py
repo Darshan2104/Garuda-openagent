@@ -1,7 +1,20 @@
-"""Write a session live, at human speed, through the real EventStore.
+"""Write a session live, through the real EventStore.
+
+    fake_run.py ROOT [SESSION_ID] [TURNS] [DELAY] [--stepped]
 
 Not a file the test writes directly: the point is to exercise `attach_persistence`, which
 opens/writes/closes per event, because that is what makes a poll able to land mid-write.
+
+Timed (the default): one turn every DELAY seconds, for poking at a dashboard by hand.
+
+Stepped (``--stepped``): the caller drives it, one line on stdin per step, and the script
+prints ``step N written`` once the step is on disk. A check that waits for wall-clock luck
+is flaky under load — on a busy machine the run raced ahead of the browser (or finished)
+before the check had looked, and "the timeline did not grow" failed about one run in three.
+Each step finishes the previous turn and *starts* the next one (budget, model response and
+a dispatched tool call with no result yet), so between steps the last turn is genuinely in
+progress, the state a live view must not report as stopped. The step after the last turn
+finishes it and ends the session.
 """
 
 import sys
@@ -13,10 +26,14 @@ from garuda.core.modes import GATE_FIELDS, MODE_PRESETS
 from garuda.core.sessions import SessionStore
 from garuda.types import AgentResult
 
-root = Path(sys.argv[1])
-session_id = sys.argv[2] if len(sys.argv) > 2 else "live-demo"
-turns = int(sys.argv[3]) if len(sys.argv) > 3 else 6
-delay = float(sys.argv[4]) if len(sys.argv) > 4 else 1.2
+args = [a for a in sys.argv[1:] if a != "--stepped"]
+stepped = "--stepped" in sys.argv[1:]
+root = Path(args[0])
+session_id = args[1] if len(args) > 1 else "live-demo"
+turns = int(args[2]) if len(args) > 2 else 6
+delay = float(args[3]) if len(args) > 3 else 1.2
+# Between the events of one step, so a poll can still land mid-step.
+pause = 0.05 if stepped else delay / 3
 
 store = SessionStore(root=root)
 store.begin(session_id=session_id, task="Watch me work: build a parser and verify it",
@@ -35,11 +52,21 @@ events.append(EventType.SESSION_START, {
 })
 print(f"started {session_id}", flush=True)
 
-for turn in range(1, turns + 1):
+
+def wait_for_step(number: int) -> None:
+    """Stepped: block until the caller asks for the next step. Timed: pace by the clock."""
+    if stepped:
+        if not sys.stdin.readline():
+            raise SystemExit("stdin closed before the run was finished")
+    elif number > 1:
+        time.sleep(pause)
+
+
+def start_turn(turn: int) -> None:
     events.append(EventType.BUDGET, {"stage": "context", "turn": turn,
                                      "used_tokens": 9000 * turn, "capacity_tokens": 120000,
                                      "fraction": round(0.075 * turn, 4)})
-    time.sleep(delay / 3)
+    time.sleep(pause)
     last = turn == turns
     calls = [] if last else [{"id": f"c{turn}", "name": "bash",
                               "arguments": {"command": f"pytest tests/step_{turn}.py -q"}}]
@@ -54,8 +81,14 @@ for turn in range(1, turns + 1):
                   "cost_usd": 0.0018 * turn},
         "duration_ms": 1500.0,
     })
-    time.sleep(delay / 3)
-    if last:
+    if not last:
+        time.sleep(pause)
+        events.append(EventType.TOOL_CALL, {"turn": turn, "id": f"c{turn}", "name": "bash",
+                                            "arguments": calls[0]["arguments"]})
+
+
+def finish_turn(turn: int) -> None:
+    if turn == turns:
         events.append(EventType.VERIFICATION, {
             "turn": turn, "approved": True, "attempt": 1,
             "summary": "Wrote parser.py and verified it.",
@@ -67,15 +100,21 @@ for turn in range(1, turns + 1):
                           "stdout": "14 passed\n", "stderr": ""}],
         })
     else:
-        events.append(EventType.TOOL_CALL, {"turn": turn, "id": f"c{turn}", "name": "bash",
-                                            "arguments": calls[0]["arguments"]})
         events.append(EventType.TOOL_RESULT, {"turn": turn, "tool_call_id": f"c{turn}",
                                               "content": f"{turn * 2} passed\n",
                                               "is_error": False, "duration_ms": 320.0})
+    time.sleep(pause)
     events.append(EventType.TURN_METRICS, {"turn": turn, "model_ms": 1500.0,
                                            "tool_ms_total": 320.0, "tool_wall_ms": 320.0})
-    print(f"  turn {turn} written", flush=True)
-    time.sleep(delay / 3)
+
+
+for number in range(1, turns + 2):
+    wait_for_step(number)
+    if number > 1:
+        finish_turn(number - 1)
+    if number <= turns:
+        start_turn(number)
+    print(f"step {number} written", flush=True)
 
 events.append(EventType.SESSION_END, {"success": True, "turns": turns, "reason": "task_complete",
                                       "via": "gate"})

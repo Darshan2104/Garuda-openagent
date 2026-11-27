@@ -220,6 +220,16 @@ See [Ready-to-use workflows](../use-cases/workflows.md) for the five journeys.
 
 ## Runs
 
+The run list (`#/runs`) counts each run by its recorded **outcome**, so a
+native run (`success`), an external-harness run or a flow (`completed`) count
+alike. The **Completed** tile is completed ÷ finished runs; it says how runs
+ended, not whether anyone checked the result, so verified runs are counted
+separately. Turns, tokens, cost and duration a run never recorded (an
+external harness or a flow records no turns or tokens) show as **—** or
+**unknown**, never 0; totals say how many runs they cover. A flow's duration
+runs from its start to its last step receipt. The status filter matches the
+outcome: **completed** finds native and external runs alike.
+
 A run's page (`#/runs/<id>`) shows live turns, model thinking where available,
 tool calls, approvals, completion checks, diffs, metrics, and nested subagent
 traces. A chat can continue without discarding its workspace or event
@@ -244,15 +254,39 @@ history. On top of that:
   Older measurements without a recorded execution are labelled
   **Unattributed historical prompts**, and gaps read **runtime tenure
   unknown** rather than being filled in.
-- **External harness** appears for a Claude Code, Codex or other ACP run: the
-  harness and adapter version, role, model, effort, the harness mode that ran,
-  the write policy, a per-turn count of message events, tool calls, tool
-  results, approval requests and errors, prompts sent, and each approval with
-  its outcome. Garuda never stores the harness's own messages or tool calls,
-  so the trace below it says so instead of showing empty turns. **Models used**
-  adds each turn's context snapshot, with the model the harness reported and
-  its estimated cost when it gives them. The run's **Cost** tile shows that
-  adapter-reported cost, labelled as such, instead of a blank.
+- **What Garuda recorded** leads the page for a Claude Code, Codex or other
+  ACP run with no native log: the full task, the outcome, the duration (the
+  same figure as the run list: recorded start to recorded end, **—** when no
+  end was recorded), prompts sent, the stored final message, the harness and adapter
+  version, role, model, effort, harness mode and write policy, a per-turn
+  count of message events, tool calls, tool results, approval requests and
+  errors, and each approval with its outcome (approval requests with no stored
+  decision say so). Garuda never stores the harness's own messages or tool
+  calls, so one short **Not recorded** note replaces the empty trace,
+  context-pressure and raw-event panels. A run that mixes a native lane with
+  an external one shows the same facts as an **External harness** card above
+  its native trace. **Models used** adds each turn's context snapshot, with
+  the model the harness reported and its estimated cost when it gives them.
+  The run's **Cost** tile shows that adapter-reported cost, labelled as such,
+  or **not reported by the adapter**.
+- **Following a live run** patches the page in place every few seconds. A turn
+  or panel whose content did not change is left alone, so an expanded turn, a
+  loaded subagent trace, the raw-events window with its filter and the focus
+  in it, the Models used panel (refreshed once when the run ends), the scroll
+  position and a text selection all stay put. A part holding your text
+  selection is updated once the selection is cleared. While the run is live,
+  its missing `session_end` and its unfinished last turn are shown as **in
+  progress**, not as alarms; a run that is no longer live and never finished
+  keeps the **No session_end** and **TURN NEVER FINISHED** notices. If the
+  dashboard stops answering, the Live card says **can't reach the dashboard —
+  retrying**, retries with a doubling wait of up to 30 seconds, and resumes
+  on its own.
+- **Raw events** loads up to 500 events at a time, and its filter searches
+  that loaded window only. A filter with no match names the events it
+  searched and offers **Search later events** / **Search earlier events**,
+  which walk the rest of the log a window at a time until one matches.
+- A link to a run that does not exist says **No such run** and links back to
+  Runs and Sessions.
 - **Consults** lists each question the session asked another role as a lane:
   who asked whom, the identity that ran, its outcome (`answered`, `withheld`,
   `failed`, `timeout`, `quarantined`, `interrupted`), duration, denied
@@ -271,7 +305,13 @@ search field to match name, id, model or workspace, and click a state chip
 place when you open a session and come back. A session's page adds:
 
 - its pending approvals;
-- a live events panel that reconnects without repeating or skipping events;
+- a live events panel that reconnects without repeating or skipping events.
+  A finished session with no native event log (a flow, whose steps have their
+  own; an external harness, whose trail is on its Trace page) and no spend
+  snapshot says so in one line instead of showing empty panels;
+- what the harness itself reported: an external session's adapter figure, or
+  for a flow the total over its step sessions, labelled *adapter-reported, not
+  metered by Garuda*;
 - for a flow: steps, attempts, artifacts passed between them, the workspace
   change per attempt, and the review outcome with its rounds, such as
   **approved after 2 rounds** (never shown as verification);
@@ -348,6 +388,12 @@ tokens and duration per native call.
   lists what it left out.
 - **Unknown cost is never zero.** A range of unpriced calls reads *unknown*; a
   mixed one shows the known sum beside the number of unpriced records.
+- **Unknown tokens are never zero either.** Calls that recorded no token count
+  read *unknown*, and a mixed row shows the known sum beside how many calls
+  recorded none.
+- **ACP turns read *not metered*** while external harnesses' usage is recorded
+  only as adapter snapshots (running figures, never summed); the tile counts
+  those reports and the sessions that sent them.
 - **Export CSV / JSON** downloads fixed schema fields: identities and counts,
   no text, paths or account names.
 - These statistics are a report. They never choose a harness or model.
@@ -359,8 +405,13 @@ tokens and duration per native call.
 ## Providers
 
 `#/providers` shows a card per harness and per API provider: whether it is
-installed, its last recorded **login** check (`not checked` until a refresh),
-and its **limits**.
+installed, its last recorded **login** check with when it was taken
+(**checked 3d ago**; `not checked` until a check runs), and its **limits**.
+Runtimes, Providers and Setup all show this one recorded check, so they never
+disagree. Reading any of these pages runs no login check and changes
+nothing; only **Refresh** (write mode, here or **Refresh login checks** on
+the Runtimes page) renews it by running each harness's documented status
+command. A limit reading shows its age the same way (**observed 3d ago**).
 
 - A limit always carries its source and when it was observed. It reads
   **unknown** unless Garuda proved that source for the exact version (Claude
@@ -382,8 +433,8 @@ and its **limits**.
 
 - **Diagnostics** for configuration, each harness your roles use, leases and
   unpublished worktrees, each with a code and a fix you can copy (the same
-  as `garuda doctor`, except that a login shows its last recorded check
-  instead of running it; the version command of each harness your roles use
+  as `garuda doctor`, except that a login shows its last recorded check and
+  its age instead of running it; the version command of each harness your roles use
   does run, and no prompt is sent). Counts per level come first, errors are
   listed before warnings, and a code that repeats more than three times (one
   `lease.stale` per crashed run, say) folds into one expandable row.
@@ -411,7 +462,10 @@ To change anything, edit your `garuda.yaml` or run `garuda init`.
 The Runtimes board works with the trusted runtime catalog and saved sessions.
 Dashboard chat stays native; the board adds:
 
-- runtime health, login state, version, capabilities, setup guidance, and
+- runtime health, login state (the recorded login check and its age, the
+  same reading Providers and Setup show; opening the board never runs it, and
+  **Refresh login checks** renews it in write mode), version, capabilities,
+  setup guidance, and
   vendor-reported quota where available, without inventing missing data;
 - a preview and an explicit **prepare** step for a native-to-ACP handoff;
 - the session's own changes, separated from changes that were already in the

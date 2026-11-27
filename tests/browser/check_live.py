@@ -1,20 +1,24 @@
 """Watch a run fill in live, in Chrome, while another process writes it.
 
 Asserts the things only a real live view can get wrong: that the turn count grows without a
-reload, that an expanded turn stays expanded across a structure refresh, that the poller stops
-when the run ends, and that an idle dashboard stops polling entirely.
+reload, that a structure refresh leaves alone everything the reader is doing (an expanded turn,
+a loaded and filtered raw-events window with the focus in its filter, a text selection, the
+scroll position), that a run in flight is not flagged as killed, that a dashboard that cannot be
+reached is retried with a backoff and recovered from, that the poller stops when the run ends,
+and that an idle dashboard stops polling entirely.
 
 The list is deliberately part of that last one. It used to poll every 2.5 seconds whenever any
 `meta.json` said `running`, and a run killed before it finished writing its meta says `running`
 forever — so the page re-rendered until the tab was closed, throwing away scroll position and
 repainting every chart each time. Following a run live is the *trace* view's job, where there is
-one run to watch and re-rendering is the point.
+one run to watch.
 """
 
 import os
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 from browser_support import count_at_least, launch, settle
@@ -26,27 +30,82 @@ HERE = Path(__file__).resolve().parent
 SHOTS = Path(os.environ.get("GARUDA_CHECK_SHOTS", tempfile.mkdtemp(prefix="garuda-check-")))
 SESSIONS = Path(os.environ["GARUDA_CHECK_SESSIONS"])
 SID = "live-demo"
+TURNS = 12
+# Generous: a condition that holds returns at once, so a deadline only costs time on failure,
+# and a loaded machine must not turn a slow page into a false failure.
+DEADLINE_MS = 30_000
 
 problems: list[str] = []
 requests: list[str] = []
+# Set while the checks deliberately cut the dashboard off: the browser logs each refused
+# request, which is the expected outcome then rather than a fault in the page.
+OUTAGE = [False]
 
+# Stepped, not timed: the run advances only when this check says so (see fake_run.py). A
+# timed writer raced the browser — under load it was turns ahead, or finished, before the
+# check first looked, and "the timeline did not grow" failed about one run in three.
 writer = subprocess.Popen(
-    [sys.executable, str(HERE / "fake_run.py"), str(SESSIONS), SID, "12", "2.0"],
-    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+    [sys.executable, str(HERE / "fake_run.py"), str(SESSIONS), SID, str(TURNS), "0",
+     "--stepped"],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+    bufsize=1,
 )
+if not writer.stdout.readline().startswith("started"):
+    raise SystemExit("fake_run.py did not start")
+started = time.monotonic()
+steps_written = [0]
+
+
+def step(count: int = 1) -> None:
+    """Write `count` steps and return once they are on disk. Each step starts one turn."""
+    for _ in range(count):
+        writer.stdin.write("\n")
+        writer.stdin.flush()
+        line = writer.stdout.readline()
+        if not line.startswith("step "):
+            raise SystemExit(f"fake_run.py stopped: {line!r}")
+        steps_written[0] += 1
+
+
+def turns_at_least(page, count: int) -> bool:
+    return settle(page, "n => document.querySelectorAll('.turn').length >= n", count,
+                  timeout=DEADLINE_MS)
+
+
+def tail_requests() -> int:
+    return len([u for u in requests if "/tail" in u])
+
+
+def page_state(page) -> dict:
+    """What a reader would lose if the page were redrawn under them."""
+    return page.evaluate("""() => {
+        const filter = document.getElementById("raw-filter");
+        const first = document.querySelector(".turn");
+        const panel = document.getElementById("conversation-panel");
+        return {
+            rows: document.querySelectorAll("#raw-body .raw-row").length,
+            filter: filter ? filter.value : null,
+            focus: document.activeElement ? document.activeElement.id : null,
+            sameTurnNode: !!(first && first.__probe),
+            samePanelNode: panel ? !!panel.__probe : null,
+            turns: document.querySelectorAll(".turn").length,
+        };
+    }""")
+
 
 with sync_playwright() as p:
     browser = launch(p)
     page = browser.new_page(viewport={"width": 1500, "height": 1100})
     page.on("console", lambda m: problems.append(f"console.{m.type}: {m.text}")
-            if m.type in ("error", "warning") else None)
+            if m.type in ("error", "warning") and not OUTAGE[0] else None)
     page.on("pageerror", lambda e: problems.append(f"pageerror: {e}"))
     page.on("request", lambda r: requests.append(r.url))
 
+    step(2)   # two turns, the second in progress
     page.goto(f"{BASE}#t={TOKEN}", wait_until="networkidle")
     # The token URL lands on the Overview; the runs list is its own tab.
     page.goto(f"{BASE}#/runs", wait_until="networkidle")
-    count_at_least(page, "#table-card .pill.running")
+    count_at_least(page, "#table-card .pill.running", timeout=DEADLINE_MS)
     page.wait_for_load_state("networkidle")
 
     # --- the runs list picks up a run started elsewhere ----------------------
@@ -74,16 +133,59 @@ with sync_playwright() as p:
     if not page.query_selector("#runs-refresh"):
         problems.append("the runs list has no Refresh button to replace the poll")
 
+    # --- leaving before the run has loaded leaves nothing behind -------------
+    # The detail request is held until the reader has already moved on. Its late answer must
+    # not draw the trace over the next view, nor start a tail poller nobody can stop.
+    held = []
+    page.route(f"**/api/runs/{SID}", lambda route: held.append(route))
+    page.evaluate(f"location.hash = '#/runs/{SID}'")
+    for _ in range(50):
+        if held:
+            break
+        page.wait_for_timeout(100)
+    page.evaluate("location.hash = '#/sessions'")
+    # Either view's placeholder (main's had no id): wait until the next view replaced it.
+    settle(page, "() => !document.querySelector('#view > .loading')")
+    for route in held:
+        route.continue_()
+    page.unroute(f"**/api/runs/{SID}")
+    page.wait_for_load_state("networkidle")
+    tails_before = tail_requests()
+    # An observation window: a leaked poller would tail every 750 ms in it.
+    page.wait_for_timeout(2500)
+    leaked_tails = tail_requests() - tails_before
+    drew_over = bool(page.query_selector(".turn")) or bool(page.query_selector("#live-badge"))
+    print(f"left before load: held={len(held)} drew over next view={drew_over} "
+          f"tail polls after={leaked_tails}")
+    if not held:
+        problems.append("the detail request was never held, so the navigation race went untested")
+    if drew_over:
+        problems.append("a run's late response drew its trace over the view the reader moved to")
+    if leaked_tails:
+        problems.append(f"a run left before it loaded still polled its tail {leaked_tails} times")
+
     # --- the detail view fills in live --------------------------------------
     page.goto(f"{BASE}#/runs/{SID}", wait_until="networkidle")
-    settle(page, "() => !!document.querySelector('#live-badge')"
-                 " && document.querySelectorAll('.turn').length > 0")
+    settle(page, "n => !!document.querySelector('#live-badge')"
+                 " && document.querySelectorAll('.turn').length >= n", steps_written[0],
+           timeout=DEADLINE_MS)
     live_badge = page.query_selector("#live-badge")
-    print("live badge:", bool(live_badge))
+    print("\nlive badge:", bool(live_badge))
     if not live_badge:
         problems.append("no live badge on an in-flight run")
     first_turns = len(page.query_selector_all(".turn"))
     print(f"turn cards on arrival: {first_turns}")
+
+    # A run in flight has no session_end and an unfinished last turn because it is running:
+    # neither the page's own notices nor the reader's warnings may call that a stop.
+    alarms = [text for text in ("No session_end in the log", "TURN NEVER FINISHED",
+                                "no_session_end", "turn_never_finished")
+              if text in page.inner_text("#view")]
+    never = [f.inner_text() for f in page.query_selector_all(".turn-flags .flag-err")
+             if "never finished" in f.inner_text()]
+    print(f"alarms on a live run: {alarms} {never}")
+    if alarms or never:
+        problems.append(f"a run in flight was flagged as stopped: {alarms + never}")
 
     # Expand the first turn: it must survive the structure refresh.
     heads = page.query_selector_all(".turn-head")
@@ -94,48 +196,154 @@ with sync_playwright() as p:
         settle(page, f"() => ({first_open})() !== {str(was_open).lower()}")
     opened_before = len(page.query_selector_all(".turn.open"))
 
-    # Wait for the timeline to grow by a turn: that is a structure refresh, which is what the
-    # expanded turn has to survive.
-    settle(page, """first => document.querySelectorAll('.turn').length > first
-                     && document.querySelectorAll('.live-body .raw-row').length > 0""",
-           first_turns, timeout=20_000)
+    # --- what the reader is doing survives a structure refresh ----------------
+    # A loaded raw-events window, a filter over it with the focus still in the filter, the
+    # Models used panel and the first turn's node (tagged, so a redraw is detectable), and
+    # the scroll position measured on a turn card near the top of the viewport.
+    page.click("#raw-load")
+    count_at_least(page, "#raw-body .raw-row")
+    page.fill("#raw-filter", "tool_call")
+    page.focus("#raw-filter")
+    page.evaluate("""() => {
+        const first = document.querySelector(".turn");
+        if (first) first.__probe = 1;
+        const panel = document.getElementById("conversation-panel");
+        if (panel) panel.__probe = 1;
+    }""")
+    settle(page, "() => document.querySelectorAll('#raw-body .raw-row').length > 0")
+    before_state = page_state(page)
+    # Two more turns, which the page can only show through structure refreshes.
+    step(2)
+    turns_at_least(page, before_state["turns"] + 2)
+    after_state = page_state(page)
+    print(f"reader state before refreshes: {before_state}")
+    print(f"reader state after two turns:  {after_state}")
+    if after_state["turns"] <= before_state["turns"]:
+        problems.append("no structure refresh happened during the reader-state check")
+    if not before_state["rows"]:
+        problems.append("the filtered raw-events window had no rows to keep")
+    for key, label in (("rows", "the filtered raw-events rows"), ("filter", "the raw filter text"),
+                       ("focus", "the keyboard focus in the raw filter")):
+        if after_state[key] != before_state[key]:
+            problems.append(f"a live refresh reset {label}: {before_state[key]!r} -> "
+                            f"{after_state[key]!r}")
+    if not after_state["sameTurnNode"]:
+        problems.append("a live refresh redrew a turn that had not changed")
+    if after_state["samePanelNode"] is False:
+        problems.append("a live refresh rebuilt the Models used panel")
+
+    # Text selection and scroll position, on a finished turn the reader is reading.
+    page.evaluate("document.activeElement && document.activeElement.blur()")
+    anchor = page.evaluate("""() => {
+        const turns = [...document.querySelectorAll(".turn.open")];
+        const turn = turns[1] || turns[0];
+        if (!turn) return null;
+        turn.scrollIntoView({block: "start"});
+        window.scrollBy(0, -40);
+        const pre = turn.querySelector(".block-output pre, pre");
+        const range = document.createRange();
+        range.selectNodeContents(pre);
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        return {id: turn.id, top: turn.getBoundingClientRect().top,
+                text: selection.toString(), turns: document.querySelectorAll(".turn").length};
+    }""")
+    step(2)
+    if anchor:
+        turns_at_least(page, anchor["turns"] + 2)
+    held_state = page.evaluate("""(id) => {
+        const turn = document.getElementById(id);
+        return {top: turn ? turn.getBoundingClientRect().top : null,
+                text: window.getSelection().toString(),
+                turns: document.querySelectorAll(".turn").length};
+    }""", anchor["id"] if anchor else "")
+    print(f"selection/scroll before: {anchor}")
+    print(f"selection/scroll after:  {held_state}")
+    if not anchor or not anchor["text"]:
+        problems.append("could not select text in a turn to check it survives a refresh")
+    elif held_state["text"] != anchor["text"]:
+        problems.append(f"a live refresh dropped the reader's text selection "
+                        f"({anchor['text'][:30]!r} -> {held_state['text'][:30]!r})")
+    if anchor and (held_state["top"] is None or abs(held_state["top"] - anchor["top"]) > 2):
+        problems.append(f"the turn being read moved under the reader: top {anchor['top']:.0f} -> "
+                        f"{held_state['top']}")
+    page.evaluate("window.getSelection().removeAllRanges()")
+
+    # --- the dashboard goes away, then comes back ------------------------------
+    OUTAGE[0] = True
+    page.route("**/tail*", lambda route: route.abort())
+    outage_start = tail_requests()
+    step(1)   # the run keeps going while the dashboard is unreachable
+    page.wait_for_timeout(8000)
+    outage_polls = tail_requests() - outage_start
+    meta = page.text_content("#live-meta") or ""
+    print(f"\noutage: {outage_polls} tail attempts in ~8s, meta {meta!r}")
+    if outage_polls > 5:
+        problems.append(f"an unreachable dashboard was retried {outage_polls} times in 8s "
+                        "with no backoff")
+    if "can't reach the dashboard" not in meta or "poll failed" in meta:
+        problems.append(f"the outage was not reported as one calm line: {meta!r}")
+    page.screenshot(path=str(SHOTS / "live-outage.png"))
+    page.unroute("**/tail*")
+    # The longest wait at this point in the backoff is 12 s.
+    recovered = settle(page, """() => {
+        const meta = document.getElementById("live-meta");
+        return !!meta && !meta.textContent.includes("can't reach");
+    }""", timeout=40_000)
+    meta = page.text_content("#live-meta") or ""
+    OUTAGE[0] = False
+    # What was written during the outage arrives once it is over.
+    turns_at_least(page, steps_written[0])
+    print(f"recovered: {recovered} ({meta!r})")
+    if not recovered:
+        problems.append("the live view did not recover once the dashboard was reachable again")
+
     mid_turns = len(page.query_selector_all(".turn"))
     still_open = len(page.query_selector_all(".turn.open"))
     live_rows = len(page.query_selector_all(".live-body .raw-row"))
-    meta_node = page.query_selector("#live-meta")
-    meta = meta_node.text_content() if meta_node else "(live card already gone)"
-    print(f"after ~5s: turns={mid_turns} live rows={live_rows}")
-    print(f"  live meta: {meta}")
-    print(f"  expanded turns: {opened_before} -> {still_open}")
+    print(f"\nmid-run: turns={mid_turns} live rows={live_rows} "
+          f"expanded {opened_before} -> {still_open} "
+          f"(run in flight for {time.monotonic() - started:.0f}s)")
     if mid_turns <= first_turns:
         problems.append(f"the timeline did not grow ({first_turns} -> {mid_turns})")
     if not live_rows:
         problems.append("the live stream pane showed no events")
     if opened_before and not still_open:
         problems.append("a structure refresh collapsed an expanded turn")
+    if writer.poll() is not None:
+        problems.append("the run finished before the live checks were done; they proved nothing")
     page.screenshot(path=str(SHOTS / "live-midrun.png"), full_page=True)
 
     # --- it stops when the run ends -----------------------------------------
+    step(TURNS + 1 - steps_written[0])   # the remaining turns, then the session end
+    writer.stdin.close()
     writer.wait(timeout=60)
-    settle(page, """() => !document.querySelector('#live-badge')
-                     && document.querySelectorAll('.turn').length === 12
-                     && document.querySelectorAll('.gate').length === 1""", timeout=20_000)
+    settle(page, """n => !document.querySelector('#live-badge')
+                     && document.querySelectorAll('.turn').length === n
+                     && document.querySelectorAll('.gate').length === 1""", TURNS,
+           timeout=DEADLINE_MS)
     final_turns = len(page.query_selector_all(".turn"))
     badge_gone = page.query_selector("#live-badge") is None
     gates = len(page.query_selector_all(".gate"))
     status = page.text_content(".page-head .pill") or ""
+    final_state = page_state(page)
     print(f"\nafter the run finished: turns={final_turns} gates={gates} "
           f"status={status.strip()!r} live badge gone={badge_gone}")
-    if final_turns != 12:
-        problems.append(f"expected 12 turns at the end, rendered {final_turns}")
+    if final_turns != TURNS:
+        problems.append(f"expected {TURNS} turns at the end, rendered {final_turns}")
     if not badge_gone:
         problems.append("the live badge stayed after the run finished")
     if gates != 1:
         problems.append(f"expected the approved gate to appear, found {gates} gate cards")
+    if final_state["filter"] != "tool_call" or final_state["rows"] != before_state["rows"]:
+        problems.append(f"the final refresh reset the raw-events pane: {final_state}")
+    if "No session_end" in page.inner_text("#view"):
+        problems.append("a run that finished cleanly still shows 'No session_end'")
 
-    tail_before = len([u for u in requests if "/tail" in u])
+    tail_before = tail_requests()
     page.wait_for_timeout(4000)
-    tail_after = len([u for u in requests if "/tail" in u])
+    tail_after = tail_requests()
     print(f"tail requests after completion over ~4s: {tail_after - tail_before}")
     if tail_after - tail_before > 0:
         problems.append("the poller kept tailing after the run finished")
@@ -143,13 +351,17 @@ with sync_playwright() as p:
 
     # --- and an idle dashboard makes no requests ----------------------------
     page.goto(f"{BASE}#/runs", wait_until="networkidle")
-    page.wait_for_timeout(1200)
+    page.wait_for_timeout(1200)   # let the list's own first loads finish
     idle_before = len(requests)
     page.wait_for_timeout(4000)
-    idle_after = len(requests)
-    print(f"requests while idle over ~4s: {idle_after - idle_before}")
-    if idle_after - idle_before > 0:
-        problems.append(f"an idle dashboard made {idle_after - idle_before} requests")
+    # The nav's approvals badge polls /api/inbox every 20 s by design (router.js), read-only
+    # and paused in a hidden tab; this check now runs long enough for one tick to land in the
+    # window. Anything else here is a leaked poller.
+    idle = [u for u in requests[idle_before:] if "/api/inbox" not in u]
+    print(f"requests while idle over ~4s: {len(requests) - idle_before} "
+          f"({len(idle)} besides the approvals badge) {requests[idle_before:]}")
+    if idle:
+        problems.append(f"an idle dashboard made {len(idle)} requests: {idle}")
 
     browser.close()
 
@@ -162,4 +374,4 @@ if problems:
         print("  !!", problem)
     sys.exit(1)
 print("  none")
-print("\nOK: the live tail follows a run, keeps expansion state, and stops cleanly.")
+print("\nOK: the live tail follows a run, keeps the reader's place, and stops cleanly.")

@@ -177,7 +177,8 @@ def test_a_still_running_session_degrades_rather_than_failing(ctx, store):
     row = body(call(ctx, "/api/runs"))["runs"][0]
     assert row["status"] == "running"
     assert row["cost_usd"] is None
-    assert row["total_tokens"] == 0
+    # Nothing recorded yet is unknown, not zero.
+    assert row["total_tokens"] is None and row["turns"] is None
 
 
 def test_run_list_filters(ctx, store):
