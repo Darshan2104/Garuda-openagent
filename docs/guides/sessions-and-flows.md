@@ -174,6 +174,53 @@ removes the worktree once its work is published (`--force` otherwise).
 
 A worktree is a separate place to edit, not confinement.
 
+### Worktree flows and checkpoints
+
+A configured flow runs in your checkout unless it sets `isolation: worktree`
+in `garuda.yaml` or you pass `garuda flow run NAME --isolation worktree`. Then
+the flow gets its own linked worktree on a `garuda/<flow>` branch from your
+current `HEAD`, the same way a worktree session does: uncommitted changes in
+your checkout aren't carried over, the flow holds the lease on its worktree
+(not on your checkout), and its review packets and `--check` commands run
+against the worktree. Your checkout, index and `HEAD` are not touched. It
+needs a Git repository with at least one commit, opened at its root, and no
+submodules; anything else refuses before a session starts. `flow resume`
+goes back to the same worktree and refuses if it is gone or was replaced.
+
+When the flow ends, `flow run` prints the worktree and the merge command:
+`garuda sessions merge FLOW --check CMD` previews, checks and publishes the
+integration commit exactly as for a worktree session. A checked flow merges
+only after its own checks passed (`integration.flow_unverified` otherwise),
+and no flow merges while it is still running.
+
+At the end of every step attempt Garuda **checkpoints** the worktree: a commit
+of its whole state (tracked edits, deletions and untracked files that
+`.gitignore` does not exclude), built with a temporary index and published
+only as `refs/garuda/<flow>/<n>`. No branch, index or `HEAD` changes, the flow
+journal is unchanged, and checkpoints are recorded in the flow's own
+`checkpoints.jsonl`. An attempt that changed nothing adds no checkpoint. A flow
+keeps at most 64; past that the oldest go first, never the first or the last.
+A checkpoint that Git refuses is recorded as failed and the flow goes on.
+
+```bash
+garuda flow show FLOW            # ... worktree: PATH, then "checkpoint N: STEP attempt A; COMMIT; TIME"
+garuda flow rollback FLOW --to 2 # restore the worktree's files to checkpoint 2
+```
+
+`flow rollback` works only on a worktree flow that is not running: it takes
+the flow's lease on the worktree and refuses (`flow.running`) while a step or
+check holds it, and refuses a shared flow (`flow.rollback_shared`). It first
+checkpoints the current state, so `flow rollback FLOW --to M` with the number
+it prints undoes it, then restores every file to the checkpoint, removing
+files the checkpoint does not hold; ignored files are left alone. A rollback
+changes the candidate, so a checked flow's recorded evidence no longer
+matches it and `flow resume` refuses it as changed.
+
+A flow's checkpoint refs are deleted with its worktree
+(`garuda sessions remove-worktree FLOW`), and when a new worktree flow starts,
+the refs of flows whose newest checkpoint is older than `sessions.keep_days`
+are deleted too.
+
 ### Approvals from elsewhere
 
 While an interactive prompt waits (in `garuda chat` or a dashboard
@@ -519,6 +566,66 @@ cleanly, so the step stops with `flow.step_deadline` and is not quarantined.
 Its supervisor only kills a worker still running 10 minutes past the deadline.
 A checked step without `deadline_min` keeps the one-hour limit of its worker,
 so set `deadline_min` on any checked step that may run longer.
+
+### Long steps
+
+A step with [`long_run`](configuration.md) runs over many turns of its ACP
+harness instead of one. Its first prompt ends with a `[garuda]` line asking the
+agent to work toward the next milestone and end each turn with a progress
+block, `<garuda-artifact type="progress">…</garuda-artifact>` (never an
+artifact: only the step's declared outputs are passed on). After each turn
+Garuda records its own facts — the harness's stop reason, whether it denied an
+action, the files changed since the step's first attempt began and a hash of
+that change, the turn count and times, and the progress note, redacted — and
+decides:
+
+| After a turn | Garuda |
+|---|---|
+| the harness refused (`refusal`) | stops the step: `flow.step_refused` |
+| every declared output is there (with none declared: `end_turn`) | finishes the step |
+| `max_tokens`, `max_turn_requests`, or `end_turn` without the outputs | sends another turn in the same session, naming the outputs still missing |
+| an action was denied and the turn ended `end_turn` | sends another turn naming the denied action: continue without it, or record that it needs approval |
+| a malformed or too-large output block | asks once for only the blocks (the repair turn below) |
+| the turn ended `cancelled` (the harness closed its session) | starts a fresh session with a brief |
+| `session_turns` or `session_hours` reached, or the harness reports its context 80% full | starts a fresh session with a brief |
+| no measured progress (the change's hash unchanged, no new output) for `no_progress_turns` turns | pauses: `flow.step_no_progress` |
+| `max_hours` or `max_turns` reached | pauses: `flow.step_deadline` or `flow.step_max_turns` |
+| a transient harness error (an exit mid-turn, an overloaded or 5xx API error, a reset connection) | waits 5 s, 30 s, then 120 s and starts a fresh session; the fourth stops the step as today |
+
+Staying in one session keeps the harness's context (and its provider's prompt
+cache); a fresh one costs a new context. A fresh session runs in the same
+Garuda step session — the same lease, evidence baseline and approvals — and
+its first prompt is the step prompt again plus a *brief*: Garuda's own records
+of the step so far (turns, files changed, outputs missing, denied actions and
+the last progress note, fenced as data, at most 6,000 characters). It is not
+restored model state. A usage limit (`harness.limit_reached`) is never retried
+here: the step stops as before.
+
+Every turn is a line in `progress/STEP-ATTEMPT.jsonl` beside the flow's
+receipts (owner-only, at most 2,000 lines, with the brief of each rotation).
+The step's receipt adds `sessions` (its Garuda step session), `harness_sessions`
+(each harness session in order), `turns`, `rotations`, `continuations`,
+`repairs` and `progress`; its status, journal entries (one intent, one receipt)
+and review packet are as for any step. The pauses are ordinary resumable
+stops: `garuda flow resume FLOW_ID` runs the step again as a new attempt, and
+they are never retried by `retries`. A checked step's worker runs the same
+loop; a read-only checked step, whose harness is one confined container,
+continues and repairs in that session but never rotates.
+
+### The repair turn
+
+When a step's turn ended normally but its declared output blocks are missing,
+malformed or too large, Garuda asks the same harness session once, with a
+short `[garuda]` prompt naming what was wrong, for only the blocks and no
+change to files. At most one repair per attempt; the receipt's `repairs` says
+how it went. If the repair does not give good blocks, the original stop
+(`flow.output_missing`, `flow.artifact_malformed`, `flow.artifact_too_large`)
+stands, and a step with `retries` runs again after it. The no-edits check,
+workspace version and candidate are taken after the repair, so a read-only
+step that changed files during it still stops with `flow.no_edits_changed`.
+This applies to every ACP flow step with outputs, with or without
+`long_run`; a refusal is never repaired, and native steps and parallel group
+members keep today's single turn.
 
 ### Reviews
 
