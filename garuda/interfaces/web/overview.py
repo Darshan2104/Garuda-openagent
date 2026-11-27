@@ -9,7 +9,7 @@ only for the few it returns:
 
 * **attention**: sessions whose worker crashed, sessions waiting on an approval,
   and flows stopped on a resumable pause (a quota wait recorded by quota recovery,
-  or a step's own deadline or silence limit);
+  or a step's own deadline, silence, progress, turn or refusal limit);
 * **running**: queued, working and waiting sessions that did not crash, with a
   flow's in-flight step when its journal names one;
 * **recent**: the newest finished sessions.
@@ -41,45 +41,68 @@ ROW_FIELDS = (
 QUOTA_WAIT = "waiting-for-quota"
 
 
+#: The stop code a usage-limit pause records (``flows.quota_recovery`` and the engine raise
+#: it by this literal; neither exports a constant for it).
+QUOTA_STOP = "flow.quota_wait"
+
+
+def _pause_kinds() -> dict[str, str]:
+    """``{stop code: pause kind}`` for the stops a flow pauses on, from the engine's own
+    constants: its liveness stops and a long step's loop stops, each kept only while the
+    engine lists it in ``RESUMABLE_CHECKED_STOPS`` (so ``flow resume`` runs the step again).
+    An ordinary failed step is resumable too, but it is a failure, not a pause."""
+    from garuda.flows.engine import LIVENESS_STOPS, RESUMABLE_CHECKED_STOPS
+    from garuda.flows.long_step import LOOP_STOPS
+
+    kinds = {code: kind for kind, code in LIVENESS_STOPS.items()}
+    for code in LOOP_STOPS:
+        kinds.setdefault(code, code.removeprefix("flow.step_"))
+    return {code: kind for code, kind in kinds.items() if code in RESUMABLE_CHECKED_STOPS}
+
+
+def quota_limit(meta: dict) -> dict:
+    """When a usage-limit pause resets, from the quota-recovery record (``reset_at``) or the
+    stop's own cause (``cause.limit.resets_at``), with the limit window; ``None`` values
+    when neither recorded it."""
+    recovery = meta.get("quota_recovery") if isinstance(meta.get("quota_recovery"), dict) else {}
+    stop = meta.get("flow_stop") if isinstance(meta.get("flow_stop"), dict) else {}
+    cause = stop.get("cause") if isinstance(stop.get("cause"), dict) else {}
+    limit = cause.get("limit") if isinstance(cause.get("limit"), dict) else {}
+
+    def stamp(value):
+        return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+    reset = stamp(recovery.get("reset_at"))
+    if reset is None:
+        reset = stamp(limit.get("resets_at"))
+    window = recovery.get("rate_limit_type") or limit.get("rate_limit_type")
+    return {"reset_at": reset, "rate_limit_type": window if isinstance(window, str) else None,
+            "source": recovery.get("quota_source") if isinstance(recovery.get("quota_source"), str)
+            else None}
+
+
 def _pause(meta: dict) -> dict | None:
     """Why a stopped flow is paused on a resumable stop, from its recorded fields, or ``None``."""
-    from garuda.flows.engine import DEADLINE_STOP, SILENT_STOP
-
     if meta.get("kind") != "flow":
         return None
     recovery = meta.get("quota_recovery")
-    if isinstance(recovery, dict) and recovery.get("state") == QUOTA_WAIT:
-        return {"kind": "quota"}
     stop = meta.get("flow_stop")
     code = stop.get("code") if isinstance(stop, dict) else None
-    if meta.get("flow_state") == "stopped" and code in (DEADLINE_STOP, SILENT_STOP):
-        return {"kind": "deadline" if code == DEADLINE_STOP else "silence"}
+    if (isinstance(recovery, dict) and recovery.get("state") == QUOTA_WAIT) or code == QUOTA_STOP:
+        # The reset time and window only when recorded (a Codex wait records neither).
+        return {"kind": "quota", **{k: v for k, v in quota_limit(meta).items() if v is not None}}
+    kinds = _pause_kinds()
+    if meta.get("flow_state") == "stopped" and code in kinds:
+        return {"kind": kinds[code]}
     return None
 
 
 def _progress(store, meta: dict) -> dict | None:
-    """The step a running flow has launched and not yet settled, from its journal.
+    """The step a running flow has launched and not yet settled, from its journal (the
+    shared read model's, which a session's detail reports as ``flow_progress``)."""
+    from garuda.core.read_model import flow_progress
 
-    ``None`` when the flow declares no readable steps or no step is in flight (between
-    steps, or in its acceptance phase); the page then shows no step rather than a guess.
-    """
-    from garuda.core.starter_evidence import flow_steps
-    from garuda.flows.engine import unsettled_attempts
-
-    declared = flow_steps(meta)
-    if not declared:
-        return None
-    try:
-        pending = unsettled_attempts(store, meta.get("session_id") or "")
-    except (OSError, ValueError, TypeError):
-        return None
-    if not pending:
-        return None
-    step, attempt = pending[-1]
-    if step not in declared:
-        return None
-    return {"step": step, "attempt": attempt, "index": declared.index(step) + 1,
-            "total": len(declared)}
+    return flow_progress(store, meta)
 
 
 def _row(store, meta: dict, queue_index: dict, *, active: bool) -> dict[str, Any]:

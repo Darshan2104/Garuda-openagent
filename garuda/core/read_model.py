@@ -157,7 +157,27 @@ def _attempt(receipt: dict) -> dict:
         # What the attempt cost and how much context it used (#832); ``None`` for a
         # receipt written before it.
         "measure": receipt.get("measure") if isinstance(receipt.get("measure"), dict) else None,
+        "turn_loop": _turn_loop(receipt),
     }
+
+
+def _turn_loop(receipt: dict) -> dict | None:
+    """A long step's turn-loop facts as its receipt recorded them (#842), or ``None`` when
+    it ran one plain turn. A count of the wrong type reads ``None`` (unknown), never 0."""
+    if not any(key in receipt for key in ("turns", "rotations", "continuations", "repairs")):
+        return None
+
+    def count(value):
+        return value if type(value) is int and value >= 0 else None
+
+    repairs = receipt.get("repairs")
+    natives = receipt.get("harness_sessions")
+    return {"turns": count(receipt.get("turns")), "rotations": count(receipt.get("rotations")),
+            "continuations": count(receipt.get("continuations")),
+            "repairs": len(repairs) if isinstance(repairs, list) else None,
+            "repair_outcomes": [r.get("outcome") for r in repairs if isinstance(r, dict)]
+            if isinstance(repairs, list) else [],
+            "harness_sessions": len(natives) if isinstance(natives, list) else None}
 
 
 def inbox(store, *, limit: int = 200) -> list[dict]:
@@ -226,7 +246,18 @@ def flow(store, session_id: str, meta: dict | None = None, *, receipts: list[dic
                          "journal": journal_coverage},
             "stop": _flow_stop(meta.get("flow_stop")),
             # Own field: a review verdict is advice about the work, not verification of it.
-            "review": meta.get("review"), "quota_recovery": meta.get("quota_recovery")}
+            "review": meta.get("review"), "quota_recovery": meta.get("quota_recovery"),
+            # How much of the change set each approving review saw (#851): partial, complete
+            # or unknown, by reviewed step.
+            "review_coverage": _review_coverage(meta.get("review_approvals"))}
+
+
+def _review_coverage(approvals) -> dict[str, str]:
+    if not isinstance(approvals, dict):
+        return {}
+    return {str(step): (record.get("coverage") if record.get("coverage") in
+                        ("partial", "complete", "unknown") else "unknown")
+            for step, record in approvals.items() if isinstance(record, dict)}
 
 
 def _bounded_fields(record: dict, limits) -> dict:
@@ -240,10 +271,18 @@ def _flow_stop(stop) -> dict | None:
     if not isinstance(stop, dict) or not stop.get("code"):
         return None
     cause = stop.get("cause")
+    limit = cause.get("limit") if isinstance(cause, dict) else None
     return {**_bounded_fields(stop, (("code", 120), ("step", 80), ("message", 500))),
             "cause": (_bounded_fields(cause, (("code", 120), ("detail", 500)))
                       if isinstance(cause, dict) and any(cause.get(k) for k in ("code", "detail"))
-                      else None)}
+                      else None),
+            # A usage-limit pause (flow.quota_wait): when the limit resets and its window.
+            "limit": ({"resets_at": limit.get("resets_at")
+                       if isinstance(limit.get("resets_at"), (int, float))
+                       and not isinstance(limit.get("resets_at"), bool) else None,
+                       "rate_limit_type": limit.get("rate_limit_type")
+                       if isinstance(limit.get("rate_limit_type"), str) else None}
+                      if isinstance(limit, dict) else None)}
 
 
 def _spend(meta: dict) -> dict | None:
@@ -362,15 +401,20 @@ def session_row(store, meta: dict, *, queue_index: dict | None = None, liveness=
     }
 
 
+def listed_row(store, meta: dict, *, queue_index: dict | None = None) -> dict[str, Any]:
+    """One list row: the shared row plus its pending approvals, live ones counted apart
+    (an expired request is denied by the broker, so it is not waiting on anyone)."""
+    row = session_row(store, meta, queue_index=queue_index)
+    pending = approvals(store, row["session_id"]) \
+        if row["state"]["work"] in ("queued", "working", "waiting") else []
+    row["approvals_pending"] = len(pending)
+    row["approvals_live"] = sum(1 for a in pending if not a.get("expired"))
+    return row
+
+
 def sessions(store, *, limit: int | None = 20, queue=None) -> list[dict]:
     index = _queue_index(queue)
-    rows = []
-    for meta in store.list_sessions(limit=limit):
-        row = session_row(store, meta, queue_index=index)
-        row["approvals_pending"] = len(approvals(store, row["session_id"])) \
-            if row["state"]["work"] in ("queued", "working", "waiting") else 0
-        rows.append(row)
-    return rows
+    return [listed_row(store, meta, queue_index=index) for meta in store.list_sessions(limit=limit)]
 
 
 def trace_detail(meta: dict) -> str | None:
@@ -400,6 +444,7 @@ def session(store, session_id: str, *, queue=None) -> dict:
     row["reported_usage"] = reported_usage(session_id)
     row["approvals"] = approvals(store, session_id)
     row["approvals_pending"] = len(row["approvals"])
+    row["approvals_live"] = sum(1 for a in row["approvals"] if not a.get("expired"))
     from garuda.core.approval_outcome import approval_summary
 
     # Denied tool calls apart from the outcome: a blocked run can end `completed` (#691).
@@ -480,7 +525,105 @@ def session(store, session_id: str, *, queue=None) -> dict:
         "native": Path(store.events_path(session_id)).is_file(),
         "external": (Path(store.session_dir(session_id)) / ACP_EVENTS_FILE).is_file(),
     }
+    row.update(session_result(store, session_id, meta, row))
     return row
+
+
+#: How many files a session's detail lists from the agent's recorded working state.
+MAX_CHANGED_FILES = 50
+
+
+def _stamp(value):
+    from datetime import datetime, timezone
+
+    # Parsed here, not with the benchmark package's helper (agent code never imports it):
+    # ISO 8601, with a trailing Z, is what every session writer stamps.
+    try:
+        parsed = (datetime.fromisoformat(value.replace("Z", "+00:00"))
+                  if isinstance(value, str) else None)
+    except ValueError:
+        parsed = None
+    if parsed is not None and parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def flow_progress(store, meta: dict) -> dict | None:
+    """The step a running flow has launched and not yet settled, from its journal.
+
+    ``None`` when the flow declares no readable steps or no step is in flight (between
+    steps, or in its acceptance phase); a reader then shows no step rather than a guess.
+    """
+    from garuda.core.starter_evidence import flow_steps
+    from garuda.flows.engine import unsettled_attempts
+
+    declared = flow_steps(meta)
+    if not declared:
+        return None
+    try:
+        pending = unsettled_attempts(store, meta.get("session_id") or "")
+    except (OSError, ValueError, TypeError):
+        return None
+    if not pending:
+        return None
+    step, attempt = pending[-1]
+    if step not in declared:
+        return None
+    return {"step": step, "attempt": attempt, "index": declared.index(step) + 1,
+            "total": len(declared)}
+
+
+def session_result(store, session_id: str, meta: dict, row: dict) -> dict[str, Any]:
+    """What a session's detail leads with beside its state: the task's result and timing.
+
+    * ``starter_origin``: admitted from a Starter (its meta carries the ``starter`` record).
+    * ``final_message``: the stored summary (clipped to 2,000 characters when written),
+      redacted; ``None`` when none was stored or the output was withheld.
+    * ``files_changed``: the files the agent's working state recorded it wrote; ``None``
+      when it recorded none (an external harness, a flow, an older run).
+    * ``ended_at`` / ``duration_ms``: a finished session's recorded end (``updated_at``, or
+      for a flow the later of that and its step receipts) and the time from ``created_at``;
+      ``None`` while it runs or when no later end was recorded.
+    * ``flow_progress``: a running flow's in-flight step (see :func:`flow_progress`).
+    """
+    from garuda.context.redact import redact_text
+    from garuda.runtime.session_state import ACTIVE_WORK
+
+    withheld = meta.get("outputs_withheld") is True
+    message = meta.get("final_message")
+    final = redact_text(message)[0] \
+        if isinstance(message, str) and message.strip() and not withheld else None
+    try:
+        files = store.load_state(session_id).get("files_modified")
+    except (OSError, ValueError, AttributeError):
+        files = None
+    files_changed = None
+    if isinstance(files, list) and files and all(isinstance(f, str) for f in files):
+        files_changed = {"files": files[:MAX_CHANGED_FILES], "total": len(files),
+                         "source": "working state"}
+    active = row["state"].get("work") in ACTIVE_WORK
+    ended_at = duration = None
+    if not active:
+        end_text = meta.get("updated_at")
+        for step in (row.get("flow") or {}).get("steps") or []:
+            for attempt in step.get("attempts") or []:
+                for key in ("finished_at", "recorded_at"):
+                    stamp = _stamp(attempt.get(key))
+                    if stamp is not None and (_stamp(end_text) is None or stamp > _stamp(end_text)):
+                        end_text = attempt[key]
+        start, end = _stamp(meta.get("created_at")), _stamp(end_text)
+        if start is not None and end is not None and end > start:
+            ended_at, duration = end_text, int((end - start).total_seconds() * 1000)
+    return {
+        "starter_origin": meta.get("starter") is not None,
+        "final_message": final,
+        "output_withheld": withheld,
+        "files_changed": files_changed,
+        "ended_at": ended_at,
+        "duration_ms": duration,
+        "flow_progress": flow_progress(store, meta) if active and meta.get("kind") == "flow"
+        else None,
+    }
 
 
 def failure_evidence(store, session_id: str, *, expected_project_id: str | None = None) -> dict:

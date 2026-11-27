@@ -82,7 +82,7 @@ with sync_playwright() as p:
 
     # --- the consulted child is its own session, marked --------------------------------------------------
     page.goto(f"{BASE}#/sessions", wait_until="load")
-    page.wait_for_selector("tr.session-row, table")
+    page.wait_for_selector("tr.session-row")  # rows arrive after the table renders
     check("the child session is marked as a consult", page.get_by_text("consult", exact=True).count() >= 1)
 
     # --- setup: grants, ceilings and per-adapter transport status -------------------------------------------

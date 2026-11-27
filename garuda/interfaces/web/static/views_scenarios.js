@@ -342,20 +342,22 @@ function renderStarterOperation(state, row, approvals) {
   });
 }
 
-function starterResultHtml(row) {
+/* The starter card. With `split` (the session page) it returns the result and next action
+ * apart from the coverage, integrity, identities and receipts, which that page keeps under
+ * "Details and evidence"; the session page already shows the state chips, so only the review
+ * chip stays. Without it (the Trace page) it is one card, as before. */
+function starterResultHtml(row, split) {
   var state = row.state || {}, coverage = row.coverage || {}, action = row.next_action || {};
   var legacy = row.starter_metadata === "legacy";
   var workspace = ((STATE.config && STATE.config.workspaces) || []).find(function (w) { return w.path === row.workspace; });
   var implement = action.id === "implement-plan" && workspace ?
     '<a class="btn" id="starter-implement" href="#/starters/build-review?workspace=' + workspace.index +
     '&variant=pair&plan_artifact=' + encodeURIComponent(action.plan_artifact) + '">Preview implementation of this plan</a>' : "";
-  return '<section class="card starter-result" id="starter-result"><h2>' +
-    (legacy ? "Recorded run evidence" : "Starter result · " + esc(row.starter_id || "unknown")) + '</h2>' +
-    (legacy ? '<p class="stat-sub">Starter input/source provenance was not recorded for this run.</p>' : "") +
+  var chips = split ? '<p>' + chip("review", row.review_label || "unknown") + '</p>' :
     '<p>' + chip("process", state.process || "unknown") + " " + chip("work", state.work || "unknown") + " " +
     chip("outcome", state.outcome || "unknown") + " " + chip("verification", (row.verification || {}).status || "unknown") + " " +
-    chip("review", row.review_label || "unknown") + '</p><p class="stat-sub">' + esc(row.process_evidence || "Stored evidence only; active-owner liveness is not probed.") + '</p>' +
-    '<p id="starter-coverage">Selected-session coverage: <strong>' + (coverage.complete ? "complete" : "incomplete / unknown") +
+    chip("review", row.review_label || "unknown") + '</p>';
+  var evidence = '<p id="starter-coverage">Selected-session coverage: <strong>' + (coverage.complete ? "complete" : "incomplete / unknown") +
     '</strong> · returned ' + esc(coverage.returned_records == null ? "unknown" : coverage.returned_records) +
     ' of ' + esc(coverage.total_records == null ? "unknown" : coverage.total_records) +
     ' records · offset ' + esc(coverage.offset) + ', limit ' + esc(coverage.limit) +
@@ -366,14 +368,26 @@ function starterResultHtml(row) {
     '</p><pre class="starter-data">' + esc(JSON.stringify({ goal: row.goal, requirements: row.requirements, constraints: row.constraints, exclude: row.exclude, approved_scope: row.approved_scope, supplied_sources: row.supplied_sources, recorded_task: legacy ? row.task : undefined }, null, 2)) + '</pre></details>' +
     '<details><summary>Artifacts, review and acceptance receipts</summary><p>' + esc(row.verification_evidence || "Flow checks are unavailable in this release; review is separate from verification.") +
     '</p><pre class="starter-data">' + esc(JSON.stringify({ artifacts: row.artifacts || [], review: row.review, verification: row.verification, acceptance_receipts: row.acceptance_receipts || [] }, null, 2)) + '</pre></details>' +
-    '<details><summary>Stored output · ' + esc((row.output || {}).scope || "unknown") + '</summary><p class="stat-sub">Stored summaries may be clipped. Missing or withheld output is not success evidence.</p><pre class="starter-data">' +
+    (coverage.next_offset != null ? '<button type="button" class="btn" id="starter-next-page">Next evidence page</button>' : "");
+  var result = '<details><summary>Stored output · ' + esc((row.output || {}).scope || "unknown") + '</summary><p class="stat-sub">Stored summaries may be clipped. Missing or withheld output is not success evidence.</p><pre class="starter-data">' +
     esc((row.output || {}).text == null ? "Output unavailable or withheld." : row.output.text) + '</pre></details>' +
     '<h3>Next action</h3><p>' + esc(action.label || "Inspect recorded evidence") + '</p>' + implement +
     (action.id === "implement-plan" && !workspace ? '<p>The recorded workspace is outside this dashboard’s allowlist. Copy the command into a terminal in that workspace.</p>' : "") +
-    (action.command ? '<label>Suggested CLI command <textarea id="starter-next-command" readonly rows="3">' + esc(action.command) + '</textarea></label><button type="button" class="btn" id="starter-next-copy">Copy command</button>' : "") +
-    (coverage.next_offset != null ? '<button type="button" class="btn" id="starter-next-page">Next evidence page</button>' : "") + '</section>';
+    (action.command ? '<label>Suggested CLI command <textarea id="starter-next-command" readonly rows="3">' + esc(action.command) + '</textarea></label><button type="button" class="btn" id="starter-next-copy">Copy command</button>' : "");
+  var head = '<section class="card starter-result" id="starter-result"><h2>' +
+    (legacy ? "Recorded run evidence" : "Starter result · " + esc(row.starter_id || "unknown")) + '</h2>' +
+    (legacy ? '<p class="stat-sub">Starter input/source provenance was not recorded for this run.</p>' : "") +
+    chips + '<p class="stat-sub">' + esc(row.process_evidence || "Stored evidence only; active-owner liveness is not probed.") + '</p>';
+  if (split) {
+    return { card: head + result + '</section>',
+             evidence: '<section class="starter-evidence" id="starter-evidence"><h2>Starter evidence</h2>' + evidence + '</section>' };
+  }
+  return head + evidence + result + '</section>';
 }
 
+/* Only a session the server records as admitted from a Starter gets the card: a plain run
+ * (`starter_metadata: "legacy"`) has no starter provenance to show, and its state is already
+ * on the page. */
 function loadStarterResult(sessionId, offset) {
   var host = el("starter-result-host");
   if (!host) return;
@@ -382,14 +396,29 @@ function loadStarterResult(sessionId, offset) {
   if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(sessionId)) return;
   var request = {};
   STATE.starterResult = request;
+  var evidenceHost = el("starter-evidence-host");
+  function current() {
+    return STATE.starterResult === request && host.isConnected && el("starter-result-host") === host;
+  }
   return api("/api/scenario-runs/" + encodeURIComponent(sessionId) + "?offset=" + (offset || 0)).then(function (row) {
-    if (STATE.starterResult !== request || !host.isConnected || el("starter-result-host") !== host) return;
-    host.innerHTML = starterResultHtml(row);
+    if (!current()) return;
+    if (row.starter_metadata === "legacy") {
+      host.innerHTML = "";
+      if (evidenceHost) evidenceHost.innerHTML = "";
+      return;
+    }
+    if (evidenceHost) {
+      var parts = starterResultHtml(row, true);
+      host.innerHTML = parts.card;
+      evidenceHost.innerHTML = parts.evidence;
+    } else {
+      host.innerHTML = starterResultHtml(row);
+    }
     var copy = el("starter-next-copy");
     if (copy) copy.addEventListener("click", function () { copyStarterCommand(el("starter-next-command")); });
     var next = el("starter-next-page");
     if (next) next.addEventListener("click", function () { loadStarterResult(sessionId, row.coverage.next_offset); });
   }).catch(function (err) {
-    if (STATE.starterResult === request && host.isConnected && el("starter-result-host") === host) host.innerHTML = starterErrorHtml(err);
+    if (current()) host.innerHTML = starterErrorHtml(err);
   });
 }

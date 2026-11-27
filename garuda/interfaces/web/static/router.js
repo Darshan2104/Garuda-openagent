@@ -16,7 +16,7 @@ var ROUTES = [
   [/^#\/runs\/([^/]+)$/, function (m) { return runDetailView(decodeURIComponent(m[1])); }],
   [/^#\/runs$/, function () { return runsView(); }],
   [/^#\/sessions\/([^/]+)$/, function (m) { return sessionDetailView(decodeURIComponent(m[1])); }],
-  [/^#\/sessions$/, function () { return sessionsView(); }],
+  [/^#\/sessions(?:\?(.*))?$/, function (m) { return sessionsView(m[1]); }],
   [/^#\/inbox$/, function () { return inboxView(); }],
   [/^#\/providers$/, function () { return providersView(); }],
   [/^#\/setup$/, function () { return setupView(); }],
