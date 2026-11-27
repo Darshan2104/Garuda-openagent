@@ -335,6 +335,33 @@ flows:
 A flow that needs a role you haven't defined refuses and lists the roles it
 needs. More in the [Sessions and flows guide](../guides/sessions-and-flows.md).
 
+### Let one step work for hours
+
+A build that needs many turns can stay in one step. Give it `long_run`, and
+Garuda keeps prompting the same harness session until the step's outputs are
+there, starting a fresh session with a brief of the work so far when one gets
+long, and pausing the flow when the step stops making measurable progress:
+
+```yaml
+flows:
+  long-build:
+    steps:
+    - {id: plan, role: planner, write_policy: no-edits, outputs: [plan]}
+    - id: build
+      role: coder            # an ACP harness role (Claude Code, Codex, ...)
+      inputs: [plan]
+      outputs: [summary]
+      long_run: {max_hours: 10, session_turns: 15, no_progress_turns: 3}
+```
+
+```bash
+garuda flow run long-build -t "Port the parser to the new AST, one module per turn"
+garuda flow show latest     # turns, harness sessions and repairs per step
+```
+
+Each turn is recorded in the attempt's progress file; see
+[Long steps](../guides/sessions-and-flows.md#long-steps).
+
 ## Let one role ask another
 
 <p class="gd-facts">Runs: the other role read-only, on a snapshot · Configured in: your <code>garuda.yaml</code></p>
