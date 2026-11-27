@@ -37,19 +37,25 @@ def prompt_record(prompt: str, parts: list[dict] | None) -> dict:
     return out
 
 
-def _trail_lines(path: Path):
-    with path.open("rb") as handle:
-        data = handle.read(MAX_TRAIL_BYTES + 1)
-    lines = data[:MAX_TRAIL_BYTES].splitlines()
-    if len(data) > MAX_TRAIL_BYTES and lines:
-        lines.pop()  # a line cut at the byte bound is not a record
-    for line in lines:
-        try:
-            row = json.loads(line)
-        except ValueError:
-            continue
-        if isinstance(row, dict):
-            yield row
+def _trail_lines(paths: list[Path]):
+    """The records of a trail's files in order, at most :data:`MAX_TRAIL_BYTES` in all."""
+    budget = MAX_TRAIL_BYTES
+    for path in paths:
+        if budget <= 0:
+            return
+        with path.open("rb") as handle:
+            data = handle.read(budget + 1)
+        lines = data[:budget].splitlines()
+        if len(data) > budget and lines:
+            lines.pop()  # a line cut at the byte bound is not a record
+        budget -= len(data)
+        for line in lines:
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(row, dict):
+                yield row
 
 
 def activity(store, session_id: str) -> dict:
@@ -61,9 +67,12 @@ def activity(store, session_id: str) -> dict:
     """
     out: dict[str, Any] = {"trail": None, "turns": None, "tool_calls": None,
                            "stop_reason": None, "approval_denied": None}
+    from garuda.observability import event_log
+
     try:
-        acp = Path(store.session_dir(session_id)) / "acp-events.jsonl"
-        if acp.is_file():
+        # The trail may be size-rotated into several files (#837): read them in order.
+        acp = event_log.part_paths(store.session_dir(session_id))
+        if acp:
             turns, calls, stop, denied = 0, set(), None, None
             for row in _trail_lines(acp):
                 payload = row.get("payload") if isinstance(row.get("payload"), dict) else {}
@@ -83,7 +92,7 @@ def activity(store, session_id: str) -> dict:
         native = Path(store.events_path(session_id))
         if native.is_file():
             turns = calls = 0
-            for row in _trail_lines(native):
+            for row in _trail_lines([native]):
                 if row.get("type") == "model_response":
                     turns += 1
                 elif row.get("type") == "tool_call":

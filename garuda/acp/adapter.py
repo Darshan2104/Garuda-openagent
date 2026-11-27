@@ -464,26 +464,27 @@ class AcpRuntime:
             return
         try:
             from garuda.acp.normalize import evidence_payload
+            from garuda.observability import event_log
 
-            path = Path(self._persist_dir) / "acp-events.jsonl"
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with path.open("a", encoding="utf-8") as handle:
-                handle.write(
-                    json.dumps(
-                        {
-                            "segment_id": self._agent_session_id or self._garuda_session_id,
-                            "kind": event.kind.value,
-                            "session_id": event.session_id,
-                            "turn": event.turn,
-                            "seq": event.seq,
-                            **({"payload": selected}
-                               if (selected := evidence_payload(event, self._trace_detail))
-                               else {}),
-                        },
-                        default=str,
-                    )
-                    + "\n"
+            # Size-rotated (event_log.ROTATE_BYTES per file), so a 12-hour step's
+            # trail stays bounded; readers see every kept part in order.
+            event_log.append(
+                Path(self._persist_dir),
+                json.dumps(
+                    {
+                        "segment_id": self._agent_session_id or self._garuda_session_id,
+                        "kind": event.kind.value,
+                        "session_id": event.session_id,
+                        "turn": event.turn,
+                        "seq": event.seq,
+                        **({"payload": selected}
+                           if (selected := evidence_payload(event, self._trace_detail))
+                           else {}),
+                    },
+                    default=str,
                 )
+                + "\n",
+            )
         except OSError:
             # Observability must not turn a running external agent into a failure.
             return

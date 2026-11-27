@@ -343,6 +343,26 @@ def _jsonl(store, relative: Path, *, limit: int) -> tuple[list[dict[str, Any]], 
     )
 
 
+def acp_trail_coverage(store, session_id: str, coverage: dict[str, Any]) -> dict[str, Any]:
+    """Bounded readers read only ``acp-events.jsonl``, the newest part of a size-rotated
+    trail (``garuda.observability.event_log``); say so when earlier parts exist."""
+    from garuda.core.session_records import MAX_RECORD_FILES
+    from garuda.observability.event_log import ACP_EVENTS_FILE, part_names
+
+    if coverage.get("status") == "unavailable":
+        return coverage
+    try:
+        names, _ = store.names(Path(session_id), limit=MAX_RECORD_FILES)
+    except (RecordError, AttributeError):
+        return coverage
+    earlier = len([name for name in part_names(names) if name != ACP_EVENTS_FILE])
+    if not earlier:
+        return coverage
+    return {**coverage, "status": "clipped",
+            "reason": f"only the newest part of a rotated trail was read; {earlier} earlier "
+                      f"part(s) were not"}
+
+
 def _record_value(record: dict[str, Any], source: str) -> dict[str, Any] | None:
     code = _safe_scalar(record.get("code"))
     phase = _safe_scalar(record.get("phase"), limit=64)
@@ -764,6 +784,7 @@ class SessionFailureEvidence:
         acp, acp_coverage = _jsonl(
             store, Path(session_id) / "acp-events.jsonl", limit=MAX_SOURCE_BYTES
         )
+        acp_coverage = acp_trail_coverage(store, session_id, acp_coverage)
 
         valid_causes = []
         for index, record in enumerate(cause_records[:MAX_CAUSES]):

@@ -25,6 +25,9 @@ CLI request:
   ``--model`` flag was given) the nearest ``defaults.role``;
 - a named role or flow replaces the whole definition below it;
 - permission ceilings and consult limits intersect (the stricter wins);
+- ``check_limits`` (per check command and per check phase): the user file may
+  set any value up to the maximum; a project may only lower the value it
+  would get without it (``config.project_widening``);
 - checks accumulate, deduplicated on run text, cwd, environment and mode;
 - ``approvals.park_timeout_sec`` (how long a background step's parked approval
   waits for an answer) only lowers: a project value at or above the user's
@@ -65,6 +68,9 @@ WRITE_POLICIES = ("edits", "no-edits")
 #: ``silence_min`` and ``tool_silence_min`` up to one day.
 STEP_LIMITS = {"deadline_min": (1, 7 * 24 * 60), "silence_min": (1, 24 * 60),
                "tool_silence_min": (1, 24 * 60)}
+#: Check time limits in seconds: ``check_limits.<key>`` is (default, maximum). The
+#: defaults are the bounds every check request had before they were configurable.
+CHECK_LIMITS = {"timeout_sec": (900, 4 * 3600), "phase_timeout_sec": (3600, 12 * 3600)}
 #: A long step's turn loop (``long_run``): whole hours and turns, with their bounds.
 #: Absent keys take :data:`garuda.flows.long_step.DEFAULTS`.
 LONG_RUN = {"max_hours": (1, 24), "session_turns": (1, 200), "session_hours": (1, 24),
@@ -555,7 +561,7 @@ def parse(data: Any, *, source: str = "") -> dict:
             _fail(key, "is a settings.yaml key; it does not belong in garuda.yaml "
                        "(see `garuda config migrate`)", code="config.conflict")
     _mapping(data, "", ("version", "defaults", "harnesses", "roles", "flows", "checks",
-                        "consults", "sessions", "approvals"))
+                        "check_limits", "consults", "sessions", "approvals"))
     if data.get("version") != VERSION:
         _fail("version", f"must be {VERSION}", code="config.unsupported_version")
     out: dict[str, Any] = {"version": VERSION}
@@ -576,6 +582,10 @@ def parse(data: Any, *, source: str = "") -> dict:
         if not isinstance(data["checks"], list):
             _fail("checks", "must be a list")
         out["checks"] = [_check(c, f"checks[{i}]") for i, c in enumerate(data["checks"])]
+    if "check_limits" in data:
+        limits = _mapping(data["check_limits"], "check_limits", tuple(CHECK_LIMITS))
+        out["check_limits"] = {key: _int(limits[key], f"check_limits.{key}", 1, CHECK_LIMITS[key][1])
+                               for key in CHECK_LIMITS if key in limits}
     if "consults" in data:
         consults = _mapping(data["consults"], "consults",
                             ("max_per_session", "timeout_sec", "max_answer_chars",
@@ -769,6 +779,13 @@ def _narrow_harnesses(user: dict, project: dict) -> dict:
     return out
 
 
+def check_limits(resolved) -> dict[str, int]:
+    """The effective ``check_limits`` of a resolved configuration, defaults filled in."""
+    config = getattr(resolved, "config", None) or {}
+    configured = config.get("check_limits") or {}
+    return {key: configured.get(key, default) for key, (default, _high) in CHECK_LIMITS.items()}
+
+
 def resolve(
     user: dict | None = None,
     project: dict | None = None,
@@ -836,6 +853,17 @@ def resolve(
                 consults[key] = value
                 prov[f"consults.{key}"] = source
 
+    # check limits: the user may raise them to the maximum; a project only lowers them
+    bounds: dict[str, int] = {}
+    for source, doc in layers:
+        for key, value in doc.get("check_limits", {}).items():
+            effective = bounds.get(key, CHECK_LIMITS[key][0])
+            if source == PROJECT and value > effective:
+                _fail(f"check_limits.{key}",
+                      f"{value} would raise the {effective} s limit the project gets; "
+                      "a project may only lower check limits", code="config.project_widening")
+            bounds[key] = value
+            prov[f"check_limits.{key}"] = source
     approvals: dict[str, int] = {}
     for source, doc in layers:
         value = doc.get("approvals", {}).get("park_timeout_sec")
@@ -867,6 +895,8 @@ def resolve(
         config["sessions"] = sessions
     if consults:
         config["consults"] = consults
+    if bounds:
+        config["check_limits"] = bounds
     if approvals:
         config["approvals"] = approvals
     if checks:
