@@ -169,6 +169,53 @@ removes the worktree once its work is published (`--force` otherwise).
 
 A worktree is a separate place to edit, not confinement.
 
+### Worktree flows and checkpoints
+
+A configured flow runs in your checkout unless it sets `isolation: worktree`
+in `garuda.yaml` or you pass `garuda flow run NAME --isolation worktree`. Then
+the flow gets its own linked worktree on a `garuda/<flow>` branch from your
+current `HEAD`, the same way a worktree session does: uncommitted changes in
+your checkout aren't carried over, the flow holds the lease on its worktree
+(not on your checkout), and its review packets and `--check` commands run
+against the worktree. Your checkout, index and `HEAD` are not touched. It
+needs a Git repository with at least one commit, opened at its root, and no
+submodules; anything else refuses before a session starts. `flow resume`
+goes back to the same worktree and refuses if it is gone or was replaced.
+
+When the flow ends, `flow run` prints the worktree and the merge command:
+`garuda sessions merge FLOW --check CMD` previews, checks and publishes the
+integration commit exactly as for a worktree session. A checked flow merges
+only after its own checks passed (`integration.flow_unverified` otherwise),
+and no flow merges while it is still running.
+
+At the end of every step attempt Garuda **checkpoints** the worktree: a commit
+of its whole state (tracked edits, deletions and untracked files that
+`.gitignore` does not exclude), built with a temporary index and published
+only as `refs/garuda/<flow>/<n>`. No branch, index or `HEAD` changes, the flow
+journal is unchanged, and checkpoints are recorded in the flow's own
+`checkpoints.jsonl`. An attempt that changed nothing adds no checkpoint. A flow
+keeps at most 64; past that the oldest go first, never the first or the last.
+A checkpoint that Git refuses is recorded as failed and the flow goes on.
+
+```bash
+garuda flow show FLOW            # ... worktree: PATH, then "checkpoint N: STEP attempt A; COMMIT; TIME"
+garuda flow rollback FLOW --to 2 # restore the worktree's files to checkpoint 2
+```
+
+`flow rollback` works only on a worktree flow that is not running: it takes
+the flow's lease on the worktree and refuses (`flow.running`) while a step or
+check holds it, and refuses a shared flow (`flow.rollback_shared`). It first
+checkpoints the current state, so `flow rollback FLOW --to M` with the number
+it prints undoes it, then restores every file to the checkpoint, removing
+files the checkpoint does not hold; ignored files are left alone. A rollback
+changes the candidate, so a checked flow's recorded evidence no longer
+matches it and `flow resume` refuses it as changed.
+
+A flow's checkpoint refs are deleted with its worktree
+(`garuda sessions remove-worktree FLOW`), and when a new worktree flow starts,
+the refs of flows whose newest checkpoint is older than `sessions.keep_days`
+are deleted too.
+
 ### Approvals from elsewhere
 
 While an interactive prompt waits (in `garuda chat` or a dashboard
@@ -749,7 +796,7 @@ check-protected or dashboard-owned flows, parallel groups, steps with
 `retries`, or Claude quota stops. If recovery is enabled, owned/check-protected/dashboard
 flows, parallel flows and flows with `retries` publish an `unsupported` recovery reason in `flow show` and the
 web flow detail rather than silently enrolling. See the
-[automation recipe](../use-cases/automate.md#continue-quota-stopped-codex-flows)
+[automation recipe](../use-cases/automate.md#continue-quota-stopped-codex-and-claude-flows)
 for setup, manual ticks, cancellation, and cron-host limitations.
 
 ### Current limitations
