@@ -50,6 +50,9 @@ FLOW_DEAD = "00000000-0000-0000-0000-00000000f00e"
 #: A completed flow whose first build attempt was interrupted and the second succeeded, and
 #: whose review ran past its deadline once before passing: history, not standing failures.
 FLOW_REPLACED = "00000000-0000-0000-0000-00000000f00f"
+#: A running flow whose step has a deadline but no silence limit (the dashboard e2e's build
+#: step): its quiet line must not speak of a limit.
+FLOW_NO_SILENCE = "00000000-0000-0000-0000-00000000f010"
 #: What looks like a failure: a red chip, pill, callout or notice. None belongs to a pause.
 FAILURE_STYLED = '.chip-bad, .pill.failed, .err-text, .notice.err, .attempt-stop:not([data-state])'
 
@@ -144,6 +147,23 @@ def seed(sessions: Path) -> None:
         stamp = time.time() - idle_min * 60
         for record in (quiet_progress, store.session_dir(child) / "meta.json"):
             os.utime(record, (stamp, stamp))
+
+    # Running with a deadline and no silence limit, active a minute ago.
+    nolimit_child = FLOW_NO_SILENCE[:-1] + "1"
+    nolimit_dir = flow(FLOW_NO_SILENCE, "Build without silence limit", flow_state="running",
+                       state=session_state.started())
+    engine._append(nolimit_dir / engine.JOURNAL, {"event": "intent", "index": 0, "step": "build",
+                                                  "attempt": 1, "at": _now(3)})
+    store.begin(nolimit_child, task="build", model="acp:fake", agent="fake", workspace="/tmp/project",
+                name="nolimit-step")
+    store.update_meta(nolimit_child, {"state": session_state.started(), "limits": {"deadline_sec": 2400},
+                                      "flow_step": {"flow_session": FLOW_NO_SILENCE, "step": "build",
+                                                    "attempt": 1}})
+    launches.write(nolimit_dir, "build", 1, {"session_id": nolimit_child, "started_at": _now(3)})
+    nolimit_progress = nolimit_dir / "progress" / "build-1.jsonl"
+    nolimit_progress.parent.mkdir(parents=True, exist_ok=True)
+    nolimit_progress.write_text(json.dumps({"turn": 1, "at": _now(1), "session": 1, "decision": "next",
+                                            "stop_reason": "end_turn"}) + "\n")
 
     # Paused on a usage limit with a recorded reset.
     reset = int(time.time()) + 3 * 3600 + 600
@@ -459,6 +479,27 @@ def main() -> int:
               str(live_dead)[:200])
         check("no Step in flight card and no quiet line for it",
               page.locator("#session-live-step").count() == 0 and page.locator('[data-live="quiet"]').count() == 0)
+        dead_step = page.locator('#flow-detail .pipe-step[data-step="build"]')
+        check("a launched attempt whose process is gone is never 'not run yet'",
+              dead_step.locator(".pipe-interrupted").count() == 1
+              and "interrupted · attempt 1" in dead_step.inner_text()
+              and "not run yet" not in dead_step.inner_text()
+              and "exited before it recorded an outcome" in dead_step.inner_text(),
+              dead_step.inner_text()[:200])
+
+        # --- a step without a silence limit: the quiet line names no limit -------------------
+        page.goto(f"{BASE}#/sessions/{FLOW_NO_SILENCE}", wait_until="load")
+        page.wait_for_selector('#session-live-step [data-live="quiet"]')
+        nolimit = page.evaluate("""async ([id, token]) => {
+          const r = await fetch('/api/sessions/' + id, {headers: {'X-Garuda-Token': token}});
+          return (await r.json()).flow.in_flight;
+        }""", [FLOW_NO_SILENCE, TOKEN])
+        quiet_text = page.locator('#session-live-step [data-live="quiet"]').inner_text()
+        check("the reader judges it ok and reports no silence limit",
+              nolimit.get("silence_state") == "ok" and nolimit.get("silence_limit_sec") is None,
+              str({k: nolimit.get(k) for k in ("silence_state", "silence_limit_sec")}))
+        check("its quiet line says no silence limit is set, not 'within its limit'",
+              "no silence limit is set" in quiet_text and "within its limit" not in quiet_text, quiet_text)
 
         # --- a finished flow's measures on its session page ----------------------------------
         page.goto(f"{BASE}#/sessions/{FLOW_DONE}", wait_until="load")

@@ -284,7 +284,10 @@ def _config(request: Request, ctx: DashboardContext, _match) -> Response:
     """
     models = sorted(
         {meta["model"] for meta in ctx.store.list_sessions(limit=reads.MAX_LIMIT, unreadable=[])
-         if isinstance(meta.get("model"), str) and meta["model"]}
+         if isinstance(meta.get("model"), str) and meta["model"]
+         # A flow parent ("flow") or an external harness ("acp:claude/haiku") is not a model
+         # Garuda's own loop can call; a chat started with one fails at its first turn.
+         and not live_module.chat_model_refusal(meta["model"])}
     )
     return ok(
         {

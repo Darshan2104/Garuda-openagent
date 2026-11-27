@@ -229,7 +229,13 @@ run a tab started or opened stays watched from any page of that tab, even
 hidden; about 90 seconds after no dashboard tab is watching a run (its tabs were
 closed), a waiting approval is denied, recorded as "stopped watching", and the
 step sees the denial while the flow keeps running; if the dashboard stops, a
-waiting approval is denied at once. A finished run's starter card
+waiting approval is denied at once. Below its waiting asks the operation panel
+lists the ones already settled, each with who settled it as the dashboard
+recorded it: **denied by you** (or approved), **the dashboard stopped
+watching**, or **nobody answered**; the dashboard keeps that record in memory,
+so a restart forgets it (the step session's own record keeps only allow, deny
+or disconnected). An answered card on **Approvals** leaves at once and does not
+come back while the server still lists the request. A finished run's starter card
 offers **Run again**, back to the flow with the workspace selected and the
 recorded task filled in to edit.
 
@@ -555,12 +561,16 @@ A session's page leads with the work, and keeps the evidence below:
   (**quiet for 12 min of a 20 min limit**) with the live view's own judgement
   as a state: within its limit; a tool call running (the longer tool limit
   applies); waiting on an approval (silence is not counted); nearing the limit;
-  or past it. **Recent turns** lists the attempt's last turns newest first
+  or past it. A step without a silence limit (no `limits.silence_min`) reads
+  **no silence limit is set for this step** instead of "within its limit". **Recent turns** lists the attempt's last turns newest first
   (turn, harness session, what happened in words, duration, files changed,
   context), three shown and the rest one click away. A field the live view
   does not report (a step without limits, an older flow) leaves its line out
   rather than guessing. The step never reads
-  "not run yet" while it is in flight. A step stopped on something that is
+  "not run yet" while it is in flight, nor once a launched attempt's process is
+  gone without a recorded outcome (a Stop, a crash): the pipeline then reads
+  **interrupted · attempt 1**, says the process exited before it recorded an
+  outcome, and links the attempt's step session and trace. A step stopped on something that is
   not a pause (a quarantine) says why here, and `garuda flow resume <id>`
   where the engine lists the stop as resumable. An older flow, or one whose
   records the reader cannot read, says **No live detail recorded for this
@@ -615,7 +625,11 @@ adapter reported (see [Sessions](sessions-and-flows.md)).
 
 `#/chat` starts nothing on its own. It resumes the chat this tab was using (or
 the newest open one), and otherwise shows **New chat** with the workspace,
-agent, model and permission choices the server accepts. If the previous chat is
+agent, model and permission choices the server accepts. A chat runs Garuda's
+own model loop, so the model suggestions leave out what this machine ran that
+such a loop cannot call (`flow`, `acp:claude/haiku` and other external agents),
+and a chat asked for one is refused with the reason; run an external agent as a
+role from **Starters** or **Flows**. If the previous chat is
 no longer open on the server (ended, reclaimed after sitting unwatched, or the
 dashboard restarted), the page says so instead of opening a new one; its
 transcript stays in Runs.
