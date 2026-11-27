@@ -360,11 +360,15 @@ var CONNECTION = { down: false, attempt: 0, delay: 0, timer: null, listeners: []
  * Retry-After. A route that 503s (read-only, no flow gateway) answers in its envelope. */
 function isConnectionLimit(response, payload) {
   return response.status === 503 &&
-    (!(payload && payload.error) || !!response.headers.get("Retry-After"));
+    (!(payload && payload.error) || !!retryAfterHeader(response));
+}
+
+function retryAfterHeader(response) {
+  return response.headers && typeof response.headers.get === "function" ? response.headers.get("Retry-After") : null;
 }
 
 function retryAfterSeconds(response) {
-  var value = Number(response.headers.get("Retry-After"));
+  var value = Number(retryAfterHeader(response));
   return isFinite(value) && value > 0 ? value : 0;
 }
 

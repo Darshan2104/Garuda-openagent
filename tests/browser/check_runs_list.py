@@ -83,7 +83,7 @@ with sync_playwright() as p:
             return needle in url
 
         page.goto(f"{BASE}#/setup", wait_until="load")  # so the next hash is a navigation
-        page.route(matcher, lambda route: held.append(route))
+        page.route(matcher, lambda route: held.append(route))  # noqa: B023 (used in this iteration)
         page.goto(f"{BASE}{path}", wait_until="load")
         page.wait_for_timeout(400)
         page.goto(f"{BASE}{away}", wait_until="load")

@@ -129,9 +129,9 @@ with sync_playwright() as p:
     page.wait_for_timeout(7500)
     check("no 'Failed to fetch' anywhere", "Failed to fetch" not in body_text(page))
     probes = [t for t, url in requests if t >= down_at and url.endswith("/api/health")]
-    gaps = [round(b - a, 2) for a, b in zip(probes, probes[1:])]
+    gaps = [round(b - a, 2) for a, b in zip(probes, probes[1:], strict=False)]
     check("the probe backs off (few probes, growing gaps)",
-          1 <= len(probes) <= 4 and all(b > a * 1.4 for a, b in zip(gaps, gaps[1:])), f"{len(probes)} probes, gaps {gaps}")
+          1 <= len(probes) <= 4 and all(b > a * 1.4 for a, b in zip(gaps, gaps[1:], strict=False)), f"{len(probes)} probes, gaps {gaps}")
     check("the approvals badge sends nothing while down",
           not [u for t, u in requests if t >= down_at and "/api/inbox" in u])
     page.screenshot(path=str(SHOTS / "shell-offline.png"))

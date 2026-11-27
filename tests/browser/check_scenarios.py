@@ -55,7 +55,8 @@ def main():
         expect(page.locator('.nav-link[data-nav="starters"]')).to_be_visible(timeout=5000)
         expect(page.locator("#starter-cards section")).to_have_count(5)
         expect(page.locator("#starter-workspace option")).to_have_count(2)
-        assert page.locator('button:has-text("Start")').count() == 0
+        # Within the page: on a narrow window the nav menu button is named after it ("Starters").
+        assert page.locator('#view button:has-text("Start")').count() == 0
         expect(page.locator('[data-starter="build-review"]')).to_contain_text("independent review configured")
         # build-review runs its checks at flow finalization (scenarios/compile.py flow_check_support).
         expect(page.locator('[data-starter="build-review"]')).to_contain_text(
