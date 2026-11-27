@@ -37,12 +37,30 @@ def _records(store):
             if key.startswith("approval:")}
 
 
-async def _parked(broker, timeout=2.0):
-    for _ in range(int(timeout / 0.01)):
+# #874: waits use a deadline, not a fixed 2 s poll; a slow macOS runner exceeded that (#830).
+WAIT_SEC = 15
+
+
+async def _parked(broker, timeout=WAIT_SEC):
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
         if broker.pending():
             return broker.pending()[0]
         await asyncio.sleep(0.01)
     raise AssertionError("nothing parked")
+
+
+async def _permission_request(duplex, timeout=WAIT_SEC):
+    """The first session/request_permission frame the server sent, or None at the deadline."""
+    from garuda.acp.protocol import decode_frame
+
+    deadline = asyncio.get_running_loop().time() + timeout
+    while True:
+        request = next((decode_frame(frame)[0] for frame in duplex.sent
+                        if decode_frame(frame)[0].get("method") == "session/request_permission"), None)
+        if request is not None or asyncio.get_running_loop().time() >= deadline:
+            return request
+        await asyncio.sleep(0.01)
 
 
 def test_a_non_answer_is_falsy_and_only_for_terminal_outcomes():
@@ -239,7 +257,7 @@ async def test_native_permission_response_uses_the_request_lifecycle(store, tmp_
     elif answer == "expired":
         monkeypatch.setattr("garuda.acp.broker.time.time", lambda: request.expires_at + 1)
     await runtime.permission_response(approval_id=request.approval_id, allow=answer != "deny")
-    await asyncio.wait_for(prompting, 3)
+    await asyncio.wait_for(prompting, 10)
     record = _records(store)[f"approval:{request.approval_id}"]
     assert record["request_digest"] == digest
     assert record["via"] == "permission_response"
@@ -277,7 +295,7 @@ async def test_native_unbound_and_foreign_answers_are_audited_without_settling_a
     assert len(decision_records(store, SID)) == 4
     assert all(r["outcome"] == "deny" for r in decision_records(store, SID))
     await runtime.permission_response(approval_id=request.approval_id, allow=False, digest=request.digest)
-    await asyncio.wait_for(prompting, 3)
+    await asyncio.wait_for(prompting, 10)
     assert len(_records(store)) == 1
     assert all(len(r.get("answered_approval_id", "")) <= 256 for r in decision_records(store, SID))
 
@@ -303,11 +321,7 @@ async def test_acp_server_approve_binds_and_audits_the_native_request(store, nat
     prompting = asyncio.create_task(duplex.call("session/prompt", {"sessionId": sid,
                                     "prompt": [{"type": "text", "text": "write proof"}]}))
     request = await _parked(broker)
-    for _ in range(200):
-        if any(decode_frame(frame)[0].get("method") == "session/request_permission" for frame in duplex.sent):
-            break
-        await asyncio.sleep(0.01)
-    else:
+    if await _permission_request(duplex) is None:
         raise AssertionError("server did not request permission")
     with pytest.raises(AssertionError, match="cannot be bound"):
         await duplex.call("session/approve", {"sessionId": sid, "approvalId": request.approval_id,
@@ -316,7 +330,7 @@ async def test_acp_server_approve_binds_and_audits_the_native_request(store, nat
     result = await duplex.call("session/approve", {"sessionId": sid,
                                                  "approvalId": request.approval_id, "approved": True})
     assert result == {"approved": True}
-    assert (await asyncio.wait_for(prompting, 3))["stopReason"] == "end_turn"
+    assert (await asyncio.wait_for(prompting, 10))["stopReason"] == "end_turn"
     records = [v for k, v in store.load_meta(sid).items() if k.startswith("approval:")]
     assert len(records) == 1
     assert any(r.get("request_digest") == request.digest and r["outcome"] == "allow" for r in records)
@@ -339,7 +353,7 @@ async def test_acp_server_approve_binds_and_audits_the_native_request(store, nat
 
 
 async def test_acp_server_permission_roundtrip_publishes_the_native_binding(store, native_factory):
-    from garuda.acp.protocol import ACP_VERSION, decode_frame
+    from garuda.acp.protocol import ACP_VERSION
     from garuda.acp.server import AcpServer
     from tests.test_acp_server import Duplex
 
@@ -353,19 +367,10 @@ async def test_acp_server_permission_roundtrip_publishes_the_native_binding(stor
     sid = (await duplex.call("session/new"))["sessionId"]
     prompting = asyncio.create_task(duplex.call("session/prompt", {"sessionId": sid,
                                     "prompt": [{"type": "text", "text": "write proof"}]}))
-    request = None
-    for _ in range(200):
-        for frame in duplex.sent:
-            message, _ = decode_frame(frame)
-            if message.get("method") == "session/request_permission":
-                request = message
-                break
-        if request is not None:
-            break
-        await asyncio.sleep(0.01)
+    request = await _permission_request(duplex)
     assert request is not None
     await server.handle({"jsonrpc": "2.0", "id": request["id"], "result": {"approved": True, "request_digest": request["params"]["request_digest"]}})
-    assert (await asyncio.wait_for(prompting, 3))["stopReason"] == "end_turn"
+    assert (await asyncio.wait_for(prompting, 10))["stopReason"] == "end_turn"
     records = [v for k, v in store.load_meta(sid).items() if k.startswith("approval:")]
     assert len(records) == 1 and records[0]["request_digest"] == request["params"]["request_digest"]
     assert records[0]["ceiling"] == request["params"]["ceiling"]
@@ -373,22 +378,14 @@ async def test_acp_server_permission_roundtrip_publishes_the_native_binding(stor
 
 @pytest.mark.parametrize("approved", [True, False])
 async def test_acp_server_denies_the_request_an_editor_answered_stale(acp_native, store, tmp_path, approved):
-    from garuda.acp.protocol import decode_frame
-
     server, duplex, sid, _, broker = acp_native
     prompting = asyncio.create_task(duplex.call("session/prompt", {"sessionId": sid,
                                     "prompt": [{"type": "text", "text": "write proof"}]}))
-    request = None
-    for _ in range(200):
-        request = next((decode_frame(frame)[0] for frame in duplex.sent
-                        if decode_frame(frame)[0].get("method") == "session/request_permission"), None)
-        if request is not None:
-            break
-        await asyncio.sleep(0.01)
+    request = await _permission_request(duplex)
     assert request is not None
     await server.handle({"jsonrpc": "2.0", "id": request["id"],
                          "result": {"approved": approved, "request_digest": "0" * 64}})
-    assert (await asyncio.wait_for(prompting, 3))["stopReason"] == "end_turn"
+    assert (await asyncio.wait_for(prompting, 10))["stopReason"] == "end_turn"
     assert broker.pending() == []
     records = [v for k, v in store.load_meta(sid).items() if k.startswith("approval:")]
     assert len(records) == 1
@@ -436,7 +433,7 @@ async def test_native_disconnect_settles_and_audits_the_waiting_request(store, n
     request = await _parked(broker)
     await runtime.cancel(reason="client disconnected")
     with pytest.raises(RuntimeCancelledError):
-        await asyncio.wait_for(prompting, 3)
+        await asyncio.wait_for(prompting, 10)
     with pytest.raises(RuntimeProtocolError):
         await runtime.permission_response(approval_id=request.approval_id, allow=True)
     assert broker.pending() == []
@@ -455,14 +452,10 @@ async def test_a_cancelled_turn_denies_asks_made_after_the_cancel(acp_native, st
         ToolCall(id="second", name="write_file", arguments={"path": "second.txt", "content": "second"})]))
     prompting = asyncio.create_task(duplex.call("session/prompt", {"sessionId": sid,
                                     "prompt": [{"type": "text", "text": "write twice"}]}))
-    for _ in range(200):
-        if any(decode_frame(frame)[0].get("method") == "session/request_permission" for frame in duplex.sent):
-            break
-        await asyncio.sleep(0.01)
-    else:
+    if await _permission_request(duplex) is None:
         raise AssertionError("server did not request permission")
     await duplex.call("session/cancel", {"sessionId": sid})
-    assert (await asyncio.wait_for(prompting, 3))["stopReason"] == "cancelled"
+    assert (await asyncio.wait_for(prompting, 10))["stopReason"] == "cancelled"
     assert broker.pending() == []
     requests = [decode_frame(frame)[0] for frame in duplex.sent
                 if decode_frame(frame)[0].get("method") == "session/request_permission"]
@@ -485,7 +478,7 @@ async def test_an_answer_during_a_cancel_settles_the_ask_as_a_deny(store, tmp_pa
     await runtime.permission_response(approval_id=request.approval_id, allow=allow, digest="0" * 64)
     assert broker.pending() == []
     with pytest.raises(RuntimeCancelledError):
-        await asyncio.wait_for(prompting, 3)
+        await asyncio.wait_for(prompting, 10)
     record = _records(store)[f"approval:{request.approval_id}"]
     assert record["outcome"] == "deny" and record["via"] == "permission_response"
     assert not (tmp_path / "proof.txt").exists()
@@ -612,9 +605,8 @@ async def test_acp_permission_wait_settles_without_an_editor_answer(acp_native, 
                          expect_digest=broker.pending()[0].digest)
         await asyncio.wait_for(entered.wait(), 10)
         # The turn is still executing another tool when broker settlement retires the wire wait.
-        for _ in range(200):
-            if not server._client_requests:
-                break
+        deadline = asyncio.get_running_loop().time() + WAIT_SEC
+        while server._client_requests and asyncio.get_running_loop().time() < deadline:
             await asyncio.sleep(0.01)
         assert not prompting.done() and not server._client_requests
         assert not server._permission_requests and not broker.pending()
@@ -693,7 +685,7 @@ async def test_worker_requester_is_bound_into_digest_channel_and_listing(store, 
             write_answer(directory, SID, request.approval_id, allow=True, expect_digest=digest)
         path.write_text(json.dumps({**fields, 'digest': digest}))
         write_answer(directory, SID, request.approval_id, allow=True, expect_digest=digest)
-        assert await asyncio.wait_for(task, 2)
+        assert await asyncio.wait_for(task, 10)
         record = _records(store)[f'approval:{request.approval_id}']
         assert record['requester'] == identity.to_dict()
         assert record['requester_ceiling'] == request.requester_ceiling
