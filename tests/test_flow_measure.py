@@ -175,8 +175,10 @@ def test_measure_lines_and_totals():
     assert measure.line({"measure": record}) == (
         "prompt ~3 tok (10 chars); sessions 0, turns 0, tool calls 0; usage not reported")
     # A later turn loop's receipt counts slot in when present.
-    later = {"measure": record, "sessions": ["a", "b"], "rotations": 1, "repairs": 0}
-    assert "sessions 2, turns 0, tool calls 0, rotations 1, repairs 0;" in measure.line(later)
+    later = {"measure": record, "sessions": ["a", "b"], "harness_sessions": ["n1"],
+             "rotations": 1, "repairs": []}
+    assert ("sessions 2, harness sessions 1, turns 0, tool calls 0, rotations 1, repairs 0;"
+            in measure.line(later))
     total = measure.flow_total([{"measure": record}, {"measure": None}])
     assert total["measured_attempts"] == 1 and total["cost_complete"] is False
 

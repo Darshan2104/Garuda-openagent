@@ -10,7 +10,9 @@ step can keep it.
 For every step attempt:
 
 1. its typed inputs are resolved from earlier receipts and checked
-   (:mod:`garuda.flows.artifacts`) against the workspace as it is now;
+   (:mod:`garuda.flows.artifacts`) against the workspace as it is now (a
+   later writing or planning step may read a ``patch`` past it, told so);
+   each ``patch`` input comes with Garuda's own diff of its producer (#820);
 2. the **intent** is journaled (fsynced) before anything launches;
 3. the step runs as its own session (its own baseline and delta) under the
    role it names; a ``no-edits`` step is compared before and after (C.10);
@@ -64,9 +66,22 @@ RETRY_NOTE = ("[garuda] An earlier attempt of this step failed. Its partial edit
 DEADLINE_STOP = "flow.step_deadline"
 SILENT_STOP = "flow.step_silent"
 LIVENESS_STOPS = {"deadline": DEADLINE_STOP, "silence": SILENT_STOP}
+#: A step session's error code for a harness usage limit (``AcpUsageLimitError``,
+#: recorded by type name; ``harness.limit_reached`` is its typed failure code).
+LIMIT_CAUSE_CODES = frozenset({"AcpUsageLimitError", "harness.limit_reached"})
+#: Harnesses whose limit stop pauses the flow with ``flow.quota_wait`` (#834):
+#: Claude reports when its limit resets. Codex keeps ``flow.step_failed`` and its
+#: proved account read.
+PAUSING_LIMIT_RUNTIMES = frozenset({"claude"})
+#: A long step's own pauses (``long_run``): no measured progress, its turn budget,
+#: or a refusal; ``max_hours`` reuses :data:`DEADLINE_STOP`. Never retried.
+NO_PROGRESS_STOP = "flow.step_no_progress"
+MAX_TURNS_STOP = "flow.step_max_turns"
+REFUSED_STOP = "flow.step_refused"
 RESUMABLE_CHECKED_STOPS = {"workspace.readonly_unenforced", "flow.step_failed", "flow.output_missing",
                            "flow.artifact_malformed", "flow.artifact_too_large",
-                           "flow.review_invalid", INTERRUPTED_STOP, DEADLINE_STOP, SILENT_STOP}
+                           "flow.review_invalid", INTERRUPTED_STOP, DEADLINE_STOP, SILENT_STOP,
+                           NO_PROGRESS_STOP, MAX_TURNS_STOP, REFUSED_STOP}
 #: While a tool call is in flight a silence-watched step waits this long (#828).
 DEFAULT_TOOL_SILENCE_MIN = 120
 
@@ -232,6 +247,9 @@ class StepLaunch:
     quota_guard: Any = None
     #: The step's liveness limits (#828); ``None`` runs it as before.
     limits: StepLimits | None = None
+    #: An ACP step's turn spec (:func:`garuda.flows.long_step.turn_spec`): its one
+    #: repair turn (#819) and, with ``long_run``, its turn loop. ``None`` runs one turn.
+    turns: dict | None = None
 
 
 @dataclass
@@ -252,6 +270,9 @@ class StepResult:
     stop_reason: str | None = None
     #: The launcher's own error code, when the step session recorded none.
     error_code: str = ""
+    #: What the step's turns did (:meth:`garuda.flows.long_step.StepTurns.record`),
+    #: with the loop's own ``stop`` when it paused the step; None for one plain turn.
+    turns: dict | None = None
 
 
 Launcher = Callable[[StepLaunch], Awaitable[StepResult]]
@@ -540,7 +561,21 @@ class FlowRunner:
                  "detail": bounded(meta.get("error_detail") or outcome.error, 500)}
         if stop_reason := bounded(outcome.stop_reason, 64):
             cause["stop_reason"] = stop_reason  # how the harness ended its turn (#824)
+        from garuda.acp.protocol import rate_limit_fields
+
+        # A usage limit's validated reset and window, never text (#834).
+        if limit := rate_limit_fields(meta.get("error_limit"), validated=True):
+            cause["limit"] = limit
         return cause if any(cause.values()) else None
+
+    def _limit_pause(self, plan, cause: dict | None) -> bool:
+        """A Claude step stopped by its usage limit pauses the flow (#834).
+
+        Not in a checked flow: its resume contract settles ``flow.step_failed``.
+        """
+        return (plan is not None and plan.runtime_id in PAUSING_LIMIT_RUNTIMES
+                and self.verification_request is None
+                and (cause or {}).get("code") in LIMIT_CAUSE_CODES)
 
     async def _publish(self, session_id: str, updates: dict, *, terminal: bool = False):
         # Every publication is a state change, so it advances `updated_at` (#763);
@@ -842,8 +877,11 @@ class FlowRunner:
             raise
 
     async def _inputs(self, step: dict, done: list[dict]) -> list[tuple[art.ArtifactRef, str]]:
+        """``step``'s checked inputs; a later writer or planner may read a ``patch``
+        past later edits (:meth:`_reads_moved_on`, #820)."""
         from garuda.config.garuda_yaml import input_source
 
+        moved_on_ok = self._reads_moved_on(step, step.get("role"))
         version = await self._version_for_flow()
         resolved = []
         for entry in step.get("inputs", []):
@@ -855,10 +893,55 @@ class FlowRunner:
                                   else f"no earlier step produced a {kind}", step=step["id"])
             for ref in refs:
                 try:
-                    resolved.append((ref, art.load(self.dir, ref, workspace_version=version)))
+                    resolved.append((ref, art.load(self.dir, ref, workspace_version=version,
+                                                   moved_on_ok=moved_on_ok)))
                 except art.ArtifactError as exc:
                     raise FlowStopped(exc.code, str(exc), step=step["id"]) from exc
         return resolved
+
+    def _reads_moved_on(self, step: dict, role: str | None) -> bool:
+        """A writing or planning step that reviews nothing: it may read an earlier
+        ``patch`` after the workspace moved on (#820). A parallel group, a
+        read-only step that does not plan, and any step that outputs a
+        ``review`` or ``findings`` (the terminal reviewer always does) keep the
+        stale refusal."""
+        outputs = step.get("outputs", [])
+        if "parallel" in step or not role or "review" in outputs or "findings" in outputs:
+            return False
+        return not self._read_only(step, role) or "plan" in outputs
+
+    async def _attachments(self, inputs, done: list[dict], *,
+                           reviewed: str | None = None) -> dict[str, prompting.Attached]:
+        """Garuda's own diff of each ``patch`` input's producer, and whether the
+        workspace moved on since it was produced, by ``ref.path`` (#820).
+
+        The diff is the review packet's evidence for that step: every path
+        changed since its first attempt's baseline, in bounded, redacted
+        excerpts. ``reviewed``: the step is the terminal reviewer of that step,
+        whose review packet already carries its diff, so none is added for it.
+        """
+        if self.launch_kind == "run" or not any(ref.type == "patch" for ref, _ in inputs):
+            return {}
+        from garuda.workspace.evidence import changed_since_baseline, review_diff_evidence
+
+        version = await self._version_for_flow()
+        attached, diffs = {}, {}
+        for ref, _ in inputs:
+            if ref.type != "patch":
+                continue
+            if ref.producer_step != reviewed and ref.producer_step not in diffs:
+                first = await _settled_sync(self._first_attempt, ref.producer_step, done)
+                base = self._first_session(first)
+                changed = await _settled_sync(changed_since_baseline, self.store, base,
+                                              self.workspace)
+                # As the review packet: a list computed now is the whole change set.
+                diffs[ref.producer_step] = prompting.diff_body(await _settled_sync(
+                    review_diff_evidence, self.store, base, self.workspace, changed,
+                    changed_total=None if changed is None else len(changed),
+                    changed_complete=None if changed is None else True))
+            attached[ref.path] = prompting.Attached(moved_on=art.moved_on(ref, version),
+                                                    diff=diffs.get(ref.producer_step))
+        return attached
 
     def _read_only(self, step: dict, role: str) -> bool:
         """A ``no-edits`` step or a ``readonly`` role: one that must not change files."""
@@ -866,14 +949,15 @@ class FlowRunner:
         return self._no_edits(step, role) or spec.get("permissions") == "readonly"
 
     def _prompt(self, step: dict, role: str, inputs, *, read_only: bool | None = None,
-                extra=None, sizes: list | None = None) -> str:
+                extra=None, attached=None, sizes: list | None = None) -> str:
         """The step's prompt (:func:`garuda.flows.prompting.assemble`); ``extra`` ends it.
         ``sizes`` receives its parts' sizes (#832)."""
         if read_only is None and self.launch_kind != "run":
             read_only = self._read_only(step, role)
         return prompting.assemble(task=self.task, flow=self.name, step=step, role=role,
                                   inputs=inputs, read_only=bool(read_only),
-                                  run=self.launch_kind == "run", extra=extra, sizes=sizes)
+                                  run=self.launch_kind == "run", extra=extra,
+                                  attached=attached, sizes=sizes)
 
     # -- running -----------------------------------------------------------------------
 
@@ -1438,6 +1522,7 @@ class FlowRunner:
                                   f"{role} is an external role without permissions: readonly; "
                                   "a parallel reviewer must be confined", step=step["id"])
         inputs = await self._inputs(step, done)
+        attached = await self._attachments(inputs, done)
         version = await self._version_for_flow()
         target = self.dir / "snapshots" / f"{step['id']}-{attempt}"
         target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -1461,7 +1546,8 @@ class FlowRunner:
         started = (_stamp(), time.monotonic())
         source_guard, snapshot_guard = NoEditsGuard(self.workspace), NoEditsGuard(target)
         sizes: list[dict] = []
-        prompt = self._prompt(step, "reviewer", inputs, read_only=True, sizes=sizes)
+        prompt = self._prompt(step, "reviewer", inputs, read_only=True, attached=attached,
+                              sizes=sizes)
 
         limits = step_limits(self.flow, step)
 
@@ -1545,6 +1631,7 @@ class FlowRunner:
         _append(self.dir / JOURNAL, {"event": "receipt", "step": step["id"],
                                      "attempt": attempt, "at": _now()})
         await self._touch()
+        await self._checkpoint(step["id"], attempt, receipt["status"])
         if stop is not None:
             raise stop
         return receipt
@@ -1925,12 +2012,46 @@ class FlowRunner:
             attempt += 1
             extra = RETRY_NOTE
 
+    async def _turn_spec(self, step: dict, plan, attempt: int, long, done: list[dict]) -> dict | None:
+        """An ACP flow step's turn spec: its one repair turn (#819) when it declares
+        outputs, and its turn loop with ``long_run``; None runs it as before."""
+        from garuda.flows import long_step
+
+        if (self.launch_kind != "flow" or plan is None or plan.kind != "acp"
+                or (long is None and not step.get("outputs"))):
+            return None
+        base = None
+        if long is not None and attempt > 1:
+            base = self._first_session(await _settled_sync(self._first_attempt, step["id"], done))
+        return long_step.turn_spec(
+            step=step["id"], attempt=attempt, outputs=list(step.get("outputs", [])), run=long,
+            progress_path=str((self.dir / "progress" / f"{step['id']}-{attempt}.jsonl").resolve()),
+            baseline_session=base)
+
     async def _record_step_receipt(self, receipt: dict) -> None:
         step, attempt = receipt["step"], receipt["attempt"]
         await _settled_sync(_write_once, self.dir / "receipts" / _receipt_name(step, attempt), receipt)
         await _settled_sync(_append, self.dir / JOURNAL,
                             {"event": "receipt", "step": step, "attempt": attempt, "at": _now()})
         await self._touch()
+        await self._checkpoint(step, attempt, receipt.get("status"))
+
+    async def _checkpoint(self, step: str, attempt: int, status) -> None:
+        """Checkpoint a worktree flow's workspace once an attempt's receipt is durable.
+
+        Best effort: the receipt is the attempt's record, so a refused
+        checkpoint is noted in the checkpoints file and the flow goes on.
+        Shared-checkout flows have no checkpoints.
+        """
+        if self.execution_workspace is None:
+            return
+        from garuda.flows import checkpoints
+
+        try:
+            await _settled_sync(checkpoints.checkpoint, self.dir, self.workspace,
+                                f"{step} attempt {attempt}: {status}", step=step, attempt=attempt)
+        except Exception as exc:  # noqa: BLE001 - never fail a settled attempt on its checkpoint
+            await _settled_sync(checkpoints.record_failure, self.dir, step, attempt, exc)
 
     async def _run_step(self, step: dict, done: list[dict], lease, *, attempt: int = 1,
                         prompt_extra: str | prompting.Findings | prompting.Packet = "",
@@ -1945,14 +2066,32 @@ class FlowRunner:
                 await self.quota_recovery.validate(self)
             except (OSError, ValueError) as exc:
                 raise FlowStopped("flow.recovery_changed", str(exc), step=step["id"]) from exc
+        from garuda.flows import long_step
+
         role = step["role"]
         no_edits = self._no_edits(step, role)
         limits = step_limits(self.flow, step)
         plan = self._role_plan(role, step=step["id"], no_edits=no_edits)
+        long = long_step.long_run(self.flow, step) if self.launch_kind == "flow" else None
+        if long is not None and (plan is None or plan.kind != "acp"):
+            if "long_run" in step:
+                raise FlowStopped(long_step.UNSUPPORTED_STOP,
+                                  f"step {step['id']} sets long_run, but its role {role} is not "
+                                  "an ACP harness; the turn loop runs ACP steps only",
+                                  step=step["id"])
+            long = None  # a flow's default applies to its ACP steps only
+        if long is not None:
+            limits = long_step.with_deadline(limits, long)
+        # The terminal reviewer's packet carries the reviewed step's diff (#820).
+        reviewer = isinstance(prompt_extra, prompting.Packet)
         inputs = await self._inputs(step, done)
+        attached = await self._attachments(
+            inputs, done,
+            reviewed=prompt_extra.packet.get("candidate", {}).get("step") if reviewer else None)
         version_before = await self._version_for_flow()
         sizes: list[dict] = []
-        prompt = self._prompt(step, role, inputs, extra=prompt_extra, sizes=sizes)
+        prompt = self._prompt(step, role, inputs, extra=prompt_extra, attached=attached,
+                              sizes=sizes)
         if self.quota_recovery is not None and self.quota_recovery.record is not None:
             note = ("\n\n[garuda] Continue from the retained workflow and current workspace after "
                     "a quota pause. Preserve partial edits and inspect existing work before "
@@ -1960,6 +2099,9 @@ class FlowRunner:
                     "not restoration of hidden model state.")
             prompt += note
             sizes.append({"part": "note", "chars": len(note)})
+        if long is not None:
+            prompt += "\n\n" + long_step.FIRST_TURN_LINE
+            sizes.append({"part": "note", "chars": len(long_step.FIRST_TURN_LINE) + 2})
         guard = await _settled_sync(NoEditsGuard, self.workspace) if no_edits else None
         capability = lease.delegate(f"{self.flow_session}:{step['id']}:{attempt}")
         started: tuple[str, float] | None = None
@@ -2009,7 +2151,8 @@ class FlowRunner:
                 quota_guard=((lambda: self.quota_recovery.before_launch(self, plan))
                              if self.quota_recovery and plan and plan.runtime_id == "codex"
                              else None),
-                limits=limits))
+                limits=limits,
+                turns=await self._turn_spec(step, plan, attempt, long, done)))
         except ConfinementRefused as exc:
             stop = FlowStopped(exc.code, exc.message, step=step["id"])
             # This refusal precedes agent start. Settle the intent so recovery
@@ -2099,6 +2242,14 @@ class FlowRunner:
                 stop = FlowStopped("flow.no_edits_changed", check.summary(), step=step["id"])
         version_after = await self._version_for_flow()
         receipt["workspace_version_after"] = version_after
+        receipt.update(long_step.receipt_fields(outcome.turns))
+        loop_stop = (outcome.turns or {}).get("stop")
+        if stop is None and isinstance(loop_stop, dict) and loop_stop.get("code") in long_step.LOOP_STOPS:
+            # The step's own turn loop paused it (no progress, max_hours, max_turns)
+            # or stopped it on a refusal: resumable, never retried.
+            cause = await _settled_sync(self._step_cause, outcome) if not outcome.success else None
+            stop = FlowStopped(loop_stop["code"], str(loop_stop.get("message") or ""),
+                               step=step["id"], cause=cause)
         if stop is None and outcome.refusal is not None and self.require_owned:
             # The owned worker refused the role (logged-out harness, model not
             # offered, ...): the attempt closed and is bounded like any failed
@@ -2109,9 +2260,10 @@ class FlowRunner:
             # The step session's own cause is kept for checked (owned worker) and
             # unchecked launches alike; the stop code is unchanged (#749).
             cause = await _settled_sync(self._step_cause, outcome)
-            stop = (None if outcome.quota_wait
+            paused = outcome.quota_wait or self._limit_pause(plan, cause)
+            stop = (None if paused
                     else _liveness_stop(f"step {step['id']}", outcome, limits, step["id"], cause)) \
-                or FlowStopped("flow.quota_wait" if outcome.quota_wait else "flow.step_failed",
+                or FlowStopped("flow.quota_wait" if paused else "flow.step_failed",
                                _failed(f"step {step['id']}", outcome, cause,
                                        no_edits=self._read_only(step, role)),
                                step=step["id"], cause=cause)

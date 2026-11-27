@@ -565,6 +565,7 @@ roles:
   reviewer: {harness: claude, model_id: <exact-id>, permissions: smart, write_policy: no-edits}
 consults: {max_per_session: 5, timeout_sec: 600, max_answer_chars: 8000}
 sessions: {isolation: auto, keep_days: 30}
+approvals: {park_timeout_sec: 1800}
 ```
 
 How the layers combine (package default, then user, then project, then the
@@ -626,6 +627,60 @@ A step's own keys override the flow's, key by key. A step that runs out stops
 with `flow.step_deadline` or `flow.step_silent`, and `garuda flow resume` runs
 it again; see [Step limits](sessions-and-flows.md#step-limits). Without
 `limits` a step has no deadline and no silence watchdog, as before.
+
+An external (ACP) step, or a flow as the default for its ACP steps, may set
+`long_run` to run over many turns in one step (whole numbers; `{}` takes every
+default):
+
+```yaml
+      - id: build
+        role: coder
+        outputs: [summary]
+        long_run: {max_hours: 10, session_turns: 15, session_hours: 3,
+                   max_turns: 200, no_progress_turns: 3}
+```
+
+- `max_hours` (1 to 24, default 12): the step's whole budget; it is also its
+  deadline (the shorter of it and `limits.deadline_min`).
+- `session_turns` (1 to 200, default 20) and `session_hours` (1 to 24,
+  default 4, at most `max_hours`): when Garuda starts a fresh harness session.
+- `max_turns` (1 to 1000, default 200): the most turns the step sends.
+- `no_progress_turns` (1 to 50, default 3): turns without a change Garuda can
+  measure before the step pauses.
+
+A step's own keys override the flow's, key by key. `long_run` on a parallel
+group is refused when the flow loads, and on a step whose role is native when
+the step starts (`flow.long_run_unsupported`); a flow's default skips native
+steps. See [Long steps](sessions-and-flows.md#long-steps). Without `long_run`
+a step sends one prompt, as before.
+
+`approvals.park_timeout_sec` is how long an approval asked by a background
+run waits in the inbox (the dashboard's Approvals page or
+`garuda approvals answer`) before the request times out and counts as a denial.
+This covers background and dashboard flow steps, whose approvals are answered
+outside the terminal. It is whole seconds from 30 to 86400 (24 hours), and the
+default is 300. A project file may only lower it: a project value at or above
+yours (or above the default, if you set none) is ignored.
+
+A flow may set `isolation: worktree` so it runs in its own Git worktree from
+your checkout's `HEAD` instead of in your checkout (`shared`, the default):
+
+```yaml
+flows:
+  overnight:
+    isolation: worktree        # or shared (the default); `auto` is not offered
+    steps:
+      - {id: build, role: coder}
+```
+
+`garuda flow run NAME --isolation worktree` (or `--isolation shared`)
+overrides it for one run.
+Your checkout, its index and `HEAD` stay as they are until you merge the flow's
+work; each step attempt is checkpointed and can be rolled back. A flow without
+the key keeps its definition digest. Dashboard flow starts refuse a flow that
+sets `isolation: worktree` (`flow.isolation_unsupported`); run it with
+`garuda flow run`. See
+[Worktree flows and checkpoints](sessions-and-flows.md#worktree-flows-and-checkpoints).
 
 `harnesses.<id>.handshake_timeout_sec` is how long Garuda waits for an
 external (ACP) harness to answer its startup calls (`initialize`,

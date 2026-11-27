@@ -388,8 +388,13 @@ the reset comes from the latest `_claude/rateLimit` the adapter reported in the
 same session. The session keeps only `status`, `resets_at` (epoch seconds) and
 `rate_limit_type` as structured fields: in `error_limit` of the session record, in
 the failure evidence, and with the session's reported usage
-(`rate_limit_status`, `rate_limit_resets_at`, `rate_limit_type`). Nothing resumes
-automatically when the limit resets.
+(`rate_limit_status`, `rate_limit_resets_at`, `rate_limit_type`). `garuda run`
+exits with status 1, as it does for any failed run. A flow step stopped this way
+stops the flow with `flow.quota_wait`, and its stop records the reset as
+`cause.limit`. With [quota recovery](../use-cases/automate.md#claude-flows)
+enabled, the flow resumes after the reported reset. That reset time is the only
+Claude limit source Garuda uses: nothing is probed and no prompt is sent to
+check it.
 
 **Turn stop reason.** Each ACP turn records the harness's own `stopReason`
 (`end_turn`, `max_tokens`, `max_turn_requests`, `refusal`, `cancelled`) as

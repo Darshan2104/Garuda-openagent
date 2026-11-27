@@ -98,12 +98,26 @@ Click a problem to see the fix.
       its plan limit. Wait for the reset time in the message (Claude's is
       given in UTC, for example `resets at 2026-11-26 15:00 UTC`), or use
       another harness in the role's `fallback:` chain. Garuda does not resume
-      the run by itself when the limit resets. A host error such as `Disk quota
+      a `garuda run` by itself when the limit resets. A flow step stopped by a
+      Claude limit stops the flow with `flow.quota_wait` and its reset time
+      (`garuda flow show` prints `limit: five_hour; resets at ...`). Run
+      `garuda flow resume` after the reset, or enable
+      [quota recovery](../use-cases/automate.md#claude-flows) to resume it
+      automatically. A host error such as `Disk quota
       exceeded (os error 122)` is not typed as a limit: it stays a plain
       `agent error`, so free disk space instead. Error text an agent sends
       back is redacted for secret patterns before Garuda stores or shows it.
 
 ## Permissions and modes
+
+??? question "A background flow step's approval timed out and was denied"
+
+    A background or dashboard flow step parks each approval in the inbox for
+    300 seconds, then denies it (`Approval timed out: ...`). Answer it from the
+    dashboard's Approvals page or with `garuda approvals answer`, or give it
+    more time with `approvals: {park_timeout_sec: 1800}` in `~/.agent/garuda.yaml`
+    (30 to 86400 seconds). A project `garuda.yaml` can only shorten it. See
+    [Configuration](../guides/configuration.md#roles-and-flows-garudayaml).
 
 ??? question "\"Approval required but no handler configured\" or \"User denied\""
 
@@ -449,7 +463,8 @@ Click a problem to see the fix.
 ??? question "A flow stops with `flow.output_missing`"
 
     The step didn't end with the `<garuda-artifact type="…">` block the next
-    step needs. For a native role, the block must be in the summary it passes to
+    step needs, and the one repair turn Garuda gives an external (ACP) step did
+    not supply it either (the receipt's `repairs`). For a native role, the block must be in the summary it passes to
     `task_complete`. Give the role an agent that says so; see
     [Level 5](../use-cases/teams.md#run-a-plan-build-review-flow).
 
@@ -474,6 +489,25 @@ Click a problem to see the fix.
     `garuda.yaml` if the work needs longer, then `garuda flow resume FLOW_ID`
     to run the step again. See
     [Step limits](../guides/sessions-and-flows.md#step-limits).
+
+??? question "A flow stops with `flow.step_no_progress`, `flow.step_max_turns` or `flow.step_refused`"
+
+    A `long_run` step paused itself. `flow.step_no_progress`: for
+    `long_run.no_progress_turns` turns nothing Garuda can measure changed (the
+    step's files, its outputs). `flow.step_max_turns`: it used
+    `long_run.max_turns`. A `long_run` step that reaches `long_run.max_hours`
+    stops with `flow.step_deadline`. `flow.step_refused`: the model refused the
+    task, which is never continued. Read the step's progress file
+    (`progress/STEP-ATTEMPT.jsonl` beside the flow's receipts, see `garuda flow
+    show`) for each turn's stop reason, change and progress note, adjust the
+    task or `long_run`, then `garuda flow resume FLOW_ID`. See
+    [Long steps](../guides/sessions-and-flows.md#long-steps).
+
+??? question "A flow stops with `flow.long_run_unsupported`"
+
+    The step sets `long_run`, but its role runs on the native harness. The turn
+    loop runs external (ACP) harness steps only: give the step an ACP role, or
+    remove `long_run` from it.
 
 ??? question "A read-only flow step runs until it hits its turn limit"
 

@@ -721,6 +721,7 @@ async def run_acp_task(
     codex_executable: str | None = None,
     before_prompt=None,
     silence_watchdog: dict | None = None,
+    after_turn=None,
 ) -> dict[str, Any]:
     """Run one task on an ACP runtime under the same invariants as native.
 
@@ -745,6 +746,12 @@ async def run_acp_task(
     (:meth:`AcpRuntime.watch_silence`); the session then settles `failed` with
     ``stop_reason: silence`` and ``error_code: run.silence_exceeded``. Without it,
     as for `garuda run` and the SDK, nothing watches the turn.
+
+    ``after_turn`` (flows only) is asked after each turn whether to finish, send
+    another prompt in the same harness session, or rotate to a fresh harness
+    session in this same Garuda session (:mod:`garuda.runtime.turn_hook`).
+    Without it a run sends exactly one prompt, as before; with it the outcome
+    gains ``turns`` (what the loop did).
     """
     import time
 
@@ -934,8 +941,15 @@ async def run_acp_task(
             from garuda.workspace.no_edits import deny_all
 
             approval, external_approvals = deny_all, False
+        # A background step's parked asks wait `approvals.park_timeout_sec` (#834).
+        park = {}
+        if external_approvals:
+            from garuda.config.garuda_yaml import park_timeout_sec
+
+            park = {"timeout_sec": park_timeout_sec(workspace)}
         handler, broker = broker_approval_handler(
-            store, session_id, manifest.runtime_id, handler=approval, external=external_approvals
+            store, session_id, manifest.runtime_id, handler=approval, external=external_approvals,
+            **park,
         )
         def make_runtime():
             runtime = build_runtime()
@@ -1070,40 +1084,60 @@ async def run_acp_task(
         first_message = with_instructions(role_plan, task)
         if before_prompt is not None:
             await before_prompt()
-        timeout = prompt_timeout
-        if deadline_sec is not None:
-            remaining = max(0.0, deadline_sec - (time.monotonic() - started_at))
-            timeout = remaining if timeout is None else min(timeout, remaining)
         from garuda.acp.protocol import AcpTimeoutError
 
-        try:
-            turn = await lease.race(
-                runtime.prompt(prompt_with(attached, first_message), timeout=timeout)
-            )
-        except AcpTimeoutError as exc:
-            if getattr(exc, "liveness", None) == "silence":
-                silence_hit = True  # the opt-in watchdog (#828) cancelled and reaped
-                raise
-            if deadline_sec is None:
-                raise
-            # The adapter has sent session/cancel and reaped the agent; the
-            # session settles failed below with the deadline as its cause.
-            deadline_hit = True
-            deadline_error = AcpTimeoutError(
-                f"the run exceeded --deadline-sec {deadline_sec:g}; the ACP turn was "
-                "cancelled and the agent stopped")
-            deadline_error.liveness = "deadline"
-            raise deadline_error from exc
-        events, _ = await runtime.poll_events(0)
+        async def one_turn(runtime, text):
+            nonlocal deadline_hit, silence_hit
+            timeout = prompt_timeout
+            if deadline_sec is not None:
+                remaining = max(0.0, deadline_sec - (time.monotonic() - started_at))
+                timeout = remaining if timeout is None else min(timeout, remaining)
+            try:
+                return await lease.race(runtime.prompt(text, timeout=timeout))
+            except AcpTimeoutError as exc:
+                if getattr(exc, "liveness", None) == "silence":
+                    silence_hit = True  # the opt-in watchdog (#828) cancelled and reaped
+                    raise
+                if deadline_sec is None:
+                    raise
+                # The adapter has sent session/cancel and reaped the agent; the
+                # session settles failed below with the deadline as its cause.
+                deadline_hit = True
+                deadline_error = AcpTimeoutError(
+                    f"the run exceeded --deadline-sec {deadline_sec:g}; the ACP turn was "
+                    "cancelled and the agent stopped")
+                deadline_error.liveness = "deadline"
+                raise deadline_error from exc
+
+        if after_turn is None:
+            turn = await one_turn(runtime, prompt_with(attached, first_message))
+            events, _ = await runtime.poll_events(0)
+            event_count = len(events)
+            loop_record = None
+        else:
+            def swap(new_runtime, new_info):
+                nonlocal runtime, info
+                runtime, info = new_runtime, new_info
+
+            turn, events, event_count, loop_record = await _turn_loop(
+                after_turn, runtime, info, one_turn, prompt_with(attached, first_message),
+                swap=swap, make_runtime=make_runtime, session_id=session_id, task=task,
+                started_at=started_at, lease=lease, deadline_sec=deadline_sec,
+                record_usage=lambda finished, finished_info: _record_acp_usage(
+                    store, session_id, finished, manifest.runtime_id, record, finished_info,
+                    confined=confinement is not None),
+                configure=lambda fresh: _configure_rotated(
+                    store, session_id, fresh, options, adapter_version, required,
+                    permission, readonly),
+                first_message=lambda text: prompt_with(attached, with_instructions(role_plan, text)),
+                emit=lambda event: emit(format_event(event) if format_event is not None
+                                        else f"[{event.kind.value} t{event.turn}] {event.payload}"))
         for event in events:
             emit(format_event(event) if format_event is not None
                  else f"[{event.kind.value} t{event.turn}] {event.payload}")
         # The agent's own words, bounded: what a brief of this session reports
         # as its output (B.7). Never a transcript.
-        reply = "".join(
-            str(e.payload.get("chunk") or "") for e in events
-            if e.kind.value == "message" and "thought" not in e.payload
-        )
+        reply = _reply_of(events)
         if reply:
             store.update_meta(session_id, {"final_message": reply[-2000:]})
         outcome = {
@@ -1116,11 +1150,14 @@ async def run_acp_task(
             # Garuda denied an action in it. Additive; the status below is unchanged.
             "stop_reason": (getattr(runtime, "last_turn", None) or {}).get("stop_reason"),
             "approval_denied": (getattr(runtime, "last_turn", None) or {}).get("approval_denied"),
-            "events": len(events),
+            "events": event_count,
             # In memory only: flow artifacts and consult answers sit at the end
             # of replies longer than the stored summary.
             "reply": reply,
         }
+        if loop_record is not None:
+            # Only with `after_turn`: the turns this run sent (additive).
+            outcome["turns"] = loop_record
     except Exception as exc:
         if began and not transferred_to_native:
             _record_run_error(store, session_id, exc)
@@ -1204,6 +1241,122 @@ async def run_acp_task(
             if not began:
                 discard_new_worktree(worktree)
     return outcome
+
+
+def _reply_of(events) -> str:
+    return "".join(
+        str(e.payload.get("chunk") or "") for e in events
+        if e.kind.value == "message" and "thought" not in e.payload
+    )
+
+
+def _turn_context(events) -> tuple[int | None, int | None]:
+    """The harness's last context report (``usage_update``) among ``events``."""
+    used = size = None
+    for event in events:
+        usage = event.payload.get("usage") if event.kind.value == "message" else None
+        if isinstance(usage, dict):
+            if type(usage.get("context_used")) is int:
+                used = usage["context_used"]
+            if type(usage.get("context_size")) is int:
+                size = usage["context_size"]
+    return used, size
+
+
+async def _configure_rotated(store, session_id, runtime, options, adapter_version, required,
+                             permission, readonly) -> None:
+    """A rotated harness session gets the role's options and mode check again."""
+    _record_negotiated(store, session_id, runtime)
+    await runtime.set_config_options(options, adapter_version=adapter_version)
+    store.update_meta(session_id, {"acp_mode": runtime.confirm_mode(
+        required, permission=permission, confined=readonly)})
+
+
+async def _turn_loop(after_turn, runtime, info, one_turn, first_prompt, *, swap, make_runtime,
+                     session_id, task, started_at, lease, deadline_sec, record_usage, configure,
+                     first_message, emit):
+    """Send turns while ``after_turn`` asks for more (:mod:`garuda.runtime.turn_hook`).
+
+    Returns the last turn's number and events, the run's event count and what
+    the loop did. ``swap`` keeps the caller's runtime the live one, so its
+    ``finally`` closes whichever harness session is current on every path.
+    """
+    import inspect
+    import time
+
+    from garuda.acp.protocol import AcpError, AcpTimeoutError, AcpUsageLimitError
+    from garuda.runtime.protocol import LifecycleState
+    from garuda.runtime.turn_hook import TurnReport
+
+    text = first_prompt
+    turns = session_turns = 0
+    total_events = 0
+    session_started = time.monotonic()
+    native_ids = [info.native_session_id]
+    rotations = continuations = 0
+    cursor = 0
+    while True:
+        turns += 1
+        session_turns += 1
+        error = None
+        turn = None
+        try:
+            turn = await one_turn(runtime, text)
+        except (AcpTimeoutError, AcpUsageLimitError):
+            raise  # a deadline, silence or usage limit always stops as today
+        except AcpError as exc:
+            error = exc
+        events, cursor = await runtime.poll_events(cursor)
+        total_events += len(events)
+        last = getattr(runtime, "last_turn", None) or {}
+        used, size = _turn_context(events)
+        now = time.monotonic()
+        report = TurnReport(
+            turn=turns, session_turn=session_turns, harness_sessions=len(native_ids),
+            native_session_id=info.native_session_id, reply=_reply_of(events),
+            stop_reason=last.get("stop_reason"), approval_denied=bool(last.get("approval_denied")),
+            denied=tuple(getattr(runtime, "last_denied", ()) or ()),
+            context_used=used, context_size=size, error=error,
+            elapsed_sec=now - started_at, session_elapsed_sec=now - session_started,
+            live=error is None and runtime.state is LifecycleState.IDLE)
+        decision = after_turn(report)
+        if inspect.isawaitable(decision):
+            decision = await decision
+        if decision.action == "finish":
+            if error is not None and not decision.extra.get("ignore_error"):
+                raise error
+            loop = {"turns": turns, "rotations": rotations, "continuations": continuations,
+                    "harness_sessions": native_ids}
+            return turn, events, total_events, loop
+        for event in events:
+            emit(event)
+        if decision.action == "next":
+            if not report.live:
+                raise RuntimeError("after_turn asked for another turn in a closed harness session")
+            continuations += 1
+            text = decision.prompt
+            continue
+        if decision.action != "rotate":
+            raise ValueError(f"unknown after_turn action {decision.action!r}")
+        if decision.delay_sec > 0:
+            delay = decision.delay_sec
+            if deadline_sec is not None:
+                delay = min(delay, max(0.0, deadline_sec - (time.monotonic() - started_at)))
+            await lease.race(asyncio.sleep(delay))
+        await runtime.close()
+        await record_usage(runtime, info)
+        fresh = make_runtime()
+        swap(fresh, info)
+        runtime = fresh
+        info = await runtime.start(task=task, session_id=session_id)
+        swap(runtime, info)
+        await configure(runtime)
+        native_ids.append(info.native_session_id)
+        rotations += 1
+        session_turns = 0
+        session_started = time.monotonic()
+        cursor = 0
+        text = first_message(decision.prompt)
 
 
 def _approval_summary(store, session_id: str) -> dict | None:

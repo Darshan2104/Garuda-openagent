@@ -394,16 +394,19 @@ def session_approval_channel(store, session_id: str):
     return FileApprovalChannel(store.session_dir(session_id) / "approvals", session_id)
 
 
-def install_session_broker(permissions, store, session_id: str, *, external=False):
+def install_session_broker(permissions, store, session_id: str, *, external=False,
+                           timeout_sec: float | None = None):
     """Route a native engine's ASK decisions through the session broker.
 
     The engine's existing interactive handler (if any) becomes the answerer,
-    so it is never bypassed; returns the broker.
+    so it is never bypassed; returns the broker. ``timeout_sec`` is how long a
+    parked ask waits (the broker's 300 s when ``None``).
     """
     from garuda.acp.broker import ApprovalBroker
 
     previous = getattr(permissions, "approval_broker", None)
     broker = ApprovalBroker(engine=permissions, store=store, session_id=session_id,
+                            **({"timeout_sec": timeout_sec} if timeout_sec is not None else {}),
                             channel=session_approval_channel(store, session_id),
                             ceiling_source=f"run-permission-engine:{getattr(permissions, 'mode', None)}")
     broker.set_answerer(None if external else

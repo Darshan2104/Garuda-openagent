@@ -203,7 +203,8 @@ def flow_total(attempts: list[dict]) -> dict:
 
 
 #: Counts a receipt may carry beside ``measure`` (a turn loop's), shown when present.
-_COUNTS = ("sessions", "turns", "tool_calls", "rotations", "continuations", "repairs")
+_COUNTS = ("sessions", "harness_sessions", "turns", "tool_calls", "rotations", "continuations",
+           "repairs")
 
 
 def _count(value: Any) -> Any:

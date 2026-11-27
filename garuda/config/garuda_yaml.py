@@ -26,6 +26,9 @@ CLI request:
 - a named role or flow replaces the whole definition below it;
 - permission ceilings and consult limits intersect (the stricter wins);
 - checks accumulate, deduplicated on run text, cwd, environment and mode;
+- ``approvals.park_timeout_sec`` (how long a background step's parked approval
+  waits for an answer) only lowers: a project value at or above the user's
+  (or the 300 s default) is ignored;
 - ``harnesses``, ``sessions.keep_days``, ``fallback`` chains and ``consult``
   grants are **user-only**: a project may keep a subset or remove them, never
   add (``config.project_widening``);
@@ -62,7 +65,17 @@ WRITE_POLICIES = ("edits", "no-edits")
 #: ``silence_min`` and ``tool_silence_min`` up to one day.
 STEP_LIMITS = {"deadline_min": (1, 7 * 24 * 60), "silence_min": (1, 24 * 60),
                "tool_silence_min": (1, 24 * 60)}
+#: A long step's turn loop (``long_run``): whole hours and turns, with their bounds.
+#: Absent keys take :data:`garuda.flows.long_step.DEFAULTS`.
+LONG_RUN = {"max_hours": (1, 24), "session_turns": (1, 200), "session_hours": (1, 24),
+            "max_turns": (1, 1000), "no_progress_turns": (1, 50)}
 ISOLATION = ("shared", "worktree", "auto")
+#: Bounds and default of `approvals.park_timeout_sec` (#834): 30 s to 24 h, 300 s.
+MIN_PARK_TIMEOUT_SEC = 30
+MAX_PARK_TIMEOUT_SEC = 24 * 3600
+DEFAULT_PARK_TIMEOUT_SEC = 300
+#: A configured flow runs in the user's checkout or in its own worktree (no ``auto``).
+FLOW_ISOLATION = ("shared", "worktree")
 ARTIFACTS = ("plan", "patch", "review", "findings", "notes", "summary")
 #: Keys that belong to ``settings.yaml``; in a ``garuda.yaml`` they conflict.
 LEGACY_KEYS = ("runtimes", "disabled_runtimes", "runtime_refs", "routing", "models",
@@ -267,7 +280,7 @@ def _step(value, path) -> dict:
     if isinstance(value, dict) and "flow" in value:
         _fail(f"{path}.flow", "a step cannot be a flow (nested flows are not supported)")
     data = _mapping(value, path, ("id", "role", "parallel", "write_policy", "inputs", "outputs",
-                                  "retries", "review", "limits"))
+                                  "retries", "review", "limits", "long_run"))
     out: dict[str, Any] = {}
     if "id" in data:
         out["id"] = _name(data["id"], f"{path}.id")
@@ -295,6 +308,11 @@ def _step(value, path) -> dict:
         out["retries"] = _int(data["retries"], f"{path}.retries", 0, MAX_RETRIES)
     if "limits" in data:
         out["limits"] = _limits(data["limits"], f"{path}.limits")
+    if "long_run" in data:
+        if "parallel" in out:
+            _fail(f"{path}.long_run", "a parallel group cannot run long; give a single role step "
+                  "long_run")
+        out["long_run"] = _long_run(data["long_run"], f"{path}.long_run")
     if "review" in data:
         review = _mapping(data["review"], f"{path}.review", ("by", "max_rounds", "independent"))
         out["review"] = {"by": _name(review.get("by"), f"{path}.review.by")}
@@ -322,6 +340,22 @@ def _limits(value, path) -> dict:
            for key in STEP_LIMITS if key in data}
     _check_silences(out, path)
     return out
+
+
+def _long_run(value, path) -> dict:
+    """A step's (or a flow's default) turn loop (``long_run``): present keys only,
+    so a flow without it parses and digests exactly as before. ``{}`` takes every
+    default."""
+    data = _mapping(value, path, tuple(LONG_RUN))
+    out = {key: _int(data[key], f"{path}.{key}", *LONG_RUN[key])
+           for key in LONG_RUN if key in data}
+    _check_long_run(out, path)
+    return out
+
+
+def _check_long_run(long_run: dict, path: str) -> None:
+    if long_run.get("session_hours", 0) > long_run.get("max_hours", 24):
+        _fail(f"{path}.session_hours", "must not be longer than max_hours")
 
 
 def _check_silences(limits: dict, path: str) -> None:
@@ -455,7 +489,7 @@ def validate_flow_retries(steps: list[dict], *, path: str) -> None:
 
 
 def _flow(value, path) -> dict:
-    data = _mapping(value, path, ("steps", "description", "limits"))
+    data = _mapping(value, path, ("steps", "description", "limits", "long_run", "isolation"))
     steps = data.get("steps")
     if not isinstance(steps, list) or not steps:
         _fail(f"{path}.steps", "must be a non-empty list")
@@ -469,11 +503,18 @@ def _flow(value, path) -> dict:
     validate_flow_retries(steps, path=steps_path)
     if "limits" in data:
         out["limits"] = _limits(data["limits"], f"{path}.limits")
+    if "long_run" in data:
+        out["long_run"] = _long_run(data["long_run"], f"{path}.long_run")
     for i, step in enumerate(out["steps"]):
         if "limits" in step and "limits" in out:  # a step overrides the default per key
             _check_silences({**out["limits"], **step["limits"]}, f"{steps_path}[{i}].limits")
+        if "long_run" in step and "long_run" in out:
+            _check_long_run({**out["long_run"], **step["long_run"]}, f"{steps_path}[{i}].long_run")
     if "description" in data:
         out["description"] = _str(data["description"], f"{path}.description")
+    if "isolation" in data:
+        # Only when written: a flow without it keeps its definition digest.
+        out["isolation"] = _choice(data["isolation"], f"{path}.isolation", FLOW_ISOLATION)
     return out
 
 
@@ -514,7 +555,7 @@ def parse(data: Any, *, source: str = "") -> dict:
             _fail(key, "is a settings.yaml key; it does not belong in garuda.yaml "
                        "(see `garuda config migrate`)", code="config.conflict")
     _mapping(data, "", ("version", "defaults", "harnesses", "roles", "flows", "checks",
-                        "consults", "sessions"))
+                        "consults", "sessions", "approvals"))
     if data.get("version") != VERSION:
         _fail("version", f"must be {VERSION}", code="config.unsupported_version")
     out: dict[str, Any] = {"version": VERSION}
@@ -563,6 +604,13 @@ def parse(data: Any, *, source: str = "") -> dict:
         if "keep_days" in sessions:
             out["sessions"]["keep_days"] = _int(sessions["keep_days"], "sessions.keep_days",
                                                 1, 3650)
+    if "approvals" in data:
+        approvals = _mapping(data["approvals"], "approvals", ("park_timeout_sec",))
+        out["approvals"] = {}
+        if "park_timeout_sec" in approvals:
+            out["approvals"]["park_timeout_sec"] = _int(
+                approvals["park_timeout_sec"], "approvals.park_timeout_sec",
+                MIN_PARK_TIMEOUT_SEC, MAX_PARK_TIMEOUT_SEC)
     _check_references(out)
     return out
 
@@ -788,6 +836,17 @@ def resolve(
                 consults[key] = value
                 prov[f"consults.{key}"] = source
 
+    approvals: dict[str, int] = {}
+    for source, doc in layers:
+        value = doc.get("approvals", {}).get("park_timeout_sec")
+        if value is None:
+            continue
+        if source == PROJECT and value >= approvals.get("park_timeout_sec",
+                                                         DEFAULT_PARK_TIMEOUT_SEC):
+            continue  # a project may only lower the wait
+        approvals["park_timeout_sec"] = value
+        prov["approvals.park_timeout_sec"] = source
+
     checks: list[dict] = []
     seen: set = set()
     for source, doc in [*layers, (CLI, {"checks": [{"run": c} for c in cli_checks]})]:
@@ -808,6 +867,8 @@ def resolve(
         config["sessions"] = sessions
     if consults:
         config["consults"] = consults
+    if approvals:
+        config["approvals"] = approvals
     if checks:
         config["checks"] = checks
 
@@ -903,6 +964,25 @@ def load_effective(workspace, *, cli_role=None, cli_runtime=None, cli_model=None
             if "model_id" in role
         )
     return resolved
+
+
+def park_timeout_sec(workspace) -> int:
+    """How long a background step's parked approval waits before it is denied (#834).
+
+    ``approvals.park_timeout_sec`` of the effective configuration for
+    ``workspace``, else the 300 s default. A configuration that cannot be read
+    here keeps the default: the run itself reports that configuration error.
+    """
+    import logging
+
+    try:
+        resolved = load_effective(workspace)
+    except (GarudaConfigError, ConfigError, OSError):
+        logging.getLogger(__name__).warning("approval park timeout not read; using the default",
+                                            exc_info=True)
+        return DEFAULT_PARK_TIMEOUT_SEC
+    value = ((resolved.config if resolved else {}).get("approvals") or {}).get("park_timeout_sec")
+    return value if isinstance(value, int) else DEFAULT_PARK_TIMEOUT_SEC
 
 
 # --- migration ---------------------------------------------------------------------
