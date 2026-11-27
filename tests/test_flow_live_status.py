@@ -177,3 +177,23 @@ def test_a_stopped_flow_prints_its_last_attempt_not_a_live_line(repo, monkeypatc
                       "--json")
     assert code == 0, out
     assert json.loads(out)["live"]["running"] is False
+
+
+def test_a_checked_usage_limit_stop_prints_a_pause_with_its_reset(repo, monkeypatch, capsys):
+    """`flow show` prints a checked flow's usage-limit stop (`flow.step_failed`, cause
+    `harness.limit_reached`) as a pause until the reset and what to run then."""
+    from garuda.acp.protocol import reset_time_text
+
+    stop = {"code": "flow.step_failed", "step": "build", "message": "usage limit",
+            "cause": {"code": "harness.limit_reached",
+                      "limit": {"resets_at": 1_900_000_000, "rate_limit_type": "five_hour"}}}
+    _store, flow_id, _directory = _flow(repo, state="stopped", stop=stop)
+    code, out = _main(monkeypatch, capsys, "flow", "show", flow_id, "--workspace", str(repo))
+    assert code == 0, out
+    assert (f"paused on a usage limit until {reset_time_text(1_900_000_000)}; run "
+            f"`garuda flow resume {flow_id}` after 2030-03-17T17:46:40+00:00") in out
+    plain = {"code": "flow.step_failed", "step": "build", "message": "it failed"}
+    _store, flow_id, _directory = _flow(repo, state="stopped", stop=plain)
+    code, out = _main(monkeypatch, capsys, "flow", "show", flow_id, "--workspace", str(repo))
+    assert code == 0, out
+    assert "paused on a usage limit" not in out

@@ -341,7 +341,9 @@ def test_a_usage_limit_pause_reports_when_it_resets(ctx, store):
     paused = {r["session_id"]: r["pause"] for r in
               body(call(ctx, "/api/overview"))["attention"]["paused"]["items"]}
     assert paused["limit"] == {"kind": "quota", "reset_at": 1_900_000_000,
-                               "rate_limit_type": "five_hour"}
+                               "rate_limit_type": "five_hour", "resume": "manual",
+                               "action": "run `garuda flow resume limit` after "
+                                         "2030-03-17T17:46:40+00:00"}
     stop = body(call(ctx, "/api/sessions/limit"))["flow"]["stop"]
     assert stop["limit"] == {"resets_at": 1_900_000_000, "rate_limit_type": "five_hour"}
 

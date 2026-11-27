@@ -2016,6 +2016,18 @@ def run_flow(args) -> int:
         stop_line = _flow_stop_line(meta.get("flow_stop"))
         if stop_line:
             print(stop_line)
+        from garuda.core.read_model import flow_pause
+
+        pause = flow_pause(meta)
+        if isinstance(pause, dict) and pause.get("kind") == "quota":
+            # A usage-limit pause (a checked flow's limit stop included): when, and what next.
+            from garuda.acp.protocol import reset_time_text
+
+            reset = pause.get("reset_at")
+            print("  paused on a usage limit until "
+                  + (reset_time_text(int(reset)) if type(reset) in (int, float)
+                     else "its reset (time not reported)")
+                  + f"; {pause.get('action')}")
         from garuda.core.read_model import flow_in_flight
 
         for line in _flow_live_lines(flow_in_flight(store, args.flow_session, meta)):

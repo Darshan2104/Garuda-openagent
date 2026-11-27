@@ -214,20 +214,61 @@ def quota_limit(meta: dict) -> dict:
             else None}
 
 
+def _limit_failure(meta: dict, stop) -> dict | None:
+    """A checked flow's usage-limit stop: ``flow.step_failed`` whose cause is a harness
+    usage limit (#834 records it so, never ``flow.quota_wait``). Its validated reset and
+    window (``{}`` when the harness reported neither), or ``None`` for any other stop."""
+    from garuda.acp.protocol import rate_limit_fields
+    from garuda.flows.engine import LIMIT_CAUSE_CODES
+
+    if meta.get("flow_state") != "stopped" or not isinstance(stop, dict) \
+            or stop.get("code") != "flow.step_failed":
+        return None
+    cause = stop.get("cause") if isinstance(stop.get("cause"), dict) else {}
+    if cause.get("code") not in LIMIT_CAUSE_CODES:
+        return None
+    limit = rate_limit_fields(cause.get("limit"), validated=True)
+    return {"reset_at": limit.get("resets_at"), "rate_limit_type": limit.get("rate_limit_type")}
+
+
+def _quota_action(flow: str, reset_at, *, automatic: bool) -> str:
+    """What happens next for a usage-limit pause, in one sentence."""
+    if automatic:
+        return "resumes after the reset"
+    when = f"after {_iso(reset_at)}" if type(reset_at) in (int, float) else "after the limit resets"
+    return f"run `garuda flow resume {flow}` {when}"
+
+
 def flow_pause(meta: dict) -> dict | None:
     """Why a stopped flow is paused on a resumable stop, from its recorded fields, or ``None``:
     ``{"kind": "quota", ...}`` (with the reset time and window when recorded) for a
     usage-limit wait, else ``{"kind": <pause kind>}`` for a flow stopped on one of
     :func:`pause_kinds`. The recorded ``outcome`` is left as stored: the run ended without
-    completing, and ``garuda flow resume`` continues it."""
+    completing, and ``garuda flow resume`` continues it.
+
+    A quota pause also says what happens next: ``resume`` is ``automatic`` while quota
+    recovery waits for the reset (an unchecked ``flow.quota_wait``) and ``manual``
+    otherwise, and ``action`` is the sentence (``resumes after the reset``, or ``run
+    `garuda flow resume FLOW` after <reset>``). A checked flow's usage limit settles as
+    ``flow.step_failed`` with cause ``harness.limit_reached`` (#834); that is a quota pause
+    too, with ``resume: manual``, as nothing resumes a checked flow by itself."""
     if meta.get("kind") != "flow":
         return None
     recovery = meta.get("quota_recovery")
     stop = meta.get("flow_stop")
     code = stop.get("code") if isinstance(stop, dict) else None
-    if (isinstance(recovery, dict) and recovery.get("state") == QUOTA_WAIT) or code == QUOTA_STOP:
+    flow = str(meta.get("session_id") or "FLOW_ID")
+    waiting = isinstance(recovery, dict) and recovery.get("state") == QUOTA_WAIT
+    if waiting or code == QUOTA_STOP:
         # The reset time and window only when recorded (a Codex wait records neither).
-        return {"kind": "quota", **{k: v for k, v in quota_limit(meta).items() if v is not None}}
+        found = {k: v for k, v in quota_limit(meta).items() if v is not None}
+        return {"kind": "quota", **found, "resume": "automatic" if waiting else "manual",
+                "action": _quota_action(flow, found.get("reset_at"), automatic=waiting)}
+    limit = _limit_failure(meta, stop)
+    if limit is not None:
+        return {"kind": "quota", **{k: v for k, v in limit.items() if v is not None},
+                "resume": "manual",
+                "action": _quota_action(flow, limit["reset_at"], automatic=False)}
     kinds = pause_kinds()
     if meta.get("flow_state") == "stopped" and code in kinds:
         return {"kind": kinds[code]}
