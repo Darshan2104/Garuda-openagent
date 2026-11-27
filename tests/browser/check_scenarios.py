@@ -9,7 +9,7 @@ import json
 import os
 from pathlib import Path
 
-from browser_support import launch
+from browser_support import NAV_TIMEOUT_MS, launch, throttle
 from playwright.sync_api import expect, sync_playwright
 
 BASE = os.environ["GARUDA_CHECK_BASE"]
@@ -48,14 +48,16 @@ def main():
         browser = launch(p)
         context = browser.new_context(viewport={"width": 1500, "height": 1100},
                                       permissions=["clipboard-read", "clipboard-write"])
-        page = context.new_page()
+        context.set_default_navigation_timeout(NAV_TIMEOUT_MS)
+        page = throttle(context.new_page())
         page.on("console", lambda m: errors.append(m.text) if m.type in {"error", "warning"} else None)
         page.on("pageerror", lambda e: errors.append(str(e)))
         open_dashboard(page, BASE, "#/starters")
         expect(page.locator('.nav-link[data-nav="starters"]')).to_be_visible(timeout=5000)
         expect(page.locator("#starter-cards section")).to_have_count(5)
         expect(page.locator("#starter-workspace option")).to_have_count(2)
-        assert page.locator('button:has-text("Start")').count() == 0
+        # Within the page: on a narrow window the nav menu button is named after it ("Starters").
+        assert page.locator('#view button:has-text("Start")').count() == 0
         expect(page.locator('[data-starter="build-review"]')).to_contain_text("independent review configured")
         # build-review runs its checks at flow finalization (scenarios/compile.py flow_check_support).
         expect(page.locator('[data-starter="build-review"]')).to_contain_text(
@@ -164,9 +166,12 @@ def main():
         # A validated recorded plan opens a preview, with its full bounded handoff.
         page.goto(BASE + "#/sessions/" + MANIFEST["plan"])
         expect(page.locator("#starter-coverage")).to_contain_text("complete")
-        expect(page.locator("#starter-result")).to_contain_text("verification: unavailable")
-        expect(page.locator("#starter-result")).to_contain_text("Recorded identities")
-        expect(page.locator("#starter-result")).to_contain_text("not reported")
+        # The session page keeps the starter's result and next action in its card and the
+        # coverage, integrity and recorded identities under "Details and evidence".
+        expect(page.locator("#session-facts")).to_contain_text("verification: unavailable")
+        expect(page.locator("#starter-result")).not_to_contain_text("process:")
+        expect(page.locator("#starter-evidence")).to_contain_text("Recorded identities")
+        expect(page.locator("#starter-evidence")).to_contain_text("not reported")
         page.screenshot(path=str(SHOTS / "starters-plan-result.png"), full_page=True)
         page.locator("#starter-implement").click()
         expect(page.locator('[data-field="variant"]')).to_have_value("pair")
@@ -180,14 +185,18 @@ def main():
         page.goto(BASE + "#/runs/" + MANIFEST["native"])
         expect(page.locator("#starter-result")).to_contain_text("verification: passed")
         page.goto(BASE + "#/sessions/" + MANIFEST["role"])
-        expect(page.locator("#starter-result")).to_contain_text("verification: passed")
-        expect(page.locator("#starter-result")).to_contain_text("current workspace is not probed")
+        expect(page.locator("#starter-result")).to_be_visible()
+        expect(page.locator("#session-facts")).to_contain_text("verification: passed")
+        expect(page.locator("#starter-evidence")).to_contain_text("current workspace is not probed")
 
+        # A run that did not start from a Starter gets no starter card on either page.
         page.goto(BASE + "#/sessions/" + MANIFEST["ordinary"])
-        expect(page.locator("#starter-result")).to_contain_text("Recorded run evidence")
-        expect(page.locator("#starter-result")).to_contain_text("Starter input/source provenance was not recorded")
-        expect(page.locator("#starter-coverage")).to_contain_text("complete")
+        expect(page.locator("#session-result")).to_be_visible()
+        expect(page.locator("#starter-result")).to_have_count(0)
         expect(page.locator("#starter-implement")).to_have_count(0)
+        page.goto(BASE + "#/runs/" + MANIFEST["ordinary"])
+        page.wait_for_load_state("networkidle")
+        expect(page.locator("#starter-result")).to_have_count(0)
 
         # Missing immutable bytes cannot leave an implement action or imply coverage.
         artifact = Path(MANIFEST["artifact"])
@@ -195,7 +204,11 @@ def main():
         artifact.rename(held_artifact)
         try:
             page.goto(BASE + "#/sessions/" + MANIFEST["plan"])
-            expect(page.locator("#starter-coverage")).to_contain_text("incomplete / unknown")
+            # The card loads after the session row; reading a plan whose bytes are gone is
+            # slower on a CI runner than the default 5 s allows.
+            expect(page.locator("#session-result")).to_be_visible(timeout=20_000)
+            expect(page.locator("#starter-coverage")).to_contain_text("incomplete / unknown",
+                                                                      timeout=20_000)
             expect(page.locator("#starter-implement")).to_have_count(0)
         finally:
             held_artifact.rename(artifact)
@@ -203,7 +216,7 @@ def main():
         # Readiness labels and remedy order must survive the frontend transport.
         for profile, expected in [("single", "review needs setup"), ("missing", "needs-setup"),
                                   ("waived", "review not independent")]:
-            other = context.new_page()
+            other = throttle(context.new_page())
             other.on("pageerror", lambda e: errors.append(str(e)))
             other.on("console", lambda m: errors.append(m.text) if m.type in {"error", "warning"} else None)
             open_dashboard(other, PROFILES[profile], "#/starters/build-review")

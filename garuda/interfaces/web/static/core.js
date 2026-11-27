@@ -7,17 +7,44 @@
 
 /* --- token bootstrap ------------------------------------------------------
  * The token and the route both live in the hash, so the token occupies it for
- * exactly one tick before being swapped for the real route.
+ * exactly one tick before being swapped for the real route — at load here, and on every
+ * later hash change in router.js: pasting the printed `#t=…` URL into an open tab is a
+ * same-document hash change, not a page load. location.replace() keeps the token out of
+ * the address bar and out of history.
  *
  * sessionStorage, not localStorage: per-tab, and it does not persist for whatever
  * else binds this port next week. A tab opened from history therefore has no token
  * and is told to relaunch, which is the fail-closed outcome. */
 
-var TOKEN = sessionStorage.getItem("garuda_token") || "";
-if (location.hash.indexOf("#t=") === 0) {
-  TOKEN = location.hash.slice(3);
-  sessionStorage.setItem("garuda_token", TOKEN);
-  location.replace("#/");
+var TOKEN = "";
+try { TOKEN = sessionStorage.getItem("garuda_token") || ""; } catch (e) { TOKEN = ""; }
+
+function setToken(token) {
+  TOKEN = token;
+  try { sessionStorage.setItem("garuda_token", token); } catch (e) { /* this tab only */ }
+}
+
+/* The token in a `#t=…` hash, or null when the hash carries none. */
+function hashToken(hash) {
+  if ((hash || "").indexOf("#t=") !== 0) return null;
+  var token = hash.slice(3);
+  try { token = decodeURIComponent(token); } catch (e) { /* keep it as typed */ }
+  return token;
+}
+
+/* Where to go once a token arrives: the page that lost its token, else the overview. */
+function takeReturnRoute() {
+  var route = "";
+  try {
+    route = sessionStorage.getItem("garuda_return") || "";
+    sessionStorage.removeItem("garuda_return");
+  } catch (e) { route = ""; }
+  return route.indexOf("#/") === 0 ? route : "#/";
+}
+
+if (hashToken(location.hash) !== null) {
+  setToken(hashToken(location.hash));
+  location.replace(takeReturnRoute());
 }
 
 var STATE = {
@@ -27,27 +54,123 @@ var STATE = {
   live: null, chat: null, raw: null, openTurns: null
 };
 
+/* --- navigation generation ------------------------------------------------
+ * Every navigation (router.js navigate()) starts a new generation. A GET the previous view
+ * still had in flight — answered after the view that asked is gone — rejects with a
+ * `Superseded` error (code "superseded"). It is not aborted: an aborted request is a failed
+ * request in every log and check that watches them, for no gain at this scale. Every promise
+ * settles: a Poller's call returns and its next tick runs, a chain's cleanup runs. What must
+ * not happen is the old view painting over the new one, so every error path starts with
+ * `if (isSuperseded(err)) return;` and success paths never see a superseded read. Writes
+ * (any non-GET) settle normally.
+ *
+ * {keep: true} keeps a GET out of this (the nav badge, boot, a chat's heartbeat): an
+ * optimisation for reads that truly outlive their view, not something correctness needs.
+ *
+ * viewGuard() returns a function that stays true while the view that called it is the one
+ * on screen; check it before touching the DOM after anything asynchronous that is not a
+ * GET through api() (a timer, a write's response, a chained re-render). */
+
+var NAVIGATION = { generation: 0 };
+
+function beginNavigation() {
+  NAVIGATION.generation += 1;
+}
+
+function viewGuard() {
+  var generation = NAVIGATION.generation;
+  return function () { return generation === NAVIGATION.generation; };
+}
+
+function supersededError() {
+  var err = new Error("Superseded by a navigation");
+  err.name = "Superseded";
+  err.code = "superseded";
+  err.status = 0;
+  return err;
+}
+
+/* True for a read the user navigated away from: ignore it, silently. */
+function isSuperseded(err) {
+  return !!err && err.code === "superseded";
+}
+
+// A superseded read nobody handled is not an error worth a console line. (Guarded: the
+// static tests run this file in a bare VM context.)
+if (typeof window !== "undefined" && window.addEventListener) {
+  window.addEventListener("unhandledrejection", function (event) {
+    if (isSuperseded(event.reason)) event.preventDefault();
+  });
+}
+
 /* --- fetch ---------------------------------------------------------------- */
 
 function api(path, opts) {
   opts = opts || {};
+  var method = opts.method || "GET";
+  var tied = method === "GET" && !opts.keep;
+  var current = tied ? viewGuard() : function () { return true; };
+  // While the dashboard is unreachable, one backed-off probe asks for everyone: a read fails
+  // here without a request, so N pollers do not become N retry loops against a dead server.
+  // A view's own backoff still runs on these failures; onReconnect() is the all-clear.
+  // Writes still go out (a user's click is worth one real attempt, and its success ends
+  // the outage early).
+  if (CONNECTION.down && method === "GET") return Promise.reject(connectionDownError());
   var headers = { "X-Garuda-Token": TOKEN };
   if (opts.body) headers["Content-Type"] = "application/json";
   return fetch(path, {
-    method: opts.method || "GET",
+    method: method,
     headers: headers,
     body: opts.body ? JSON.stringify(opts.body) : undefined
   }).then(function (response) {
+    if (!current()) throw supersededError();
     return response.text().then(function (text) {
+      if (!current()) throw supersededError();
       var payload = null;
       try { payload = text ? JSON.parse(text) : null; } catch (e) { payload = null; }
-      if (response.ok) return payload;
+      if (response.ok) {
+        if (CONNECTION.down) connectionRestored();
+        return payload;
+      }
       var err = new Error((payload && payload.error && payload.error.message) || response.statusText);
       err.code = (payload && payload.error && payload.error.code) || "unavailable";
       err.status = response.status;
+      if (isConnectionLimit(response, payload)) {
+        err.code = "too_many_connections";
+        err.retryAfter = retryAfterSeconds(response);
+        err.message = TOO_MANY_TABS;
+        connectionLost(err);
+      } else {
+        if (CONNECTION.down) connectionRestored();
+        if (response.status === 401) confirmAuthLost();
+      }
       throw err;
+    }, function () {
+      throw current() ? unreachableError() : supersededError();
     });
+  }, function () {
+    // Failed after a navigation: the view that asked is gone.
+    if (!current()) throw supersededError();
+    // fetch() rejects only when no response arrived: the server is down or unreachable. The
+    // browser's own words ("Failed to fetch", "Load failed") say nothing a user can act on.
+    throw unreachableError();
   });
+}
+
+function connectionDownError() {
+  var tabs = CONNECTION.reason === "too_many_connections";
+  var err = new Error(tabs ? TOO_MANY_TABS : UNREACHABLE);
+  err.code = tabs ? "too_many_connections" : "network";
+  err.status = 0;
+  return err;
+}
+
+function unreachableError() {
+  var err = new Error(UNREACHABLE);
+  err.code = "network";
+  err.status = 0;
+  connectionLost(err);
+  return err;
 }
 
 /* --- DOM ----------------------------------------------------------------- */
@@ -143,6 +266,13 @@ function ageText(seconds) {
   if (seconds < 3600) return Math.floor(seconds / 60) + "m ago";
   if (seconds < 86400) return Math.floor(seconds / 3600) + "h ago";
   return Math.floor(seconds / 86400) + "d ago";
+}
+
+/* A future epoch-seconds time as "in 3h"; a past one as "3h ago" (via ageText). */
+function untilEpochText(epochSeconds) {
+  var seconds = epochSeconds - Date.now() / 1000;
+  if (seconds <= 0) return ageText(-seconds);
+  return seconds < 60 ? "in under a minute" : "in " + ageText(seconds).replace(/ ago$/, "");
 }
 
 function loginAge(check) {
@@ -273,11 +403,218 @@ function unreadableNote(payload) {
     '<span class="notice-body"> — left out of this list; the dashboard’s server log says why.</span></div>';
 }
 
+/* --- lost or missing token --------------------------------------------------
+ * Any 401 means this tab's token is not the running dashboard's: it never had one, or the
+ * dashboard restarted with a new one. One full-page state for both, with a field to paste
+ * the printed link into (router.js handles it), since a hard reload was the only other way
+ * to replace a token sessionStorage still holds. */
+
 function tokenRequiredPanel() {
   return (
-    '<div class="empty">' +
-    "<p><strong>This dashboard needs its token.</strong></p>" +
-    "<p>Relaunch <code>garuda web</code> and open the URL it prints.</p>" +
+    '<div class="empty token-panel" id="token-panel">' +
+    "<p><strong>" + (TOKEN
+      ? "This dashboard was restarted or the link expired — open the new link printed by <code>garuda web</code>"
+      : "This dashboard needs its link — open the one printed by <code>garuda web</code>") + "</strong></p>" +
+    "<p>Or paste that link here (it ends in <code>#t=…</code>):</p>" +
+    '<form id="token-form" class="token-form" autocomplete="off">' +
+    '<input type="text" id="token-input" spellcheck="false" aria-label="Dashboard link printed by garuda web"' +
+    ' placeholder="http://127.0.0.1:…/#t=…">' +
+    '<button type="submit" class="btn btn-primary">Open</button></form>' +
+    '<p class="stat-sub" id="token-error" role="alert"></p>' +
     "</div>"
   );
+}
+
+/* A 401 from one request is confirmed with /api/health before the whole page is replaced:
+ * a refused token fails every route, so health refuses it too; anything narrower stays that
+ * view's to report (the session tail says so in its own status line). */
+var AUTH_CHECK = { running: false };
+
+function confirmAuthLost() {
+  if (AUTH_CHECK.running || el("token-panel")) return;
+  AUTH_CHECK.running = true;
+  fetch("/api/health", { headers: { "X-Garuda-Token": TOKEN }, cache: "no-store" }).then(function (response) {
+    AUTH_CHECK.running = false;
+    if (response.status === 401) authLost();
+  }, function () { AUTH_CHECK.running = false; });
+}
+
+/* Show the token state once, remembering the page to come back to. */
+function authLost() {
+  if (el("token-panel")) return;
+  var hash = location.hash || "";
+  if (hash.indexOf("#/") === 0) {
+    try { sessionStorage.setItem("garuda_return", hash); } catch (e) { /* back to the overview */ }
+  }
+  render(tokenRequiredPanel());
+}
+
+/* --- connection ------------------------------------------------------------
+ * One banner for the whole app when the dashboard cannot be reached (the server stopped, or
+ * it refuses connections because too many tabs are open). A light /api/health probe retries
+ * with exponential backoff, capped at 30 s and never sooner than a Retry-After; when it
+ * answers, the banner clears itself and every onReconnect() callback runs (the router's
+ * refreshes the current view). api() reports failures here itself, so a view renders
+ * `err.message` (or apiErrorText(err)) and never needs its own banner or retry loop.
+ *
+ * A request that got no answer is first confirmed with one probe: only when /api/health
+ * fails too is the dashboard declared unreachable (banner, reads fail fast, one backed-off
+ * probe). If the probe answers, the failure was that one request's, and the view's own
+ * backoff handles it — declaring an outage there, and a reconnect a moment later, made a
+ * view that kept failing retry in a tight loop. A connection-limit 503 is the server's own
+ * word, so it is declared at once. */
+
+var UNREACHABLE = "Can’t reach the dashboard — is `garuda web` still running?";
+var TOO_MANY_TABS = "Too many open dashboard tabs — the dashboard serves at most 32 connections at once; close some tabs.";
+var PROBE_MAX_MS = 30000;
+var CONNECTION = { down: false, checking: false, attempt: 0, delay: 0, timer: null, listeners: [] };
+
+/* The server's connection-limit refusal: a 503 without a route's error envelope, or with a
+ * Retry-After. A route that 503s (read-only, no flow gateway) answers in its envelope. */
+function isConnectionLimit(response, payload) {
+  return response.status === 503 &&
+    (!(payload && payload.error) || !!retryAfterHeader(response));
+}
+
+function retryAfterHeader(response) {
+  return response.headers && typeof response.headers.get === "function" ? response.headers.get("Retry-After") : null;
+}
+
+function retryAfterSeconds(response) {
+  var value = Number(retryAfterHeader(response));
+  return isFinite(value) && value > 0 ? value : 0;
+}
+
+/* Whether `err` (from api()) is about the connection rather than the request. */
+function isConnectionError(err) {
+  return !!err && (err.code === "network" || err.code === "too_many_connections");
+}
+
+/* A request failure as one line: the server's message and its error code. */
+function apiErrorText(err) {
+  if (!err) return "Request failed";
+  if (isConnectionError(err) || !err.code) return String(err.message || "Request failed");
+  return err.message + " (" + err.code + (err.status ? ", HTTP " + err.status : "") + ")";
+}
+
+/* Run `fn` each time the dashboard becomes reachable again. Returns an unsubscribe. */
+function onReconnect(fn) {
+  CONNECTION.listeners.push(fn);
+  return function () {
+    CONNECTION.listeners = CONNECTION.listeners.filter(function (other) { return other !== fn; });
+  };
+}
+
+function connectionLost(err) {
+  if (err && err.code === "too_many_connections") { declareDown(err); return; }
+  if (CONNECTION.down || CONNECTION.checking) return;
+  CONNECTION.checking = true;
+  fetch("/api/health", { headers: { "X-Garuda-Token": TOKEN }, cache: "no-store" }).then(function (response) {
+    CONNECTION.checking = false;
+    if (isConnectionLimit(response, null)) {
+      declareDown({ code: "too_many_connections", retryAfter: retryAfterSeconds(response) });
+    } else if (response.status === 401) {
+      authLost();
+    }
+  }, function () {
+    CONNECTION.checking = false;
+    declareDown(err);
+  });
+}
+
+function declareDown(err) {
+  CONNECTION.reason = (err && err.code) || "network";
+  showConnectionBanner(err);
+  if (CONNECTION.down) return;
+  CONNECTION.down = true;
+  CONNECTION.attempt = 0;
+  scheduleProbe(err && err.retryAfter);
+}
+
+function scheduleProbe(retryAfter) {
+  clearTimeout(CONNECTION.timer);
+  var delay = Math.min(1000 * Math.pow(2, CONNECTION.attempt), PROBE_MAX_MS);
+  if (retryAfter) delay = Math.max(delay, retryAfter * 1000);
+  CONNECTION.attempt += 1;
+  CONNECTION.delay = delay;
+  CONNECTION.timer = setTimeout(probeConnection, delay);
+}
+
+function probeConnection() {
+  clearTimeout(CONNECTION.timer);
+  if (!CONNECTION.down) return;
+  fetch("/api/health", { headers: { "X-Garuda-Token": TOKEN }, cache: "no-store" }).then(function (response) {
+    if (isConnectionLimit(response, null)) {
+      var err = { code: "too_many_connections", retryAfter: retryAfterSeconds(response) };
+      CONNECTION.reason = err.code;
+      showConnectionBanner(err);
+      scheduleProbe(err.retryAfter);
+      return;
+    }
+    connectionRestored();
+    if (response.status === 401) authLost();
+  }, function () {
+    CONNECTION.reason = "network";
+    showConnectionBanner({ code: "network" });
+    scheduleProbe();
+  });
+}
+
+function connectionRestored() {
+  if (!CONNECTION.down) return;
+  CONNECTION.down = false;
+  clearTimeout(CONNECTION.timer);
+  var banner = el("conn-banner");
+  if (banner) banner.hidden = true;
+  CONNECTION.listeners.slice().forEach(function (fn) {
+    try { fn(); } catch (e) { /* one listener must not stop the rest */ }
+  });
+}
+
+function showConnectionBanner(err) {
+  var banner = el("conn-banner");
+  if (!banner) return;
+  var tabs = err && err.code === "too_many_connections";
+  el("conn-banner-text").textContent = (tabs ? TOO_MANY_TABS : UNREACHABLE) + " Retrying…";
+  banner.setAttribute("data-reason", tabs ? "too_many_connections" : "network");
+  banner.hidden = false;
+}
+
+/* --- write actions -----------------------------------------------------------
+ * guardAction(button, fn, {confirm, busy, errorTarget}) runs one write behind a button: it
+ * asks `confirm` first when given, disables the button and shows "working…" (or `busy`)
+ * until the promise `fn` returns settles, so a double-click sends one request, then
+ * restores the button. A failure is shown with the server's message and error code, in
+ * `errorTarget` (an element or its id) or else a toast, and resolves to undefined; success
+ * resolves to what `fn` returned. */
+
+function guardAction(button, fn, options) {
+  options = options || {};
+  if (!button || button.disabled || button.getAttribute("aria-busy") === "true") return Promise.resolve(undefined);
+  if (options.confirm && !window.confirm(options.confirm)) return Promise.resolve(undefined);
+  var label = button.innerHTML;
+  button.disabled = true;
+  button.setAttribute("aria-busy", "true");
+  button.textContent = options.busy || "working…";
+  function restore() {
+    button.disabled = false;
+    button.removeAttribute("aria-busy");
+    button.innerHTML = label;
+  }
+  return Promise.resolve().then(fn).then(function (value) {
+    restore();
+    return value;
+  }, function (err) {
+    restore();
+    if (isSuperseded(err)) return undefined;  // the page moved on; nothing to report
+    var text = apiErrorText(err);
+    var target = typeof options.errorTarget === "string" ? el(options.errorTarget) : options.errorTarget;
+    if (target) {
+      target.innerHTML = '<div class="notice err" role="alert"><div class="notice-title">Request failed</div>' +
+        '<div class="notice-body">' + esc(text) + "</div></div>";
+    } else {
+      toast(text);
+    }
+    return undefined;
+  });
 }

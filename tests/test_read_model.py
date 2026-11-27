@@ -108,8 +108,38 @@ def test_a_review_outcome_is_never_verification(world):
     attempt = review["attempts"][0]
     assert (attempt["status"], attempt["delta"], attempt["no_edits"]) == ("stopped", False, "changed")
     assert attempt["stop"]["code"] == "flow.no_edits_changed"
+    # Which attempt produced it and which consumed it: two review rounds pass two patches
+    # along the same pair of steps, and the list must tell them apart.
     assert row["flow"]["edges"] == [
-        {"from_step": "code", "to_step": "review", "type": "diff", "digest": "d" * 64}]
+        {"from_step": "code", "to_step": "review", "type": "diff", "digest": "d" * 64,
+         "from_attempt": 1, "to_attempt": 1}]
+
+
+def test_a_flow_totals_its_receipts_measures_like_flow_show(world):
+    """The web's flow view and `flow show --json` carry one flow-level measure (#832): the
+    shared read model totals the receipts exactly as the trajectory summary does."""
+    from garuda.flows import measure
+    from garuda.flows.trajectory import trajectory
+
+    store, queue, ids = world
+    directory = engine.flow_dir(store, ids["flow"])
+    usage = {"source": "adapter_reported", "reports": 3, "first_context_used": 900,
+             "peak_context_used": 4000, "context_size": 200000, "cost_usd": 0.0125,
+             "cost_complete": True, "models": ["m-1"]}
+    engine._write_once(directory / "receipts" / "code-2.json", {
+        "index": 0, "step": "code", "role": "coder", "attempt": 2, "session_id": ids["done"],
+        "success": True, "status": "done", "inputs": [], "outputs": [],
+        "measure": {**measure.attempt(store, prompt="p" * 400, parts=None,
+                                      session_ids=[ids["done"]], duration_ms=1500),
+                    "turns": 3, "tool_calls": 7, "usage": usage}})
+
+    total = read_model.session(store, ids["flow"], queue=queue)["flow"]["measure"]
+
+    assert total == trajectory(store, ids["flow"])["summary"]["measure"]
+    assert (total["attempts"], total["measured_attempts"]) == (3, 1)
+    assert (total["turns"], total["tool_calls"], total["prompt_chars"]) == (3, 7, 400)
+    assert (total["peak_context_used"], total["reported_cost_usd"]) == (4000, 0.0125)
+    assert total["cost_complete"] is False  # two attempts recorded no measure: not complete
 
 
 def test_session_detail_uses_the_authorized_bounded_artifact_projection(world):

@@ -552,4 +552,133 @@ for offset, record in enumerate(long_records):
 write(LONG_ID, "A very long run, to keep the trace fast and the raw filter honest",
       long_records, turns=LONG_TURNS)
 
+# 12–14. Flow parents: a completed two-round flow, a flow stopped by a failed step, and a flow
+#        with a step in flight. A flow's own session has no event log (each step runs in its
+#        own session), so its trace page must be the flow, never "no session_end". Written by
+#        the production writers: the session store and session state, the engine's receipt and
+#        journal writers, the receipt `measure` builder and the usage-summary recorder.
+FLOW_DONE, FLOW_STOPPED, FLOW_RUNNING = "l12-flow-completed", "m13-flow-stopped", "n14-flow-running"
+FLOW_STEP_SESSIONS = 7  # step sessions the three flows write (each a run of its own)
+
+
+def seed_flows() -> None:
+    from garuda.flows import engine, measure
+    from garuda.observability.usage import record_usage_summary
+    from garuda.runtime import session_state
+
+    now = datetime.now(timezone.utc)
+
+    def stamp(minutes_ago: float) -> str:
+        return (now - timedelta(minutes=minutes_ago)).isoformat()
+
+    def step_session(sid, task, calls, *, usage=None):
+        CLOCK[0] = 0
+        records = [start()]
+        for turn, name in enumerate(calls, start=1):
+            records += [budget(turn, 0.1 * turn),
+                        response(turn, f"{task}: turn {turn}.",
+                                 [spec(f"{sid}-{turn}", name, {"path": "calc.py"})]),
+                        tool(turn, f"{sid}-{turn}"), result(turn, f"{sid}-{turn}", "ok"),
+                        metrics(turn)]
+        records.append(end(True, len(calls)))
+        write(sid, task, records, turns=len(calls), model="acme/haiku-mini")
+        if usage:
+            record_usage_summary(store, sid, "seg-1", usage)
+
+    def flow_parent(sid, task, steps, **meta):
+        store.begin(session_id=sid, task=task, model="flow", agent="flow:pair2",
+                    workspace="/Users/dev/project")
+        store.update_meta(sid, {"kind": "flow", "flow": {"name": "pair2", "steps": steps},
+                                "created_at": stamp(12), **meta})
+        directory = engine.flow_dir(store, sid)
+        (directory / "receipts").mkdir(parents=True, exist_ok=True)
+        return directory
+
+    def patch(step, attempt, sid, digest):
+        return {"type": "patch", "digest": digest * 64, "producer_step": step,
+                "producer_session": sid, "attempt": attempt, "size": 233,
+                "workspace_version": f"w{attempt}", "path": f"artifacts/{step}-{attempt}-patch.txt",
+                "version": 1}
+
+    def receipt(directory, step, index, attempt, role, sid, *, minutes, duration_ms,
+                status="done", inputs=(), outputs=(), measured=True, prompt_chars=934):
+        record = {
+            "index": index, "step": step, "role": role, "attempt": attempt, "session_id": sid,
+            "success": status == "done", "status": status,
+            "inputs": list(inputs), "outputs": list(outputs),
+            "role_plan": {"runtime_id": "claude", "kind": "acp",
+                          "model_id": "haiku" if role == "coder" else "sonnet",
+                          "name": role, "permissions": "smart"},
+            "started_at": stamp(minutes + duration_ms / 60000), "finished_at": stamp(minutes),
+            "recorded_at": stamp(minutes), "duration_ms": duration_ms,
+            "workspace_version_before": f"v{attempt}", "workspace_version_after": f"v{attempt + 1}",
+        }
+        if measured:
+            record["measure"] = measure.attempt(
+                store, prompt="p" * prompt_chars,
+                parts=[{"part": "task", "chars": prompt_chars - 58}, {"part": "preamble", "chars": 58}],
+                session_ids=[sid], duration_ms=duration_ms)
+        engine._write_once(directory / "receipts" / f"{step}-{attempt}.json", record)
+
+    # 12. Completed after two review rounds: build → review, build → review. The last review
+    #     receipt predates measuring, so its row must read "not recorded".
+    sessions = {"b1": "l12-step-build-1", "r1": "l12-step-review-1",
+                "b2": "l12-step-build-2", "r2": "l12-step-review-2"}
+    step_session(sessions["b1"], "build round 1", ["write_file", "bash", "read_file", "bash"],
+                 usage=[{"context_used": 22372, "context_size": 200000, "cost_usd": 0.0102,
+                         "model": "claude-haiku"},
+                        {"context_used": 24445, "context_size": 200000, "cost_usd": 0.0327242,
+                         "model": "claude-haiku"}])
+    step_session(sessions["r1"], "review round 1", ["read_file"])
+    step_session(sessions["b2"], "build round 2", ["edit", "bash"],
+                 usage=[{"context_used": 24688, "context_size": 200000, "cost_usd": 0.0289294,
+                         "model": "claude-haiku"}])
+    step_session(sessions["r2"], "review round 2", ["read_file", "bash"])
+    directory = flow_parent(FLOW_DONE, "Add an add() function to calc.py with a test",
+                            ["build", "review"], flow_state="completed", status="completed",
+                            state=session_state.finished(success=True),
+                            final_message="calc.add is in place, with tests/test_calc.py.",
+                            review={"status": "review_approved", "rounds": 2, "history": []},
+                            review_approvals={"build": {"status": "review_approved",
+                                                        "rounds": 2, "coverage": "complete"}})
+    first, second = patch("build", 1, sessions["b1"], "a"), patch("build", 2, sessions["b2"], "b")
+    receipt(directory, "build", 0, 1, "coder", sessions["b1"], minutes=10, duration_ms=26990,
+            outputs=[first])
+    receipt(directory, "review", 1, 1, "reviewer", sessions["r1"], minutes=9, duration_ms=12533,
+            inputs=[first], prompt_chars=1800)
+    receipt(directory, "build", 0, 2, "coder", sessions["b2"], minutes=7, duration_ms=16768,
+            outputs=[second], prompt_chars=2419)
+    receipt(directory, "review", 1, 2, "reviewer", sessions["r2"], minutes=6, duration_ms=11002,
+            inputs=[second], measured=False)
+    print(f"  {FLOW_DONE}  completed flow, 4 attempts, 4 step sessions")
+
+    # 13. Stopped: the review step failed, so the flow stopped with a recorded stop code.
+    step_session("m13-step-build-1", "build", ["write_file"])
+    step_session("m13-step-review-1", "review", ["read_file"])
+    directory = flow_parent(FLOW_STOPPED, "Rename the config loader", ["build", "review"],
+                            flow_state="stopped", status="failed",
+                            state=session_state.finished(success=False),
+                            flow_stop={"code": "flow.step_failed", "step": "review",
+                                       "message": "review failed: the harness exited"})
+    done = patch("build", 1, "m13-step-build-1", "c")
+    receipt(directory, "build", 0, 1, "coder", "m13-step-build-1", minutes=8, duration_ms=9000,
+            outputs=[done])
+    receipt(directory, "review", 1, 1, "reviewer", "m13-step-review-1", minutes=7,
+            duration_ms=4000, status="stopped", inputs=[done])
+    print(f"  {FLOW_STOPPED}  stopped flow (flow.step_failed)")
+
+    # 14. Running: build is done, review is launched (a journal intent with no receipt yet).
+    step_session("n14-step-build-1", "build", ["write_file", "bash"])
+    directory = flow_parent(FLOW_RUNNING, "Port the parser to the new tokenizer",
+                            ["build", "review"], flow_state="running",
+                            state=session_state.started())
+    receipt(directory, "build", 0, 1, "coder", "n14-step-build-1", minutes=3, duration_ms=30000,
+            outputs=[patch("build", 1, "n14-step-build-1", "d")])
+    engine._append(directory / engine.JOURNAL, {"event": "intent", "index": 1, "step": "review",
+                                                "attempt": 1, "at": stamp(2)})
+    print(f"  {FLOW_RUNNING}  running flow, step 2 of 2 in flight")
+
+
+seed_flows()
+
 print(f"\nSeeded {len(list(ROOT.iterdir()))} sessions at {ROOT}")

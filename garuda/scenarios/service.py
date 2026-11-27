@@ -16,7 +16,7 @@ from garuda.core.sessions import SessionStore
 from garuda.flows import review
 from garuda.runtime.registry import RegistryError
 from garuda.runtime.roles import RoleRefused, acp_options, acp_permission, check_provable, harness_mode
-from garuda.scenarios.catalog import load_catalog
+from garuda.scenarios.catalog import CHECKED_FLOW_STARTERS, load_catalog, selects_flow
 from garuda.scenarios.compile import LaunchContext, compile_with_context, resolve_launch, workspace_path
 from garuda.scenarios.inputs import validate_inputs
 from garuda.scenarios.types import LaunchPlan, StarterError
@@ -124,6 +124,27 @@ def readiness(context: LaunchContext, *, starter_id: str, owned: bool = False) -
                                            "Name a mode that cannot write on this role, or "
                                            "remove its harness_mode.", level="error"))
 
+    for code, message, fix in long_run_blockers(context):
+        blockers.append(code)
+        diagnostics.append(_diagnostic(code, message, fix, level="error"))
+    if selects_flow(entry):
+        for role in context.project_roles:
+            blockers.append("starter.project_role")
+            diagnostics.append(_diagnostic(
+                "starter.project_role",
+                f"{role}: the project's garuda.yaml chooses this role's harness, model, agent, "
+                "mode or effort; a selected flow runs only roles you configured",
+                f"Define {role} in your user garuda.yaml, or remove its definition from the "
+                "project file.", level="error"))
+        origin = context.flow_origin or {}
+        if origin.get("source") == "project":
+            diagnostics.append(_diagnostic(
+                "flow.project_source",
+                "This flow is defined by the project's garuda.yaml, not your own "
+                "configuration" + ("" if origin.get("trusted") else
+                                   ", and that file is not trusted") + ".",
+                "Review its steps before starting."))
+
     reviews = []
     for step in (context.flow or {}).get("steps", []):
         if "review" not in step:
@@ -148,14 +169,14 @@ def readiness(context: LaunchContext, *, starter_id: str, owned: bool = False) -
     trusted_checks = checks_with_authority(context.resolved)
     if context.kind == "flow":
         verification = ("from-acceptance-receipt"
-                        if starter_id == "build-review" and trusted_checks
+                        if starter_id in CHECKED_FLOW_STARTERS and trusted_checks
                         and sys.platform == "linux" else "unavailable")
     else:
         verification = "from-acceptance-receipt"
-    if starter_id in {"build-review", "run-with-role"} and not trusted_checks:
+    if starter_id in {"build-review", "run-with-role", "run-flow"} and not trusted_checks:
         diagnostics.append(_diagnostic("verification.no_trusted_check", "No trusted or explicitly requested checks are configured.",
                                        "Run `garuda init --project` to propose checks, or `garuda config trust` for a changed project file."))
-    if (starter_id == "build-review" and trusted_checks and sys.platform != "linux"):
+    if (starter_id in CHECKED_FLOW_STARTERS and trusted_checks and sys.platform != "linux"):
         blockers.append("flow.verification_unavailable")
         diagnostics.append(_diagnostic(
             "verification.unsupported_supervisor",
@@ -175,6 +196,45 @@ def readiness(context: LaunchContext, *, starter_id: str, owned: bool = False) -
             "bindings": {name: plan.record() for name, plan in context.role_plans.items()},
             "remedies": remedies, "diagnostics": diagnostics, "runtime_evidence": evidence,
             "verification": verification, "check_count": len(trusted_checks)}
+
+
+def flow_checks(plan: LaunchPlan) -> tuple[str, ...] | None:
+    """The ``checks`` a flow starter's start passes to the flow service.
+
+    ``None`` runs no checks. A checked starter passes its explicit
+    ``options.checks`` (already part of its resolved configuration) or ``()``,
+    so the effective checks run at flow finalization, as ``garuda flow run``
+    with the same ``--check`` options does.
+    """
+    if plan.kind != "flow" or plan.starter_id not in CHECKED_FLOW_STARTERS:
+        return None
+    return tuple(plan.options.get("checks", ()))
+
+
+def pipeline_view(plan: LaunchPlan, context: LaunchContext) -> dict:
+    """``{"pipeline": ...}`` for a selecting flow starter's preview, else ``{}``.
+
+    The five listed starters' previews stay exactly as they were.
+    """
+    if plan.kind != "flow" or not selects_flow(load_catalog()[plan.starter_id]):
+        return {}
+    from garuda.scenarios.pipeline import project
+
+    return {"pipeline": project(context)}
+
+
+def long_run_blockers(context: LaunchContext) -> list[tuple[str, str, str]]:
+    """A ``long_run`` step on a non-ACP role, which the engine stops mid-run."""
+    out = []
+    for step in gy.effective_flow_steps(context.flow or {"steps": []}):
+        role = step.get("role")
+        plan = context.role_plans.get(role)
+        if "long_run" in step and plan is not None and plan.kind != "acp":
+            out.append(("flow.long_run_unsupported",
+                        f"step {step['id']} sets long_run, but its role {role} is "
+                        "not an ACP harness; the turn loop runs ACP steps only",
+                        "Bind the role to an ACP harness, or remove the step's long_run."))
+    return out
 
 
 def readiness_refusal(state: dict, message: str) -> tuple[str, str]:
@@ -223,7 +283,7 @@ class StarterService:
             result = await FlowExecutionService(self.store).run(
                 current.target, current.task, current.workspace,
                 starter_record=current.launch_metadata(),
-                checks=() if current.starter_id == "build-review" else None)
+                checks=flow_checks(current))
             return {"session_id": result.flow.flow_session,
                     "exit_code": 0 if result.flow.completed else 3}
         from garuda.agents.requests import execute_role_request
@@ -249,6 +309,8 @@ class StarterService:
         root = workspace_path(workspace)
         rows = []
         for entry in load_catalog().values():
+            if selects_flow(entry):
+                continue  # reachable by id through preview and start; never listed
             try:
                 context = resolve_launch(entry, {}, root)
                 state = readiness(context, starter_id=entry.id)
@@ -263,7 +325,8 @@ class StarterService:
         plan, context = compile_with_context(entry_id, inputs, workspace, store=self.store,
                                              allow_cross_project_context=allow_cross_project_context)
         return {"plan": plan.to_dict(), "readiness": readiness(context, starter_id=entry_id),
-                "configuration": setup_view.configuration(context.resolved)}
+                "configuration": setup_view.configuration(context.resolved),
+                **pipeline_view(plan, context)}
 
     def build_and_check(self, inputs: dict, workspace: str | Path, *, checks: list[str] | None = None,
                         allow_cross_project_context: bool = False) -> dict:

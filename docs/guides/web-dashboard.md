@@ -33,7 +33,12 @@ native Garuda agent.
 The command prints a URL with a one-time token (`http://127.0.0.1:8787/#t=…`);
 open that exact URL. It opens on the **Overview**. Press Ctrl-C to stop it: the
 dashboard finishes the flow and chat operations it owns, prints
-`Garuda dashboard stopped.` and exits 0.
+`Garuda dashboard stopped.` and exits 0. Pasting the link into a tab that is
+already open works too: the dashboard takes the token, removes it from the
+address bar and history, and reloads its data. If the dashboard restarted (a new
+token) or the tab never had one, every page shows **This dashboard was
+restarted or the link expired** with a field to paste the new link into; it
+returns to the page you were on.
 
 | Flag | Default | Use |
 |---|---|---|
@@ -55,8 +60,8 @@ dashboard finishes the flow and chat operations it owns, prints
 |---|---|---|
 | Overview | `#/` (also `#/overview`) | The landing page: what needs you, what is running, what finished last, and the health of the harnesses your roles use |
 | Starters | `#/starters`, `#/starters/<id>` | Five packaged journeys, configured readiness, preview/copy, and owned Linux flow starts in write mode |
-| Runs | `#/runs` | Every run: turns, tool calls, diffs, metrics, models used, consults |
-| Sessions | `#/sessions` | Live and past sessions with their state, queue and flow; Stop |
+| Runs | `#/runs` | Traces and metrics of what each agent did: turns, tool calls, diffs, tokens, cost, models used, consults |
+| Sessions | `#/sessions` | State, queue, approvals and control for each session (flow, Stop) |
 | Approvals | `#/inbox` | Every waiting approval; Allow or Deny |
 | Usage | `#/usage` | Totals and breakdowns from the usage ledger; CSV or JSON export |
 | Setup | `#/setup` | Roles, flows, agents, where each value came from, diagnostics |
@@ -66,13 +71,29 @@ dashboard finishes the flow and chat operations it owns, prints
 
 ## Finding your way
 
+Runs and Sessions list the same sessions for different jobs, and each says so
+under its title: Runs for what an agent did, Sessions for what state it is in
+and what you can do about it. Every run row links to its session and every
+session row to its trace.
+
 The **Approvals** tab shows a red count whenever a request is waiting, so a
 parked approval is visible from every page. The count is a read-only poll of
-`/api/inbox` every 20 seconds and pauses while the tab is hidden.
+`/api/inbox` every 20 seconds and pauses while the tab is hidden. On a window
+too narrow for every tab (a phone, a split screen), the tabs fold into one menu
+button that names the current page and carries the same count; `Esc` closes it.
+
+If the dashboard stops answering, one banner says **Can't reach the
+dashboard — is `garuda web` still running? Retrying…** and retries with a
+growing gap (at most 30 seconds); when the dashboard answers, the banner goes
+away and the page reloads its data. With more than 32 connections open at once
+(many tabs), it says **Too many open dashboard tabs** instead and waits as long
+as the dashboard asks. Buttons that change something (Recover, Prepare,
+Providers Refresh) show **working…** and ignore repeat clicks until the request
+finishes; a refusal shows the dashboard's message and error code.
 
 | Key | Does |
 |---|---|
-| `1`–`9`, `0` | Switch to the nth tab (`0` is the tenth, Chat in write mode) |
+| `1`–`9`, `0` | Switch to the nth tab (`0` is the tenth, Chat in write mode); `?` lists them |
 | `/` | Focus the page's search field |
 | `r` | Reload the current view, except Chat or a view with unsubmitted edits |
 | `t` | Toggle light and dark |
@@ -91,8 +112,12 @@ successfully submitted or you navigate away.
   where you act: approvals waiting (with expired ones counted apart, since they
   will be denied) → **Approvals**; sessions whose worker **crashed** and
   sessions **waiting** on an approval → the session; flows **paused** on a
-  resumable stop (a quota wait recorded by quota recovery, or a step's own
-  deadline or silence limit) → the session; configuration errors →
+  resumable stop (a usage-limit pause, shown as **paused: usage limit, resets
+  in 3h** with the absolute time when the harness reported its reset; a quota
+  wait recorded by quota recovery; a step's own
+  deadline or silence limit, or a long step's own pause: no measurable
+  progress, its turn budget used, or its harness refusing to continue) → the
+  session; configuration errors →
   **Setup**; a harness a role uses that is unavailable, logged out or not in
   the runtime catalog → **Providers**. With nothing to show it says
   **Nothing needs you right now**.
@@ -220,7 +245,17 @@ See [Ready-to-use workflows](../use-cases/workflows.md) for the five journeys.
 
 ## Runs
 
-The run list (`#/runs`) counts each run by its recorded **outcome**, so a
+The run list (`#/runs`) covers every session in the store. It loads the newest
+100 that match the search and filters and says how many there are in all
+(**100 of 1,160 runs loaded**); **Load older runs** under the table brings the
+next 100, and the tiles and charts say when they cover only the loaded runs.
+Search matches the task or session id across the whole store. The search, the
+status and the agent are part of the address (`#/runs?q=fib&status=failed`),
+so a filtered list survives a reload, can be shared, and Back undoes a filter.
+Each row shows the whole task with the session's name under it; the task links
+to the trace and the name to the session. On a phone the rows stack.
+
+The list counts each run by its recorded **outcome**, so a
 native run (`success`), an external-harness run or a flow (`completed`) count
 alike. The **Completed** tile is completed ÷ finished runs; it says how runs
 ended, not whether anyone checked the result, so verified runs are counted
@@ -269,6 +304,23 @@ history. On top of that:
   the model the harness reported and its estimated cost when it gives them.
   The run's **Cost** tile shows that adapter-reported cost, labelled as such,
   or **not reported by the adapter**.
+- **A flow's own run** (a flow parent, reached from the run list or the
+  session page's **Trace**) has no event log of its own: each step ran in its
+  own session. Its page is the flow: the task, how it ended (outcome,
+  verification and review as three separate facts, with review rounds and
+  coverage), the duration (the run list's figure, recorded start to end), the
+  final message, then the steps in order with each attempt: who ran it, its
+  status, duration, turn-loop counts, what it consumed and produced, an **Open
+  trace** button for that step session's own trace and a link to its session.
+  **Measured** shows each attempt's receipt measure (prompt size as an
+  estimate, turns, tool calls, wall time, peak context of context size, the
+  adapter-reported cost) and the flow's totals; peak context is occupancy, not
+  billable tokens, the cost is not metered by Garuda, and anything a receipt
+  did not record reads **not recorded**. A stopped flow says why in one
+  sentence from its recorded stop; a running flow says which step of how many
+  is in progress and refreshes every 10 seconds. Artifact edges name the
+  producing and consuming attempts, so two review rounds no longer read as a
+  duplicate.
 - **Following a live run** patches the page in place every few seconds. A turn
   or panel whose content did not change is left alone, so an expanded turn, a
   loaded subagent trace, the raw-events window with its filter and the focus
@@ -296,27 +348,80 @@ history. On top of that:
 
 ## Sessions
 
-The Sessions page shows every session's state (**queued** with its position,
-**working**, **waiting** on an approval, **crashed** when its worker is gone,
-or how it ended), runtime, role and model, outcome and verification as
-separate columns, workspace and branch, and approvals waiting. Type in the
-search field to match name, id, model or workspace, and click a state chip
-(**crashed 3**, **working 1**…) to show only that state; the filter stays in
-place when you open a session and come back. A session's page adds:
+The Sessions page lists sessions newest first, 50 at a time: their state
+(**queued** with its position, **working**, **waiting** on an approval,
+**crashed** when its worker is gone, or how it ended), runtime, role and
+model, outcome and verification as separate chips, workspace and branch,
+Garuda's usage and cost (`unknown` until metered) with the spend gate in one
+line, approvals waiting (expired ones counted apart), and when each was
+updated and started. Each name has the session's short id and the first words
+of its task beneath it, so two runs of one task are told apart. The header
+says how many are shown out of how many exist; **Load older** fetches the next
+page. The table fits a laptop screen; on a phone each session is a card.
 
-- its pending approvals;
-- a live events panel that reconnects without repeating or skipping events.
-  A finished session with no native event log (a flow, whose steps have their
-  own; an external harness, whose trail is on its Trace page) and no spend
-  snapshot says so in one line instead of showing empty panels;
-- what the harness itself reported: an external session's adapter figure, or
-  for a flow the total over its step sessions, labelled *adapter-reported, not
-  metered by Garuda*;
-- for a flow: steps, attempts, artifacts passed between them, the workspace
-  change per attempt, and the review outcome with its rounds, such as
-  **approved after 2 rounds** (never shown as verification);
-- **Stop**, for a background session: it leaves the queue, or its worker is
-  stopped once its recorded process identity matches.
+Search (name, id, task, model, agent, role, runtime, workspace or branch) and
+the state chips (**crashed 3**, **working 1**…) filter on the server, across
+every session rather than only the loaded rows. The filter lives in the
+address, as `#/sessions?q=…&state=…`: a reload keeps it, the link can be
+shared, Back and Forward step through state-chip changes, and a session's
+**All sessions** button returns to it. The list refreshes every 15 seconds while
+the tab is visible and changes only the rows that changed.
+
+A session's page leads with the work, and keeps the evidence below:
+
+- **Waiting for you**, at the top when the session has pending approvals, with
+  a link to answer them on the Approvals page.
+- The task (its first lines; **Show the full task** for the rest); runtime,
+  role and model; workspace and branch; when it started, and when it ended and
+  how long it took (or how long it has been running), each relative with the
+  absolute time beside it. An end that was not recorded says so.
+- **Result**: outcome and verification as two chips (a review gets its own),
+  the stored final message (it may be clipped, and withheld output is not
+  shown), the files the agent's working state recorded it wrote, and for a
+  failure or a crash the cause in one sentence with what to do next.
+- For a flow, a vertical pipeline of its steps: who ran each (role → harness
+  and model), its status, attempts with their duration, workspace change and
+  a link to each attempt's session, the artifacts it passed on, and the review
+  outcome with its rounds, such as **approved after 2 rounds** (never shown as
+  verification), with **coverage: partial** when the reviewer saw only part of
+  the change set. A long step's attempt adds its turn loop as its receipt
+  recorded it (**7 turns · 1 rotation · 5 continuations · 1 repair**); a
+  one-turn step shows none. A stopped attempt names its stop code in a plain
+  sentence. The step in flight is highlighted. When the flow stopped, the
+  Result says why in one sentence and, for a resumable stop (a deadline,
+  silence, no progress, the turn budget, a refusal, a failed step or missing
+  output), that `garuda flow resume <id>` runs the step again; a usage-limit
+  pause says when the limit resets and that quota recovery resumes the flow; a
+  step killed
+  by the supervisor's backstop (`flow.step_backstop`) is quarantined instead,
+  and the page says to set `limits.deadline_min` for a step that runs that
+  long.
+- For a session started from a Starter, its result and next action.
+- **Live events**: the session's event count and the last event's type. It
+  polls the log every 2 seconds while the tab is visible and holds no
+  connection open, so many open session pages do not slow the others down; it
+  reads **connected · waiting for events** when the session is quiet, and
+  continues from a byte offset, so nothing repeats or is skipped. If the
+  dashboard does not answer it says so and retries with growing pauses (up to
+  30 seconds) until it is back; a refused request (401, 403, 404) says why and
+  stops, with **Retry now**.
+- **Usage**: Garuda's usage and cost, what the harness itself reported (an
+  external session's adapter figure, or for a flow the total over its step
+  sessions, labelled *adapter-reported, not metered by Garuda*), and every
+  spend-gate value. A session with no native event log (a flow, whose steps
+  have their own; an external harness, whose trail is on its Trace page) and
+  no spend snapshot says so in one line instead of showing empty panels.
+- **Details and evidence**, collapsed: the four state facts, ownership and
+  reconciliation, artifact references, failure evidence (shown open above
+  instead when the session failed or crashed), and a Starter's coverage,
+  integrity and recorded identities.
+
+While the session is active the page re-reads it every 10 seconds and as soon
+as its log shows the state changed or ended, and updates each section in place:
+what you opened stays open. **Stop**, for a background session, asks you to
+confirm, is disabled while the request is in flight, and shows the server's
+answer: the session leaves the queue, or its worker is stopped once its
+recorded process identity matches.
 
 `garuda sessions --json` prints the same rows: the CLI and the dashboard read
 one model. A session whose record is damaged (a `meta.json` that isn't a JSON
@@ -366,10 +471,16 @@ means "answer recorded", not "the tool will run": the broker checks the
 session, request digest, nonce, expiry and permission ceiling, and records one
 decision.
 
-- The page sends the digest it showed you. A request that changed since is
-  refused (`stale_request`, 409); a second answer, or one after the decision,
-  loses (`already_answered`, 409); an expired request is refused (`expired`,
-  410) and denied.
+- The header counts what can still be answered, as the tab's red count does;
+  expired requests are listed apart under **Expired** (the broker denies them).
+- The page refreshes every 5 seconds while the tab is visible. A new request
+  appears and an answered or withdrawn one goes away without rebuilding the
+  other cards, so nothing moves under the pointer.
+- Both buttons are disabled while an answer is in flight. The page sends the
+  digest it showed you. A request that changed since is refused
+  (`stale_request`, 409); a second answer, or one after the decision, loses
+  (`already_answered`, 409); an expired request is refused (`expired`, 410)
+  and denied. The card shows the server's message, code and status.
 - If the browser abandons an approval it was polling, Garuda denies it instead
   of leaving the run blocked.
 - Headless runs, including `--bg` runs, deny approvals at once, so they never
@@ -540,11 +651,11 @@ Providers page discards it.
 | `POST /api/scenarios/start` | Write-mode Linux flow admission: exact `operation_id`, `starter_id`, `inputs`, `workspace`, `preview_digest`, and `authority_digest` |
 | `GET /api/scenario-operations/<operation_id>` | Durable admission/flow projection for polling and approval-heartbeat refresh |
 | `GET /api/scenario-runs/<id>` | Shared selected-session evidence; `limit` 1–200 and non-negative `offset`, optional workspace index for names |
-| `GET /api/runs`, `GET /api/runs/<id>` | Runs and one run's trace |
+| `GET /api/runs`, `GET /api/runs/<id>` | Runs (`q`, `status`, `agent`, `model`; `limit` up to 500 and `offset` page the whole store; the reply carries the true `total` and every `agents` name) and one run's trace |
 | `GET /api/runs/<id>/tail` | Poll a run for new events |
-| `GET /api/sessions` | `limit` an integer >= 1, default 100, capped at 500; every session's row: the four facts, the derived `crashed` label, queue position, worker, approvals waiting, agent digest, resume provenance |
-| `GET /api/sessions/<id>` | One session, with pending approvals and, for a flow, its steps, attempts and review outcome |
-| `GET /api/sessions/<id>/stream` | Live events as server-sent events |
+| `GET /api/sessions` | Newest first: `limit` an integer >= 1 (default 100, capped at 500), `offset` >= 0, `q` (search) and `state` (a state label) filter across every session. `sessions` holds each row: the four facts, the derived `crashed` label, queue position, worker, approvals waiting (`approvals_pending`, of which `approvals_live` not expired), agent digest, resume provenance; with `total`, `matched`, `counts` (per state label, after the search), `next_offset` and `unreadable_sessions` |
+| `GET /api/sessions/<id>` | One session, with pending approvals, its stored `final_message`, `files_changed`, `ended_at`/`duration_ms`, `starter_origin` and, for a flow, its steps, attempts, review outcome and `flow_progress` |
+| `GET /api/sessions/<id>/stream` | Live events as server-sent events (the session page polls `/api/runs/<id>/tail` instead) |
 | `GET /api/sessions/<id>/conversation` | The Models used, links and lanes data |
 | `POST /api/sessions/<id>/cancel` | Stop a background session (write) |
 | `GET /api/overview` | The Overview's session sections, selected from every session: crashed, waiting and paused sessions (each list `items`, at most 50, and `total`), running sessions with a flow's in-flight step, the last 8 finished, and approval counts |

@@ -304,6 +304,19 @@ def suite(workdir: Path, shots: Path, *, owned_starts: bool) -> list[str]:
         port = dashboard(sessions, "web-dc.log", extra_env=env)
         return run_check("check_data_correctness.py", port, shots, env)
 
+    # --- app shell and the Runs list: write mode, more sessions than one list window --
+    def shell():
+        root = workdir / "shell"
+        root.mkdir()
+        manifest = root / "manifest.json"
+        env = {"GARUDA_GLOBAL_SETTINGS": str(root / "settings.yaml"),
+               "GARUDA_CHECK_SHELL_MANIFEST": str(manifest)}
+        seed(str(HERE / "seed_shell_runs.py"), str(root / "sessions"), str(root), str(manifest), env=env)
+        port = dashboard(root / "sessions", "web-shell.log", read_only=False, extra_env=env)
+        # The list check first: the shell check's sweep must not change what it counts.
+        listed = run_check("check_runs_list.py", port, shots, env)
+        return run_check("check_shell.py", port, shots, env) and listed
+
     # --- read-only starters, with real ACP/flow/acceptance history ------------
     def starters():
         root = workdir / "starters"
@@ -366,6 +379,7 @@ def suite(workdir: Path, shots: Path, *, owned_starts: bool) -> list[str]:
         ("check_consults.py", lambda: seeded("con", "check_consults.py", "--consults")),
         ("check_overview.py", overview),
         ("check_data_correctness.py", data_correctness),
+        ("check_runs_list.py + check_shell.py", shell),
         ("check_scenarios.py", starters),
         # Linux-owned flow and role starts in the real Chrome channel
         *([("owned starts", lambda: run_owned_starts(workdir, shots, ports.take()))]

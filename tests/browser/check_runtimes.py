@@ -172,6 +172,7 @@ with sync_playwright() as p:
     # Classify and run can render the same text, so clear it: a wait for "changed" would
     # otherwise time out and read the classify result.
     before = cleared("#rt-recover-result")
+    page.once("dialog", lambda dialog: dialog.accept())  # Recover asks before it writes
     page.click("#rt-recover-run")
     answered("#rt-recover-result", before)
     recovered = page.text_content("#rt-recover-result") or ""
