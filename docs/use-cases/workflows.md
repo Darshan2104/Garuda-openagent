@@ -256,6 +256,41 @@ snapshot; another writer can cause output withholding. Garuda does not certify
 that the model read each supplied source or that its answer is correct. Inspect
 `starter result reconnect-question`; withheld answers remain withheld.
 
+## Run a configured flow
+
+The five starters each run a fixed flow or role. To run your own flow, name it:
+
+```bash
+garuda flow list --workspace .
+garuda starter run run-flow --flow plan-only --goal "Add reconnect status using the current client" --source client.py --preview
+```
+
+`--flow` takes any flow `garuda flow list` shows. The flow is looked up by name
+in the effective configuration; a definition is never supplied with the request.
+A flow defined by the project's `garuda.yaml` (a repository that ships its own
+flow) is selectable, as `garuda flow run` runs it. The preview says so plainly:
+its origin, the defining file and whether that file is trusted, with the warning
+`flow.project_source` asking you to review its steps before starting. Editing the
+file after preview makes the start refuse until you preview again. What needs
+trust still waits for it: untrusted project checks never run. The roles stay
+yours: a step whose role's harness, model, agent, harness mode or effort the
+project file chose refuses (`starter.project_role`); a project may only narrow
+your roles. The preview adds a `pipeline` with each step's roles and their runtime, model,
+effort and effective permission, its inputs, outputs, review, limits and
+`long_run`, and the backstop an owned step gets (one hour when the step has no
+`limits.deadline_min`). Unknown values are `null` with a reason. Repeated `--check`
+options join the effective checks, which run at flow finalization on Linux. The
+equivalent command is the ordinary `garuda flow run NAME --task …` with the same
+compiled task.
+
+A dashboard start (the same HTTP preview and start as the other starters, with
+`starter_id: run-flow`) refuses, at preview, flows the owned engine cannot run:
+step retries (`starter.retries_unsupported`), a flow `isolation` other than
+`shared` (`starter.isolation_unsupported`), parallel groups
+(`starter.parallel_ownership_unavailable`) and a `long_run` step on a non-ACP role
+(`flow.long_run_unsupported`). Run those with the equivalent command in a
+terminal. A dashboard-started flow is never resumed automatically.
+
 ## Inspect, interrupt and recover
 
 `--json` exposes the same result data. Selected reads are bounded and report

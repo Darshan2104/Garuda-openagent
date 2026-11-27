@@ -22,10 +22,10 @@ from garuda.core.acceptance import checks_with_authority
 from garuda.core.sessions import SessionStore
 from garuda.flows import packaged
 from garuda.runtime.roles import RolePlan, plan_role
-from garuda.scenarios.catalog import brief_text, load_catalog
+from garuda.scenarios.catalog import CHECKED_FLOW_STARTERS, brief_text, load_catalog, selects_flow
 from garuda.scenarios.digests import digest
 from garuda.scenarios.handoff import prepare_inputs, render_plan
-from garuda.scenarios.inputs import bound_task, validate_inputs, validate_options
+from garuda.scenarios.inputs import FLOW_NAME, bound_task, validate_inputs, validate_options
 from garuda.scenarios.sources import resolve_sources
 from garuda.scenarios.types import LaunchPlan, Starter, StarterError
 
@@ -120,6 +120,48 @@ def workspace_path(workspace: str | Path) -> Path:
     return root
 
 
+#: The role keys that choose what runs (harness, model, agent, mode, effort). A
+#: project may narrow a user role (permissions, write policy, fallbacks, consults)
+#: but never choose these for a role a selected flow runs.
+ROLE_IDENTITY = ("harness", "model_id", "profile", "harness_mode", "effort")
+
+
+def _selection_facts(resolved, selected: tuple[dict, str], root: Path) -> dict:
+    """Where a selected flow is defined, disclosed in its digested plan (read-only).
+
+    ``trusted`` is whether the project file's exact bytes carry a trust grant;
+    configuration applies a project flow either way (only project checks and
+    native model ids wait for trust).
+    """
+    _flow, source = selected
+    origin = {"source": {gy.PACKAGE: "packaged", gy.USER: "user",
+                         gy.PROJECT: "project"}.get(source, source),
+              "file": None, "trusted": None}
+    if source == gy.USER:
+        origin["file"] = str(gy.user_path())
+    elif source == gy.PROJECT:
+        from garuda.config.project_trust import is_trusted, read_project_file
+
+        project = read_project_file(root)
+        origin["file"] = str(project.path) if project is not None else None
+        origin["trusted"] = project is not None and is_trusted(project)
+    return {"flow_origin": origin}
+
+
+def _project_roles(resolved, names: list[str]) -> tuple[str, ...]:
+    """Roles of a selected flow whose harness, model, agent, mode or effort the
+    project file chose: a new project role, or one that changes the user's."""
+    user = (gy.load_file(gy.user_path()) or {}).get("roles", {})
+    chosen = []
+    for name in names:
+        if resolved.provenance.get(f"roles.{name}") != gy.PROJECT:
+            continue
+        role, mine = resolved.config["roles"][name], user.get(name)
+        if mine is None or any(role.get(key) != mine.get(key) for key in ROLE_IDENTITY):
+            chosen.append(name)
+    return tuple(chosen)
+
+
 @dataclass(frozen=True)
 class LaunchContext:
     """Static resolution shared by listing, compilation and readiness; never persisted."""
@@ -135,12 +177,16 @@ class LaunchContext:
     source_facts: tuple[SourceFact, ...] = ()
     fallback_plans: dict[str, tuple[RolePlan, ...]] = dataclass_field(default_factory=dict)
     configuration_sources: tuple[SourceFact, ...] = ()
+    #: A selected flow's origin (``{"source", "file", "trusted"}``); ``None`` otherwise.
+    flow_origin: dict | None = None
+    #: A selected flow's roles whose identity the project file chose (refused).
+    project_roles: tuple[str, ...] = ()
 
 
 def resolve_launch(entry: Starter, inputs: dict, root: Path, *, has_plan: bool = False) -> LaunchContext:
     """Resolve only launch settings, so listing needs no invented task inputs."""
     options = validate_options(entry, inputs.get("options", {}))
-    kind, flow = entry.launch["kind"], None
+    kind, flow, selection = entry.launch["kind"], None, {}
     target = inputs.get("role", entry.launch.get("role")) if kind == "run" else None
     if kind == "run" and not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,47}", target):
         raise StarterError("starter.role_invalid", "select a configured role name")
@@ -152,16 +198,27 @@ def resolve_launch(entry: Starter, inputs: dict, root: Path, *, has_plan: bool =
         raise
     catalog = prepare_runtime_catalog(root)
     if kind == "flow":
-        variant = inputs.get("variant", entry.launch["flow"])
-        variants = entry.launch.get("variants", {entry.launch["flow"]: entry.launch["flow"]})
-        if variant not in variants:
-            raise StarterError("starter.variant_invalid", "select a packaged starter variant")
-        target = variants[variant]
-        if target == "pair" and not has_plan:
-            raise StarterError("starter.plan_required", "select a validated plan with plan_artifact: FLOW:STEP:ATTEMPT")
         available = packaged.available(resolved)
-        if target not in available:
-            raise StarterError("flow.unknown", "the starter's flow is unavailable")
+        if selects_flow(entry):
+            # The caller names a flow; its definition is only ever the effective
+            # one (packaged, user or project), disclosed with its origin.
+            target = inputs.get("flow")
+            if not isinstance(target, str) or not FLOW_NAME.fullmatch(target):
+                raise StarterError("starter.flow_invalid", "select a configured flow by name")
+            if target not in available:
+                raise StarterError("flow.unknown", f"no flow named {target!r} is available here; "
+                                   "`garuda flow list` lists them")
+            selection = _selection_facts(resolved, available[target], root)
+        else:
+            variant = inputs.get("variant", entry.launch["flow"])
+            variants = entry.launch.get("variants", {entry.launch["flow"]: entry.launch["flow"]})
+            if variant not in variants:
+                raise StarterError("starter.variant_invalid", "select a packaged starter variant")
+            target = variants[variant]
+            if target == "pair" and not has_plan:
+                raise StarterError("starter.plan_required", "select a validated plan with plan_artifact: FLOW:STEP:ATTEMPT")
+            if target not in available:
+                raise StarterError("flow.unknown", "the starter's flow is unavailable")
         flow, source = available[target]
         names = packaged.required_roles(flow)
         missing = packaged.missing_roles(flow, resolved)
@@ -189,8 +246,10 @@ def resolve_launch(entry: Starter, inputs: dict, root: Path, *, has_plan: bool =
         role_plans[name] = choices[0]
         if len(choices) > 1:
             fallback_plans[name] = tuple(choices)
+    if selection:
+        selection["project_roles"] = _project_roles(resolved, names)
     return LaunchContext(resolved, catalog, kind, target, flow, source, role_plans, options,
-                         fallback_plans=fallback_plans)
+                         fallback_plans=fallback_plans, **selection)
 
 
 def compile_with_context(entry_id: str, inputs: dict, workspace: str | Path, *,
@@ -237,7 +296,7 @@ def compile_with_context(entry_id: str, inputs: dict, workspace: str | Path, *,
     task = _task(entry, inputs, sources, session_text, handoff_text)
     if _config_sources(root) != before:
         raise StarterError("starter.config_changed", "configuration changed during preview; preview again")
-    flow_check_support = kind == "flow" and entry.id == "build-review"
+    flow_check_support = kind == "flow" and entry.id in CHECKED_FLOW_STARTERS
     checks = [{"definition": _display(definition), "definition_digest": digest(definition), "authority": authority,
                "execution": "available-at-flow-finalization" if flow_check_support else
                             "not-supported-by-flow" if kind == "flow" else "available-at-run"}
@@ -258,6 +317,10 @@ def compile_with_context(entry_id: str, inputs: dict, workspace: str | Path, *,
                   "verification": ("from-acceptance-receipt" if flow_checks_selected else
                                    "unavailable" if kind == "flow" else
                                    "from-acceptance-receipt")}
+    if context.flow_origin is not None:
+        # Digested: a selected flow's origin, file and trust state are part of
+        # what the preview approved.
+        provenance["flow_origin"] = context.flow_origin
     if context.fallback_plans:
         provenance["fallback_candidates"] = {
             role: [candidate.record() for candidate in choices]

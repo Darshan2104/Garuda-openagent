@@ -26,7 +26,13 @@ from garuda.scenarios.launch_intents import (
     IntentStateError,
     LaunchIntentStore,
 )
-from garuda.scenarios.service import RESOLUTION_ERRORS, readiness, readiness_refusal
+from garuda.scenarios.service import (
+    RESOLUTION_ERRORS,
+    flow_checks,
+    pipeline_view,
+    readiness,
+    readiness_refusal,
+)
 
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 logger = logging.getLogger(__name__)
@@ -149,7 +155,8 @@ class FlowStartGateway:
         return {"plan": plan.to_dict(),
                 "readiness": readiness(context, starter_id=starter_id, owned=True),
                 "configuration": setup_view.configuration(context.resolved),
-                "authority": self.authority(plan, context)}
+                "authority": self.authority(plan, context),
+                **pipeline_view(plan, context)}
 
     def _workspace(self, index: int) -> tuple[Path, list[int]]:
         if type(index) is not int or not 0 <= index < len(self.workspaces):
@@ -324,7 +331,7 @@ class FlowStartGateway:
                     plan, context, flow_session=record["reserved_session"],
                     operation_binding=binding, on_admitted=admitted,
                     approval_handler=approval, permission_mode=self.max_permission,
-                    checks=() if plan.starter_id == "build-review" else None)
+                    checks=flow_checks(plan))
             if current["phase"] == "admitted":
                 meta = await _settled_call(self.store.load_meta, result.flow.flow_session)
                 if meta.get("flow_state") == "quarantined":

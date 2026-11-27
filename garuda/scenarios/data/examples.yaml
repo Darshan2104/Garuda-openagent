@@ -32,3 +32,8 @@ examples:
     starter: ask-role
     inputs:
       question: Can reconnect status use the current retry client?
+  reconnect-flow:
+    starter: run-flow
+    inputs:
+      flow: plan-only
+      goal: Add reconnect status using the current client

@@ -232,8 +232,12 @@ def flow(store, session_id: str, meta: dict | None = None, *, receipts: list[dic
         attempts = [_attempt(r) for r in receipts if r.get("step") == step]
         for attempt in attempts:
             for ref in attempt["inputs"]:
+                # Which attempt consumed it, and of which producing attempt: two rounds pass
+                # two different patches along the same pair of steps, and a list of edges
+                # with nothing else to tell them apart read as a duplicate (#856 finding 2).
                 edge = {"from_step": ref["producer_step"], "to_step": step, "type": ref["type"],
-                        "digest": ref["digest"]}
+                        "digest": ref["digest"], "from_attempt": ref["attempt"],
+                        "to_attempt": attempt["attempt"]}
                 if edge not in edges:
                     edges.append(edge)
         steps.append({"id": step, "attempts": attempts})
@@ -249,7 +253,16 @@ def flow(store, session_id: str, meta: dict | None = None, *, receipts: list[dic
             "review": meta.get("review"), "quota_recovery": meta.get("quota_recovery"),
             # How much of the change set each approving review saw (#851): partial, complete
             # or unknown, by reviewed step.
-            "review_coverage": _review_coverage(meta.get("review_approvals"))}
+            "review_coverage": _review_coverage(meta.get("review_approvals")),
+            # The receipts' per-attempt measures, totalled (#832): the same figure as
+            # `flow show --json`'s summary.measure. Adapter-reported cost, never metered.
+            "measure": _measure_total(steps)}
+
+
+def _measure_total(steps: list[dict]) -> dict:
+    from garuda.flows.measure import flow_total
+
+    return flow_total([attempt for step in steps for attempt in step["attempts"]])
 
 
 def _review_coverage(approvals) -> dict[str, str]:

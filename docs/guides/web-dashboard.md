@@ -304,6 +304,23 @@ history. On top of that:
   the model the harness reported and its estimated cost when it gives them.
   The run's **Cost** tile shows that adapter-reported cost, labelled as such,
   or **not reported by the adapter**.
+- **A flow's own run** (a flow parent, reached from the run list or the
+  session page's **Trace**) has no event log of its own: each step ran in its
+  own session. Its page is the flow: the task, how it ended (outcome,
+  verification and review as three separate facts, with review rounds and
+  coverage), the duration (the run list's figure, recorded start to end), the
+  final message, then the steps in order with each attempt: who ran it, its
+  status, duration, turn-loop counts, what it consumed and produced, an **Open
+  trace** button for that step session's own trace and a link to its session.
+  **Measured** shows each attempt's receipt measure (prompt size as an
+  estimate, turns, tool calls, wall time, peak context of context size, the
+  adapter-reported cost) and the flow's totals; peak context is occupancy, not
+  billable tokens, the cost is not metered by Garuda, and anything a receipt
+  did not record reads **not recorded**. A stopped flow says why in one
+  sentence from its recorded stop; a running flow says which step of how many
+  is in progress and refreshes every 10 seconds. Artifact edges name the
+  producing and consuming attempts, so two review rounds no longer read as a
+  duplicate.
 - **Following a live run** patches the page in place every few seconds. A turn
   or panel whose content did not change is left alone, so an expanded turn, a
   loaded subagent trace, the raw-events window with its filter and the focus
