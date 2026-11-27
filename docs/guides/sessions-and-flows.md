@@ -17,6 +17,11 @@ Generated `current-task.md` and `handoff.md` redact credential assignments in
 check evidence and failure summaries before writing. Environment-style names
 such as `DB_PASSWORD=...`, `AWS_SECRET_ACCESS_KEY=...` and `OPENAI_API_KEY: ...`
 are covered, along with common standalone tokens including `hf_` and `sk-ant-`.
+An assignment is redacted only when its key is a credential name and its value
+could be a secret, so prose and code stay readable: `tests pass: 3 passed`,
+`bypass: bool`, `password: str`, `password = getpass()`, `$DB_PASSWORD` and
+`PWD=/home/me` are left alone, while `password: hunter2` and quoted or
+high-entropy values are still redacted.
 Affected files include a redaction note. This is best-effort pattern matching;
 avoid putting credentials or novel secret formats in commands and tool output.
 

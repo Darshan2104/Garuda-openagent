@@ -19,11 +19,20 @@ from dataclasses import dataclass
 MAX_BODY_CHARS = 32_768
 MAX_OUTPUT_CHARS = 2_000
 
+#: Credential words an assignment's key must end in. A strong word names a
+#: credential on its own; a weak word is also ordinary English or a shell name
+#: (`tests pass:`, `secret: rotate this`, `PWD=/home/me`).
+_STRONG_WORDS = (r"password|passwd|passphrase|api[_-]?key|access[_-]?key(?:[_-]?id)?"
+                 r"|secret[_-]?key|private[_-]?key|client[_-]?secret"
+                 r"|(?:auth|access|refresh)[_-]?token")
+_WEAK_WORDS = r"pass|pwd|secret|token"
+
 #: (kind, pattern). Conservative on purpose: a false positive costs one
 #: rephrase, a false negative leaks a credential into the context pack.
 #: Best-effort pattern redaction (not a secrecy proof): multiline PEM blocks,
 #: common token shapes, and `key: value` credential assignments are covered;
-#: arbitrary base64 blobs or novel secret formats are not.
+#: arbitrary base64 blobs or novel secret formats are not. A `credential` match
+#: is kept only when `_credential_value` judges its value a possible secret.
 _SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     # Full PEM block first (DOTALL): header + body + footer redacted as one.
     # The header-only pattern below remains as a fallback for truncated blocks.
@@ -42,17 +51,28 @@ _SECRET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("api-token", re.compile(r"\bhf_[A-Za-z0-9]{30,}")),
     ("api-token", re.compile(r"\bglpat-[A-Za-z0-9_-]{8,}")),
     ("api-token", re.compile(r"\bAIza[A-Za-z0-9_-]{8,}")),
-    ("api-token", re.compile(r"\bnpm_[A-Za-z0-9]{8,}")),
+    # An npm token is `npm_` + 36 characters; `npm_lifecycle_event` is not one.
+    ("api-token", re.compile(r"\bnpm_[A-Za-z0-9]{30,}")),
     ("api-token", re.compile(r"\bxox[bpas]-[A-Za-z0-9-]{8,}")),
     ("aws-key", re.compile(r"\bAKIA[0-9A-Z]{16}")),
     ("url-credential", re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://[^\s/:@]+:[^\s/@]+@")),
+    # The key is a whole name (never the tail of `bypass` or `compass`) whose
+    # last part is a credential word; a Python/TypeScript annotation before
+    # `=` is skipped. `_credential_value` then judges the value (#870).
     ("credential", re.compile(
-        r'''(?i)\b[\w-]*(?:password|passwd|pass|pwd|secret|token|api[_-]?key|access_?key(?:_id)?|secret_?key|private_?key)["']?\s*[:=]\s*'''
-        r'''(?:"[^"\n]+"|'[^'\n]+'|[^\s\[\]{}"',;=]+)'''
+        rf"""(?<![A-Za-z0-9_.-])(?P<key>[A-Za-z0-9_.-]*?(?i:{_STRONG_WORDS}|{_WEAK_WORDS}))"""
+        r"""(?![A-Za-z0-9_])["']?"""
+        r"""(?:[ \t]*:[ \t]*[A-Za-z_][\w.]*(?:\[[^\]\n=]*\])?"""
+        r"""(?:[ \t]*\|[ \t]*[A-Za-z_][\w.]*(?:\[[^\]\n=]*\])?)*(?=[ \t]*=(?!=)))?"""
+        r"""[ \t]*(?P<sep>[:=])(?!=)[ \t]*"""
+        r"""(?P<value>"[^"\n]+"|'[^'\n]+'|[^\s\[\]{}"',;=]+)"""
     )),
-    ("credential", re.compile(r'''(?i)--password\s+(?:"[^"\n]+"|'[^'\n]+'|[^\s\[\]"']+)''')),
+    ("credential", re.compile(
+        r"""(?i)(?P<key>--password)(?P<sep>\s)\s*(?P<value>"[^"\n]+"|'[^'\n]+'|[^\s\[\]"']+)""")),
     ("basic-auth", re.compile(r"(?i)\bauthorization:\s*basic\s+[A-Za-z0-9+/]+=*")),
-    ("bearer", re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/-]{8,}")),
+    # A bearer token has a digit or a dot, or is long: "bearer authentication" is prose.
+    ("bearer", re.compile(r"(?i)\bbearer\s+(?:(?=[A-Za-z_~+/-]*[0-9.][A-Za-z0-9])[A-Za-z0-9._~+/-]{8,}"
+                          r"|[A-Za-z0-9._~+/-]{20,})")),
 )
 
 #: Markers that betray raw chain-of-thought in a handoff body. Best-effort:
@@ -96,6 +116,99 @@ def forget_secret(value: str) -> None:
     _REGISTERED.discard(value)
 
 
+_CREDENTIAL_WORD = re.compile(rf"(?i)(?:{_STRONG_WORDS}|{_WEAK_WORDS})\Z")
+_STRONG_WORD = re.compile(rf"(?i)(?:{_STRONG_WORDS})\Z")
+_ANY_CREDENTIAL_WORD = re.compile(rf"(?i)(?:{_STRONG_WORDS}|{_WEAK_WORDS})")
+#: Values that are a type, a literal keyword or a placeholder, not a secret.
+_NOT_SECRET = frozenset((
+    "str", "string", "bytes", "int", "bool", "boolean", "number", "any", "object",
+    "optional", "secretstr", "secretbytes", "none", "null", "nil", "undefined",
+    "true", "false", "required", "redacted",
+))
+_REFERENCE = re.compile(r"\$(?:[{(]|[A-Za-z_]\w*\Z)|%[A-Za-z_]\w*%\Z|<[^<>\n]*>\Z|\{\{")
+_CALL = re.compile(r"[A-Za-z_][\w.]*\(")
+_DOTTED = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+\Z")
+_IDENTIFIER = re.compile(r"[A-Za-z_]\w*\Z")
+
+
+def _looks_secret(value: str) -> bool:
+    """High-entropy shape: mixed case with a digit, or long and digit-rich."""
+    if len(value) < 8 or value[0] in "/~." or any(c.isspace() for c in value):
+        return False
+    digits = sum(c.isdigit() for c in value)
+    if digits and any(c.islower() for c in value) and any(c.isupper() for c in value):
+        return True
+    return len(value) >= 16 and digits >= len(value) / 5 and any(c.isalpha() for c in value)
+
+
+def _credential_value(match: re.Match[str]) -> bool:
+    """Whether a `credential` match assigns what may be a real secret (#870).
+
+    The key must name a credential: a strong word (`password`, `api_key`, ...)
+    or a weak one (`pass`, `pwd`, `secret`, `token`), alone or ending a
+    compound name (`DB_PASS`, `x-api-key`, `self.token`, `dbPassword`,
+    `PGPASSWORD`), never the tail of a word (`bypass`, `compass`). The value is
+    let through when it is code rather than a literal: a type
+    (`password: str`), a call or index (`getpass()`, `os.environ["X"]`), a
+    reference (`$DB_PASSWORD`, `${{ secrets.X }}`, `settings.SECRET_KEY`,
+    `password=password`) or a placeholder (`None`, `<password>`). A bare weak
+    word before `:` (`tests pass: 3 passed`, `secret: rotate this`), a weak
+    word glued to capitals (`XPASS`, `BYPASS=1`) and a bare `pwd`
+    (`PWD=/home/me`) need a quoted or high-entropy value. Everything else fails
+    toward redacting, so `password: <any word>` is still redacted.
+    """
+    key, sep, value = match.group("key"), match.group("sep"), match.group("value")
+    found = _CREDENTIAL_WORD.search(key)
+    if found is None:
+        return False
+    prefix, word = key[:found.start()], found.group()
+    glued = bool(prefix) and prefix.isupper() and word.isupper() and prefix[-1] not in "_.-"
+    if not prefix or glued:
+        compound = False  # password, TOKEN; glued capitals: PGPASSWORD, XPASS, BYPASS
+    elif prefix[-1] in "_.-" or (prefix[-1].islower() or prefix[-1].isdigit()) and word[0].isupper():
+        compound = True  # DB_PASS, self.token, x-api-key, dbPassword
+    else:
+        return False  # bypass, compass, Passport
+    quoted = value[0] in "\"'"
+    inner = value[1:-1].strip() if quoted else value.rstrip(")")
+    if (not any(c.isalnum() for c in inner) or inner.startswith("[REDACTED")
+            or _REFERENCE.match(inner)):
+        return False
+    if quoted:
+        return True
+    following = match.string[match.end():match.end() + 1]
+    if (inner.lower() in _NOT_SECRET or set(inner.lower()) <= set("x*.")
+            or following in ("(", "[") or _CALL.match(inner)):
+        return False
+    secret_shaped = _looks_secret(inner)
+    if not secret_shaped and (_DOTTED.match(inner) or _IDENTIFIER.match(inner)
+                              and _ANY_CREDENTIAL_WORD.search(inner)
+                              and ("_" in inner or inner.lower() == word.lower()
+                                   or re.search("[a-z][A-Z]", inner))):
+        return False  # settings.SECRET_KEY, password=password, token=self_token
+    if not _STRONG_WORD.match(word) and not compound and (
+            glued or sep == ":" or word.lower() == "pwd"):
+        return secret_shaped
+    return True
+
+
+def _substitute(kind: str, pattern: re.Pattern[str], text: str,
+                findings: list[RedactionFinding]) -> str:
+    out: list[str] = []
+    pos = 0
+    while (match := pattern.search(text, pos)) is not None:
+        if kind == "credential" and not _credential_value(match):
+            # Keep the text, and look again from the value: it may hold a key.
+            out.append(text[pos:match.start("value")])
+            pos = match.start("value")
+            continue
+        out.append(text[pos:match.start()] + f"[REDACTED:{kind}]")
+        findings.append(RedactionFinding(kind=kind, count=1))
+        pos = match.end()
+    out.append(text[pos:])
+    return "".join(out)
+
+
 def redact_text(text: str) -> tuple[str, list[RedactionFinding]]:
     """Replace secret patterns with `[REDACTED:<kind>]`. Returns text + findings."""
     findings: list[RedactionFinding] = []
@@ -104,17 +217,7 @@ def redact_text(text: str) -> tuple[str, list[RedactionFinding]]:
             findings.append(RedactionFinding(kind="registered-secret", count=text.count(literal)))
             text = text.replace(literal, "[REDACTED:registered-secret]")
     for kind, pattern in _SECRET_PATTERNS:
-
-        def _mask(match: re.Match[str], kind: str = kind) -> str:
-            # Preserve the conventional assertion diagnostic, not credential
-            # assignments whose value happens to be the word "expected".
-            if (kind == "credential" and match.group() == "token: expected"
-                    and match.string[max(0, match.start() - 16):match.start()].endswith("AssertionError: ")):
-                return match.group()
-            findings.append(RedactionFinding(kind=kind, count=1))
-            return f"[REDACTED:{kind}]"
-
-        text = pattern.sub(_mask, text)
+        text = _substitute(kind, pattern, text, findings)
     return text, findings
 
 
