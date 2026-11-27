@@ -40,6 +40,12 @@ DONE_STEPS = ("00000000-0000-0000-0000-00000000f005", "00000000-0000-0000-0000-0
 #: Running flows the live view judges near (warn) and past (over) their silence limit.
 FLOW_WARN = "00000000-0000-0000-0000-00000000f007"
 FLOW_OVER = "00000000-0000-0000-0000-00000000f008"
+#: A checked flow stopped on a usage limit (resume: manual), before and after its reset; a flow
+#: with an interrupted attempt; a flow whose attempt's process died (not running).
+FLOW_LIMIT = "00000000-0000-0000-0000-00000000f009"
+FLOW_LIMIT_PASSED = "00000000-0000-0000-0000-00000000f00c"
+FLOW_INTERRUPTED = "00000000-0000-0000-0000-00000000f00d"
+FLOW_DEAD = "00000000-0000-0000-0000-00000000f00e"
 CRASHED_OLD = tuple(f"00000000-0000-0000-0000-00000000c00{i}" for i in range(1, 4))
 CRASHED_NEW = "00000000-0000-0000-0000-00000000c009"
 DEAD_OWNER = {"pid": 2_000_000_000, "identity": "gone", "pgid": 1, "epoch": "e"}
@@ -152,6 +158,40 @@ def seed(sessions: Path) -> None:
             "measure": measure.attempt(store, prompt="p" * 1200,
                                        parts=[{"part": "task", "chars": 1200}],
                                        session_ids=[sid], duration_ms=61000 + index)})
+
+    # A checked flow's usage limit settles as flow.step_failed with cause harness.limit_reached
+    # (#834): a quota pause that only `garuda flow resume` continues, after the reset.
+    for fid, minutes in ((FLOW_LIMIT, 12), (FLOW_LIMIT_PASSED, -20)):
+        limit_dir = flow(fid, "Checked build " + fid[-1], flow_state="stopped", status="failed",
+                         state=session_state.finished(success=False),
+                         flow_stop={"code": "flow.step_failed", "step": "build",
+                                    "message": "build failed: usage limit reached",
+                                    "cause": {"code": "harness.limit_reached",
+                                              "limit": {"status": "rejected", "rate_limit_type": "five_hour",
+                                                        "resets_at": int(time.time()) + minutes * 60}}})
+        for event in ("intent", "receipt"):
+            engine._append(limit_dir / engine.JOURNAL, {"event": event, "index": 0, "step": "build",
+                                                        "attempt": 1, "at": _now(30)})
+        engine._write_once(limit_dir / "receipts" / "build-1.json", {
+            "index": 0, "step": "build", "role": "coder", "attempt": 1, "success": False,
+            "status": "stopped", "inputs": [], "outputs": [],
+            "stop": {"code": "flow.step_failed", "message": "usage limit reached"}})
+
+    # An interrupted attempt: its receipt carries the counts recovered from the progress file.
+    interrupted = flow(FLOW_INTERRUPTED, "Interrupted soak", flow_state="interrupted", status="failed",
+                       state=session_state.finished(success=False))
+    engine._write_once(interrupted / "receipts" / "build-1.json", {
+        "index": 0, "step": "build", "role": "coder", "attempt": 1, "success": False,
+        "status": "stopped", "inputs": [], "outputs": [],
+        "stop": {"code": "flow.interrupted", "message": "interrupted by SIGTERM"},
+        "turns": 6, "rotations": 1, "continuations": 5, "harness_sessions": ["h-1", "h-2"],
+        "repairs": [], "turn_loop_source": "progress", "last_turn_decision": "next",
+        "last_turn_at": _now(9)})
+
+    # An open attempt whose flow process died: not running, so no live card or quiet line.
+    dead = flow(FLOW_DEAD, "Dead owner", flow_state="running", state=session_state.started(DEAD_OWNER))
+    engine._append(dead / engine.JOURNAL, {"event": "intent", "index": 0, "step": "build",
+                                           "attempt": 1, "at": _now(50)})
 
     # Crashed sessions: three from days ago (they fold) and one from now.
     for index, sid in enumerate((*CRASHED_OLD, CRASHED_NEW)):
@@ -280,8 +320,61 @@ def main() -> int:
         page.goto(f"{BASE}#/sessions/{FLOW_PAUSED}", wait_until="load")
         check("a paused step says why", text_contains(page, '#flow-live[data-state="paused"]', "usage limit reached"))
         paused = page.locator("#flow-live").inner_text()
-        check("and when it resets, and that quota recovery resumes it",
-              "in 3h" in paused and "Quota recovery resumes" in paused, paused)
+        check("and when it resets, and that it resumes by itself (resume: automatic)",
+              "in 3h" in paused and "resumes automatically after the reset" in paused, paused)
+
+        # --- a checked flow paused on a usage limit: resume by hand, after the reset ---------
+        page.goto(f"{BASE}#/sessions/{FLOW_LIMIT}", wait_until="load")
+        row = page.evaluate("""async ([id, token]) => {
+          const r = await fetch('/api/sessions/' + id, {headers: {'X-Garuda-Token': token}});
+          return await r.json();
+        }""", [FLOW_LIMIT, TOKEN])
+        block = page.locator("#session-pause-block")
+        check("the reader reports a manual quota pause", (row.get("pause") or {}).get("resume") == "manual"
+              and row["pause"]["kind"] == "quota", str(row.get("pause")))
+        check("the pause leads the Result, with the reset and the command to run",
+              count_is(page, '#session-pause-block[data-resume="manual"]', 1)
+              and "usage limit, resets" in block.inner_text() and "(in 1" in block.inner_text()
+              and f"garuda flow resume {FLOW_LIMIT}" in block.inner_text()
+              and block.locator("button.copy-fix").count() == 1, block.inner_text() if block.count() else "")
+        check("the read model's own next step is shown", row["pause"]["action"] in page.locator("#session-pause-block").inner_text())
+        check("the header says paused", page.locator("#session-label").inner_text() == "paused")
+        check("a pause is not a failure to investigate: its evidence stays collapsed",
+              page.locator("#session-failure-host #failure-evidence").count() == 0
+              and page.locator("#session-evidence #failure-evidence").count() == 1)
+        check("the paused step says how it resumes in the pipeline",
+              page.locator('#flow-detail .pipe-pause [data-resume="manual"]').count() == 1)
+        page.goto(f"{BASE}#/sessions/{FLOW_LIMIT_PASSED}", wait_until="load")
+        check("after the reset it says so, never a negative countdown",
+              text_contains(page, "#session-pause-block", "reset passed")
+              and "run the command to continue" in page.locator("#session-pause-block").inner_text()
+              and " ago)" not in page.locator("#session-pause-block").inner_text(),
+              page.locator("#session-pause-block").inner_text())
+        page.goto(f"{BASE}#/runs/{FLOW_LIMIT}", wait_until="load")
+        check("the flow trace says the same", text_contains(page, "#flow-stopped", "resume: manual")
+              and f"garuda flow resume {FLOW_LIMIT}" in page.locator("#flow-stopped").inner_text(),
+              page.locator("#flow-stopped").inner_text() if page.locator("#flow-stopped").count() else "")
+
+        # --- an interrupted attempt: last known counts, from the progress file --------------
+        page.goto(f"{BASE}#/sessions/{FLOW_INTERRUPTED}", wait_until="load")
+        loop = page.locator('#flow-detail .turn-loop[data-source="progress"]')
+        check("an interrupted attempt shows its last known counts, labelled",
+              count_is(page, '#flow-detail .turn-loop[data-source="progress"]', 1)
+              and "last known, from the progress file" in loop.inner_text()
+              and "6 turns · 1 rotation · 5 continuations" in loop.inner_text()
+              and "continued with another turn" in loop.inner_text(), loop.inner_text() if loop.count() else "")
+
+        # --- a flow whose step is not running: no stale live card ----------------------------
+        page.goto(f"{BASE}#/sessions/{FLOW_DEAD}", wait_until="load")
+        page.wait_for_selector("#session-result")
+        live_dead = page.evaluate("""async ([id, token]) => {
+          const r = await fetch('/api/sessions/' + id, {headers: {'X-Garuda-Token': token}});
+          return (await r.json()).flow.in_flight;
+        }""", [FLOW_DEAD, TOKEN])
+        check("the reader says the attempt is not running", live_dead is not None and live_dead.get("running") is False,
+              str(live_dead)[:200])
+        check("no Step in flight card and no quiet line for it",
+              page.locator("#session-live-step").count() == 0 and page.locator('[data-live="quiet"]').count() == 0)
         page.screenshot(path=str(SHOTS / "live-paused-1440-light.png"), full_page=True)
 
         # --- a finished flow's measures on its session page ----------------------------------
@@ -308,6 +401,13 @@ def main() -> int:
         check("a step past it says so", over.count() == 1 and "past its silence limit" in over.inner_text(),
               over.inner_text() if over.count() else "")
         check("a step within its limit does not", page.locator(f'#home-attention-list li[data-key="quiet:{FLOW_LIVE}"]').count() == 0)
+        limit_row = page.locator(f'#home-attention-list li[data-key="paused:{FLOW_LIMIT}"]')
+        check("a paused row says how it resumes", limit_row.count() == 1
+              and limit_row.locator('[data-resume="manual"]').count() == 1
+              and f"garuda flow resume {FLOW_LIMIT}" in limit_row.inner_text(), limit_row.inner_text() if limit_row.count() else "")
+        auto_row = page.locator(f'#home-attention-list li[data-key="paused:{FLOW_PAUSED}"]')
+        check("an automatic one says it resumes by itself", auto_row.count() == 1
+              and "resumes automatically after the reset" in auto_row.inner_text())
         fold = page.locator('#home-attention-list li[data-key="fold:crashed"]')
         check("crashes older than a day fold into one line",
               count_is(page, '#home-attention-list li[data-key="fold:crashed"]', 1)
@@ -340,7 +440,9 @@ def main() -> int:
             page.set_viewport_size({"width": width, "height": 1000})
             for scheme in ("light", "dark"):
                 page.emulate_media(color_scheme=scheme)
-                for name, hash_ in (("live-step", f"#/sessions/{FLOW_LIVE}"),
+                for name, hash_ in (("live-limit", f"#/sessions/{FLOW_LIMIT}"),
+                                    ("live-interrupted", f"#/sessions/{FLOW_INTERRUPTED}"),
+                                    ("live-step", f"#/sessions/{FLOW_LIVE}"),
                                     ("live-trace", f"#/runs/{FLOW_LIVE}"),
                                     ("live-paused", f"#/sessions/{FLOW_PAUSED}"),
                                     ("live-measured", f"#/sessions/{FLOW_DONE}"),
@@ -348,7 +450,8 @@ def main() -> int:
                     page.goto(f"{BASE}{hash_}", wait_until="load")
                     ready = {"live-step": "#flow-live", "live-trace": "#flow-live", "live-paused": "#flow-live",
                              "live-measured": "#flow-measure", "live-overview": "#home-running-list li",
-                             "live-sessions": "tr.session-row"}[name]
+                             "live-sessions": "tr.session-row", "live-limit": "#session-pause-block",
+                             "live-interrupted": ".turn-loop"}[name]
                     page.wait_for_selector(ready)
                     check(f"no horizontal scroll: {name} at {width} ({scheme})",
                           page.evaluate("document.documentElement.scrollWidth <= innerWidth"),

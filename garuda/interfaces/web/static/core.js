@@ -387,6 +387,45 @@ function toggleTheme() {
   localStorage.setItem("garuda_theme", next);
 }
 
+/* --- phone tables ------------------------------------------------------------------
+ * A .table-stack table becomes a card of labelled cells at phone width (app.css). A cell
+ * without its own data-th takes its column header's text, so a renderer only adds the class;
+ * labelled once per render, by a light observer of the view. */
+
+function labelStackTables(root) {
+  if (!root || !root.querySelectorAll) return;
+  root.querySelectorAll("table.table-stack").forEach(function (table) {
+    var heads = Array.prototype.map.call(table.querySelectorAll("thead th"), function (th) {
+      return th.textContent.trim();
+    });
+    if (!heads.length) return;
+    table.querySelectorAll("tbody tr, tfoot tr").forEach(function (tr) {
+      var column = 0;
+      Array.prototype.forEach.call(tr.children, function (cell) {
+        if (!cell.hasAttribute("data-th") && heads[column]) cell.setAttribute("data-th", heads[column]);
+        column += cell.colSpan || 1;
+      });
+    });
+  });
+}
+
+if (typeof MutationObserver !== "undefined" && typeof document !== "undefined" && document.getElementById) {
+  (function () {
+    var pending = false;
+    var watch = function () {
+      var root = document.getElementById("view");
+      if (!root) return;
+      new MutationObserver(function () {
+        if (pending) return;
+        pending = true;
+        (window.requestAnimationFrame || setTimeout)(function () { pending = false; labelStackTables(root); });
+      }).observe(root, { childList: true, subtree: true });
+    };
+    if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", watch);
+    else watch();
+  })();
+}
+
 /* --- sessions a list could not read -------------------------------------------------
  * A list route skips a session whose record is damaged instead of failing (and says so
  * in `unreadable_sessions`), so one bad directory cannot hide every other run. The page

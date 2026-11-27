@@ -1081,6 +1081,11 @@ tr.session-row[data-pause] { --row-c: var(--st-pause-dot); }
 #setup-root td code { white-space: nowrap; }
 #setup-root td:first-child { white-space: nowrap; overflow-wrap: normal; }
 #agents-table :is(.agent-size, th.num) { text-align: left; min-width: 260px; }
+@media (max-width: 760px) {  /* stacked Setup tables: each cell is a card line that wraps */
+  #agents-table :is(.agent-size, th.num) { min-width: 0; }
+  #setup-root #consult-adapters td:last-child { min-width: 0; }
+  #setup-root .table-stack td:first-child, #setup-root .table-stack td code { white-space: normal; overflow-wrap: anywhere; }
+}  /* stacked: the cell is a card line */
 .agent-sections { display: block; }
 .agent-section { display: block; font-size: 12px; }
 #consult-adapters td:last-child { min-width: 280px; }

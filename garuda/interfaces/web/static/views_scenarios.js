@@ -18,7 +18,7 @@ function starterBindingsHtml(bindings, recorded) {
     return Object.assign({ role: name }, bindings[name]);
   });
   if (!rows.length) return '<p class="stat-sub">Role identities are unknown.</p>';
-  return '<div class="table-wrap"><table class="starter-bindings"><thead><tr><th>Role / step</th><th>' +
+  return '<div class="table-wrap"><table class="starter-bindings table-stack"><thead><tr><th>Role / step</th><th>' +
     (recorded ? "Recorded" : "Configured") + ' runtime</th><th>Model</th><th>' +
     (recorded ? "Evidence" : "Role permissions / write policy") + '</th></tr></thead><tbody>' + rows.map(function (r) {
       return '<tr><td>' + esc(r.role || r.name || r.step || "unknown") +
@@ -333,13 +333,16 @@ function renderStarterOperation(state, row, approvals) {
 
 /* One owned operation and its approvals, shared by the Starters page ("starter"), a Flows
  * start waiting for admission ("flow") and the session page's operation panel ("session").
- * `grace` is the broker's heartbeat grace in seconds, when known. */
-function starterOperationHtml(row, approvals, where, grace) {
+ * `grace` and `timeout` are the broker's heartbeat grace and answer timeout in seconds, when
+ * known (/api/approvals publishes both); the defaults are the broker's own (#871). */
+function starterOperationHtml(row, approvals, where, grace, timeout) {
   var session = row.session_id && where !== "session" ?
     '<a class="btn" href="#/sessions/' + encodeURIComponent(row.session_id) + '">Open session details</a>' : '';
-  var keep = '. Answer its approvals here or on the <a href="#/inbox">Approvals</a> page. They stay open while this dashboard tab ' +
-    'is open, on any page; about ' + esc(grace || 90) + ' seconds after no dashboard tab is watching this run (its tabs were closed), ' +
-    'a waiting approval is denied as "stopped watching" and the step sees the denial. The run itself keeps going on the server.</p>';
+  var keep = '. Answer its approvals here or on the <a href="#/inbox">Approvals</a> page, on any page of an open dashboard tab ' +
+    '(also when a step runs in its own process). Each waits up to ' + esc(timeout || 300) + ' seconds unanswered, then it is denied; ' +
+    'about ' + esc(grace || 90) + ' seconds after no dashboard tab is watching this run (its tabs were closed), a waiting approval ' +
+    'is denied as "stopped watching" and the step sees the denial, while the run keeps going on the server. If the dashboard ' +
+    'stops, a waiting approval is denied at once.</p>';
   return '<section class="card starter-operation-card"><h3>' + (where === "session" ? "Dashboard operation" : "Starter operation") + '</h3><p>' +
     chip("operation", row.status || row.phase) + ' ' + chip("flow", row.flow_state || "not admitted") +
     '</p><p class="stat-sub">Operation <code>' + esc(row.operation_id) + '</code>' +

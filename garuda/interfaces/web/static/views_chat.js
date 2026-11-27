@@ -218,7 +218,7 @@ function newChatState(chatId, known) {
     id: chatId, info: known || null, offset: 0, poller: null,
     rows: [], seq: 0, renderedSeq: 0, liveHtml: null,
     approvals: [], settled: [], usedSettled: Object.create(null), seenAsks: Object.create(null),
-    answering: Object.create(null), graceSeconds: null,
+    answering: Object.create(null), graceSeconds: null, timeoutSeconds: null,
     sources: [], pending: [], lastEvent: null, childOpen: Object.create(null),
     sending: false, stopping: false, ending: false, fetchingUrl: false,
     uploads: Promise.resolve(), failures: 0, offline: null, mounted: false
@@ -744,6 +744,7 @@ function pollChat(chat) {
       chat.offline = null;
       chat.info = info;
       if (typeof approvals.grace_seconds === "number") chat.graceSeconds = approvals.grace_seconds;
+      if (typeof approvals.timeout_seconds === "number") chat.timeoutSeconds = approvals.timeout_seconds;
       chat.settled = approvals.settled || [];
       if (tail.truncated) {
         chat.offset = 0; chat.rows = []; chat.renderedSeq = 0;
@@ -1007,6 +1008,7 @@ function approvalCardHtml(chat, ask) {
     ? '<pre class="args">' + esc(JSON.stringify(ask.arguments, null, 1)) + "</pre>"
     : '<pre class="args">' + esc(ask.action) + "</pre>";
   var grace = typeof chat.graceSeconds === "number" ? chat.graceSeconds + "s" : "a short while";
+  var timeout = typeof chat.timeoutSeconds === "number" ? chat.timeoutSeconds + "s" : "its timeout";
   return (
     '<div class="notice approval" data-ask="' + esc(ask.ask_id) + '">' +
     '<div class="notice-title">Approve <span class="mono">' +
@@ -1016,9 +1018,9 @@ function approvalCardHtml(chat, ask) {
     '<div class="composer-row">' +
     '<button type="button" class="btn btn-primary" data-approve="' + esc(ask.ask_id) + '">Approve</button>' +
     '<button type="button" class="btn" data-deny="' + esc(ask.ask_id) + '">Deny</button>' +
-    '<span class="stat-sub approval-note">It waits while this tab is open, even in the ' +
-    "background or on another dashboard page. Closing the tab denies it after " + esc(grace) +
-    " — the agent carries on as if refused, and the transcript says why.</span></div>" +
+    '<span class="stat-sub approval-note">It waits up to ' + esc(timeout) + " for an answer while this tab is open, even in the " +
+    "background or on another dashboard page, and is denied after that. Closing the tab denies it after " + esc(grace) +
+    ", ending the chat denies it at once — the agent carries on as if refused, and the transcript says why.</span></div>" +
     '<div class="stat-sub approval-status" role="status"></div></div>'
   );
 }

@@ -40,8 +40,8 @@ PAUSED = SID + "e2"
 #: folded attention rows, the step-session line), on their own dashboard.
 LIVE_BASE = os.environ.get("GARUDA_CHECK_LIVE_BASE")
 LIVE = "#/sessions/00000000-0000-0000-0000-00000000f00"
-LIVE_ROUTES = [LIVE + "1", LIVE + "3", LIVE + "4", "#/runs/00000000-0000-0000-0000-00000000f001",
-               "#/", "#/sessions"]
+LIVE_ROUTES = [LIVE + "1", LIVE + "3", LIVE + "4", LIVE + "9", "#/sessions/00000000-0000-0000-0000-00000000f00d",
+               "#/runs/00000000-0000-0000-0000-00000000f001", "#/", "#/sessions"]
 
 LOADED = """() => {
   const view = document.querySelector('#view');
@@ -49,7 +49,13 @@ LOADED = """() => {
     && !document.querySelector('#view [aria-busy="true"]:not(.btn)');
 }"""
 
+#: What may scroll sideways inside its card on a phone: code, diffs, raw payloads, charts.
+INNER_SCROLL_ALLOWED = ("pre, code, textarea, .diff, .diff-body, .raw-payload, .starter-data, "
+                        ".final-text, .task-full, svg, .chart, figure")
+
 INSPECT = """() => {
+  const INNER_SCROLL_ALLOWED = '__ALLOWED__';
+
   const visible = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length)
     && getComputedStyle(el).visibility !== 'hidden';
   const alpha = c => { const m = c.match(/rgba?\\(([^)]+)\\)/); if (!m) return 1;
@@ -88,10 +94,21 @@ INSPECT = """() => {
       }
     }
   }
+  // Boxes that scroll sideways inside the page: a table that should stack, a list that should
+  // wrap. Only genuinely wide content (code, diffs, raw payloads, charts) may scroll.
+  const inner = [];
+  document.querySelectorAll('#view *').forEach(el => {
+    if (inner.length >= 5 || !visible(el)) return;
+    const cs = getComputedStyle(el);
+    if (!['auto', 'scroll'].includes(cs.overflowX) || el.scrollWidth <= el.clientWidth + 1) return;
+    if (el.closest(INNER_SCROLL_ALLOWED)) return;
+    inner.push(name(el) + ' (' + el.scrollWidth + ' > ' + el.clientWidth + ')');
+  });
   return {
-    width: document.documentElement.scrollWidth, window: window.innerWidth, pills, chips, wide,
+    width: document.documentElement.scrollWidth, window: window.innerWidth, pills, chips, wide, inner,
   };
 }"""
+INSPECT = INSPECT.replace("__ALLOWED__", INNER_SCROLL_ALLOWED)
 
 FOCUSED = """() => {
   const el = document.activeElement;
@@ -138,6 +155,8 @@ def main() -> int:
                 if width == 390:
                     check(f"{where}: no sideways page scroll", found["width"] <= found["window"],
                           f"(page {found['width']}px wide: {found['wide']})")
+                    check(f"{where}: nothing scrolls sideways inside the page", not found["inner"],
+                          str(found["inner"]))
                 check(f"{where}: every state pill is styled", not found["pills"], str(found["pills"][:3]))
                 check(f"{where}: chips keep key: value on one line", not found["chips"],
                       str(found["chips"][:3]))
