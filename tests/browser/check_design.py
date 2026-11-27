@@ -28,7 +28,8 @@ TOKEN = os.environ.get("GARUDA_CHECK_TOKEN", "check-token")
 SHOTS = Path(os.environ.get("GARUDA_CHECK_SHOTS", tempfile.mkdtemp(prefix="garuda-check-")))
 
 SID = "#/sessions/00000000-0000-0000-0000-0000000000"
-ROUTES = ["#/", "#/starters", "#/runs", "#/sessions", SID + "03", SID + "05", SID + "08",
+ROUTES = ["#/", "#/flows", "#/flows/plan-only", "#/starters", "#/runs", "#/sessions",
+          SID + "03", SID + "05", SID + "08",
           SID + "04", SID + "b5", SID + "e2", SID + "e3", "#/inbox", "#/usage", "#/setup",
           "#/providers", "#/runtimes", "#/chat", "#/nope"]
 TRACES = ["#/runs/b2-rejected-then-passed", "#/runs/j10-external-acp", "#/runs/l12-flow-completed",

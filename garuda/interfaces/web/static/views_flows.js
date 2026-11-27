@@ -98,7 +98,7 @@ function flowCardHtml(row, workspace, host) {
   var state = row.readiness || {};
   return '<section class="card flow-card" data-flow="' + esc(row.name) + '"><h2><a href="' + flowHref(row.name, workspace) + '">' +
     esc(row.name) + "</a></h2>" +
-    '<p class="flow-card-meta">' + flowSourceHtml(row) + " " +
+    '<p class="chips flow-card-meta">' + flowSourceHtml(row) + " " +
     chip("readiness", row.error ? "error" : (state.status || "not checked"), state.can_run ? "chip-on" : (row.error ? "chip-bad" : "chip-off")) +
     " " + chip("steps", row.steps) + "</p>" +
     (row.description ? '<p class="stat-sub">' + esc(row.description) + "</p>" : "") +
@@ -167,9 +167,9 @@ function flowInputText(input) {
 }
 
 function flowMembersHtml(members) {
-  // data-label: at phone width each row stacks into labelled cells (app.css, Flows block).
-  function cell(label, html) { return '<td data-label="' + label + '">' + html + "</td>"; }
-  return '<div class="table-wrap"><table class="starter-bindings flow-members"><thead><tr><th>Role</th><th>Runtime / model</th>' +
+  // .table-stack with data-th: at phone width each row stacks into labelled cells.
+  function cell(label, html) { return '<td data-th="' + label + '">' + html + "</td>"; }
+  return '<div class="table-wrap"><table class="starter-bindings table-stack flow-members"><thead><tr><th>Role</th><th>Runtime / model</th>' +
     "<th>Effort</th><th>Permission: configured → effective</th><th>Writes</th><th>Fallbacks</th></tr></thead><tbody>" +
     (members || []).map(function (m) {
       var perm = m.permission || {};
@@ -234,7 +234,7 @@ function flowFormHtml() {
     '<label>Sources <textarea data-field="sources" rows="2" placeholder="One source per line: repo/path#section or session:NAME"></textarea></label>' +
     '<label>Explicit checks <textarea data-option="checks" rows="2" placeholder="One command per line; they join the configured checks"></textarea></label>' +
     '<div class="row"><button type="submit" class="btn btn-primary" id="flow-preview-button">Preview</button></div></form>' +
-    '<div id="flow-preview" aria-live="polite"><p class="stat-sub">Preview starts nothing. Editing any field discards the preview.</p></div>' +
+    '<div id="flow-preview" class="starter-preview" aria-live="polite"><p class="stat-sub">Preview starts nothing. Editing any field discards the preview.</p></div>' +
     '<div id="flow-operation" aria-live="polite"></div></section>';
 }
 
@@ -248,7 +248,7 @@ function flowDetailView(name) {
     state.host = data.host;
     render('<div class="page-head"><h1>Flow ' + esc(row.name) + "</h1>" + flowWorkspaceHtml(workspace) +
       '<a class="btn" href="#/flows?workspace=' + esc(workspace) + '">All flows</a></div>' +
-      '<p class="flow-card-meta">' + flowSourceHtml(row) + (row.source_file ? ' <span class="stat-sub">' + esc(row.source_file) + "</span>" : "") + "</p>" +
+      '<p class="chips flow-card-meta">' + flowSourceHtml(row) + (row.source_file ? ' <span class="stat-sub">' + esc(row.source_file) + "</span>" : "") + "</p>" +
       (row.description ? "<p>" + esc(row.description) + "</p>" : "") +
       flowHostNoticeHtml(data.host) +
       (row.error ? '<div class="notice err flow-error" data-error="' + esc(row.error.code) + '"><div class="notice-title">' + esc(row.error.code) +
@@ -357,16 +357,16 @@ function flowIdentitiesHtml(data) {
     (step.members || []).forEach(function (member) {
       var admitted = envelope ? (envelope.flow.steps || []).filter(function (s) { return s.index === step.index && s.role === member.role; })[0] : null;
       rows.push('<tr data-step="' + esc(step.id) + '" data-role="' + esc(member.role) + '">' +
-        '<td data-label="Step">' + esc(step.id) + '</td><td data-label="Role">' + esc(member.role) +
-        '</td><td data-label="Runtime / model">' + esc(((roles[member.role] || {}).runtime_id) || member.runtime_id || "unknown") + " / " +
-        esc(((roles[member.role] || {}).model_id) || member.model_id || "harness default") + '</td><td data-label="Configured permission">' +
-        esc((member.permission || {}).configured || "unset") + '</td><td data-label="Effective permission">' +
+        '<td data-th="Step">' + esc(step.id) + '</td><td data-th="Role">' + esc(member.role) +
+        '</td><td data-th="Runtime / model">' + esc(((roles[member.role] || {}).runtime_id) || member.runtime_id || "unknown") + " / " +
+        esc(((roles[member.role] || {}).model_id) || member.model_id || "harness default") + '</td><td data-th="Configured permission">' +
+        esc((member.permission || {}).configured || "unset") + '</td><td data-th="Effective permission">' +
         esc(admitted ? admitted.permission : ((member.permission || {}).effective || "unknown")) + "</td></tr>");
     });
   });
   return '<h3>Who runs each step</h3><p class="stat-sub">' + (ceiling ? "Dashboard permission ceiling: <code>" + esc(ceiling) +
     "</code>. A step above it refuses the start." : "No ceiling applies to a copied command; the dashboard ceiling applies only to starts here.") + "</p>" +
-    '<div class="table-wrap"><table class="starter-bindings flow-members" id="flow-identities"><thead><tr><th>Step</th><th>Role</th><th>Runtime / model</th>' +
+    '<div class="table-wrap"><table class="starter-bindings table-stack" id="flow-identities"><thead><tr><th>Step</th><th>Role</th><th>Runtime / model</th>' +
     "<th>Configured permission</th><th>Effective permission</th></tr></thead><tbody>" + rows.join("") + "</tbody></table></div>";
 }
 
@@ -414,7 +414,7 @@ function flowPreviewHtml(data, state) {
       return '<li data-diagnostic="' + esc(d.code) + '"><code>' + esc(d.code) + "</code> " + esc(d.message) +
         '<br><span class="stat-sub">' + esc(d.fix) + "</span></li>";
     }).join("") + "</ul>" : "") +
-    "<p>" + chip("verification", plan.provenance.verification) + " " + chip("role invocations ≤", plan.limits.max_role_invocations) + " " +
+    '<p class="chips">' + chip("verification", plan.provenance.verification) + " " + chip("role invocations ≤", plan.limits.max_role_invocations) + " " +
     chip("review pairs ≤", plan.limits.review_pairs) + " " + chip("cost", plan.limits.cost) + "</p>" +
     flowIdentitiesHtml(data) + flowChecksHtml(plan) + flowDisclosuresHtml(data) +
     '<label>Equivalent CLI command <textarea id="flow-command" readonly rows="6">' + esc(plan.equivalent_command) + "</textarea></label>" +
