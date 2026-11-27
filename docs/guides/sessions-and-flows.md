@@ -687,8 +687,12 @@ decides:
 Staying in one session keeps the harness's context (and its provider's prompt
 cache); a fresh one costs a new context. A fresh session runs in the same
 Garuda step session — the same lease, evidence baseline and approvals — and
-its first prompt is the step prompt again plus a *rotation brief* from flow
-memory, the same builder as a review's round brief (below). It is built only
+its first prompt is the step's task prompt again, the "this step may take
+several turns" line once, and one *rotation brief* from flow memory, the same
+builder as a review's round brief (below). Whatever only the attempt's first
+prompt carried (a new attempt's brief, the quota-pause or retry note) is not
+sent again, so a fresh session never gets an older brief beside the current
+one. It is built only
 from Garuda's records: the attempt's progress file, the step's earlier
 receipts and the reason for the fresh session. It says:
 
@@ -724,6 +728,25 @@ disagree.
 
 A usage limit (`harness.limit_reached`) is never retried here: the step stops
 as before.
+
+A new attempt of a long step (after `garuda flow resume`, a quota recovery
+continuation, a crash continuation or a retry) starts with the same kind of
+brief, built from the earlier attempts' records, when one of them recorded a
+turn, or when the previous one ended in a turn the loop never records (an
+interruption, a usage limit). Its first line says which attempt this is and
+why the step restarted, from the previous receipt: interrupted, its usage
+limit reached at the time the attempt stopped and when the limit resets,
+a quota wait, no measured progress, `max_hours`, `max_turns`, or a failure;
+and whether a resume, quota recovery or a retry runs it again. Then come the
+earlier attempts, the turns of the latest attempt that recorded any, the files
+changed since the first attempt as measured after that attempt's last
+recorded turn, the outputs still missing, and the last progress note, fenced.
+It has the same 8,000-character budget, redaction and trimming order. Under
+quota recovery it replaces the generic "continue after a quota pause" note,
+and after a retry the retry note, so the agent gets one note. Attempts up to
+the last one that finished do not count: in a review round, the round brief
+covers them. A plain step (no `long_run`) keeps the one-line quota or retry
+note: Garuda records no turns for it, so there is nothing else to brief from.
 
 Every turn is a line in `progress/STEP-ATTEMPT.jsonl` beside the flow's
 receipts (owner-only, at most 2,000 lines, with the brief of each rotation).
@@ -903,9 +926,10 @@ Then the killed attempt is recorded as stopped with `flow.interrupted` (its
 receipt carries the proof under `crash`, and the journal keeps exactly two
 entries per attempt), and the step runs again as the next attempt under the
 original checks. A [long step](#long-steps) starts that attempt with a
-rotation brief built from the killed attempt's progress file, saying the
-previous run of the step was interrupted, so it picks up from Garuda's records
-of how far it got.
+brief built from the killed attempt's progress file, saying that attempt was
+interrupted, so it picks up from Garuda's records of how far it got. Fresh
+harness sessions later in that attempt get only their own rotation brief, which
+lists the interrupted attempt once among the earlier attempts.
 
 If anything cannot be proved, nothing is written: the attempt stays
 quarantined and the refusal (`flow.interrupted_unsettled`, or

@@ -44,12 +44,17 @@ attempt's progress file, then:
 
 To *rotate* is to start a fresh harness session in the same Garuda step
 session — the same lease, evidence baseline and approvals — whose first
-prompt is the step prompt again plus a *brief*: Garuda's own records of the
-attempt so far (``brief(reason, progress) -> str``; by default
-:func:`memory_brief`, the flow memory's
-:func:`garuda.flows.memory.rotation_brief` over the attempt's progress file).
-Agent text (progress notes, denied action titles) is redacted and fenced as
-data, never a ``[garuda]`` line.
+prompt is the step's task prompt again, :data:`FIRST_TURN_LINE` once, and
+one *brief*: Garuda's own records of the attempt so far
+(``brief(reason, progress) -> str``; by default :func:`memory_brief`, the
+flow memory's :func:`garuda.flows.memory.rotation_brief` over the attempt's
+progress file). The task prompt is the step prompt up to the engine's
+first-turn line (:func:`task_prompt`): what the engine adds after that line
+for the attempt's first prompt only (a new attempt's brief,
+:func:`garuda.flows.memory.resume_brief`, or the quota or retry note) is
+never sent again, so a rotation never carries a stale brief beside the
+fresh one (#866). Agent text (progress notes, denied action titles) is
+redacted and fenced as data, never a ``[garuda]`` line.
 """
 
 from __future__ import annotations
@@ -97,6 +102,20 @@ FIRST_TURN_LINE = (
     f'and end each turn with a progress block, <garuda-artifact type="{PROGRESS_TYPE}">what is '
     "done; what is next</garuda-artifact>, placed before any output blocks; give the output "
     "blocks only when the whole task is done.")
+
+
+def task_prompt(step_prompt: str) -> str:
+    """What a rotation sends again of ``step_prompt``: everything before the engine's
+    last :data:`FIRST_TURN_LINE` (the whole prompt when it has none).
+
+    The engine ends a long step's task prompt with that line and puts only the
+    attempt's first-prompt notes after it. No fenced text can contain it (each
+    fenced line starts with ``| ``), so the last one is always the engine's.
+    """
+    head, sep, _ = step_prompt.rpartition("\n\n" + FIRST_TURN_LINE)
+    return head if sep else step_prompt
+
+
 _TRANSIENT = re.compile(
     r"overloaded|\b5\d\d\b|connection (?:reset|refused|closed|error|lost)|econnreset|"
     r"socket hang up|temporarily unavailable|network error|stream (?:closed|ended)", re.I)
@@ -373,6 +392,8 @@ class StepTurns:
         self.outputs = list(spec["outputs"])
         self.run = LongRun(**spec["long_run"]) if spec["long_run"] is not None else None
         self.step_prompt = step_prompt
+        #: What each fresh harness session is sent again before its line and brief.
+        self.task_prompt = task_prompt(step_prompt)
         self.store = store
         self.workspace = workspace
         self.session_id = session_id
@@ -645,7 +666,7 @@ class StepTurns:
             brief = memory_brief(reason, progress)
         brief = brief[:MAX_BRIEF]
         self.rotations += 1
-        decision = TurnDecision.rotate("\n\n".join([self.step_prompt, FIRST_TURN_LINE, brief]),
+        decision = TurnDecision.rotate("\n\n".join([self.task_prompt, FIRST_TURN_LINE, brief]),
                                        reason=reason, delay_sec=delay)
         decision.extra["brief"] = brief
         return decision
