@@ -74,6 +74,10 @@ function boot() {
         if (chatLink) chatLink.hidden = true;
       }
       navigate();
+      // Listen only from here: a hash change before health answered is already covered by
+      // the navigate() above (it reads the current hash). Listening earlier mounted that
+      // view twice, and the second mount's "Loading…" wiped the first one's table.
+      if (!boot.listening) { boot.listening = true; window.addEventListener("hashchange", navigate); }
       startInboxBadge();
     })
     .catch(function (err) {
@@ -186,5 +190,4 @@ el("keys-help").addEventListener("click", function (event) {
   if (event.target === el("keys-help")) toggleKeysHelp(false);
 });
 
-window.addEventListener("hashchange", navigate);
 boot();
