@@ -439,7 +439,8 @@ fork evidence. `sessions show` projects fork lineage from saved metadata without
 recovery, execution or restoration.
 `redact.py` validates packs (size, workspace-relative paths, no-reasoning
 markers) and best-effort redacts secret patterns (full PEM blocks, tokens,
-credential assignments) recursively over every string and key; the writer
+credential assignments, whose value `_credential_value` screens so prose and
+code such as `tests pass:` or `password: str` stay; #870) recursively over every string and key; the writer
 scrubs automatically, rebuilds from the scrubbed map, and blocks unsafe
 handoffs, while durable repository files are unreachable by construction
 (strings in, never paths).

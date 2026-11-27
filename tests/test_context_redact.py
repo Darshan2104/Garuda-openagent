@@ -232,3 +232,161 @@ def test_review_generated_pack_credential_formats(tmp_path, text, secret):
 ])
 def test_review_redaction_preserves_nonsecret_diagnostics(text):
     assert redact_text(text) == (text, [])
+
+
+# Regression corpus for issue #870: the credential pattern matched any word
+# ending in `pass`/`secret`/`token` before `:` and dropped words from plans,
+# reviews and briefs. Every secret below is fake.
+_PEM = ("-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEFAKEFAKE\n"
+        "-----END OPENSSH PRIVATE KEY-----")
+
+TRUE_POSITIVES = [
+    # (text, the fake secret that must not survive)
+    ("key sk-abc123XYZ_ here", "sk-abc123XYZ_"),
+    ("ghp_deadbeefcafe1234", "ghp_deadbeefcafe1234"),
+    ("AKIAIOSFODNN7EXAMPLE", "AKIAIOSFODNN7EXAMPLE"),
+    ("password=hunter2 hunter2", "hunter2 hunter2"),
+    ("Authorization: Bearer abcdef123456", "abcdef123456"),
+    ("Deploy with api_key=supersecretvalue9.", "supersecretvalue9"),
+    ("note token=abc123XYZ", "abc123XYZ"),
+    ("acp token=lanesecret", "lanesecret"),
+    (_PEM, "b3BlbnNzaC1rZXktdjEFAKEFAKE"),
+    ("-----BEGIN RSA PRIVATE KEY-----\nMIIEtruncatedFAKE", "BEGIN RSA PRIVATE KEY"),
+    ("DB_PASSWORD=hunter2hunter2", "hunter2hunter2"),
+    ("AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY",
+     "wJalrXUtnFEMIK7MDENGbPxRfiCYEXAMPLEKEY"),
+    ("OPENAI_API_KEY: opaque-provider-credential", "opaque-provider-credential"),
+    ("GITHUB_TOKEN=opaque-github-credential", "opaque-github-credential"),
+    ("AWS_ACCESS_KEY_ID=opaque-access-credential", "opaque-access-credential"),
+    ("hf_abcdefghijklmnopqrstuvwxyz012345", "hf_abcdefghijklmnopqrstuvwxyz012345"),
+    ("sk-ant-api03-FAKEabcdefghijklmnop", "FAKEabcdefghijklmnop"),
+    ('config {"api_key": "opaque-json-value"}', "opaque-json-value"),
+    ('"password": "hunter2hunter2"', "hunter2hunter2"),
+    ("password = 'hunter2 hunter3'", "hunter3"),
+    ("https://user:p4ssw0rd123@host/repo", "p4ssw0rd123"),
+    ("postgres://admin:SuperSecret99@db:5432/app", "SuperSecret99"),
+    ("mongodb+srv://svc:FAKEmongo42@cluster0.example.net/db", "FAKEmongo42"),
+    ("Authorization: Basic dXNlcjpwYXNzd29yZA==", "dXNlcjpwYXNzd29yZA"),
+    ("DB_PASS=opaque-pass", "opaque-pass"),
+    ("MYSQL_PWD=opaque-pwd", "opaque-pwd"),
+    ("PRIVATE_KEY=opaque-private-key", "opaque-private-key"),
+    ("x-api-key: opaque-header-key", "opaque-header-key"),
+    ("--password opaque-flag-value", "opaque-flag-value"),
+    ("mysql --password=hunter2flag -u root", "hunter2flag"),
+    ("ghs_abcdefghijklmnop", "ghs_abcdefghijklmnop"),
+    ("glpat-abcdefghijklmnopqrst", "glpat-abcdefghijklmnopqrst"),
+    ("AIzaSyA-abcdefghijklmnopqrstuvwxyz12345", "AIzaSyA-abcdefghijklmnopqrstuvwxyz12345"),
+    ("npm_abcdefghijklmnopqrstuvwxyz0123456789", "npm_abcdefghijklmnopqrstuvwxyz0123456789"),
+    ("xoxb-1234-FAKEslackbot", "xoxb-1234-FAKEslackbot"),
+    ("password: hunter22", "hunter22"),
+    ("PASSWORD: hunter2hunter2", "hunter2hunter2"),
+    ("PGPASSWORD=fakepgpass psql -h db", "fakepgpass"),
+    ("PASS=hunter2", "hunter2"),
+    ("export SECRET=opaque-env-secret", "opaque-env-secret"),
+    ("  password: fakeyamlpass\n  user: app", "fakeyamlpass"),
+    ("token: FAKEab12cd34EF", "FAKEab12cd34EF"),
+    ("secret: 'rotate-me-now'", "rotate-me-now"),
+    ('pass: "fakequoted"', "fakequoted"),
+    ("pwd=Secret123x&user=me", "Secret123x"),
+    ('self.password = "hunter2"', "hunter2"),
+    ('password: str = "FAKEannotated"', "FAKEannotated"),
+    ('const apiKey = "opaque-js-key";', "opaque-js-key"),
+    ("dbPassword: fakecamelvalue", "fakecamelvalue"),
+    ('client_secret: "opaque-oauth-secret"', "opaque-oauth-secret"),
+    ("refresh_token=opaque-refresh-value", "opaque-refresh-value"),
+    ("x-auth-token: opaque-header-token", "opaque-header-token"),
+    ("$password = 'fakephp';", "fakephp"),
+    ("Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.e30.FAKEsig", "eyJhbGciOiJIUzI1NiJ9"),
+    ('SECRET_KEY = "django-insecure-FAKEkey"', "django-insecure-FAKEkey"),
+    ("password=changeme", "changeme"),
+    ("tests pass: token=FAKEchained1", "FAKEchained1"),
+]
+
+TRUE_NEGATIVES = [
+    # The live and reproduced examples from issue #870.
+    "...the tests pass: `sub` now returns `a - b`...",
+    "Verification: tests pass: 3 passed",
+    "def run(bypass: bool = False):",
+    "secret: rotate this",
+    "checks pass: yes",
+    # Plan and review text.
+    "1. Run pytest; expect: all tests pass: 12 passed, 0 failed.",
+    "Verification: `python -m pytest -q tests/test_textkit.py` -> tests pass: 5 passed",
+    "Finding (minor): the bypass: flag is never read in cli.py.",
+    "Review: approve. Lint and tests pass: ruff clean, mypy clean.",
+    "Risk: the token bucket refills every minute; no secret handshake required.",
+    "Plan: add a passport: field to the user model and a compass: heading.",
+    "The `password:` field is masked in the form.",
+    "Uses bearer authentication for the admin API.",
+    "| pass: 3 | fail: 0 | skip: 1 |",
+    "PASS: tests/shell/test_install.sh",
+    "XPASS: test_flaky_upload",
+    "3 passed, 1 skipped in 0.42s",
+    # Python.
+    "password: str",
+    "def connect(user: str, password: Optional[str] = None) -> Conn:",
+    "password = getpass()",
+    "password = getpass.getpass('Password: ')",
+    'password = os.environ["DB_PASSWORD"]',
+    'api_key = os.getenv("OPENAI_API_KEY")',
+    "password_hash = hash(password)",
+    "if password == expected:",
+    "login(user=user, password=password)",
+    "token = tokens[0]",
+    "token = None",
+    "secret_key = settings.SECRET_KEY",
+    "max_tokens=4096",
+    "num_tokens: 1234",
+    "tokenizer: cl100k_base",
+    "password_hash == expected",
+    "AssertionError: token: expected 3",
+    "hf_transfer",
+    # JavaScript / TypeScript.
+    "const token = process.env.GITHUB_TOKEN;",
+    "interface Login { password: string; remember: boolean }",
+    "headers: { Authorization: `Bearer ${token}` },",
+    "return { token: req.headers.authorization };",
+    "apiKey: config.apiKey,",
+    "if (!token) return;",
+    "npm_lifecycle_event",
+    # YAML and shell.
+    "secret_scanning: enabled",
+    "password: ${DB_PASSWORD}",
+    "GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}",
+    "api_key: null",
+    "bypass: true",
+    "PWD=/home/me/projects/app",
+    "export PASSWORD=$DB_PASSWORD",
+    'password: "<your-password>"',
+    "passed: 42",
+    "token_count: 512",
+    '<input type="password" name="pass">',
+]
+
+
+def test_corpus_sizes():
+    assert len(TRUE_POSITIVES) >= 40 and len(TRUE_NEGATIVES) >= 40
+
+
+@pytest.mark.parametrize("text,secret", TRUE_POSITIVES)
+def test_corpus_true_positive_is_redacted(text, secret):
+    cleaned, findings = redact_text(text)
+    assert secret not in cleaned
+    assert findings and "[REDACTED:" in cleaned
+
+
+@pytest.mark.parametrize("text", TRUE_NEGATIVES)
+def test_corpus_true_negative_is_left_alone(text):
+    assert redact_text(text) == (text, [])
+
+
+def test_rejected_match_keeps_the_rest_of_the_line():
+    cleaned, findings = redact_text("Verification: tests pass: 3 passed; DB_PASSWORD=hunter2hunter2")
+    assert cleaned == "Verification: tests pass: 3 passed; [REDACTED:credential]"
+    assert [f.kind for f in findings] == ["credential"]
+
+
+def test_redacted_text_is_stable_when_redacted_again():
+    """Briefs re-redact stored artifacts (#816): a second pass changes nothing."""
+    once, _ = redact_text("password=hunter2 and tests pass: 3 passed")
+    assert redact_text(once) == (once, [])
