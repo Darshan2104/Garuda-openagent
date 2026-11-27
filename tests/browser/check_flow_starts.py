@@ -111,9 +111,9 @@ def main() -> None:
             BASE + "api/approvals?owner=" + operation,
             headers={"X-Garuda-Token": TOKEN}).json()["grace_seconds"]
         page.goto(BASE + "#/runs")
-        page.wait_for_timeout(grace * 1000 * 0.8)  # an observation window, not a wait
-        page.goto(BASE + "#/usage")
-        page.wait_for_timeout(grace * 1000 * 0.8)
+        page.wait_for_timeout(grace * 1000 * 0.7)  # observation windows, not waits: together
+        page.goto(BASE + "#/usage")               # longer than the grace window
+        page.wait_for_timeout(grace * 1000 * 0.7)
         expect(page.locator("#nav-inbox-count")).to_have_text("1", timeout=30_000)
         pending = live_asks(context, operation)
         assert len(pending) == 1, pending
