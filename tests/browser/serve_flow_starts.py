@@ -22,7 +22,7 @@ from garuda.interfaces.web.approvals import ApprovalBroker
 #: The approval heartbeat grace window, shortened for the browser checks. Kept short so a
 #: whole wait stays under the owned role worker's 10 s control-socket timeout
 #: (garuda/runtime/role_control.py): an approval answered later than that fails the step.
-GRACE_SECONDS = 3.0
+GRACE_SECONDS = 2.0
 
 
 class ModelEndpoint(BaseHTTPRequestHandler):

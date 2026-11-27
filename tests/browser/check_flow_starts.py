@@ -106,14 +106,18 @@ def main() -> None:
 
         # The heartbeat follows the user: wander off for longer than the grace window, the
         # approval still waits, the badge counts it, Approvals answers it.
+        # The whole wait stays under 10 s: the owned role worker's control socket times out
+        # after 10 s (garuda/runtime/role_control.py), and an approval answered later than
+        # that fails the step whatever the dashboard does (reported; not this page's code).
         operation = start_from_flows(page, "Wait while the user is on other pages")
+        asked = time.monotonic()
         grace = context.request.get(
             BASE + "api/approvals?owner=" + operation,
             headers={"X-Garuda-Token": TOKEN}).json()["grace_seconds"]
         page.goto(BASE + "#/runs")
-        page.wait_for_timeout(grace * 1000 * 0.7)  # observation windows, not waits: together
+        page.wait_for_timeout(grace * 1000 * 0.6)  # observation windows, not waits: together
         page.goto(BASE + "#/usage")               # longer than the grace window
-        page.wait_for_timeout(grace * 1000 * 0.7)
+        page.wait_for_timeout(grace * 1000 * 0.6)
         expect(page.locator("#nav-inbox-count")).to_have_text("1", timeout=30_000)
         pending = live_asks(context, operation)
         assert len(pending) == 1, pending
@@ -121,6 +125,7 @@ def main() -> None:
         item = page.locator('#inbox-list [data-live="1"]')
         expect(item).to_have_count(1, timeout=20_000)
         expect(item).to_contain_text("dashboard flow")
+        print(f"answered {time.monotonic() - asked:.1f}s after the approval appeared", flush=True)
         item.locator('[data-act="allow"]').click()
         expect(item).to_contain_text("allowed")
         settle_operation(context, operation, "completed")

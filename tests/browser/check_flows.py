@@ -147,6 +147,17 @@ def watch_heartbeat(page) -> None:
     check("Approvals lists it, marked and linked to its session",
           "dashboard flow" in item.inner_text()
           and item.locator(f'a[href="#/sessions/{ASK["session_id"]}?operation={OPERATION}"]').count() == 1)
+    for theme in ("light", "dark"):
+        page.evaluate("t => localStorage.setItem('garuda_theme', t)", theme)
+        page.reload()
+        expect(item).to_have_count(1, timeout=20_000)
+        page.screenshot(path=str(SHOTS / f"flows-approvals-1440-{theme}.png"), full_page=True)
+        page.set_viewport_size({"width": 390, "height": 844})
+        check(f"390 px Approvals with a dashboard flow has no horizontal scroll ({theme})",
+              no_horizontal_scroll(page), str(wider_than_page(page)))
+        page.screenshot(path=str(SHOTS / f"flows-approvals-390-{theme}.png"), full_page=True)
+        page.set_viewport_size({"width": 1440, "height": 1000})
+    page.evaluate("() => localStorage.setItem('garuda_theme', 'light')")
     item.locator('[data-act="allow"]').click()
     expect(item).to_contain_text("allowed")
     check("the answer is bound to the ask's owner and digest",
@@ -190,7 +201,7 @@ def main() -> None:
               team.locator('[data-flow-project="untrusted"]').count() == 1, team.inner_text())
         check("packaged flows are labelled as examples",
               "packaged example" in page.locator('[data-flow="plan-only"]').inner_text())
-        page.screenshot(path=str(SHOTS / "flows-library-1440.png"), full_page=True)
+        page.screenshot(path=str(SHOTS / "flows-library-write.png"), full_page=True)
 
         # --- one flow: pipeline, form, preview, invalidation, copy ---------------------------
         page.locator('[data-flow="two-step"] h2 a').click()
@@ -214,7 +225,7 @@ def main() -> None:
               text_contains(page, "#flow-backstop", "after 60 min"))
         check("the resume disclosure is shown", page.locator("#flow-no-resume").count() == 1)
         check("identities name each step's role", page.locator('#flow-identities tr[data-step="look"]').count() == 1)
-        page.screenshot(path=str(SHOTS / "flows-preview-1440.png"), full_page=True)
+        page.screenshot(path=str(SHOTS / "flows-preview-write.png"), full_page=True)
         page.locator("#flow-copy").click()
         check("Copy puts the command on the clipboard",
               settle(page, "c => navigator.clipboard.readText().then(t => t === c)", preview["plan"]["equivalent_command"]))
@@ -227,7 +238,7 @@ def main() -> None:
         page.locator('[data-field="goal"]').fill(TASK + " edited")
         check("editing a field invalidates the preview",
               page.locator("#flow-preview-stale").count() == 1 and page.locator("#flow-command").count() == 0)
-        page.screenshot(path=str(SHOTS / "flows-detail-1440.png"), full_page=True)
+        page.screenshot(path=str(SHOTS / "flows-detail-edited.png"), full_page=True)
 
         # A parallel flow previews and copies but never offers Start.
         page.goto(BASE + "#/flows/fan-out")
@@ -254,30 +265,33 @@ def main() -> None:
               and "read-only" in ro.locator("#flow-copy-only").inner_text())
         check("read-only still copies the same command", ro.locator("#flow-command").input_value() == cli_command())
 
-        # --- phone width and both themes -----------------------------------------------------
-        for theme in ("light", "dark"):
-            phone = browser.new_context(viewport={"width": 390, "height": 844})
-            phone.on("console", lambda m: errors.append(m.text) if m.type in {"error", "warning"} else None)
-            small = open_page(phone, BASE, "#/flows")
-            small.evaluate("t => localStorage.setItem('garuda_theme', t)", theme)
-            small.reload()
-            expect(small.locator("#flow-cards .flow-card").first).to_be_visible(timeout=20_000)
-            check(f"390 px library has no horizontal scroll ({theme})", no_horizontal_scroll(small))
-            small.screenshot(path=str(SHOTS / f"flows-library-390-{theme}.png"), full_page=True)
-            small.goto(BASE + "#/flows/review-loop")
-            expect(small.locator("#flow-pipeline .pipe-step")).to_have_count(2, timeout=20_000)
-            check(f"390 px flow page has no horizontal scroll ({theme})", no_horizontal_scroll(small))
-            check(f"390 px roles stack instead of scrolling inside their card ({theme})", small.evaluate(
-                """() => Array.from(document.querySelectorAll('.flow-members')).every(
-                    t => t.scrollWidth <= t.parentElement.clientWidth + 1)"""))
-            small.screenshot(path=str(SHOTS / f"flows-detail-390-{theme}.png"), full_page=True)
-            small.locator('[data-field="goal"]').fill(TASK)
-            small.locator("#flow-preview-button").click()
-            expect(small.locator("#flow-command")).to_be_visible(timeout=20_000)
-            check(f"390 px preview has no horizontal scroll ({theme})", no_horizontal_scroll(small),
-                  str(wider_than_page(small)))
-            small.screenshot(path=str(SHOTS / f"flows-preview-390-{theme}.png"), full_page=True)
-            phone.close()
+        # --- both widths and both themes ----------------------------------------------------
+        for width, height in ((1440, 1000), (390, 844)):
+            for theme in ("light", "dark"):
+                where = f"{width} px {theme}"
+                view = browser.new_context(viewport={"width": width, "height": height})
+                view.on("console", lambda m: errors.append(m.text) if m.type in {"error", "warning"} else None)
+                small = open_page(view, BASE, "#/flows")
+                small.evaluate("t => localStorage.setItem('garuda_theme', t)", theme)
+                small.reload()
+                expect(small.locator("#flow-cards .flow-card").first).to_be_visible(timeout=20_000)
+                check(f"library has no horizontal scroll ({where})", no_horizontal_scroll(small),
+                      str(wider_than_page(small)))
+                small.screenshot(path=str(SHOTS / f"flows-library-{width}-{theme}.png"), full_page=True)
+                small.goto(BASE + "#/flows/review-loop")
+                expect(small.locator("#flow-pipeline .pipe-step")).to_have_count(2, timeout=20_000)
+                check(f"flow page has no horizontal scroll ({where})", no_horizontal_scroll(small),
+                      str(wider_than_page(small)))
+                check(f"roles fit their card without scrolling sideways ({where})", small.evaluate(
+                    """() => Array.from(document.querySelectorAll('.flow-members')).every(
+                        t => t.scrollWidth <= t.parentElement.clientWidth + 1)"""))
+                small.locator('[data-field="goal"]').fill(TASK)
+                small.locator("#flow-preview-button").click()
+                expect(small.locator("#flow-command")).to_be_visible(timeout=20_000)
+                check(f"flow page with preview has no horizontal scroll ({where})", no_horizontal_scroll(small),
+                      str(wider_than_page(small)))
+                small.screenshot(path=str(SHOTS / f"flows-preview-{width}-{theme}.png"), full_page=True)
+                view.close()
         browser.close()
     check("no console errors", not errors, "; ".join(errors[:5]))
     if failures:
