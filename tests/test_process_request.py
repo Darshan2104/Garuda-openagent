@@ -30,7 +30,7 @@ async def test_role_budget_and_anonymous_input_do_not_widen_acceptance_limits(tm
 @linux
 @pytest.mark.asyncio
 @pytest.mark.parametrize("purpose,timeout,payload", [
-    ("acceptance", 901, None), ("role", 3601, None),
+    ("acceptance", 901, None), ("role", 7 * 24 * 3600 + 601, None),
     ("acceptance", 30, "x" * 65_536), ("unknown", 30, None),
 ], ids=["check-time", "role-time", "check-input", "unknown-purpose"])
 async def test_worker_refuses_invalid_limits_when_the_parent_selector_is_bypassed(

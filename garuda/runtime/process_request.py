@@ -12,7 +12,11 @@ import os
 from dataclasses import dataclass
 
 WIRE_VERSION = 2
-REQUEST_LIMITS = {"acceptance": (900, 65_536), "role": (3600, 2_097_152)}
+#: A role worker may run as long as the longest step deadline (`limits.deadline_min`, 7 days)
+#: plus the owned backstop margin (`garuda.runtime.owned_role.DEADLINE_MARGIN`), so a checked
+#: step with a deadline past 50 minutes (#828) or a `long_run` step can start at all.
+ROLE_TIMEOUT_CAP = 7 * 24 * 3600 + 600
+REQUEST_LIMITS = {"acceptance": (900, 65_536), "role": (ROLE_TIMEOUT_CAP, 2_097_152)}
 MAX_REQUEST_BYTES = max(value[1] for value in REQUEST_LIMITS.values())
 
 
