@@ -344,8 +344,29 @@ svg { display: block; width: 100%; height: auto; }
 .trace-facts dd { margin: 0; overflow-wrap: anywhere; }
 #external-turns th.num, #flow-measure th.num { text-align: right; }
 #flow-measure .not-recorded { color: var(--muted); font-style: italic; }
+/* A step attempt's link to its own trace: the way into what the step actually did. */
+a.attempt-trace { padding: 2px 9px; font-size: 12px; margin-left: 4px; }
 #flow-measure tfoot th { text-align: left; font-weight: 600; }
 #flow-measure tfoot td, #flow-measure tfoot th { border-top: 2px solid var(--border); }
+
+/* Phone width: each attempt's measures are a card of label/value pairs, two to a line. */
+@media (max-width: 760px) {
+  #flow-measured-card .table-wrap { overflow-x: visible; }
+  #flow-measure thead { display: none; }
+  #flow-measure, #flow-measure tbody, #flow-measure tfoot { display: block; width: 100%; }
+  #flow-measure tr {
+    display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 12px;
+    padding: 8px 0; border-bottom: 1px solid var(--border);
+  }
+  #flow-measure td, #flow-measure th {
+    display: block; border: 0; padding: 3px 0; text-align: left; overflow-wrap: anywhere;
+  }
+  #flow-measure .measure-name, #flow-measure td[colspan] { grid-column: 1 / -1; font-weight: 600; }
+  #flow-measure td[data-th]::before {
+    content: attr(data-th); display: block; color: var(--muted); font-style: normal;
+    font: 10px/1.6 var(--mono); text-transform: uppercase; letter-spacing: 0.04em;
+  }
+}
 #external-summary h3 { font-size: 13px; margin: 14px 0 6px; }
 #external-summary .block { margin-top: 10px; }
 #external-summary .block pre { max-height: 320px; overflow: auto; }

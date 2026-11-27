@@ -423,12 +423,14 @@ with sync_playwright() as p:
                   values.get("tool_calls") != str(m["tool_calls"]) or
                   values.get("prompt_chars") != str(m["prompt"]["chars"])):
             problems.append(f"Measured {key} differs from its receipt: {values} vs {m}")
-    total_text = page.inner_text("#flow-measure tfoot")
+    total_node = page.query_selector("#flow-measure tfoot")
+    total_text = (total_node.text_content() if total_node else "") or ""  # not CSS-uppercased
     print(f"measured total: {' '.join(total_text.split())}")
     if "3 of 4 attempts measured" not in total_text or "$0.0617" not in total_text \
             or "incomplete" not in total_text or api_measures["total"]["reported_cost_usd"] != 0.0616536:
         problems.append(f"the flow total does not match the receipts' measures: {total_text!r}")
-    note = page.inner_text("#flow-measure-note")
+    note_node = page.query_selector("#flow-measure-note")
+    note = note_node.inner_text() if note_node else ""
     for honest in ("estimate", "occupancy, not billable", "not meter", "not recorded"):
         if honest not in note:
             problems.append(f"the Measured note does not say {honest!r}")

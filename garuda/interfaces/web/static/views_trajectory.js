@@ -252,7 +252,7 @@ function flowSummaryHtml(run, row, ctx) {
   var stopped = !ctx.live && state.outcome !== "completed";
   var sentence = stopped && typeof failureSentence === "function" ? failureSentence(row) : null;
   return (
-    '<div class="card" id="flow-summary-card"><h2>Flow ' + esc(flow.name || "") + "</h2>" +
+    '<div class="card" id="flow-summary-card"><h2>' + (ctx.live ? "So far" : "How it ended") + "</h2>" +
     (sentence ? '<div class="notice err" id="flow-stopped"><div class="notice-title">' +
       esc(sentence.cause) + '</div><div class="notice-body">' + esc(sentence.next) + "</div></div>" : "") +
     '<dl class="trace-facts">' +
@@ -287,9 +287,15 @@ function groupedNumber(value) {
   return String(value).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 
+var MEASURE_LABELS = {
+  prompt_chars: "Prompt", turns: "Turns", tool_calls: "Tool calls", duration_ms: "Wall time",
+  peak_context_used: "Peak context", cost_usd: "Reported cost"
+};
+
 function measuredCell(key, raw, text) {
   var known = raw !== null && raw !== undefined;
   return '<td class="num' + (known ? "" : " not-recorded") + '" data-k="' + esc(key) + '"' +
+    ' data-th="' + esc(MEASURE_LABELS[key] || key) + '"' +
     (known ? ' data-v="' + esc(raw) + '"' : "") + ">" + esc(known ? text : "not recorded") + "</td>";
 }
 
@@ -326,7 +332,8 @@ function flowMeasuredHtml(flow) {
       var usage = m && m.usage;
       rows.push(
         '<tr class="measure-row" data-step="' + esc(step.id) + '" data-attempt="' + esc(attempt.attempt) +
-        '"' + (m ? "" : ' data-measured="no"') + "><td>" + esc(step.id) + " #" + esc(attempt.attempt) + "</td>" +
+        '"' + (m ? "" : ' data-measured="no"') + '><td class="measure-name">' + esc(step.id) + " #" +
+        esc(attempt.attempt) + "</td>" +
         (m
           ? promptCell(m.prompt) + countCell("turns", m.turns) + countCell("tool_calls", m.tool_calls) +
             measuredCell("duration_ms", typeof m.duration_ms === "number" ? m.duration_ms : null,
@@ -347,7 +354,7 @@ function flowMeasuredHtml(flow) {
   var wallSum = walls.length && walls.every(function (w) { return typeof w === "number"; })
     ? walls.reduce(function (a, b) { return a + b; }, 0) : null;
   var totalRow =
-    '<tr class="measure-total"><th scope="row">Flow total · ' + esc(measured) + " of " +
+    '<tr class="measure-total"><th scope="row" class="measure-name">Flow total · ' + esc(measured) + " of " +
     esc(total.attempts) + " attempts measured</th>" +
     (measured
       ? measuredCell("prompt_chars", total.prompt_chars, "~" + groupedNumber(total.prompt_est_tokens) +

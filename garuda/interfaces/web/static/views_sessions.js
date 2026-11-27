@@ -431,7 +431,7 @@ function attemptHtml(attempt) {
     " " + chip("workspace", delta, "chip-off") +
     (attempt.no_edits ? " " + chip("no-edits", attempt.no_edits, attempt.no_edits === "unchanged" ? "chip-on" : "chip-bad") : "") +
     ' <span class="stat-sub">' + esc(attempt.duration_ms === null || attempt.duration_ms === undefined ? "duration unknown" : fmt.duration(attempt.duration_ms)) + "</span>" +
-    (attempt.session_id ? ' · <a class="attempt-trace" href="#/runs/' + encodeURIComponent(attempt.session_id) + '">trace</a>' +
+    (attempt.session_id ? ' <a class="btn btn-small attempt-trace" href="#/runs/' + encodeURIComponent(attempt.session_id) + '">Open trace</a>' +
       ' · <a href="#/sessions/' + encodeURIComponent(attempt.session_id) + '">session</a>' : "") + "</div>" +
     turnLoopHtml(attempt.turn_loop) +
     (attempt.stop ? '<div class="stat-sub attempt-stop">stopped: ' + esc(attempt.stop.code) +
