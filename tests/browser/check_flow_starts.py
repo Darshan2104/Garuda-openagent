@@ -37,8 +37,10 @@ def main() -> None:
         page.locator('[data-flow-approval][data-approved="true"]').click()
         expect(page.locator("#starter-operation")).to_contain_text("terminal", timeout=30_000)
         expect(page.locator("#starter-operation")).to_contain_text("completed")
-        expect(page.locator("#starter-operation a")).to_have_attribute(
+        # The panel also links to Approvals, where its asks are answered too.
+        expect(page.locator("#starter-operation a.btn")).to_have_attribute(
             "href", re.compile(r"^#/sessions/"))
+        expect(page.locator('#starter-operation a[href="#/inbox"]')).to_have_count(1)
         assert len(starts) == 1
 
         duplicate = context.request.post(
