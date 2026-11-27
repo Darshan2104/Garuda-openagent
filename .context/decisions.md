@@ -5895,3 +5895,60 @@ real secrets and now find nothing in ordinary text.
 `runtime/selection/explain.py` keeps its own deliberately broad substring
 screen. The corpus in `tests/test_context_redact.py` holds 57 true positives
 and 53 true negatives, including the live examples from the issue.
+
+## 2026-11-27: An owned step's approval waits for its broker, not the control socket (#869)
+
+An owned step's worker asks its parent for an approval over the role control
+socket. That socket had one 10 s timeout for every call, so an approval that
+was not answered within 10 s timed out inside the worker. The broker recorded
+`via: answerer, outcome: deny` at 10.0 s, and the socket's buffered reader was
+then unusable. The worker's `result` call failed, and the step ended as "the
+role worker exited without a result (exit code 1)". The parent's dashboard
+responder still accepted the later Allow, but nothing was listening for it.
+This affected foreground dashboard flow and run starts, whose parent answers
+through the dashboard's 300 s queue. Background steps park on the file channel
+in the worker and never send an approval over the socket.
+
+The fix keeps the 10 s timeout (`CONTROL_TIMEOUT`) for every lease call
+(`acquire`, `check`, `release`, `quarantine`, `result`). It gives `approve` a
+separate timeout: the parked request's own `expires_at` plus `APPROVAL_MARGIN`
+(30 s), or the default park timeout from now when the request has none. The
+margin is there because the parent parks the ask a moment after the worker's
+broker does, so the parent's timeout reply lands just after the worker's
+deadline. The worker's answerer is now `RoleApproval`
+(`RoleControlClient.answerer`). The broker passes it the request through
+`ask_request`, as it already does for the terminal approver. The exchange runs
+in a thread, so the worker's loop keeps running while the request waits: the
+broker's own timeout fires on time, and the harness I/O and the step's
+deadline and silence watchdogs keep working. A lock keeps calls in order.
+
+Liveness is the kernel's. The socket has only the parent at its other end, so
+a parent that dies closes the socket, and the waiting `recv` returns at once.
+A supervisor that dies makes the parent settle the step, which closes the
+socket too. `RoleApproval` turns that into
+`Unanswered(disconnected)`, and a reply that never comes within the deadline
+plus the margin becomes `Unanswered(timeout)`. The broker audits both as
+non-answers, and neither one allows. We considered a heartbeat on the socket
+and rejected it. It would change the strict one-request, one-reply protocol
+that the parent's nonce and sequence check relies on. The only extra case it
+would catch is a parent that is alive but wedged, and the deadline already
+bounds that case, with the supervisor's backstop behind it. A call whose reply
+was lost (a timeout, EOF or a partial line) marks the channel broken. Every
+later call then refuses with `LeaseError` instead of reading a stale reply.
+
+The lock held during an approval starves nothing. The worker never renews
+the workspace lease: the parent's `WorkspaceLeaseGuard` heartbeat renews it
+every TTL/3 on the parent's loop, and the parent awaits the approval without
+blocking that loop. The worker's other calls (`acquire`, the one-off `check`
+from `start_heartbeat` and before each `race`, `quarantine`, `release`,
+`result`) are made between turns, never while a prompt's approval is pending.
+A test answers after about 25 lease TTLs. It checks that the lease is never
+stale and that no other call reaches the parent during the wait.
+
+What stays the same: an answer after the broker's deadline is recorded as
+`via: timeout`. The parent's late reply is then read and discarded within the
+margin, so the worker can still report the step's result. Allow-list decisions
+(#862) never reach the socket. `decided_by`, `via` and `outcome` records are
+unchanged. `RoleControlClient.approve(action)` without a deadline still works
+for direct callers.
+

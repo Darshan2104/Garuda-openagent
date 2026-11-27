@@ -667,7 +667,8 @@ a step sends one prompt, as before.
 run waits in the inbox (the dashboard's Approvals page or
 `garuda approvals answer`) before the request times out and counts as a denial.
 This covers background and dashboard flow steps, whose approvals are answered
-outside the terminal. It is whole seconds from 30 to 86400 (24 hours), and the
+outside the terminal. A step started from the dashboard in the foreground waits
+on the dashboard's own 5-minute timeout instead. It is whole seconds from 30 to 86400 (24 hours), and the
 default is 300. A project file may only lower it: a project value at or above
 yours (or above the default, if you set none) is ignored.
 

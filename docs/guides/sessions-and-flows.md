@@ -242,7 +242,10 @@ never wait for an answer.
 
 A flow step has no one to answer either: a foreground step's requests are
 denied, and a background step's wait in the inbox until
-`approvals.park_timeout_sec`. So that an unattended coder can still run its
+`approvals.park_timeout_sec`. A step started from the dashboard in the
+foreground asks the dashboard, and its request waits there for up to 5 minutes,
+also when the step runs in its own role worker process. An answer after that is
+a denial, and the step goes on with it. So that an unattended coder can still run its
 tests, a role may list the shell commands it may run without a person
 (`approvals.allow`, see
 [Commands a flow step may run without you](configuration.md#commands-a-flow-step-may-run-without-you)).

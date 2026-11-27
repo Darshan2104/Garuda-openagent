@@ -10,6 +10,8 @@ import secrets
 import socket
 import struct
 import tempfile
+import threading
+import time
 from pathlib import Path
 
 from garuda.interfaces.run_guard import LeaseCapability
@@ -24,6 +26,13 @@ MAX_RESULT_OUTPUT = 262_144
 #: The one request allowed past CONTROL_LIMIT is the result: its output escaped as
 #: JSON (at most 6 bytes per output byte) plus the request's own fields.
 RESULT_REQUEST_LIMIT = 6 * MAX_RESULT_OUTPUT + CONTROL_LIMIT
+#: How long a role worker waits for the parent's reply to any control call but
+#: ``approve``: a parent that does not answer a lease call within it is wedged.
+CONTROL_TIMEOUT = 10.0
+#: How long past its broker's own park deadline a worker still waits for the
+#: parent's answer to an approval (#869): the parent's responder parks the ask a
+#: moment after the worker's broker did, so its timeout reply lands just after.
+APPROVAL_MARGIN = 30.0
 #: The most characters of a responder's non-answer reason relayed to a role child.
 MAX_UNANSWERED_REASON = 1_024
 #: The most characters of a worker's typed refusal message (#738).
@@ -290,29 +299,49 @@ class RoleControl:
 
 
 class RoleControlClient:
-    """Worker-only proxy. Contains no LeaseStore and cannot mint a lease grant."""
+    """Worker-only proxy. Contains no LeaseStore and cannot mint a lease grant.
+
+    Every call is one request and one reply in order, so calls share a lock.
+    A lease call waits :data:`CONTROL_TIMEOUT` for its reply; an approval waits
+    as long as the worker's broker parks the ask, plus :data:`APPROVAL_MARGIN`
+    (#869). A parent that dies closes the socket, so either wait ends at once.
+    A reply that never came leaves the channel unusable; later calls refuse.
+    """
 
     def __init__(self, document):
         self.workspace = document["workspace"]
         self.capacity_key = document["capacity_key"]
         self.nonce = document["nonce"]
         self.sequence = 0
+        self._lock = threading.Lock()
+        self._broken = False
         self._socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self._socket.settimeout(10)
+        self._socket.settimeout(CONTROL_TIMEOUT)
         self._socket.connect(document["path"])
         self._reader = self._socket.makefile("rb")
+        #: The answerer a worker's approval broker uses (:class:`RoleApproval`).
+        self.answerer = RoleApproval(self)
 
     def request(self, op, value=None):
         return self._exchange(op, value)["value"]
 
-    def _exchange(self, op, value, *, unanswered=False):
-        message = {"nonce": self.nonce, "sequence": self.sequence, "op": op, "value": value}
-        raw = json.dumps(message, allow_nan=False).encode() + b"\n"
-        if len(raw) > (RESULT_REQUEST_LIMIT if op == "result" else CONTROL_LIMIT):
-            raise LeaseError("oversized role control request")
-        self._socket.sendall(raw)
-        self.sequence += 1
-        reply = json.loads(self._reader.readline(CONTROL_LIMIT + 1))
+    def _exchange(self, op, value, *, unanswered=False, timeout=None):
+        with self._lock:
+            if self._broken:
+                raise LeaseError("role control channel lost an earlier reply")
+            message = {"nonce": self.nonce, "sequence": self.sequence, "op": op, "value": value}
+            raw = json.dumps(message, allow_nan=False).encode() + b"\n"
+            if len(raw) > (RESULT_REQUEST_LIMIT if op == "result" else CONTROL_LIMIT):
+                raise LeaseError("oversized role control request")
+            self._broken = True  # until this call's reply has been read whole
+            self._socket.settimeout(CONTROL_TIMEOUT if timeout is None else timeout)
+            self._socket.sendall(raw)
+            self.sequence += 1
+            line = self._reader.readline(CONTROL_LIMIT + 1)
+            self._socket.settimeout(CONTROL_TIMEOUT)
+            if line.endswith(b"\n"):
+                self._broken = False
+            reply = json.loads(line)
         shapes = ({"ok", "value"}, {"ok", "value", "unanswered"}) if unanswered else ({"ok", "value"},)
         if not isinstance(reply, dict) or set(reply) not in shapes or reply["ok"] is not True:
             raise LeaseError("role control refused or disconnected")
@@ -344,12 +373,22 @@ class RoleControlClient:
     async def release(self):
         self.request("release")
 
-    async def approve(self, action):
+    async def approve(self, action, *, expires_at=None):
         """The parent's yes or no, or an :class:`~garuda.core.approval_outcome.Unanswered`
-        (falsy) when its responder timed out or lost its person."""
+        (falsy) when its responder timed out or lost its person.
+
+        It waits until ``expires_at`` (the worker broker's park deadline, epoch
+        seconds; the default park timeout from now without one) plus
+        :data:`APPROVAL_MARGIN`, in a thread so the worker's own loop runs on.
+        """
+        from garuda.config.garuda_yaml import DEFAULT_PARK_TIMEOUT_SEC
         from garuda.core.approval_outcome import ApprovalOutcome, Unanswered
 
-        reply = self._exchange("approve", action, unanswered=True)
+        if expires_at is None:
+            expires_at = time.time() + DEFAULT_PARK_TIMEOUT_SEC
+        timeout = max(0.0, expires_at - time.time()) + APPROVAL_MARGIN
+        reply = await asyncio.to_thread(self._exchange, "approve", action, unanswered=True,
+                                        timeout=timeout)
         if type(reply["value"]) is not bool:
             raise LeaseError("role approval is neither a yes nor a no")
         if "unanswered" not in reply:
@@ -367,3 +406,32 @@ class RoleControlClient:
     def close(self):
         self._reader.close()
         self._socket.close()
+
+
+class RoleApproval:
+    """A role worker's broker answerer: the parent's answer, over the control socket.
+
+    The broker hands :meth:`ask_request` the parked request, so the wait is
+    bounded by that request's own deadline (its park timeout, 300 s unless the
+    broker was given another) rather than by the channel's lease-call timeout.
+    A parent that never replied, or whose end of the channel closed, is a
+    non-answer the broker audits as such; it never allows.
+    """
+
+    def __init__(self, client):
+        self._client = client
+
+    async def __call__(self, action):
+        return await self._client.approve(action)
+
+    async def ask_request(self, request):
+        from garuda.core.approval_outcome import ApprovalOutcome, Unanswered
+
+        try:
+            return await self._client.approve(request.action, expires_at=request.expires_at)
+        except TimeoutError:
+            return Unanswered(ApprovalOutcome.TIMEOUT,
+                              "the role's parent did not answer within the approval's park timeout")
+        except (OSError, ValueError):
+            return Unanswered(ApprovalOutcome.DISCONNECTED,
+                              "the role's parent closed its control channel while the approval waited")
