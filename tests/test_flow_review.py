@@ -517,12 +517,54 @@ async def test_a_structured_review_requests_changes_with_its_evidence(repo):
     script = Script([json.dumps(STRUCTURED), APPROVE])
     result = await _run(repo, script, _config(max_rounds=1)).run()
     assert result.completed
-    assert rv.STRUCTURED_FORMAT in script.prompts[("review", 1)]
+    assert rv.STRUCTURED_FORMAT not in script.prompts[("review", 1)]  # only offered FORMAT
     retry = script.prompts[("build", 2)]
     assert "src/loop.py:10-14: never terminates" in retry and "run tests/test_loop.py" in retry
     history = SessionStore().load_meta(result.flow_session)["review"]["history"]
     assert history[0]["structured"][0]["evidence"] == "the while condition never changes"
     assert "structured" not in history[1]  # the legacy line review stays legacy
+
+
+@pytest.mark.parametrize("verdict, severity", [("changes", "major"), ("approve", "minor")])
+async def test_a_secret_beside_an_escaped_quote_keeps_a_structured_review_valid(repo, verdict,
+                                                                                severity):
+    """#812 follow-up: redacting the JSON text cut `password=\\"..."` at the escape and
+    left invalid JSON (`flow.review_invalid`); a structured review is redacted per value."""
+    secret = "FAKEhunter2value"
+    review = {"version": 2, "verdict": verdict, "findings": [{
+        "severity": severity, "path": "a.txt", "lines": None,
+        "message": f'a.txt sets password="{secret}" in plain text',
+        "evidence": "line 1", "verification": "grep password a.txt"}]}
+    script = Script([json.dumps(review), APPROVE])
+    runner = _run(repo, script, _config(max_rounds=1))
+    result = await runner.run()
+
+    assert result.completed, result.stopped
+    first = next(r for r in result.receipts if r["step"] == "review" and r["attempt"] == 1)
+    ref = first["outputs"][0]
+    stored = (runner.dir / ref["path"]).read_text()
+    assert ref["redactions"] == 1 and secret not in stored
+    parsed = rv.parse(stored)
+    assert parsed.approved is (verdict == "approve")
+    assert parsed.structured[0]["message"] == "a.txt sets [REDACTED:credential] in plain text"
+    history = SessionStore().load_meta(result.flow_session)["review"]["history"]
+    assert history[0]["verdict"] == verdict
+    assert secret not in json.dumps(history)
+    if verdict == "changes":
+        retry = script.prompts[("build", 2)]
+        assert secret not in retry and "a.txt sets [REDACTED:credential] in plain text" in retry
+    else:
+        assert ("build", 2) not in script.prompts
+
+
+def test_a_secret_spanning_a_json_key_and_value_is_still_redacted(tmp_path):
+    from garuda.flows import artifacts
+
+    content = json.dumps({"version": 2, "password": "FAKEhunter2value"})
+    ref = artifacts.store(tmp_path, type="review", content=content, step="review",
+                          session_id="s", attempt=1, workspace_version=None)
+    stored = (tmp_path / ref.path).read_text()
+    assert "FAKEhunter2value" not in stored and ref.redactions == 1
 
 
 class PacketScript(Script):
@@ -544,7 +586,7 @@ async def test_the_reviewer_receives_a_frozen_candidate_packet(repo):
     prompt = script.prompts[("review", 1)]
     meta = SessionStore().load_meta(result.flow_session)
     digest = meta["review_packet"]["digest"]
-    assert f'<review-packet digest="{digest}">' in prompt and "src/loop.py" in prompt
+    assert f'<review-packet digest="{digest}" fence="' in prompt and "src/loop.py" in prompt
     assert meta["review"]["history"][0]["packet_digest"] == digest
     build = next(r for r in result.receipts if r["step"] == "build")
     assert meta["review_packet"]["candidate"]["workspace_version"] == build["workspace_version_after"]
@@ -553,7 +595,7 @@ async def test_the_reviewer_receives_a_frozen_candidate_packet(repo):
 async def test_an_unrecorded_manifest_is_unknown_not_empty(repo):
     script = Script([APPROVE])
     result = await _run(repo, script, _config(max_rounds=0)).run()
-    assert "&quot;status&quot;: &quot;unknown&quot;" in script.prompts[("review", 1)]
+    assert _packet_from_prompt(script.prompts[("review", 1)])["changed"]["status"] == "unknown"
     assert SessionStore().load_meta(result.flow_session)["review_packet"]["changed_total"] is None
 
 
@@ -701,8 +743,8 @@ async def test_a_cut_change_list_is_never_reported_complete(repo, record_total, 
     result = await _run(repo, script, _config(max_rounds=0)).run()
     assert result.completed
     prompt = script.prompts[("review", 1)]
-    assert f"&quot;complete&quot;: {json.dumps(complete)}" in prompt
-    assert f"&quot;total&quot;: {json.dumps(total)}" in prompt
+    changed = _packet_from_prompt(prompt)["changed"]
+    assert (changed["complete"], changed["total"]) == (complete, total)
     packet = SessionStore().load_meta(result.flow_session)["review_packet"]
     assert (packet["changed_total"], packet["changed_complete"]) == (total, complete)
 
@@ -710,7 +752,7 @@ async def test_a_cut_change_list_is_never_reported_complete(repo, record_total, 
 async def test_a_short_change_list_is_complete(repo):
     script = ManyFilesScript([APPROVE], 3)
     result = await _run(repo, script, _config(max_rounds=0)).run()
-    assert "&quot;complete&quot;: true" in script.prompts[("review", 1)]
+    assert _packet_from_prompt(script.prompts[("review", 1)])["changed"]["complete"] is True
     packet = SessionStore().load_meta(result.flow_session)["review_packet"]
     assert (packet["changed_total"], packet["changed_complete"]) == (3, True)
 
@@ -749,10 +791,10 @@ async def test_config_evidence_is_not_complete_when_the_change_list_is_not(
     result = await _run(repo, script, _config(max_rounds=0)).run()
     assert result.completed
     prompt = script.prompts[("review", 1)]
-    config_block = prompt[prompt.index("&quot;config&quot;"):prompt.index("&quot;checks&quot;")]
-    assert f"&quot;complete&quot;: {json.dumps(complete)}" in config_block
-    assert "&quot;total&quot;: null" in config_block  # what lies past the cut is not counted
-    assert reason in config_block
+    config_block = _packet_from_prompt(prompt)["config"]
+    assert config_block["complete"] is complete
+    assert config_block["total"] is None  # what lies past the cut is not counted
+    assert reason in json.dumps(config_block)
 
 
 @pytest.mark.parametrize("changed_complete, expected", [(True, True), (False, False), (None, None)])
@@ -799,11 +841,11 @@ def _record_packet_candidate(store, sid, repo):
 
 
 def _packet_from_prompt(prompt):
-    from html import unescape
-
-    body = prompt.split('<review-packet digest="', 1)[1].split(">\n", 1)[1].split(
-        "\n</review-packet>", 1)[0]
-    return json.loads(unescape("\n".join(line.removeprefix("| ") for line in body.splitlines())))
+    """The packet from its fence: raw compact JSON, never HTML-escaped (#821)."""
+    head, rest = prompt.split('<review-packet digest="', 1)[1].split(">\n", 1)
+    marker = head.split(' fence="', 1)[1].rstrip('"')
+    body = rest.split(f'\n</review-packet fence="{marker}">', 1)[0]
+    return json.loads("\n".join(line.removeprefix("| ") for line in body.splitlines()))
 
 
 async def test_engine_packet_carries_real_diff_evidence_and_excludes_prior_check_receipts(repo):
@@ -830,7 +872,9 @@ async def test_engine_packet_carries_real_diff_evidence_and_excludes_prior_check
     assert "after review settles" in packet["checks"]["note"]
     rendered = rv.render_packet(packet)
     assert "prior-check-must-not-be-in-the-packet" not in rendered
-    assert rendered.count("</review-packet>") == 1  # source cannot close the data envelope
+    marker = rendered.split(' fence="', 1)[1][:16]
+    assert marker not in REVIEW_SOURCE
+    assert rendered.count(f'</review-packet fence="{marker}">') == 1  # source cannot close it
     assert _packet_from_prompt(rendered) == {k: v for k, v in packet.items() if k != "task"}
     assert guard.check().unchanged
     digest = packet["digest"]
@@ -874,12 +918,14 @@ def test_review_packet_bounds_delivered_excerpt_bytes(repo, content):
         reviewer={"id": "review", "role": "reviewer"}, spec={}, candidate={},
         changed=paths, reviewer_plan=None, no_edits=True, diff=diff)
     rendered = rv.render_packet(packet)
-    prefix, suffix = '&quot;excerpt&quot;: &quot;', '&quot;,'
-    lines = [line.removeprefix("| ").lstrip() for line in rendered.split("\n")]
-    excerpts = [line.removeprefix(prefix).removesuffix(suffix)
-                for line in lines if line.startswith(prefix)]
+    from html import escape
+
+    # Excerpt budgets still count JSON and HTML escaping (now conservative, #821):
+    # the delivered packet is raw JSON, so measure each excerpt as it was budgeted.
+    excerpts = [row["excerpt"] for row in _packet_from_prompt(rendered)["diff"]["files"]]
     assert len(excerpts) == 12
-    sizes = [len(text.encode("utf-8")) for text in excerpts]
+    sizes = [sum(len(escape(json.dumps(char)[1:-1]).encode("utf-8")) for char in text)
+             for text in excerpts]
     assert all(size <= 4096 for size in sizes)
     assert 0 < sum(sizes) <= 32 * 1024
     assert sizes == [row["rendered_bytes_shown"] for row in diff["files"]]
@@ -1168,8 +1214,11 @@ def _packaged_pbr_runner(repo, launcher, **kw):
 
 
 def _assert_reviewer_saw_plan_and_patch(prompt, patch):
-    assert '<flow-input type="plan" from="plan">\n| do it\n</flow-input>' in prompt
-    assert f'<flow-input type="patch" from="build">\n| {patch}\n</flow-input>' in prompt
+    marker = prompt.split('<flow-input type="plan" from="plan" fence="', 1)[1][:16]
+    assert (f'<flow-input type="plan" from="plan" fence="{marker}">\n| do it\n'
+            f'</flow-input fence="{marker}">') in prompt
+    assert (f'<flow-input type="patch" from="build" fence="{marker}">\n| {patch}\n'
+            f'</flow-input fence="{marker}">') in prompt
     assert prompt.index('type="plan"') < prompt.index('type="patch"')
 
 

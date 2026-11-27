@@ -11,6 +11,7 @@ import os
 import tempfile
 from pathlib import Path
 
+from browser_support import launch
 from playwright.sync_api import sync_playwright
 
 BASE = os.environ.get("GARUDA_CHECK_BASE", "http://127.0.0.1:8897/")
@@ -29,8 +30,7 @@ def check(label, cond, detail=""):
 
 
 with sync_playwright() as p:
-    channel = os.environ.get("GARUDA_CHECK_CHANNEL")
-    browser = p.chromium.launch(channel=channel) if channel else p.chromium.launch()
+    browser = launch(p)
     page = browser.new_page(viewport={"width": 1500, "height": 1000})
     page.on("console", lambda m: problems.append(f"console.{m.type}: {m.text}")
             if m.type in ("error", "warning") else None)
@@ -152,6 +152,10 @@ with sync_playwright() as p:
     page.goto(f"{BASE}#/usage?range=24h", wait_until="load")
     page.wait_for_selector("#share-table")
     page.wait_for_selector("#usage-spend")
+    # Spend snapshots arrive on their own request after the card renders (5e5781b4), so wait
+    # for the placeholder to be replaced rather than reading it.
+    page.wait_for_function("() => !document.querySelector('#usage-spend-snapshots')"
+                           ".textContent.includes('Loading spend snapshots')")
     check("usage shows recorded limits and scope apart from window totals",
           "token cap: 400000" in page.locator("#usage-spend").inner_text()
           and "scope: native_run_tree" in page.locator("#usage-spend").inner_text())

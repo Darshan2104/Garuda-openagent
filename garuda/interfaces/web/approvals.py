@@ -15,6 +15,12 @@ agent sees a denial and carries on, but the handler returns a falsy
 :class:`~garuda.acp.broker.Unanswered` (timeout or disconnect) so the audit records what
 actually happened rather than a "no" nobody gave.
 
+**Who decided is kept, not inferred.** The permission engine turns every falsy answer into
+the same "User denied" sentence, so the transcript alone cannot tell a person's "no" from the
+reaper's. The broker records each settled ask — approved, denied by the person, timed out,
+reaped after the heartbeat stopped, or denied because the chat closed — and
+``/api/approvals`` serves that record, so the chat shows a reaper denial as exactly that.
+
 **An answer names the ask it saw.** Each ask carries a digest of its id, owner and screened
 action; an answer must name the same owner and digest, so a stale card or another chat's
 listing cannot settle it.
@@ -50,8 +56,10 @@ import hashlib
 import logging
 import time
 import uuid
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 from garuda.acp.broker import ApprovalOutcome, Unanswered
@@ -64,9 +72,26 @@ logger = logging.getLogger(__name__)
 #: open but unattended.
 APPROVAL_TIMEOUT_SECONDS = 300.0
 
-#: How long after an owner's last request its pending asks are denied. Must be comfortably
-#: longer than the client's poll interval and shorter than a person's patience.
-HEARTBEAT_GRACE_SECONDS = 30.0
+#: How long after an owner's last request its pending asks are denied. It has to outlast the
+#: slowest heartbeat a *watching* browser can send, and that is set by background-tab timer
+#: throttling, not by the client's own interval: Chrome's intensive throttling lets a page
+#: hidden for five minutes wake its chained timers at most once a minute, and other browsers
+#: budget background timers similarly. So 60 s is the worst gap between beats from a tab
+#: that is still open, and 90 s leaves 30 s for a slow request and a reaper tick. The reaper
+#: runs every 10 s, so a tab that really is gone has its ask denied within about 100 s —
+#: still a third of the five-minute timeout it exists to beat. (30 s, the old value, reaped
+#: the approvals of people who had only switched tabs.)
+HEARTBEAT_GRACE_SECONDS = 90.0
+
+#: How many settled asks the broker remembers, across owners, for the transcript to explain.
+SETTLED_HISTORY = 200
+
+#: Who settled an ask. ``you`` is the only one that is a person's decision.
+DECIDED_BY_USER = "you"
+DECIDED_BY_TIMEOUT = "timeout"
+DECIDED_BY_REAPER = "stopped_watching"
+DECIDED_BY_CLOSE = "chat_closed"
+DECIDED_BY_CANCEL = "cancelled"
 
 
 @dataclass
@@ -81,6 +106,8 @@ class PendingAsk:
     tool_name: str | None = None
     tool_call_id: str | None = None
     arguments: dict[str, Any] | None = None
+    #: Set by whichever path completed the future; read when the handler records it.
+    decided_by: str | None = None
 
     @property
     def digest(self) -> str:
@@ -115,6 +142,7 @@ class ApprovalBroker:
     ) -> None:
         self._pending: dict[str, PendingAsk] = {}
         self._seen: dict[str, float] = {}
+        self._settled: deque[dict[str, Any]] = deque(maxlen=SETTLED_HISTORY)
         self._timeout = timeout
         self._grace = grace
 
@@ -142,19 +170,26 @@ class ApprovalBroker:
 
         async def handler(action: str) -> "bool | Unanswered":
             ask = self._park(owner, action, events)
+            answer: "bool | Unanswered | None" = None
             try:
                 # No `shield`: `wait_for` cancelling the future on timeout is exactly the
                 # behaviour wanted. A cancelled future is `done()`, so a late answer from
                 # the browser settles nothing instead of resolving something unreachable.
-                return await asyncio.wait_for(ask.future, self._timeout)
+                answer = await asyncio.wait_for(ask.future, self._timeout)
+                return answer
             except asyncio.TimeoutError:
                 logger.info("Approval %s timed out; denying", ask.ask_id)
-                return Unanswered(ApprovalOutcome.TIMEOUT,
-                                  "dashboard approval timed out without an answer")
+                ask.decided_by = DECIDED_BY_TIMEOUT
+                answer = Unanswered(ApprovalOutcome.TIMEOUT,
+                                    "dashboard approval timed out without an answer")
+                return answer
             finally:
                 # Also the cancellation path: an unparked ask cannot be answered by a
                 # browser that no longer has anything to answer.
                 self._pending.pop(ask.ask_id, None)
+                # Recorded before the engine emits its `permission_ask` event, so a client
+                # that reads this after seeing the event always finds it.
+                self._record(ask, answer)
 
         return handler
 
@@ -173,6 +208,50 @@ class ApprovalBroker:
         self.touch(owner)
         logger.info("Parked approval %s for %s: %s", ask.ask_id, owner, action)
         return ask
+
+    def _record(self, ask: PendingAsk, answer: "bool | Unanswered | None") -> None:
+        decided_by = ask.decided_by or (DECIDED_BY_CANCEL if answer is None else DECIDED_BY_USER)
+        self._settled.append({
+            "ask_id": ask.ask_id,
+            "owner": ask.owner,
+            "action": ask.action,
+            "tool_name": ask.tool_name,
+            "tool_call_id": ask.tool_call_id,
+            "approved": answer is True,
+            "decided_by": decided_by,
+            "summary": self._summary(decided_by, answer is True),
+            "reason": answer.reason if isinstance(answer, Unanswered) else None,
+            "settled_at": datetime.now(timezone.utc).isoformat(),
+        })
+
+    def _summary(self, decided_by: str, approved: bool) -> str:
+        """One sentence a person can read, and the only wording the client shows."""
+        if decided_by == DECIDED_BY_USER:
+            return "approved by you" if approved else "denied by you"
+        if decided_by == DECIDED_BY_TIMEOUT:
+            return f"denied: nobody answered within {self._timeout:g}s"
+        if decided_by == DECIDED_BY_REAPER:
+            return (f"denied: the dashboard stopped watching "
+                    f"(no heartbeat for {self._grace:g}s)")
+        if decided_by == DECIDED_BY_CLOSE:
+            return "denied: the chat was closed"
+        return "withdrawn: the turn was stopped before it was answered"
+
+    def settled(self, owner: str | None = None) -> list[dict[str, Any]]:
+        """Recently settled asks and who settled them, oldest first.
+
+        Read from HTTP threads while the loop appends, so it copies first: ``tuple()`` of a
+        deque runs in C under the GIL, where a Python-level loop over the deque itself could
+        see it mutate mid-iteration and raise."""
+        return [dict(item) for item in tuple(self._settled)
+                if owner is None or item["owner"] == owner]
+
+    def settled_ask(self, ask_id: str) -> dict[str, Any] | None:
+        """The record of one settled ask, if it is still remembered."""
+        for item in reversed(tuple(self._settled)):
+            if item["ask_id"] == ask_id:
+                return dict(item)
+        return None
 
     def _attach_structure(self, ask: PendingAsk, events) -> None:
         """Recover ``{id, name, arguments}`` from the newest ``model_response``.
@@ -233,7 +312,7 @@ class ApprovalBroker:
             return "mismatch"
 
         async def settle() -> bool:
-            return self.settle(ask, approved)
+            return self.settle(ask, approved, decided_by=DECIDED_BY_USER)
 
         try:
             done = asyncio.run_coroutine_threadsafe(settle(), loop).result(timeout=5)
@@ -242,12 +321,14 @@ class ApprovalBroker:
             return "already_resolved"
         return "resolved" if done else "already_resolved"
 
-    def settle(self, ask: PendingAsk, approved: "bool | Unanswered") -> bool:
+    def settle(self, ask: PendingAsk, approved: "bool | Unanswered", *,
+               decided_by: str = DECIDED_BY_USER) -> bool:
         """Complete one ask. **Must be called on the agent loop** — a future is loop-affine,
         and `set_result` from another thread is undefined behaviour that usually appears to
         work. Returns False if it was already resolved."""
         if ask.future.done():
             return False
+        ask.decided_by = decided_by
         ask.future.set_result(approved)
         return True
 
@@ -279,7 +360,8 @@ class ApprovalBroker:
                 continue
             logger.info("Owner %s went quiet; denying approval %s", ask.owner, ask.ask_id)
             if self.settle(ask, Unanswered(ApprovalOutcome.DISCONNECTED,
-                                           "dashboard stopped polling for this approval")):
+                                           "dashboard stopped polling for this approval"),
+                           decided_by=DECIDED_BY_REAPER):
                 denied += 1
         return denied
 
@@ -289,7 +371,8 @@ class ApprovalBroker:
         denied = 0
         for ask in list(self._pending.values()):
             if ask.owner == owner and self.settle(ask, Unanswered(
-                    ApprovalOutcome.DISCONNECTED, "dashboard owner went away")):
+                    ApprovalOutcome.DISCONNECTED, "dashboard owner went away"),
+                    decided_by=DECIDED_BY_CLOSE):
                 denied += 1
         return denied
 

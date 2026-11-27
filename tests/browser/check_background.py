@@ -17,6 +17,7 @@ import tempfile
 import time
 from pathlib import Path
 
+from browser_support import launch
 from playwright.sync_api import sync_playwright
 
 BASE = os.environ.get("GARUDA_CHECK_BASE", "http://127.0.0.1:8897/")
@@ -59,8 +60,7 @@ def cli_sessions():
 
 
 with sync_playwright() as p:
-    channel = os.environ.get("GARUDA_CHECK_CHANNEL")
-    browser = p.chromium.launch(channel=channel) if channel else p.chromium.launch()
+    browser = launch(p)
     page = browser.new_page(viewport={"width": 1500, "height": 1000})
     expected_conflicts = [1]  # the deliberately stale click below is answered 409
 

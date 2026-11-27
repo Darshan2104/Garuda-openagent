@@ -112,6 +112,11 @@ async def main() -> None:
     port = int(sys.argv[1])
     sessions = Path(sys.argv[2])
     workspace = Path(sys.argv[3])
+    # A second allowed workspace, so the check can hold two chats at once: each chat leases its
+    # workspace for its whole life.
+    second = workspace.parent / f"{workspace.name}-second"
+    (second / "build").mkdir(parents=True, exist_ok=True)
+    (second / "build" / "out.o").write_text("x\n")
     token = sys.argv[4]
 
     from garuda.interfaces import session as session_module
@@ -161,7 +166,7 @@ async def main() -> None:
         token=token,
         sessions_dir=sessions,
         allow_run=True,
-        workspaces=(workspace,),
+        workspaces=(workspace, second),
         open_browser=False,
     )
     ctx = build_context(config, loop=asyncio.get_running_loop())

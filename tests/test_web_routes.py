@@ -150,7 +150,8 @@ def test_config_offers_models_this_machine_has_run(ctx, store):
 
 def test_the_run_list_is_empty_on_a_fresh_store(ctx):
     payload = body(call(ctx, "/api/runs"))
-    assert payload == {"runs": [], "total": 0, "limit": reads.DEFAULT_LIMIT}
+    assert payload == {"runs": [], "total": 0, "limit": reads.DEFAULT_LIMIT,
+                       "unreadable_sessions": {"count": 0, "ids": [], "being_written": []}}
 
 
 def test_a_run_row_carries_what_the_table_renders(ctx, store):
@@ -358,3 +359,128 @@ def test_sessions_api_refuses_a_limit_below_one(ctx, store, query):
     assert response.status == 400
     assert "integer >= 1" in body(response)["error"]["message"]
     assert len(body(call(ctx, "/api/sessions", query="limit=1"))["sessions"]) == 1
+
+
+# --- the Overview read (landing page) ---------------------------------------------------
+
+DEAD_OWNER = {"pid": 2_000_000_000, "identity": "gone", "pgid": 1, "epoch": "e"}
+
+
+def _old_sessions_then_bulk(store, bulk=205):
+    """A crashed and a waiting session, then ``bulk`` newer finished ones: more than the
+    200 rows the test asks /api/sessions for, so the old two fall off its end."""
+    import time
+
+    from garuda.acp.approval_channel import FileApprovalChannel
+    from garuda.acp.broker import ApprovalRequest
+    from garuda.runtime import session_state
+
+    for sid in ("old-crashed", "old-waiting"):
+        store.begin(sid, task=sid, model="m", agent="build", workspace="/tmp", name=sid)
+    store.update_meta("old-crashed", {"state": session_state.started(DEAD_OWNER)})
+    store.update_meta("old-waiting", {"state": {**session_state.started(), "work": "waiting"}})
+    channel = FileApprovalChannel(store.session_dir("old-waiting") / "approvals", "old-waiting")
+    channel.publish(ApprovalRequest("a1", "rm -rf build", "terminal", "native", "old-waiting"),
+                    ceiling="smart", expires_at=time.time() + 3600)
+    channel.publish(ApprovalRequest("a2", "git push", "terminal", "native", "old-waiting"),
+                    ceiling="smart", expires_at=time.time() - 5)
+    for index in range(bulk):
+        store.begin(f"bulk-{index:03d}", task="t", model="m", agent="build", workspace="/tmp")
+        store.finish(f"bulk-{index:03d}", AgentResult(success=True, final_message="ok",
+                                                      messages=[], turns=1, metadata={}))
+
+
+def test_overview_finds_crashed_and_waiting_sessions_older_than_the_newest_200(ctx, store):
+    _old_sessions_then_bulk(store)
+    listed = {r["session_id"] for r in body(call(ctx, "/api/sessions", query="limit=200"))["sessions"]}
+    assert not {"old-crashed", "old-waiting"} & listed  # the capped list misses them
+
+    response = call(ctx, "/api/overview")
+    assert response.status == 200
+    payload = body(response)
+    assert payload["sessions_total"] == 207
+    attention = payload["attention"]
+    assert [r["session_id"] for r in attention["crashed"]["items"]] == ["old-crashed"]
+    assert attention["crashed"]["items"][0]["label"] == "crashed"
+    assert [r["session_id"] for r in attention["waiting"]["items"]] == ["old-waiting"]
+    # A crashed session is not running; a waiting one both runs and needs you.
+    assert [r["session_id"] for r in payload["running"]["items"]] == ["old-waiting"]
+    # Expired requests are counted apart: they will be denied, not answered.
+    assert payload["approvals"] == {"waiting": 1, "expired": 1, "sessions": 1}
+    assert [r["session_id"] for r in payload["recent"]] == [f"bulk-{i:03d}" for i in range(204, 196, -1)]
+    # Rows are the read model's, trimmed: verification stays its own field.
+    recent = payload["recent"][0]
+    assert recent["state"]["outcome"] == "completed"
+    assert recent["verification"]["status"] == "unavailable"
+    assert "spend" not in recent and "task" not in recent
+
+
+def test_inbox_lists_an_approval_older_than_the_newest_200_sessions(ctx, store):
+    """The Overview's approvals row links to the inbox; both must see the same request."""
+    _old_sessions_then_bulk(store)
+    inbox = body(call(ctx, "/api/inbox"))["approvals"]
+    assert [(a["session_id"], a["approval_id"]) for a in inbox if not a["expired"]] == [
+        ("old-waiting", "a1")]
+
+
+def _flow(store, sid, **meta):
+    from garuda.runtime import session_state
+
+    stopped = "flow_stop" in meta
+    store.begin(sid, task=sid, model="m", agent="build", workspace="/tmp", name=sid)
+    store.update_meta(sid, {
+        "kind": "flow", "flow": {"name": "pair", "steps": ["code", "review"]},
+        "flow_state": "stopped" if stopped else "running",
+        "state": session_state.finished(success=False) if stopped else session_state.started(),
+        **meta})
+
+
+def test_overview_reports_resumable_pauses_and_a_flows_step_in_flight(ctx, store):
+    from garuda.flows import engine
+
+    _flow(store, "deadline", flow_stop={"code": engine.DEADLINE_STOP, "step": "code", "message": "late"})
+    _flow(store, "silent", flow_stop={"code": engine.SILENT_STOP, "step": "review", "message": "quiet"})
+    _flow(store, "quota", flow_stop={"code": "flow.step_failed", "step": "code", "message": "quota"},
+          quota_recovery={"state": "waiting-for-quota", "reason": "Codex quota exhausted",
+                          "next_check": 1.0})
+    _flow(store, "failed", flow_stop={"code": "flow.step_failed", "step": "code", "message": "boom"})
+    _flow(store, "running")
+    directory = engine.flow_dir(store, "running")
+    directory.mkdir(parents=True, exist_ok=True)
+    engine._append(directory / engine.JOURNAL, {"event": "intent", "index": 1, "step": "review",
+                                                "attempt": 1, "at": "t"})
+    _flow(store, "between-steps")
+
+    payload = body(call(ctx, "/api/overview"))
+    paused = {r["session_id"]: r for r in payload["attention"]["paused"]["items"]}
+    assert set(paused) == {"deadline", "silent", "quota"}  # an ordinary failure is not a pause
+    assert paused["deadline"]["pause"] == {"kind": "deadline"}
+    assert paused["deadline"]["flow"]["stop"]["code"] == engine.DEADLINE_STOP
+    assert paused["silent"]["pause"] == {"kind": "silence"}
+    assert paused["quota"]["pause"] == {"kind": "quota"}
+    assert paused["quota"]["quota_recovery"]["reason"] == "Codex quota exhausted"
+    running = {r["session_id"]: r for r in payload["running"]["items"]}
+    assert running["running"]["progress"] == {"step": "review", "attempt": 1, "index": 2, "total": 2}
+    # No journaled step in flight: no step is claimed.
+    assert running["between-steps"]["progress"] is None
+
+
+def test_overview_is_a_guarded_read_in_both_modes(store):
+    from urllib.parse import parse_qs
+
+    for allow_run in (False, True):
+        mode_ctx = DashboardContext(port=PORT, token=TOKEN, store=store, allow_run=allow_run)
+        response = call(mode_ctx, "/api/overview")
+        assert response.status == 200
+        assert body(response)["running"] == {"items": [], "total": 0}
+        assert body(response)["recent"] == []
+    read_only = DashboardContext(port=PORT, token=TOKEN, store=store)
+    good = {"host": f"127.0.0.1:{PORT}", TOKEN_HEADER: TOKEN}
+    for headers, status in (({"host": good["host"]}, 401),
+                            ({**good, TOKEN_HEADER: "wrong"}, 401),
+                            ({**good, "host": "evil.example"}, 403),
+                            ({**good, "origin": "http://evil.example"}, 403)):
+        response = dispatch(Request(method="GET", path="/api/overview", query=parse_qs(""),
+                                    headers=headers), read_only)
+        assert response.status == status, headers
+    assert call(read_only, "/api/overview", method="POST").status in (403, 405)
