@@ -208,15 +208,17 @@ function wireRtOps() {
       return;
     }
     var submitted = submittedViewInputs(el("rt-handoff-target").closest(".card"));
-    api("/api/runs/" + encodeURIComponent(sid) + "/handoff",
-        { method: "POST", body: { target: target } })
-      .then(function (prepared) {
-        submitted();
-        rtResult("rt-handoff-result",
-          '<div class="meta">handoff state: <strong>' + esc(prepared.handoff_state) + "</strong></div>" +
-          '<div class="meta">' + esc(prepared.handoff_file || "") + "</div>");
-      })
-      .catch(function (err) { rtResult("rt-handoff-result", rtError(err)); });
+    // One write per click: the guard disables the button until the POST settles.
+    guardAction(this, function () {
+      return api("/api/runs/" + encodeURIComponent(sid) + "/handoff",
+                 { method: "POST", body: { target: target } })
+        .then(function (prepared) {
+          submitted();
+          rtResult("rt-handoff-result",
+            '<div class="meta">handoff state: <strong>' + esc(prepared.handoff_state) + "</strong></div>" +
+            '<div class="meta">' + esc(prepared.handoff_file || "") + "</div>");
+        });
+    }, { errorTarget: "rt-handoff-result" });
   });
   el("rt-diff-load").addEventListener("click", function () {
     var sid = el("rt-diff-session").value.trim();
@@ -245,7 +247,7 @@ function wireRtOps() {
       })
       .catch(function (err) { rtResult("rt-diff-result", rtError(err)); });
   });
-  function recover(method) {
+  function recover(method, button) {
     var sid = el("rt-recover-session").value.trim();
     if (!sid) {
       rtResult("rt-recover-result", '<div class="notice err"><div class="notice-body">' +
@@ -253,24 +255,29 @@ function wireRtOps() {
       return;
     }
     var submitted = submittedViewInputs(el("rt-recover-session").closest(".card"));
-    api("/api/runs/" + encodeURIComponent(sid) + "/recover", { method: method })
-      .then(function (report) {
-        if (report.error) {
-          rtResult("rt-recover-result", rtError({ message: report.error }));
-          return;
-        }
-        submitted();
-        var notes = (report.notes || []).map(function (n) {
-          return "<div>" + esc(n) + "</div>";
-        }).join("");
-        rtResult("rt-recover-result",
-          '<div class="meta">state: <strong>' + esc(report.state) + "</strong></div>" +
-          '<div class="meta">resume: ' + esc(report.resume_session_id) + "</div>" + notes);
-      })
-      .catch(function (err) { rtResult("rt-recover-result", rtError(err)); });
+    // Recover writes: it asks first, and a double-click sends one POST.
+    guardAction(button, function () {
+      return api("/api/runs/" + encodeURIComponent(sid) + "/recover", { method: method })
+        .then(function (report) {
+          if (report.error) {
+            rtResult("rt-recover-result", rtError({ message: report.error }));
+            return;
+          }
+          submitted();
+          var notes = (report.notes || []).map(function (n) {
+            return "<div>" + esc(n) + "</div>";
+          }).join("");
+          rtResult("rt-recover-result",
+            '<div class="meta">state: <strong>' + esc(report.state) + "</strong></div>" +
+            '<div class="meta">resume: ' + esc(report.resume_session_id) + "</div>" + notes);
+        });
+    }, {
+      confirm: method === "POST" ? "Recover session " + sid + "? This writes its recovery state." : null,
+      errorTarget: "rt-recover-result"
+    });
   }
-  el("rt-recover-classify").addEventListener("click", function () { recover("GET"); });
-  el("rt-recover-run").addEventListener("click", function () { recover("POST"); });
+  el("rt-recover-classify").addEventListener("click", function () { recover("GET", this); });
+  el("rt-recover-run").addEventListener("click", function () { recover("POST", this); });
 }
 
 /* --- providers and limits (F.2) -------------------------------------------------------------
@@ -342,8 +349,8 @@ function providerCardHtml(card) {
     body += '<p class="stat-sub">' + esc(card.rate_limits.status) + " — " + esc(card.rate_limits.reason) + "</p>";
   }
   body += '<p class="stat-sub">Observed use (' + esc(card.observed_use.label) + ")</p>" +
-    '<table class="table"><thead><tr><th>Window</th><th class="num">Sessions</th><th class="num">Native calls</th><th class="num">ACP turns</th><th class="num">Tokens</th><th class="num">Cost</th></tr></thead><tbody>' +
-    useRowHtml(card.observed_use) + "</tbody></table>";
+    '<div class="table-wrap"><table class="table"><thead><tr><th>Window</th><th class="num">Sessions</th><th class="num">Native calls</th><th class="num">ACP turns</th><th class="num">Tokens</th><th class="num">Cost</th></tr></thead><tbody>' +
+    useRowHtml(card.observed_use) + "</tbody></table></div>";
   return '<div class="card provider-card" data-provider="' + esc(card.id) + '" data-kind="' + esc(card.kind) + '">' + head + body + "</div>";
 }
 
@@ -355,15 +362,18 @@ function providersView() {
       '<div class="page-head"><h1>Providers and limits</h1>' +
       '<button type="button" class="btn" id="providers-refresh"' + (canWrite() ? "" : " disabled") + ">Refresh</button>" +
       '<span class="meta" id="providers-note">' + (canWrite() ? "" : "read-only dashboard: refresh is off") + "</span></div>" +
+      '<div id="providers-error"></div>' +
       '<p class="stat-sub">Limits come only from sources Garuda has proved for the exact harness version; everything else reads unknown. ' +
       "Refresh re-runs the documented status reads and never sends a prompt.</p>" +
       '<div class="grid cols-2" id="provider-cards">' + (cards.length ? cards.map(providerCardHtml).join("") : '<div class="empty">No harnesses or providers yet.</div>') + "</div>"
     );
     el("providers-refresh").addEventListener("click", function () {
-      el("providers-note").textContent = "refreshing…";
-      api("/api/providers/refresh", { method: "POST", body: {} })
-        .then(function () { return providersView(); })
-        .catch(function (err) { el("providers-note").textContent = err.message; });
+      var stillHere = viewGuard();
+      guardAction(this, function () {
+        // A write settles even after the user moved on; re-render only if they did not.
+        return api("/api/providers/refresh", { method: "POST", body: {} })
+          .then(function () { if (stillHere()) return providersView(); });
+      }, { busy: "refreshing…", errorTarget: "providers-error" });
     });
   }).catch(function (err) {
     if (err.status === 401) { render(tokenRequiredPanel()); return; }

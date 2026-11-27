@@ -13,7 +13,10 @@
       <span class="brand-name">Garuda</span>
       <span class="badge" id="mode-badge">…</span>
     </div>
-    <nav class="nav">
+    <button type="button" class="nav-menu" id="nav-menu" aria-expanded="false" aria-controls="nav"
+            aria-label="Pages menu"><span class="nav-menu-icon" aria-hidden="true">☰</span>
+      <span id="nav-current">Menu</span><span class="nav-count" id="nav-menu-count" hidden></span></button>
+    <nav class="nav" id="nav" aria-label="Pages">
       <a href="#/" class="nav-link" data-nav="overview">Overview</a>
       <a href="#/starters" class="nav-link" data-nav="starters">Starters</a>
       <a href="#/runs" class="nav-link" data-nav="runs">Runs</a>
@@ -27,20 +30,25 @@
     </nav>
     <div class="topbar-right">
       <span class="meta" id="version-label"></span>
-      <button type="button" class="theme-toggle" id="keys-toggle" title="Keyboard shortcuts (?)">?</button>
-      <button type="button" class="theme-toggle" id="theme-toggle" title="Toggle theme">◑</button>
+      <button type="button" class="theme-toggle" id="keys-toggle" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">?</button>
+      <button type="button" class="theme-toggle" id="theme-toggle" title="Toggle theme" aria-label="Toggle light or dark theme">◑</button>
     </div>
   </header>
 
+  <div id="conn-banner" class="conn-banner" role="status" aria-live="polite" hidden>
+    <span id="conn-banner-text"></span>
+    <button type="button" class="btn btn-small" id="conn-retry">Retry now</button>
+  </div>
+
   <main id="view" class="view"></main>
 
-  <div id="toast" class="toast" hidden></div>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
   <div id="keys-help" class="keys-help" hidden>
     <div class="card" role="dialog" aria-label="Keyboard shortcuts">
       <h2>Keyboard shortcuts</h2>
       <table><tbody>
-        <tr><td><kbd>1</kbd> – <kbd>9</kbd>, <kbd>0</kbd></td><td>Switch to the nth tab (0 is the tenth)</td></tr>
+        <tr><td><kbd>1</kbd> – <kbd>9</kbd>, <kbd>0</kbd></td><td>Switch tab:<ul class="keys-tabs" id="keys-tabs"></ul></td></tr>
         <tr><td><kbd>/</kbd></td><td>Focus this page's search</td></tr>
         <tr><td><kbd>r</kbd></td><td>Reload this view (except Chat or unsubmitted edits)</td></tr>
         <tr><td><kbd>t</kbd></td><td>Toggle light / dark</td></tr>

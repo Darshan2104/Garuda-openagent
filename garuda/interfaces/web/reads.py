@@ -157,6 +157,8 @@ def summarize_session(meta: dict[str, Any], store: SessionStore) -> dict[str, An
         # the whole id to link anywhere.
         "session_id": session_id,
         "task": meta.get("task"),
+        # The session's human name, so a row can tell near-identical tasks apart.
+        "name": meta.get("name") if isinstance(meta.get("name"), str) else None,
         "agent": meta.get("agent"),
         "mode": meta.get("mode"),
         "workspace": meta.get("workspace"),
@@ -178,22 +180,27 @@ def list_runs(
     store: SessionStore,
     *,
     limit: int = DEFAULT_LIMIT,
+    offset: int = 0,
     status: str | None = None,
     agent: str | None = None,
     model: str | None = None,
     query: str | None = None,
 ) -> dict[str, Any]:
-    """The run list, newest first, filtered.
+    """The run list, newest first, filtered, as one window of ``limit`` rows from ``offset``.
 
     Filtering happens after the read because ``list_sessions`` is the only thing that
     knows how to sort and how to skip an unreadable session; re-implementing that here
     to push filters down would duplicate its defensive behaviour.
+
+    Every session is filtered before the window is cut, so ``total`` and a search cover
+    the whole store, not only its newest ``MAX_LIMIT`` (a search over 5,000 sessions used
+    to find the matches among the newest 500 and report that as the total). Only the rows
+    the response carries are summarized, since each one stats its log.
     """
     limit = max(0, min(limit, MAX_LIMIT))
-    # Read a wider window than requested so filters do not silently return fewer rows
-    # than exist. Still bounded.
-    metas = store.list_sessions(limit=MAX_LIMIT)
-    rows = []
+    offset = max(0, offset)
+    metas = store.list_sessions(limit=None)
+    matched = []
     for meta in metas:
         if agent and meta.get("agent") != agent:
             continue
@@ -203,11 +210,14 @@ def list_runs(
             haystack = f"{meta.get('task') or ''}\n{meta.get('session_id') or ''}".lower()
             if query.lower() not in haystack:
                 continue
-        row = summarize_session(meta, store)
-        if status and not _matches_status(meta, row, status):
+        if status and not _matches_status(meta, _state_fields(meta), status):
             continue
-        rows.append(row)
-    return {"runs": rows[:limit], "total": len(rows), "limit": limit}
+        matched.append(meta)
+    rows = [summarize_session(meta, store) for meta in matched[offset:offset + limit]]
+    # The agent filter offers every agent in the store, not only those in this window.
+    agents = sorted({a for a in (m.get("agent") for m in metas) if isinstance(a, str) and a})
+    return {"runs": rows, "total": len(matched), "limit": limit, "offset": offset,
+            "agents": agents}
 
 
 #: Token fields a run's ``usage`` may carry; each is read only when it was recorded.

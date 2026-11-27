@@ -81,7 +81,8 @@ function sessionRowHtml(row) {
     '<td><a href="#/sessions/' + encodeURIComponent(row.session_id) + '">' +
     esc(row.name || row.session_id.slice(0, 8)) + "</a>" +
     (row.kind === "flow" ? ' <span class="pill unknown">flow</span>' : "") +
-    (row.origin === "consult" ? ' <span class="pill unknown">consult</span>' : "") + "</td>" +
+    (row.origin === "consult" ? ' <span class="pill unknown">consult</span>' : "") +
+    ' <a class="session-trace stat-sub" href="#/runs/' + encodeURIComponent(row.session_id) + '" title="Trace and metrics on Runs">trace</a></td>' +
     '<td><span class="pill ' + (row.crashed ? "failed" : (state.work === "working" ? "running" : "unknown")) + '">' + esc(row.label) + "</span></td>" +
     "<td>" + esc(identityText(row)) + "</td>" +
     "<td>" + chip("outcome", state.outcome || "—", outcomeClass(state.outcome)) + " " + verificationChip(row.verification) + selfCheckChip(row.self_check) + "</td>" +
@@ -110,6 +111,8 @@ function sessionsView() {
     render(
       '<div class="page-head"><h1>Sessions</h1><span class="meta" id="sessions-count">' + rows.length + "</span>" +
       '<button type="button" class="btn" id="sessions-refresh">Refresh</button></div>' +
+      '<p class="page-lede" id="sessions-lede">State, queue, approvals and control for each session. ' +
+      'Traces and metrics of what each agent did are on <a href="#/runs">Runs</a>.</p>' +
       '<div class="filters"><input type="search" id="sessions-search" placeholder="Search name, id, model, workspace…  ( / )" value="' + esc(filter.q) + '">' +
       '<div class="state-chips" id="sessions-states">' +
       '<button type="button" class="state-chip" data-label="">all ' + rows.length + "</button>" +
