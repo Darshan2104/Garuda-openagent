@@ -461,8 +461,8 @@ function sourcesPanelHtml() {
 
 function refreshSources() {
   var chat = STATE.chat;
-  if (!chat) return Promise.resolve();
-  return api("/api/chat/" + encodeURIComponent(chat.id) + "/sources")
+  if (!chat || chat.ending) return Promise.resolve();
+  chat.sourcesLoad = api("/api/chat/" + encodeURIComponent(chat.id) + "/sources")
     .then(function (payload) {
       if (STATE.chat !== chat) return;
       chat.sources = payload.sources || [];
@@ -474,6 +474,7 @@ function refreshSources() {
       var meta = el("sources-meta");
       if (meta && STATE.chat === chat) meta.textContent = "could not refresh the list — " + err.message;
     });
+  return chat.sourcesLoad;
 }
 
 function renderSources() {
@@ -640,7 +641,7 @@ function addUrlSource() {
 function sendChatTurn() {
   var chat = STATE.chat;
   var box = el("chat-task");
-  if (!chat || !box || chat.sending) return;
+  if (!chat || !box || chat.sending || chat.ending) return;
   var task = (box.value || "").trim();
   if (!task) return;
   chat.sending = true;
@@ -1065,7 +1066,17 @@ function endChat() {
   chat.ending = true;
   var button = el("chat-close");
   if (button) { button.disabled = true; button.textContent = "Ending…"; }
-  api("/api/chat/" + encodeURIComponent(chat.id), { method: "DELETE" })
+  // Stop asking about the chat before ending it, and let what is in flight land first. The
+  // server forgets the chat as soon as the DELETE arrives but answers only after tearing the
+  // workspace down, so a poll in that window asked about a chat that no longer existed: a 404
+  // Chrome logs as an error, and a "gone" page racing the real outcome. Ending denies any
+  // pending approval anyway, so the heartbeat has nothing left to protect.
+  var poller = chat.poller;
+  if (poller) poller.stop();
+  Promise.all([poller ? poller.idle() : null, chat.sourcesLoad])
+    .then(function () {
+      return api("/api/chat/" + encodeURIComponent(chat.id), { method: "DELETE" });
+    })
     .then(function () {
       if (STATE.chat === chat) STATE.chat = null;
       unwatchChat(chat);
@@ -1079,6 +1090,8 @@ function endChat() {
     .catch(function (err) {
       chat.ending = false;
       if (err.status === 404) { chatGone(chat); return; }
+      // Still open: watch it again.
+      if (CHAT_OPEN[chat.id] === chat) { chat.poller = null; watchChat(chat); }
       toast("Could not end the chat — " + err.code + ": " + err.message);
       var again = el("chat-close");
       if (again && STATE.chat === chat) { again.disabled = false; again.textContent = "End chat"; }

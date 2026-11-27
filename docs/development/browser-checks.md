@@ -20,6 +20,7 @@ The runner seeds session fixtures, starts dashboards on free ports, and tears th
 - **Failures.** A section whose fixture or dashboard cannot start is reported as failed and the remaining sections still run. The summary lists every failed section; on failure the working directory (dashboard logs `web*.log`, `screenshots/`) is kept and its path printed.
 - **Timeouts.** A dashboard has `GARUDA_CHECK_START_TIMEOUT` seconds (default 120) to listen, which covers a cold first import; each check script has `GARUDA_CHECK_TIMEOUT` seconds (default 600).
 - **Waiting.** Checks wait for the condition they assert (`tests/browser/browser_support.py`), not for a fixed time. A remaining fixed wait is an observation window, such as counting requests while an idle page sits still.
+- **Load.** `GARUDA_CHECK_CPU_THROTTLE=4` slows the page's CPU fourfold (Chromium's `Emulation.setCPUThrottlingRate`, applied by `throttle()` in `browser_support.py`; `check_chat.py` uses it), to bring out races that a loaded CI runner hits and a fast laptop does not. Races between the page and the server are reproduced deterministically instead, with a Playwright route that holds or reorders responses.
 - On Linux the full run also includes the owned starts; `--skip-owned-starts` leaves them out.
 
 ## CI
