@@ -1048,9 +1048,11 @@ stays stopped with `flow.quota_wait` and its resume checkpoint. `garuda flow
 resume FLOW_ID` continues it: before the reset it waits for it first, after
 the reset it runs the step at once. While another process is still waiting for
 the reset, `garuda flow resume` refuses with `flow.quota_wait` and names that
-process. A dashboard-started checked flow also records `flow.quota_wait`, but
-nothing waits for it and its resume keeps the existing `flow.operation_managed`
-refusal.
+process. A dashboard-started flow also records `flow.quota_wait` (a checked one
+with its resume checkpoint), but nothing waits for it: `garuda flow resume`
+refuses it with `flow.operation_managed`, and the dashboard's owned resume
+([Resume a dashboard flow](web-dashboard.md#resume-a-dashboard-flow)) continues
+it once the reset has passed, refusing with `flow.resume_quota_wait` before.
 
 ### Automatic recovery after Codex quota exhaustion
 
