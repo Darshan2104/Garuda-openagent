@@ -206,7 +206,10 @@ def project(store, session_id, *, limit=50, offset=0):
                   'command': shlex.join(['garuda', 'starter', 'run', 'build-review', '--variant', 'pair', '--plan-artifact', reference, '--workspace', meta['workspace']])}
     elif row['verification'].get('code') == 'verification.unsupported_supervisor':
         action = {'id': 'run-on-linux', 'label': 'Run the checked flow on Linux'}
-    elif row['verification']['status'] == 'unavailable' and (not data or data['starter_id'] != 'ask-role'):
+    elif (row['verification']['status'] == 'unavailable' and (not data or data['starter_id'] != 'ask-role')
+          # A flow's checks are its own acceptance contract, not `garuda init`: suggesting
+          # it after a plain completed flow was a next action that did not exist.
+          and meta.get('kind') != 'flow'):
         action = {'id': 'configure-checks', 'label': 'Configure checks or use Build and check', 'command': 'garuda init --project'}
     else:
         action = {'id': 'inspect', 'label': 'Inspect recorded results', 'command': f'garuda sessions show {shlex.quote(session_id)}'}

@@ -31,7 +31,10 @@ native Garuda agent.
     the `--max-permission` posture or a stricter one.
 
 The command prints a URL with a one-time token (`http://127.0.0.1:8787/#t=…`);
-open that exact URL. It opens on the **Overview**. Press Ctrl-C to stop it: the
+open that exact URL. It opens on the **Overview**. Right after it starts listening,
+the dashboard reads every session record and runs the harness discovery the
+Overview's own requests would run, in the background (it never delays startup,
+and stops on shutdown), so the first page is fast. Press Ctrl-C to stop it: the
 dashboard finishes the flow and chat operations it owns, prints
 `Garuda dashboard stopped.` and exits 0. Pasting the link into a tab that is
 already open works too: the dashboard takes the token, removes it from the
@@ -146,13 +149,21 @@ page scrolls sideways.
   wait recorded by quota recovery; a step's own
   deadline or silence limit, or a long step's own pause: no measurable
   progress, its turn budget used, or its harness refusing to continue) → the
-  session; configuration errors →
+  session; a running flow step the live view judges near its silence limit
+  (**quiet for 17 min, limit 20 — the watchdog will stop the step**) or past
+  it; configuration errors →
   **Setup**; a harness a role uses that is unavailable, logged out or not in
   the runtime catalog → **Providers**. With nothing to show it says
-  **Nothing needs you right now**.
+  **Nothing needs you right now**. Crashed, waiting and paused rows older than
+  a day fold into one line per kind (**3 crashed sessions older than a day**),
+  newest first; expanding it shows every one, nothing is hidden or deleted,
+  and an expanded fold stays expanded across refreshes.
 - **Running now**: queued, working and waiting sessions with runtime, role,
   model, state and elapsed time; a flow shows the step its journal says is in
-  flight (**step 1 of 2 · code**) and no step when none is.
+  flight (**step 1 of 2 · code**) and no step when none is, with that step's
+  turn and last activity from the flow's live view. The step's own session is
+  listed under its flow, linked by what it recorded (its `flow_step`, or the
+  flow's live view naming it), not as a second unrelated row.
 - **Recent**: the last eight finished sessions with outcome and verification
   as separate chips (a review is never shown as verification).
 - **Harness health**: one row per harness your roles or their fallbacks use,
@@ -492,8 +503,38 @@ A session's page leads with the work, and keeps the evidence below:
   by the supervisor's backstop (`flow.step_backstop`) is quarantined instead,
   and the page says to set `limits.deadline_min` for a step that runs that
   long.
-- For a session started from a Starter, its result and next action.
-- **Live events**: the session's event count and the last event's type. It
+- **Step in flight**, for a flow whose step is running: the attempt, when it
+  started and for how long, who runs it (role → harness/model, read from the
+  step's own session), links to that session and its trace, turns · rotations
+  · continuations, the last turn's stop reason and decision in plain words,
+  the last activity and how long the step has been idle, context occupancy as
+  **56k of 200k (28%)** with a small meter (how full the harness reported its
+  window, not billed tokens), time left to the step's deadline, the last
+  checkpoint, and the agent's own last progress note (escaped, collapsed when
+  long, labelled as its words rather than a Garuda fact). A **Quiet** line
+  shows how long the step has been quiet against the silence limit that applies
+  (**quiet for 12 min of a 20 min limit**) with the live view's own judgement
+  as a state: within its limit; a tool call running (the longer tool limit
+  applies); waiting on an approval (silence is not counted); nearing the limit;
+  or past it. **Recent turns** lists the attempt's last turns newest first
+  (turn, harness session, what happened in words, duration, files changed,
+  context), three shown and the rest one click away. A field the live view
+  does not report (a step without limits, an older flow) leaves its line out
+  rather than guessing. The step never reads
+  "not run yet" while it is in flight. A paused step says why, when its limit
+  resets and when quota recovery checks next, and `garuda flow resume <id>`
+  where the engine lists the stop as resumable. An older flow, or one whose
+  records the reader cannot read, says **No live detail recorded for this
+  step**. Every value is the shared live view (`garuda flow show --json`'s
+  `live`), nothing estimated; the block updates in place on the page's
+  refresh. The flow's Trace page shows the same block.
+- A finished flow's **Measured** table: what each attempt's receipt measured
+  (prompt size, turns, tool calls, wall time, peak context, reported cost) and
+  the flow total, the same table as its Trace page.
+- For a session started from a Starter, its result and, when there is one, the
+  next action (a plain completed flow is no longer told to configure checks).
+- **Live events** (not for a flow, which has no event log of its own): the
+  session's event count and the last event's type. It
   polls the log every 2 seconds while the tab is visible and holds no
   connection open, so many open session pages do not slow the others down; it
   reads **connected · waiting for events** when the session is quiet, and
@@ -522,9 +563,11 @@ recorded process identity matches.
 `garuda sessions --json` prints the same rows: the CLI and the dashboard read
 one model. A session whose record is damaged (a `meta.json` that isn't a JSON
 object, a field of the wrong type, a file the dashboard can't read) is left out
-of the Runs, Sessions and Approvals lists, and each page says **N sessions could
-not be read** (the ids are in its tooltip, the reason in the server log); the
-session's own page answers `session_unreadable` instead of failing. A queue that can't be read shows as `unknown`, not as empty. A
+of the Runs, Sessions, Approvals and Overview lists, and each page says **N
+sessions could not be read**, naming each one with a link to its page; that page
+says in one sentence what is wrong with the record (`session_unreadable`)
+instead of failing. A flow step's own session names its flow and step in the
+list (**step build (attempt 1) of flow …**) and on its page. A queue that can't be read shows as `unknown`, not as empty. A
 session row's own usage and cost still read `unknown`; the Usage page has the
 totals, and a session's detail adds `reported_usage`, what an external harness's
 adapter reported (see [Sessions](sessions-and-flows.md)).

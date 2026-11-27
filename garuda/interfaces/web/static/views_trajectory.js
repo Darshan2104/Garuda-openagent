@@ -219,8 +219,8 @@ function flowProgressHtml(row) {
  * shared read-model field (`row.flow.in_flight`) from the flow runtime, and this is where it
  * renders. Deliberately no reader of the progress file of its own here. */
 function flowInFlightHtml(row) {
-  void row;
-  return "";
+  // The session page's own block (views_sessions.js flowLiveHtml), from `row.flow.in_flight`.
+  return typeof flowLiveHtml === "function" ? flowLiveHtml(row) : "";
 }
 
 function flowTilesHtml(run, row, ctx) {

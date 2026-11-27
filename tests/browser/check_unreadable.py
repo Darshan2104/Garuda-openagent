@@ -47,8 +47,10 @@ def main() -> int:
     with sync_playwright() as p:
         browser = launch_browser(p)
         page = browser.new_page(viewport={"width": 1400, "height": 900})
+        # Opening the damaged session's page is answered 409 on purpose; Chrome logs that load.
+        expect_409 = [False]
         page.on("console", lambda m: problems.append(f"console.{m.type}: {m.text}")
-                if m.type in ("error", "warning") else None)
+                if m.type in ("error", "warning") and not (expect_409[0] and "409" in m.text) else None)
         page.on("pageerror", lambda e: problems.append(f"pageerror: {e}"))
         page.goto(f"{BASE}#t={TOKEN}", wait_until="load")
 
@@ -59,9 +61,24 @@ def main() -> int:
         check("the readable run is listed", text_contains(page, "#table-card", "a readable run"))
         check("runs say one session could not be read", text_contains(page, ".unreadable-note", NOTE))
         note = page.locator(".unreadable-note")
-        check("the note names the session in its tooltip",
-              note.count() == 1 and note.get_attribute("title") == "zz-damaged")
+        check("the note names the session and links to its page",
+              note.count() == 1 and "zz-damaged" in note.inner_text()
+              and note.locator('a.unreadable-id[href="#/sessions/zz-damaged"]').count() == 1,
+              note.inner_text() if note.count() else "")
         page.screenshot(path=str(SHOTS / "unreadable-runs.png"))
+        # The linked page says in one sentence what is wrong (the typed 409), not "see the log".
+        expect_409[0] = True
+        note.locator("a.unreadable-id").click()
+        check("the session page explains the damaged record",
+              text_contains(page, "#session-unreadable", "can't be read")
+              and page.locator('#session-unreadable[data-code="session_unreadable"]').count() == 1
+              and "cannot read" in page.locator("#session-unreadable").inner_text(),
+              page.locator("#view").inner_text()[:300])
+        page.screenshot(path=str(SHOTS / "unreadable-session.png"))
+        expect_409[0] = False
+        page.goto(f"{BASE}#/", wait_until="load")
+        check("the overview names it too", text_contains(page, "#home-unreadable", "zz-damaged")
+              and page.locator('#home-unreadable a[href="#/sessions/zz-damaged"]').count() == 1)
 
         page.goto(f"{BASE}#/sessions", wait_until="load")
         check("sessions still list the readable one", count_is(page, "tr.session-row", 1))

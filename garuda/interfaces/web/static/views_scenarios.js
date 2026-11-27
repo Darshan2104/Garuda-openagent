@@ -397,11 +397,19 @@ function starterResultHtml(row, split) {
     '<details><summary>Artifacts, review and acceptance receipts</summary><p>' + esc(row.verification_evidence || "Flow checks are unavailable in this release; review is separate from verification.") +
     '</p><pre class="starter-data">' + esc(JSON.stringify({ artifacts: row.artifacts || [], review: row.review, verification: row.verification, acceptance_receipts: row.acceptance_receipts || [] }, null, 2)) + '</pre></details>' +
     (coverage.next_offset != null ? '<button type="button" class="btn" id="starter-next-page">Next evidence page</button>' : "");
+  // A next action only when there is one: "inspect recorded results" is what the page already
+  // is, and on the session page a running session's evidence is incomplete by nature (its
+  // live block says what it is doing), unless an approval waits on the person.
+  var realAction = action.id && action.id !== "inspect" &&
+    !(split && ["queued", "working", "waiting"].indexOf(state.work) >= 0 && action.id !== "approval");
+  var again = typeof flowRunAgainHtml === "function" ? flowRunAgainHtml(row) : "";
   var result = '<details><summary>Stored output · ' + esc((row.output || {}).scope || "unknown") + '</summary><p class="stat-sub">Stored summaries may be clipped. Missing or withheld output is not success evidence.</p><pre class="starter-data">' +
     esc((row.output || {}).text == null ? "Output unavailable or withheld." : row.output.text) + '</pre></details>' +
-    '<h3>Next action</h3><p>' + esc(action.label || "Inspect recorded evidence") + '</p>' + implement + flowRunAgainHtml(row) +
-    (action.id === "implement-plan" && !workspace ? '<p>The recorded workspace is outside this dashboard’s allowlist. Copy the command into a terminal in that workspace.</p>' : "") +
-    (action.command ? '<label>Suggested CLI command <textarea id="starter-next-command" readonly rows="3">' + esc(action.command) + '</textarea></label><button type="button" class="btn" id="starter-next-copy">Copy command</button>' : "");
+    // "Run again" (a flow started from the Flows page) is a real next action on its own.
+    (realAction || again ? '<h3>Next action</h3>' : "") +
+    (realAction ? '<p>' + esc(action.label || "Inspect recorded evidence") + '</p>' + implement : "") + again +
+    (realAction ? (action.id === "implement-plan" && !workspace ? '<p>The recorded workspace is outside this dashboard’s allowlist. Copy the command into a terminal in that workspace.</p>' : "") +
+    (action.command ? '<label>Suggested CLI command <textarea id="starter-next-command" readonly rows="3">' + esc(action.command) + '</textarea></label><button type="button" class="btn" id="starter-next-copy">Copy command</button>' : "") : "");
   var head = '<section class="card starter-result" id="starter-result"><h2>' +
     (legacy ? "Recorded run evidence" : "Starter result · " + esc(row.starter_id || "unknown")) + '</h2>' +
     (legacy ? '<p class="stat-sub">Starter input/source provenance was not recorded for this run.</p>' : "") +
