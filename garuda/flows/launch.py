@@ -10,6 +10,12 @@ A step with ``limits`` (#828) passes its deadline to the launcher's own
 deadline and, for ACP, asks the adapter's silence watchdog to watch the turn;
 the step's result names which one stopped it (``liveness``). A step without
 ``limits`` launches exactly as before.
+
+An ACP step with a turn spec (``launch.turns``: declared outputs or
+``long_run``) passes :class:`garuda.flows.long_step.StepTurns` as
+``run_acp_task``'s ``after_turn`` hook: one repair turn for bad output blocks
+(#819) and, with ``long_run``, the turn loop. The step's output is then the
+reply the hook chose, and its result carries the hook's record (``turns``).
 """
 
 from __future__ import annotations
@@ -42,6 +48,12 @@ async def _acp(launch: StepLaunch) -> StepResult:
     plan = launch.role_plan
     store = launch.store or SessionStore()
     session_id = str(uuid.uuid4())
+    hook = None
+    if launch.turns is not None:
+        from garuda.flows.long_step import StepTurns
+
+        hook = StepTurns(launch.turns, step_prompt=launch.prompt, store=store,
+                         workspace=launch.workspace, session_id=session_id)
     try:
         summary = await run_acp_task(
             launch.prompt, runtime_id=plan.runtime_id, workspace=launch.workspace,
@@ -52,6 +64,7 @@ async def _acp(launch: StepLaunch) -> StepResult:
             codex_executable=launch.codex_executable,
             before_prompt=launch.quota_guard,
             **acp_limits(launch.limits),
+            **({"after_turn": hook} if hook is not None else {}),
         )
     except RecoveryWaiting as exc:
         return StepResult(session_id, False, "", error=_redacted(exc), quota_wait=True,
@@ -64,11 +77,18 @@ async def _acp(launch: StepLaunch) -> StepResult:
         return StepResult(session_id, False, "", error=_redacted(exc),
                           closure={"status": "closed"} if launch.quota_recovery else None,
                           liveness=liveness_of(exc, launch.limits),
-                          stop_reason=getattr(exc, "acp_stop_reason", None))
-    return StepResult(summary["session_id"], summary.get("status") == "completed",
-                      str(summary.get("reply") or ""),
+                          stop_reason=getattr(exc, "acp_stop_reason", None),
+                          turns=hook.record() if hook is not None else None)
+    if hook is None:
+        return StepResult(summary["session_id"], summary.get("status") == "completed",
+                          str(summary.get("reply") or ""),
+                          closure={"status": "closed"} if launch.quota_recovery else None,
+                          stop_reason=summary.get("stop_reason"))
+    return StepResult(summary["session_id"],
+                      summary.get("status") == "completed" and hook.stop is None, hook.output,
                       closure={"status": "closed"} if launch.quota_recovery else None,
-                      stop_reason=summary.get("stop_reason"))
+                      error=(hook.stop or {}).get("message", ""),
+                      stop_reason=summary.get("stop_reason"), turns=hook.record())
 
 
 def acp_limits(limits) -> dict:

@@ -1922,6 +1922,11 @@ def run_flow(args) -> int:
             ran = "/".join(str(v) for v in (plan.get("runtime_id"), plan.get("model_id")) if v)
             took = receipt.get("duration_ms")
             extra = (f"; {ran}" if ran else "") + (f"; {took / 1000:.1f}s" if type(took) is int else "")
+            if type(receipt.get("turns")) is int:  # a long step's turns or a repair (#819)
+                repairs = receipt.get("repairs") if isinstance(receipt.get("repairs"), list) else []
+                extra += (f"; {receipt['turns']} turns, {receipt.get('rotations', 0)} rotations"
+                          + "".join(f", repair {r.get('outcome')}" for r in repairs
+                                    if isinstance(r, dict)))
             print(f"  {receipt['step']} (attempt {receipt['attempt']}): {receipt['status']}; "
                   f"outputs: {outs}{extra}")
         for line in _flow_worktree_lines(store, args.flow_session, meta):
@@ -1935,7 +1940,9 @@ def run_flow(args) -> int:
         else:
             outcome = asyncio.run(_terminable(lambda: service.run(
                 args.name, args.task, args.workspace, checks=tuple(args.checks),
-                isolation=getattr(args, "isolation", None)), terminated))
+                # Only when asked: without the flag the call is the one it always was.
+                **({"isolation": args.isolation} if getattr(args, "isolation", None) else {})),
+                terminated))
     except asyncio.CancelledError:
         # SIGTERM reached a point with no settled stop: the engine recorded the
         # flow `interrupted` and released what it proved closed (#760).

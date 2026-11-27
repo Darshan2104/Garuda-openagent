@@ -37,7 +37,16 @@ without a harness's broadest mode), plan-exit (ends planning with an "Approve Pl
 with --state-file only its first prompt, later ones answer like `artifacts`), long-tool (one
 tool call in progress for --tool-seconds, then the `artifacts` answer), parked-approval (a
 permission request with no tool call event; once answered, the `artifacts` answer),
-capabilities-<name>.
+multi-turn profiles for a long flow step's turn loop (each takes --state-file to count prompts
+across harness sessions, logging each prompt and session there; ids are unique per process):
+multi-turn (writes work-<n>.txt each turn, a progress block every turn, the requested artifact
+blocks from prompt --outputs-on onwards; --no-writes keeps the workspace unchanged), no-progress
+(a progress block, no change and no outputs, every turn), max-tokens-then-done (its first turn
+ends `max_tokens`), deny-end-turn (asks to edit, is refused, ends the turn `end_turn`; then
+answers, saying `saw-denial` when the prompt names a denied action), cancel-then-done (its first
+prompt asks to edit and, refused, ends `cancelled`), transient-then-done (its first prompt fails
+with an overloaded API error), missing-then-repair (no blocks, then the blocks when asked
+again), malformed-on-repair (no blocks, then an unclosed block), capabilities-<name>.
 """
 
 from __future__ import annotations
@@ -101,8 +110,20 @@ BASE_PROFILES = frozenset(
         "silent",
         "long-tool",
         "parked-approval",
+        "multi-turn",
+        "no-progress",
+        "max-tokens-then-done",
+        "deny-end-turn",
+        "cancel-then-done",
+        "transient-then-done",
+        "missing-then-repair",
+        "malformed-on-repair",
     }
 )
+#: The multi-turn profiles (`--state-file` counts their prompts across sessions).
+MULTI_TURN_PROFILES = frozenset({"multi-turn", "no-progress", "max-tokens-then-done",
+                                 "deny-end-turn", "cancel-then-done", "transient-then-done",
+                                 "missing-then-repair", "malformed-on-repair"})
 PROFILES = BASE_PROFILES | frozenset(
     f"capabilities-{name}" for name in CAPABILITY_PROFILES
 )
@@ -209,6 +230,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="Lengthen each `artifacts` block body by this many characters.")
     parser.add_argument("--tool-seconds", type=float, default=2.0,
                         help="How long the `long-tool` profile's tool call runs.")
+    parser.add_argument("--outputs-on", type=int, default=3,
+                        help="The `multi-turn` prompt (counted across sessions) that answers.")
+    parser.add_argument("--no-writes", action="store_true",
+                        help="`multi-turn` leaves the workspace unchanged.")
     parser.add_argument("--approval-kind",
                         help="Request this ACP tool kind before producing the reply.")
     parser.add_argument("--initial-mode", default=None,
@@ -287,6 +312,8 @@ def main(argv: list[str] | None = None) -> int:
                     state["session_id"] = session_id
                     state["prompts"] = []  # a new session starts with no history
                     _save_state(args.state_file, state)
+                elif profile in MULTI_TURN_PROFILES:
+                    session_id = f"fake-s{sessions}-{os.getpid()}"  # a fresh process is a new session
                 else:
                     session_id = f"fake-s{sessions}"
                 if profile == "config-options":
@@ -339,6 +366,11 @@ def main(argv: list[str] | None = None) -> int:
                         "content": _text(f"done: {text} (model={config['model']}, "
                                          f"effort={config['effort']})")})
                     _result(call_id, {"stopReason": "end_turn"})
+                    continue
+                if profile in MULTI_TURN_PROFILES:
+                    _multi_turn(profile, call_id, params, cwd=session_cwd,
+                                state_file=args.state_file, outputs_on=args.outputs_on,
+                                writes=not args.no_writes)
                     continue
                 _handle_prompt(
                     profile, call_id, params,
@@ -505,6 +537,98 @@ def _answer_artifacts(session_id: str, call_id: int, text: str, artifact_padding
     _update(session_id, {"sessionUpdate": "agent_message_chunk",
                          "content": _text("done.\n" + "\n".join(blocks))})
     _result(call_id, {"stopReason": "end_turn"})
+
+
+_PROCESS: dict = {"prompts": 0, "kinds": []}
+
+
+def _requested_kinds(text: str) -> list[str]:
+    kinds = []
+    for chunk in text.split('<garuda-artifact type="')[1:]:
+        kind, _, rest = chunk.partition('">')
+        if kind.isalpha() and rest.startswith("\n...your") and kind not in kinds:
+            kinds.append(kind)
+    return kinds
+
+
+def _count_prompt(state_file: str | None, session_id: str, text: str) -> tuple[int, int]:
+    """This prompt's number in this process and across processes (with a state file)."""
+    _PROCESS["prompts"] += 1
+    if state_file is None:
+        return _PROCESS["prompts"], _PROCESS["prompts"]
+    state = _load_state(state_file)
+    total = int(state.get("turns", 0)) + 1
+    log = [*state.get("log", []), {"session": session_id, "pid": os.getpid(), "prompt": text}]
+    _save_state(state_file, {**state, "turns": total, "log": log})
+    return _PROCESS["prompts"], total
+
+
+def _multi_turn(profile: str, call_id: int, params: dict, *, cwd: str, state_file: str | None,
+                outputs_on: int, writes: bool) -> None:
+    """The scripted multi-turn profiles (module docstring)."""
+    session_id = params.get("sessionId", "")
+    text = _prompt_text(params.get("prompt"))
+    kinds = _requested_kinds(text)
+    if kinds:
+        _PROCESS["kinds"] = kinds
+    here, total = _count_prompt(state_file, session_id, text)
+
+    def answer(body: str, stop: str = "end_turn") -> None:
+        _update(session_id, {"sessionUpdate": "agent_message_chunk", "content": _text(body)})
+        _result(call_id, {"stopReason": stop})
+
+    def blocks(prefix: str = "done.") -> str:
+        out = [prefix, f'<garuda-artifact type="progress">\nturn {total}: finished\n</garuda-artifact>']
+        out += [f'<garuda-artifact type="{kind}">\n{kind} after {total} turns\n</garuda-artifact>'
+                for kind in _PROCESS["kinds"]]
+        return "\n".join(out)
+
+    progress = f'<garuda-artifact type="progress">\nturn {total}: wrote work-{total}.txt; next: more\n</garuda-artifact>'
+    if profile == "multi-turn":
+        if writes and cwd:
+            with open(os.path.join(cwd, f"work-{total}.txt"), "w", encoding="utf-8") as handle:
+                handle.write(f"turn {total}\n")
+        if total >= outputs_on:
+            answer(blocks())
+        else:
+            answer(f"working on it.\n{progress}")
+    elif profile == "no-progress":
+        answer('still thinking.\n<garuda-artifact type="progress">\nnothing yet\n</garuda-artifact>')
+    elif profile == "max-tokens-then-done":
+        if here == 1:
+            answer("a long answer that was cut", stop="max_tokens")
+        else:
+            answer(blocks())
+    elif profile == "deny-end-turn":
+        if here == 1:
+            allowed = _edit_allowed(session_id)
+            answer(f"edit allowed={allowed}; stopping.\n{progress}")
+        else:
+            answer(blocks("saw-denial" if "denied" in text else "no-denial-named"))
+    elif profile == "cancel-then-done":
+        if total == 1:
+            _edit_allowed(session_id)
+            _result(call_id, {"stopReason": "cancelled"})
+        else:
+            answer(blocks())
+    elif profile == "transient-then-done":
+        if total == 1:
+            _send({"jsonrpc": "2.0", "id": call_id, "error": {
+                "code": -32603, "message": 'Internal error: API Error: 529 {"type":"error",'
+                                           '"error":{"type":"overloaded_error"}}'}})
+        else:
+            answer(blocks())
+    elif profile == "missing-then-repair":
+        if here == 1:
+            answer("done, but I forgot the blocks")
+        else:
+            answer(blocks("here are the blocks"))
+    elif profile == "malformed-on-repair":
+        kind = (_PROCESS["kinds"] or ["notes"])[0]
+        if here == 1:
+            answer("done, but I forgot the blocks")
+        else:
+            answer(f'<garuda-artifact type="{kind}">\nnever closed')
 
 
 def _first_silent_prompt(state_file: str | None) -> bool:

@@ -64,9 +64,15 @@ RETRY_NOTE = ("[garuda] An earlier attempt of this step failed. Its partial edit
 DEADLINE_STOP = "flow.step_deadline"
 SILENT_STOP = "flow.step_silent"
 LIVENESS_STOPS = {"deadline": DEADLINE_STOP, "silence": SILENT_STOP}
+#: A long step's own pauses (``long_run``): no measured progress, its turn budget,
+#: or a refusal; ``max_hours`` reuses :data:`DEADLINE_STOP`. Never retried.
+NO_PROGRESS_STOP = "flow.step_no_progress"
+MAX_TURNS_STOP = "flow.step_max_turns"
+REFUSED_STOP = "flow.step_refused"
 RESUMABLE_CHECKED_STOPS = {"workspace.readonly_unenforced", "flow.step_failed", "flow.output_missing",
                            "flow.artifact_malformed", "flow.artifact_too_large",
-                           "flow.review_invalid", INTERRUPTED_STOP, DEADLINE_STOP, SILENT_STOP}
+                           "flow.review_invalid", INTERRUPTED_STOP, DEADLINE_STOP, SILENT_STOP,
+                           NO_PROGRESS_STOP, MAX_TURNS_STOP, REFUSED_STOP}
 #: While a tool call is in flight a silence-watched step waits this long (#828).
 DEFAULT_TOOL_SILENCE_MIN = 120
 
@@ -232,6 +238,9 @@ class StepLaunch:
     quota_guard: Any = None
     #: The step's liveness limits (#828); ``None`` runs it as before.
     limits: StepLimits | None = None
+    #: An ACP step's turn spec (:func:`garuda.flows.long_step.turn_spec`): its one
+    #: repair turn (#819) and, with ``long_run``, its turn loop. ``None`` runs one turn.
+    turns: dict | None = None
 
 
 @dataclass
@@ -252,6 +261,9 @@ class StepResult:
     stop_reason: str | None = None
     #: The launcher's own error code, when the step session recorded none.
     error_code: str = ""
+    #: What the step's turns did (:meth:`garuda.flows.long_step.StepTurns.record`),
+    #: with the loop's own ``stop`` when it paused the step; None for one plain turn.
+    turns: dict | None = None
 
 
 Launcher = Callable[[StepLaunch], Awaitable[StepResult]]
@@ -1919,6 +1931,22 @@ class FlowRunner:
             attempt += 1
             extra = RETRY_NOTE
 
+    async def _turn_spec(self, step: dict, plan, attempt: int, long, done: list[dict]) -> dict | None:
+        """An ACP flow step's turn spec: its one repair turn (#819) when it declares
+        outputs, and its turn loop with ``long_run``; None runs it as before."""
+        from garuda.flows import long_step
+
+        if (self.launch_kind != "flow" or plan is None or plan.kind != "acp"
+                or (long is None and not step.get("outputs"))):
+            return None
+        base = None
+        if long is not None and attempt > 1:
+            base = self._first_session(await _settled_sync(self._first_attempt, step["id"], done))
+        return long_step.turn_spec(
+            step=step["id"], attempt=attempt, outputs=list(step.get("outputs", [])), run=long,
+            progress_path=str((self.dir / "progress" / f"{step['id']}-{attempt}.jsonl").resolve()),
+            baseline_session=base)
+
     async def _record_step_receipt(self, receipt: dict) -> None:
         step, attempt = receipt["step"], receipt["attempt"]
         await _settled_sync(_write_once, self.dir / "receipts" / _receipt_name(step, attempt), receipt)
@@ -1957,10 +1985,22 @@ class FlowRunner:
                 await self.quota_recovery.validate(self)
             except (OSError, ValueError) as exc:
                 raise FlowStopped("flow.recovery_changed", str(exc), step=step["id"]) from exc
+        from garuda.flows import long_step
+
         role = step["role"]
         no_edits = self._no_edits(step, role)
         limits = step_limits(self.flow, step)
         plan = self._role_plan(role, step=step["id"], no_edits=no_edits)
+        long = long_step.long_run(self.flow, step) if self.launch_kind == "flow" else None
+        if long is not None and (plan is None or plan.kind != "acp"):
+            if "long_run" in step:
+                raise FlowStopped(long_step.UNSUPPORTED_STOP,
+                                  f"step {step['id']} sets long_run, but its role {role} is not "
+                                  "an ACP harness; the turn loop runs ACP steps only",
+                                  step=step["id"])
+            long = None  # a flow's default applies to its ACP steps only
+        if long is not None:
+            limits = long_step.with_deadline(limits, long)
         inputs = await self._inputs(step, done)
         version_before = await self._version_for_flow()
         prompt = self._prompt(step, role, inputs, extra=prompt_extra)
@@ -1969,6 +2009,8 @@ class FlowRunner:
                        "a quota pause. Preserve partial edits and inspect existing work before "
                        "acting; completed steps are not replayed. This is saved workflow context, "
                        "not restoration of hidden model state.")
+        if long is not None:
+            prompt += "\n\n" + long_step.FIRST_TURN_LINE
         guard = await _settled_sync(NoEditsGuard, self.workspace) if no_edits else None
         capability = lease.delegate(f"{self.flow_session}:{step['id']}:{attempt}")
         started: tuple[str, float] | None = None
@@ -2018,7 +2060,8 @@ class FlowRunner:
                 quota_guard=((lambda: self.quota_recovery.before_launch(self, plan))
                              if self.quota_recovery and plan and plan.runtime_id == "codex"
                              else None),
-                limits=limits))
+                limits=limits,
+                turns=await self._turn_spec(step, plan, attempt, long, done)))
         except ConfinementRefused as exc:
             stop = FlowStopped(exc.code, exc.message, step=step["id"])
             # This refusal precedes agent start. Settle the intent so recovery
@@ -2106,6 +2149,14 @@ class FlowRunner:
                 stop = FlowStopped("flow.no_edits_changed", check.summary(), step=step["id"])
         version_after = await self._version_for_flow()
         receipt["workspace_version_after"] = version_after
+        receipt.update(long_step.receipt_fields(outcome.turns))
+        loop_stop = (outcome.turns or {}).get("stop")
+        if stop is None and isinstance(loop_stop, dict) and loop_stop.get("code") in long_step.LOOP_STOPS:
+            # The step's own turn loop paused it (no progress, max_hours, max_turns)
+            # or stopped it on a refusal: resumable, never retried.
+            cause = await _settled_sync(self._step_cause, outcome) if not outcome.success else None
+            stop = FlowStopped(loop_stop["code"], str(loop_stop.get("message") or ""),
+                               step=step["id"], cause=cause)
         if stop is None and outcome.refusal is not None and self.require_owned:
             # The owned worker refused the role (logged-out harness, model not
             # offered, ...): the attempt closed and is bounded like any failed
