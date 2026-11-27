@@ -43,6 +43,7 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import traceback
 from pathlib import Path
 
@@ -286,23 +287,58 @@ def worker_record(process) -> dict:
     """What identifies the worker process: pid, start identity, group, command."""
     from garuda.runtime.recovery import _process_identity
 
-    try:
-        identity = _process_identity(process.pid)
-    except Exception:
-        identity = None
+    identity = getattr(process, "garuda_start_identity", _UNREAD)
+    if identity is _UNREAD:
+        try:
+            identity = _process_identity(process.pid)
+        except Exception:
+            identity = None
     command = hashlib.sha256(" ".join(process.args).encode()).hexdigest() \
         if isinstance(getattr(process, "args", None), list) else None
     return {"pid": process.pid, "identity": identity, "pgid": process.pid, "command": command}
+
+
+_UNREAD = object()
+
+
+def _worker_argv(session_id: str) -> list[str]:
+    return [sys.executable, "-m", "garuda.interfaces.main", WORKER_COMMAND, session_id]
 
 
 def _spawn_worker(session_id: str, *, store_root: Path | None = None) -> subprocess.Popen:
     env = dict(os.environ)
     if store_root is not None:
         env["GARUDA_SESSIONS_DIR"] = str(store_root.resolve())
-    return subprocess.Popen(
-        [sys.executable, "-m", "garuda.interfaces.main", WORKER_COMMAND, session_id],
-        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    process = subprocess.Popen(
+        _worker_argv(session_id), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         start_new_session=True, close_fds=True, env=env)
+    reap_detached(process)
+    return process
+
+
+def reap_detached(process: subprocess.Popen) -> None:
+    """Wait on a detached, long-lived child from a daemon thread, so it never lingers
+    as a zombie of this (dashboard or CLI) process after it exits (#884).
+
+    Nothing else waits on such a child: without this it stays ``Z`` until
+    :mod:`subprocess` happens to collect it at the next spawn. Its start identity is
+    read first, while the pid still names it (an unreaped child cannot be recycled),
+    and kept for :func:`worker_record`, so a worker that exits at once is identified
+    exactly as one that runs. The caller is never blocked.
+    """
+    from garuda.runtime.recovery import _process_identity
+
+    try:
+        process.garuda_start_identity = _process_identity(process.pid)
+    except Exception:
+        process.garuda_start_identity = None
+    threading.Thread(target=_wait_quietly, args=(process,), daemon=True,
+                     name=f"garuda-reap-{process.pid}").start()
+
+
+def _wait_quietly(process: subprocess.Popen) -> None:
+    with contextlib.suppress(Exception):
+        process.wait()
 
 
 # --- the worker --------------------------------------------------------------------------
@@ -601,5 +637,16 @@ def cancel(store, session_id: str, *, queue=None, kill=os.killpg) -> str:
         # The pid now belongs to another process. Never signal it.
         store.update_meta(session_id, {"status": "failed", "state": session_state.interrupted()})
         return "the worker's pid was reused by another process; nothing was signalled"
+    from garuda.runtime.ownership import group_running
+    from garuda.runtime.recovery import _is_zombie
+
+    if _is_zombie(pid):
+        # It has exited and only awaits its parent's reap (#884): a zombie keeps its
+        # identity and still answers kill(pid, 0). Its unreaped pid pins its group, so
+        # signalling that group reaches only the worker's own descendants.
+        if worker.get("pgid") in (None, pid) and group_running(pid):
+            kill(pid, signal.SIGTERM)
+        store.update_meta(session_id, {"status": "failed", "state": session_state.interrupted()})
+        return "the worker is not running"
     kill(worker.get("pgid") or pid, signal.SIGTERM)
     return "asked the running worker to stop"

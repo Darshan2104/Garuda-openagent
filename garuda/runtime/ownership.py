@@ -288,5 +288,53 @@ def owner_liveness(owner: dict) -> bool | None:
             return False
         except PermissionError:
             return None
+        # A zombie leader (exited, not yet reaped by its parent, #884) keeps its
+        # group in existence; only a member still running keeps the owner alive.
+        return group_running(pgid)
+    return False
+
+
+def group_running(pgid: int) -> bool:
+    """Whether process group ``pgid`` has a member that has not wholly exited.
+
+    ``killpg(pgid, 0)`` also succeeds on a group whose only members are zombies.
+    True when the group cannot be inspected, so a caller never evicts on a guess.
+    """
+    from garuda.runtime.recovery import RecoveryError, _linux_stat, _use_proc
+
+    if not _use_proc():
+        return _ps_group_running(pgid)
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
         return True
+    for name in entries:
+        if not name.isdigit():
+            continue
+        pid = int(name)
+        try:
+            fields = _linux_stat(pid)
+        except (RecoveryError, OSError):
+            return True
+        if fields is None or len(fields) < 4:
+            continue  # exited while scanning
+        if fields[3] == str(pgid) and not _exited(pid, _linux_stat):
+            return True
+    return False
+
+
+def _ps_group_running(pgid: int) -> bool:
+    import subprocess
+
+    try:
+        result = subprocess.run(["ps", "-A", "-o", "pgid=", "-o", "stat="], capture_output=True,
+                                text=True, timeout=10, env={**os.environ, "LC_ALL": "C"})
+    except (OSError, subprocess.SubprocessError):
+        return True
+    if result.returncode != 0:
+        return True
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 2 and parts[0] == str(pgid) and not parts[1].startswith("Z"):
+            return True
     return False
