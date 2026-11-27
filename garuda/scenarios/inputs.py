@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from copy import deepcopy
 
 from garuda.context.redact import redact_text
@@ -11,6 +12,8 @@ from garuda.scenarios.types import Starter, StarterError
 MAX_FIELD_CHARS = 32_768
 MAX_TASK_CHARS = 128_000
 MAX_TASK_BYTES = 512_000
+#: A garuda.yaml flow name (``garuda_yaml._name``).
+FLOW_NAME = re.compile(r"[a-z0-9][a-z0-9_-]{0,47}")
 
 
 def bounded_text(value, name):
@@ -42,6 +45,12 @@ def validate_inputs(entry: Starter, inputs: dict, *, require_fields: bool = True
                 raise StarterError("starter.input_invalid", f"{name} must be a list of source references")
         elif kind == "execution-options":
             out[name] = validate_options(entry, value)
+        elif kind == "flow-name":
+            # A name only, never a definition: the flow resolves server-side
+            # against the effective configuration (a project flow once trusted).
+            if not isinstance(value, str) or not FLOW_NAME.fullmatch(value):
+                raise StarterError("starter.flow_invalid",
+                                   f"{name} must name a configured flow (lowercase letters, digits, '-', '_')")
     return out
 
 

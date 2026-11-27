@@ -354,9 +354,29 @@ Files are named context references with digests: supplied context does not prove
 that a runtime read a file. `--preview` performs no process, model, network,
 admission, or store write. Start recompiles and revalidates before dispatch. Background workers revalidate
 again after waiting for capacity, using the recorded explicit context grant.
-Flow starters do not accept a check option. `build-review` automatically selects
+The packaged flow starters do not accept a check option. `build-review` automatically selects
 authorized configured checks; planning starters select none. The equivalent
 `garuda flow run` command accepts repeated `--check` arguments.
+
+`run-flow --flow NAME --goal TEXT` runs any flow `garuda flow list` shows: a
+packaged flow, one from your user `garuda.yaml`, or a project flow once the
+project file's exact bytes are trusted (`starter.project_flow_untrusted`
+otherwise). It is reachable by id but is not one of the five listed starters, so
+`starter list` and `starter show` leave it out. It accepts repeated `--source` and
+`--check`; like `build-review`, it runs the effective checks at flow
+finalization (Linux only). Its preview adds a `pipeline`: each step's roles with
+their runtime, model, effort and effective permission, inputs, outputs, review,
+retries, limits, `long_run` and the owned one-hour backstop for a step without a
+deadline. The equivalent command is `garuda flow run NAME --task TASK --check …`
+with the same compiled task (the starter brief and the framed task field), so
+every step receives the same prompt. A dashboard start also refuses step retries
+(`starter.retries_unsupported`), a non-shared `isolation`
+(`starter.isolation_unsupported`) and parallel groups; a `long_run` step on a
+non-ACP role refuses everywhere (`flow.long_run_unsupported`).
+
+```bash
+garuda starter run run-flow --flow plan-only --goal "Explain reconnect status" --workspace . --preview
+```
 
 JSON runs put runtime progress on stderr and one result document on stdout.
 Results separate stored process/work/outcome, review and its independence policy,

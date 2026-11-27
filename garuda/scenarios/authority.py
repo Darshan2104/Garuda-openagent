@@ -99,6 +99,39 @@ def _capabilities(backend_available: bool, approval_available: bool) -> dict:
     }
 
 
+def _selects_flow(starter_id) -> bool:
+    from garuda.scenarios.catalog import load_catalog, selects_flow
+
+    entry = load_catalog().get(starter_id) if isinstance(starter_id, str) else None
+    return entry is not None and selects_flow(entry)
+
+
+def _owned_shape_blockers(name: str, flow: dict, block) -> None:
+    """Flow shapes the owned engine refuses after admission, refused before it.
+
+    The owned flow parent refuses step retries (``flow.retries_unsupported``)
+    and a non-shared ``isolation`` (``flow.isolation_unsupported``); parallel
+    groups are refused below for every flow starter. Only a selecting starter
+    (``run-flow``) reports these, so the five packaged starters' refusals stay
+    as they were. Blockers are not part of the envelope or its digest.
+    """
+    from garuda.config.garuda_yaml import effective_flow_steps
+
+    for step in effective_flow_steps(flow):
+        if step.get("retries"):
+            block("starter.retries_unsupported",
+                  f"Step {step['id']} sets retries: {step['retries']}, "
+                  "which a dashboard-owned flow never runs.",
+                  f"Remove the step's retries, or run `garuda flow run {name}` from a terminal "
+                  "without checks.")
+    isolation = flow.get("isolation", "shared")
+    if isolation != "shared":
+        block("starter.isolation_unsupported",
+              f"Flow {name} sets isolation: {isolation}; a dashboard start runs only in the "
+              "shared checkout.",
+              f"Run `garuda flow run {name}` from a terminal, or remove the flow's isolation.")
+
+
 def start_authority(plan, context, **policy) -> dict:
     """The authority envelope for the plan's launch kind."""
     if plan.kind == "run" and context.kind == "run":
@@ -175,6 +208,8 @@ def flow_authority(plan, context, *, max_permission: str, server_epoch: str,
     roles = {}
     steps = []
     flow = context.flow or {"steps": []}
+    if _selects_flow(plan.starter_id):
+        _owned_shape_blockers(plan.target, flow, block)
     for index, step in enumerate(flow.get("steps", [])):
         if step.get("parallel"):
             block("starter.parallel_ownership_unavailable",

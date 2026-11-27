@@ -1,5 +1,45 @@
 # Durable decisions
 
+## 2026-11-27 — A starter may select a configured flow by name (run-flow)
+
+The browser (and `garuda starter run`) may now select any available configured
+flow by name through one hidden catalog starter, `run-flow`
+(`launch.select: configured`, one required `flow-name` field). This widens the
+public starter boundary from five fixed targets to every flow `garuda flow list`
+shows, so the selection is bounded:
+
+- The request carries a name only. `validate_inputs` refuses anything but a
+  garuda.yaml name (`starter.flow_invalid`) and `resolve_launch` resolves it
+  against `packaged.available(resolved)` (`flow.unknown`); a definition is never
+  accepted from the caller.
+- Configuration applies a project flow without trust (only checks and native
+  model ids are withheld). A flow selected by name is stricter: one whose
+  provenance is the project file is refused (`starter.project_flow_untrusted`)
+  unless that file's exact bytes carry a trust grant. `garuda config trust`
+  grants only files that ask for something needing trust, so a flows-only project
+  file must be copied into the user file to be selectable; making flows
+  trust-bearing is a separate configuration decision.
+- It uses the existing preview, start and status path unchanged: the same
+  compile digest and authority digest revalidated at admission, the same
+  operation id and duplicate protection, write-mode gating, the Linux-only owned
+  start, and the `--max-permission` ceiling on every step role, parallel member,
+  reviewer and fallback. No new route or launcher.
+- Flow shapes the owned engine refuses after admission are refused at preview:
+  `starter.retries_unsupported` and `starter.isolation_unsupported` in the
+  authority (outside the digested envelope), the existing
+  `starter.parallel_ownership_unavailable`, and `flow.long_run_unsupported` in
+  readiness. They apply to `run-flow` only, so the five starters' previews,
+  digests, commands and refusals stay byte-identical (pinned in
+  `tests/test_starter_pins.py`).
+- `run-flow` is a checked flow starter like `build-review`
+  (`CHECKED_FLOW_STARTERS`): its starts pass `checks` (explicit `options.checks`,
+  else `()`), so its equivalent `garuda flow run NAME --task TASK --check …` runs
+  the same checks and delivers the same step prompt.
+- `garuda starter list` and the dashboard library still list five starters;
+  `starter show` and `GET /api/scenarios/run-flow` answer `starter.unknown`.
+  The preview adds a read-only `pipeline` (`garuda/scenarios/pipeline.py`) for
+  `run-flow` only.
+
 ## 2026-11-26 — A review packet covers every attempt of the reviewed step (#814)
 
 Each attempt of a reviewed step is a new session with a fresh baseline, and

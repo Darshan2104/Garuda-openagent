@@ -256,6 +256,35 @@ snapshot; another writer can cause output withholding. Garuda does not certify
 that the model read each supplied source or that its answer is correct. Inspect
 `starter result reconnect-question`; withheld answers remain withheld.
 
+## Run a configured flow
+
+The five starters each run a fixed flow or role. To run your own flow, name it:
+
+```bash
+garuda flow list --workspace .
+garuda starter run run-flow --flow plan-only --goal "Add reconnect status using the current client" --source client.py --preview
+```
+
+`--flow` takes any flow `garuda flow list` shows. The flow is looked up by name
+in the effective configuration; a definition is never supplied with the request.
+A project flow is selectable only once the project `garuda.yaml`'s exact bytes are
+trusted; otherwise copy it into your user file (`garuda config show --flow NAME`).
+The preview adds a `pipeline` with each step's roles and their runtime, model,
+effort and effective permission, its inputs, outputs, review, limits and
+`long_run`, and the backstop an owned step gets (one hour when the step has no
+`limits.deadline_min`). Unknown values are `null` with a reason. Repeated `--check`
+options join the effective checks, which run at flow finalization on Linux. The
+equivalent command is the ordinary `garuda flow run NAME --task …` with the same
+compiled task.
+
+A dashboard start (the same HTTP preview and start as the other starters, with
+`starter_id: run-flow`) refuses, at preview, flows the owned engine cannot run:
+step retries (`starter.retries_unsupported`), a flow `isolation` other than
+`shared` (`starter.isolation_unsupported`), parallel groups
+(`starter.parallel_ownership_unavailable`) and a `long_run` step on a non-ACP role
+(`flow.long_run_unsupported`). Run those with the equivalent command in a
+terminal. A dashboard-started flow is never resumed automatically.
+
 ## Inspect, interrupt and recover
 
 `--json` exposes the same result data. Selected reads are bounded and report

@@ -12,7 +12,16 @@ from garuda.scenarios.types import Starter, StarterError
 
 VERSION = 1
 RUN_OPTIONS = frozenset({"name", "isolation", "bg", "checks"})
-FIELD_TYPES = frozenset({"text", "source-refs", "execution-options"})
+FIELD_TYPES = frozenset({"text", "source-refs", "execution-options", "flow-name"})
+#: ``launch.select``: the flow target is the starter's one ``flow-name`` field,
+#: checked against the effective flows (packaged, user, trusted project).
+SELECTIONS = frozenset({"configured"})
+#: The execution options a selecting flow starter may carry: explicit checks only.
+SELECT_OPTIONS = frozenset({"checks"})
+#: Flow starters that run the effective checks at flow finalization: their
+#: owned and CLI starts pass ``checks`` (the explicit ``options.checks``, else
+#: ``()``), never ``None``.
+CHECKED_FLOW_STARTERS = frozenset({"build-review", "run-flow"})
 
 
 def _mapping(value, allowed, path):
@@ -47,17 +56,26 @@ def parse_definition(text: str) -> Starter:
                    "starter")
     if type(doc.get("version")) is not int or doc["version"] != VERSION:
         raise StarterError("starter.catalog_invalid", "starter.version must be 1")
-    launch = _mapping(doc.get("launch"), {"kind", "flow", "role", "no_edits", "variants", "options"},
-                      "launch")
+    launch = _mapping(doc.get("launch"), {"kind", "flow", "role", "no_edits", "variants", "options",
+                                          "select"}, "launch")
     kind = launch.get("kind")
     if not isinstance(kind, str) or kind not in {"flow", "run"}:
         raise StarterError("starter.catalog_invalid", "launch.kind must be flow or run")
+    selects = "select" in launch
+    allowed = RUN_OPTIONS if kind == "run" else SELECT_OPTIONS if selects else set()
     options = launch.get("options", [])
     if (not isinstance(options, list) or any(not isinstance(o, str) for o in options)
-            or len(set(options)) != len(options) or set(options) - (RUN_OPTIONS if kind == "run" else set())):
+            or len(set(options)) != len(options) or set(options) - allowed):
         raise StarterError("starter.catalog_invalid", "unsupported or duplicate launch options")
+    fields = doc.get("fields")
+    if selects:
+        _selection(launch, fields)
+    elif isinstance(fields, dict) and any(isinstance(field, dict) and field.get("type") == "flow-name"
+                                          for field in fields.values()):
+        raise StarterError("starter.catalog_invalid", "a flow-name field needs launch.select")
     if kind == "flow":
-        _name(launch.get("flow"), "launch.flow")
+        if not selects:
+            _name(launch.get("flow"), "launch.flow")
         if set(launch) & {"role", "no_edits"}:
             raise StarterError("starter.catalog_invalid", "flow launch cannot carry run settings")
         variants = launch.get("variants", {})
@@ -72,7 +90,6 @@ def parse_definition(text: str) -> Starter:
             raise StarterError("starter.catalog_invalid", "run launch cannot carry flow settings")
         if "no_edits" in launch and type(launch["no_edits"]) is not bool:
             raise StarterError("starter.catalog_invalid", "launch.no_edits must be boolean")
-    fields = doc.get("fields")
     if not isinstance(fields, dict) or not fields:
         raise StarterError("starter.catalog_invalid", "fields must be a non-empty mapping")
     for name, value in fields.items():
@@ -86,6 +103,25 @@ def parse_definition(text: str) -> Starter:
             _text(field["label"], f"fields.{name}.label")
     return Starter(VERSION, _name(doc.get("id"), "id"), _text(doc.get("title"), "title"),
                    launch, fields, _name(doc.get("brief"), "brief"), _name(doc.get("example"), "example"))
+
+
+def _selection(launch: dict, fields) -> None:
+    """A selecting launch: a flow with exactly one required ``flow-name`` field, ``flow``."""
+    if launch.get("kind") != "flow" or not isinstance(launch.get("select"), str) \
+            or launch["select"] not in SELECTIONS:
+        raise StarterError("starter.catalog_invalid", "launch.select must be configured on a flow launch")
+    if set(launch) & {"flow", "variants"}:
+        raise StarterError("starter.catalog_invalid", "a selecting launch names no fixed flow or variants")
+    names = [name for name, field in (fields if isinstance(fields, dict) else {}).items()
+             if isinstance(field, dict) and field.get("type") == "flow-name"]
+    if names != ["flow"] or fields["flow"].get("required") is not True:
+        raise StarterError("starter.catalog_invalid",
+                           "launch.select needs exactly one required flow-name field named flow")
+
+
+def selects_flow(entry: Starter) -> bool:
+    """A starter that selects its flow by name; reachable by id, never listed."""
+    return "select" in entry.launch
 
 
 def load_catalog() -> dict[str, Starter]:

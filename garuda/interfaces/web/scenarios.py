@@ -9,7 +9,7 @@ from garuda.core.project_identity import ProjectIdentityError
 from garuda.core.session_records import parse_json
 from garuda.core.sessions import validate_session_ref
 from garuda.interfaces.web.wire import BadRequest, error, ok
-from garuda.scenarios.catalog import example_inputs, load_catalog
+from garuda.scenarios.catalog import example_inputs, load_catalog, selects_flow
 from garuda.scenarios.service import RESOLUTION_ERRORS, StarterService
 from garuda.scenarios.types import StarterError
 
@@ -56,7 +56,8 @@ def detail(request, ctx, starter_id):
     _query(request, {"workspace"})
     root = _query_workspace(request, ctx)
     entries = load_catalog()
-    if starter_id not in entries:
+    # A selecting starter (run-flow) is reachable through preview/start, never listed.
+    if starter_id not in entries or selects_flow(entries[starter_id]):
         raise StarterError("starter.unknown", "select an installed starter")
     entry = entries[starter_id]
     row = next(row for row in StarterService(ctx.store).list(root) if row["id"] == starter_id)

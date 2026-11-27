@@ -1,0 +1,1 @@
+Carry out the supplied task with the selected flow's configured steps, roles and review policy. Emit the typed artifacts each step declares. A review outcome is separate from verification: only configured or explicitly requested checks verify the result.

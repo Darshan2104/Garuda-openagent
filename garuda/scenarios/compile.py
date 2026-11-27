@@ -22,10 +22,10 @@ from garuda.core.acceptance import checks_with_authority
 from garuda.core.sessions import SessionStore
 from garuda.flows import packaged
 from garuda.runtime.roles import RolePlan, plan_role
-from garuda.scenarios.catalog import brief_text, load_catalog
+from garuda.scenarios.catalog import CHECKED_FLOW_STARTERS, brief_text, load_catalog, selects_flow
 from garuda.scenarios.digests import digest
 from garuda.scenarios.handoff import prepare_inputs, render_plan
-from garuda.scenarios.inputs import bound_task, validate_inputs, validate_options
+from garuda.scenarios.inputs import FLOW_NAME, bound_task, validate_inputs, validate_options
 from garuda.scenarios.sources import resolve_sources
 from garuda.scenarios.types import LaunchPlan, Starter, StarterError
 
@@ -120,6 +120,14 @@ def workspace_path(workspace: str | Path) -> Path:
     return root
 
 
+def _project_trusted(root: Path) -> bool:
+    """Whether the project garuda.yaml's exact bytes carry a trust grant (read-only)."""
+    from garuda.config.project_trust import is_trusted, read_project_file
+
+    project = read_project_file(root)
+    return project is not None and is_trusted(project)
+
+
 @dataclass(frozen=True)
 class LaunchContext:
     """Static resolution shared by listing, compilation and readiness; never persisted."""
@@ -152,16 +160,35 @@ def resolve_launch(entry: Starter, inputs: dict, root: Path, *, has_plan: bool =
         raise
     catalog = prepare_runtime_catalog(root)
     if kind == "flow":
-        variant = inputs.get("variant", entry.launch["flow"])
-        variants = entry.launch.get("variants", {entry.launch["flow"]: entry.launch["flow"]})
-        if variant not in variants:
-            raise StarterError("starter.variant_invalid", "select a packaged starter variant")
-        target = variants[variant]
-        if target == "pair" and not has_plan:
-            raise StarterError("starter.plan_required", "select a validated plan with plan_artifact: FLOW:STEP:ATTEMPT")
         available = packaged.available(resolved)
-        if target not in available:
-            raise StarterError("flow.unknown", "the starter's flow is unavailable")
+        if selects_flow(entry):
+            # The caller names a flow; its definition is only ever the effective
+            # one: packaged, user, or a project flow once its bytes are trusted.
+            target = inputs.get("flow")
+            if not isinstance(target, str) or not FLOW_NAME.fullmatch(target):
+                raise StarterError("starter.flow_invalid", "select a configured flow by name")
+            if target not in available:
+                raise StarterError("flow.unknown", f"no flow named {target!r} is available here; "
+                                   "`garuda flow list` lists them")
+            if available[target][1] == gy.PROJECT and not _project_trusted(root):
+                # Configuration applies a project flow without trust; a flow
+                # selected by name (from a browser, say) also needs the
+                # project file's exact bytes to be trusted.
+                raise StarterError(
+                    "starter.project_flow_untrusted",
+                    f"flow {target!r} comes from this project's garuda.yaml, whose exact bytes "
+                    "are not trusted; copy it into your user garuda.yaml (`garuda config show "
+                    f"--flow {target}`) or trust the project file with `garuda config trust`")
+        else:
+            variant = inputs.get("variant", entry.launch["flow"])
+            variants = entry.launch.get("variants", {entry.launch["flow"]: entry.launch["flow"]})
+            if variant not in variants:
+                raise StarterError("starter.variant_invalid", "select a packaged starter variant")
+            target = variants[variant]
+            if target == "pair" and not has_plan:
+                raise StarterError("starter.plan_required", "select a validated plan with plan_artifact: FLOW:STEP:ATTEMPT")
+            if target not in available:
+                raise StarterError("flow.unknown", "the starter's flow is unavailable")
         flow, source = available[target]
         names = packaged.required_roles(flow)
         missing = packaged.missing_roles(flow, resolved)
@@ -237,7 +264,7 @@ def compile_with_context(entry_id: str, inputs: dict, workspace: str | Path, *,
     task = _task(entry, inputs, sources, session_text, handoff_text)
     if _config_sources(root) != before:
         raise StarterError("starter.config_changed", "configuration changed during preview; preview again")
-    flow_check_support = kind == "flow" and entry.id == "build-review"
+    flow_check_support = kind == "flow" and entry.id in CHECKED_FLOW_STARTERS
     checks = [{"definition": _display(definition), "definition_digest": digest(definition), "authority": authority,
                "execution": "available-at-flow-finalization" if flow_check_support else
                             "not-supported-by-flow" if kind == "flow" else "available-at-run"}
