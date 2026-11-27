@@ -722,6 +722,7 @@ async def run_acp_task(
     before_prompt=None,
     silence_watchdog: dict | None = None,
     after_turn=None,
+    approvals_allow=(),
 ) -> dict[str, Any]:
     """Run one task on an ACP runtime under the same invariants as native.
 
@@ -752,6 +753,12 @@ async def run_acp_task(
     session in this same Garuda session (:mod:`garuda.runtime.turn_hook`).
     Without it a run sends exactly one prompt, as before; with it the outcome
     gains ``turns`` (what the loop did).
+
+    ``approvals_allow`` (flows only, #861) is the role's ``approvals.allow``:
+    an ``execute`` ask whose command matches is approved without a person and
+    recorded with ``decided_by: allow_list`` (:mod:`garuda.acp.allow_list`).
+    A read-only run never uses it. Without it, as for `garuda run` and the
+    SDK, every ask goes to ``approval`` as before.
     """
     import time
 
@@ -951,10 +958,17 @@ async def run_acp_task(
             store, session_id, manifest.runtime_id, handler=approval, external=external_approvals,
             **park,
         )
+        allow_list = None
+        if approvals_allow and not readonly and confinement is None:
+            allow_list = broker.allow_list(approvals_allow, workspace, session_id=session_id,
+                                           runtime_id=manifest.runtime_id)
+
         def make_runtime():
             runtime = build_runtime()
             if silence_watchdog:
                 runtime.watch_silence(**silence_watchdog)
+            if allow_list is not None:
+                runtime.allow_commands(allow_list)
             if consult_host is not None and confinement is None:  # no host socket in a container
                 runtime.attach_consult(consult_host)  # exposed only for a proved adapter (G.3)
             return runtime

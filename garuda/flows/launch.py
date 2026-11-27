@@ -11,6 +11,10 @@ deadline and, for ACP, asks the adapter's silence watchdog to watch the turn;
 the step's result names which one stopped it (``liveness``). A step without
 ``limits`` launches exactly as before.
 
+An ACP step whose role has ``approvals.allow`` (#861) passes it to
+``run_acp_task``, so allow-listed shell commands run without a person; a
+no-edits step or a read-only role never does.
+
 An ACP step with a turn spec (``launch.turns``: declared outputs or
 ``long_run``) passes :class:`garuda.flows.long_step.StepTurns` as
 ``run_acp_task``'s ``after_turn`` hook: one repair turn for bad output blocks
@@ -65,6 +69,7 @@ async def _acp(launch: StepLaunch) -> StepResult:
             before_prompt=launch.quota_guard,
             **acp_limits(launch.limits),
             **({"after_turn": hook} if hook is not None else {}),
+            **allow_list(launch),
         )
     except RecoveryWaiting as exc:
         return StepResult(session_id, False, "", error=_redacted(exc), quota_wait=True,
@@ -89,6 +94,16 @@ async def _acp(launch: StepLaunch) -> StepResult:
                       closure={"status": "closed"} if launch.quota_recovery else None,
                       error=(hook.stop or {}).get("message", ""),
                       stop_reason=summary.get("stop_reason"), turns=hook.record())
+
+
+def allow_list(launch: StepLaunch) -> dict:
+    """``run_acp_task`` keywords for the role's ``approvals.allow`` (#861): none for a
+    no-edits step, a read-only role or a role without one, so such a step launches
+    exactly as before."""
+    from garuda.runtime.roles import step_allow_list
+
+    allow = step_allow_list(launch.role_plan, no_edits=launch.no_edits)
+    return {"approvals_allow": allow} if allow else {}
 
 
 def acp_limits(limits) -> dict:

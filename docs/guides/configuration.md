@@ -580,8 +580,9 @@ command line):
 - A role or flow with the same name **replaces** the whole definition below it.
 - Permission ceilings and consult limits **intersect**: the stricter one wins.
 - Checks **accumulate**; an identical check is listed once.
-- `harnesses`, `sessions.keep_days`, `fallback` chains and `consult` grants are
-  **yours only**: a project file may keep a subset or remove them, never add.
+- `harnesses`, `sessions.keep_days`, `fallback` chains, `consult` grants and a
+  role's `approvals.allow` patterns are **yours only**: a project file may keep
+  a subset or remove them, never add.
 - `check_limits` may only be **lowered** by a project file
   (`config.project_widening` otherwise); see [Check time limits](#check-time-limits).
 - `--runtime` or `--model` on the command line skips an implicit
@@ -908,6 +909,73 @@ run. A Codex coder that must run commands in a flow needs `permissions: auto`
 ends its turn when it is refused a command it needs, which fails the step with
 the denied action named. Use an asking mode when you answer approvals yourself:
 `garuda run --role NAME` in an interactive terminal asks you about each request.
+
+### Commands a flow step may run without you
+
+A role may name the shell commands its harness may run in an unattended flow
+step, so a coder can run its own tests:
+
+```yaml
+# ~/.agent/garuda.yaml
+roles:
+  coder:
+    harness: claude
+    model_id: <exact-id>
+    approvals:
+      allow:
+        - "python -m pytest*"
+        - "npm test"
+        - "npm run lint*"
+```
+
+When the step's harness asks to run a command (`session/request_permission`),
+Garuda allows it without a person only if all of these hold. Anything else
+takes the usual path, which in a foreground flow is a denial and in a
+background flow a parked approval:
+
+- The request is a shell command: ACP tool kind `execute`, with the command
+  in the request's `rawInput.command` (claude-agent-acp and codex-acp send
+  it). Edits, deletes, moves, fetches, reads and every other kind are never
+  allowed this way. Neither is a command whose working directory is outside
+  the step's workspace.
+- The command holds none of `;` `&` `|` `` ` `` `$` `>` `<` `\` or a line
+  break, so `python -m pytest; rm -rf ~`, `python -m pytest | tee log` and
+  `python -m pytest $(...)` are denied even though they start with an allowed
+  command.
+- The whole command, trimmed and with runs of whitespace collapsed to one
+  space, matches one pattern with shell-glob rules: `*` is any text
+  (spaces and `/` included), `?` one character, `[...]` a set. `npm test`
+  allows exactly `npm test`, not `npm test --watch`; `python -m pytest*`
+  allows `python -m pytest`, `python -m pytest -q tests/` and also
+  `python -m pytestfoo`.
+
+The patterns are strict: `allow` is a list of at most 32 non-empty strings of
+at most 200 characters, without duplicates. A pattern that holds one of the
+characters above (it could never match), or whose first word is not a literal
+program name (`*`, `py* -m pytest`), is refused with its full path, for
+example `roles.coder.approvals.allow[1]`. `allow: []` allows nothing.
+
+Only flow steps that may edit use the list, in the foreground and in the
+background. A no-edits step, a role with `write_policy: no-edits` or
+`permissions: readonly` (which run in Docker confinement) and parallel
+review groups never do. `garuda run --role NAME` does not use it either: an
+attended run asks you, and a headless one denies, as before. Neither does the
+SDK.
+
+A project file may only narrow your list: it may repeat a role with a subset
+of your patterns, or `allow: []`, and a project role that leaves `approvals`
+out keeps yours. A pattern you did not list, or an allow-list on a role you
+did not define, is refused as `config.project_widening`. A role without
+`approvals` behaves exactly as before, and its identity digest is unchanged;
+adding the key changes the role's digest, and the role on each step session
+lists the patterns (`role.approvals_allow`).
+
+Each command allowed this way is recorded on the step session like any other
+approval decision: an `approval:<id>` record with `outcome: allow`,
+`decided_by: allow_list`, the `pattern` that matched and the normalized
+`command`. `approval_summary` counts it as allowed and adds `allow_listed`,
+and a long step's progress does not list it as denied. See
+[What the allow-list allows](safety-and-workspaces.md#what-a-roles-allow-list-allows).
 
 ### A role's agent
 
