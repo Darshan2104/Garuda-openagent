@@ -55,13 +55,14 @@ var STATE = {
 };
 
 /* --- navigation generation ------------------------------------------------
- * Every navigation (router.js navigate()) starts a new generation and aborts the GETs the
- * previous view still had in flight. Such a GET — aborted, or answered after the view that
- * asked is gone — rejects with a `Superseded` error (code "superseded"). Every promise
+ * Every navigation (router.js navigate()) starts a new generation. A GET the previous view
+ * still had in flight — answered after the view that asked is gone — rejects with a
+ * `Superseded` error (code "superseded"). It is not aborted: an aborted request is a failed
+ * request in every log and check that watches them, for no gain at this scale. Every promise
  * settles: a Poller's call returns and its next tick runs, a chain's cleanup runs. What must
  * not happen is the old view painting over the new one, so every error path starts with
  * `if (isSuperseded(err)) return;` and success paths never see a superseded read. Writes
- * (any non-GET) are never aborted and settle normally.
+ * (any non-GET) settle normally.
  *
  * {keep: true} keeps a GET out of this (the nav badge, boot, a chat's heartbeat): an
  * optimisation for reads that truly outlive their view, not something correctness needs.
@@ -70,11 +71,9 @@ var STATE = {
  * on screen; check it before touching the DOM after anything asynchronous that is not a
  * GET through api() (a timer, a write's response, a chained re-render). */
 
-var NAVIGATION = { generation: 0, controller: null };
+var NAVIGATION = { generation: 0 };
 
 function beginNavigation() {
-  if (NAVIGATION.controller) NAVIGATION.controller.abort();
-  NAVIGATION.controller = typeof AbortController === "function" ? new AbortController() : null;
   NAVIGATION.generation += 1;
 }
 
@@ -122,8 +121,7 @@ function api(path, opts) {
   return fetch(path, {
     method: method,
     headers: headers,
-    body: opts.body ? JSON.stringify(opts.body) : undefined,
-    signal: tied && NAVIGATION.controller ? NAVIGATION.controller.signal : undefined
+    body: opts.body ? JSON.stringify(opts.body) : undefined
   }).then(function (response) {
     if (!current()) throw supersededError();
     return response.text().then(function (text) {
@@ -151,7 +149,7 @@ function api(path, opts) {
       throw current() ? unreachableError() : supersededError();
     });
   }, function () {
-    // Aborted by a navigation, or answered after one: the view that asked is gone.
+    // Failed after a navigation: the view that asked is gone.
     if (!current()) throw supersededError();
     // fetch() rejects only when no response arrived: the server is down or unreachable. The
     // browser's own words ("Failed to fetch", "Load failed") say nothing a user can act on.

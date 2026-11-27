@@ -93,7 +93,7 @@ with sync_playwright() as p:
         for route in held:
             try:
                 route.continue_()
-            except Exception:  # the navigation aborted it, which is the point
+            except Exception:  # the page may already have dropped it
                 pass
         page.wait_for_timeout(800)
         check(f"a slow {path} read leaves {away} intact",
@@ -102,7 +102,7 @@ with sync_playwright() as p:
               and page.locator("#runs-body, #rt-table").count() == 0, f"held={len(held)}")
 
     # --- a poller started without {keep: true} survives a navigation mid-request -----------
-    # The navigation aborts its read, which must reject as Superseded (not hang): the Poller
+    # Its read is answered after the navigation and must reject as Superseded (not hang): the Poller
     # releases its in-flight flag and keeps ticking on the next page.
     page.goto(f"{BASE}#/setup", wait_until="load")
     held_health = []
@@ -126,7 +126,7 @@ with sync_playwright() as p:
     for route in held_health:
         try:
             route.continue_()
-        except Exception:  # aborted by the navigation, which is the point
+        except Exception:  # the page may already have dropped it
             pass
     kept = settle(page, "() => window.__ticks >= 2", timeout=10_000)
     probe = page.evaluate("[window.__ticks, window.__superseded, window.__failures]")

@@ -33,7 +33,7 @@ function navigate() {
   // response render into the view that replaced it. leaveChat() unmounts the chat but keeps
   // its heartbeat while a turn runs or an approval waits: the chat lives on the server either
   // way, and stopping here denied the user's own approval. Closing the tab still stops it.
-  // A new generation first: reads the old view still has in flight are aborted and dropped.
+  // A new generation first: reads the old view still has in flight reject as Superseded.
   beginNavigation();
   stopLive();
   leaveChat();
