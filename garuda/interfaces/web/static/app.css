@@ -578,7 +578,8 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
   background: color-mix(in srgb, var(--c-dot) var(--tint), var(--surface));
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--c-dot) 40%, transparent);
 }
-.pipe-current > .pipe-head .pipe-no {
+/* .pipe-step keeps the halo level with the :is() rule above, which would otherwise clear it */
+.pipe-step.pipe-current > .pipe-head .pipe-no {
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--c-dot) 25%, transparent); animation: pulse-ring 2s var(--ease) infinite;
 }
 :is(.pipe-current, .pipe-step[data-pause]) > .pipe-head > .pill { background: var(--surface); }
@@ -729,7 +730,7 @@ a.attempt-trace { margin-left: 4px; }
 .sessions-table td { vertical-align: top; padding-top: 11px; padding-bottom: 11px; }
 .s-sub { color: var(--muted); font-size: 12px; margin-top: 3px; }
 .s-name { max-width: 280px; white-space: normal; overflow-wrap: anywhere; }
-.s-name > a:first-child { font-weight: 600; }
+td.s-name > a:first-child { font-weight: 600; }  /* td: level with td > a:first-child */
 .s-name .s-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .s-name code { font-size: 11px; background: none; border: 0; padding: 0; color: var(--muted); }
 .s-clip { max-width: 180px; overflow: hidden; text-overflow: ellipsis; color: var(--muted); font-size: 12.5px; }
@@ -761,7 +762,8 @@ tr.session-row[data-pause] { --row-c: var(--st-pause-dot); }
 }
 .state-chip:hover { color: var(--text); background: var(--surface-2); }
 .state-chip.active { background: var(--text); border-color: var(--text); color: var(--surface); }
-.state-chip[data-label]:not([data-label=""])::before {
+/* :where() so the crashed diamond and queued ring below can reshape the marker */
+.state-chip:where([data-label]:not([data-label=""]))::before {
   content: ""; width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--c-dot);
 }
 .state-chip.active::before { box-shadow: 0 0 0 2px var(--surface); }
@@ -1168,7 +1170,7 @@ tr.session-row[data-pause] { --row-c: var(--st-pause-dot); }
 }
 /* Sessions at phone width: compact cards; the rest behind "details". */
 @media (max-width: 760px) {
-  .sessions-wrap { overflow-x: visible; background: none; border: 0; box-shadow: none; }
+  .view > .sessions-wrap { overflow-x: visible; background: none; border: 0; box-shadow: none; }
   .sessions-table thead { display: none; }
   .sessions-table, .sessions-table tbody { display: block; width: 100%; }
   .sessions-table tr.session-row {

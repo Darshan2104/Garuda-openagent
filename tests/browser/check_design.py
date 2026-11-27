@@ -16,6 +16,11 @@ And the paused flow (``overview-flow-deadline``, stopped on a resumable deadline
 says "paused", its stopped step is drawn paused by a data attribute (not ``:has()``, which
 older Firefox lacks), never as an ordinary failure. Fails on any console error.
 
+And four rules that a more specific selector once overrode, so the intended look never showed:
+the running step's marker has its halo; the crashed and queued state filter chips draw a
+diamond and a ring; on a phone the Sessions cards sit on the page, not in a bordered box; and
+session names are 600 weight.
+
 With ``GARUDA_CHECK_SNAPSHOTS=1`` it also screenshots every route and fixture state (the
 paused/replaced flows, the step in flight, approvals, chat, Flows, traces with every turn open,
 the phone menu, the keyboard help, the connection banners, the token page, an empty store) at
@@ -136,6 +141,51 @@ FOCUSED = """() => {
   return { ok: ring || halo, what: el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') +
            (el.getAttribute('href') ? '[href=' + el.getAttribute('href') + ']' : '') };
 }"""
+
+
+def cascade_checks(browser, check) -> None:
+    """Rules a more specific selector used to override: each is drawn as the design says."""
+    from browser_support import settle
+
+    for width in (1440, 390):
+        context = browser.new_context(viewport={"width": width, "height": 900})
+        page = context.new_page()
+        page.goto(f"{BASE}#t={TOKEN}", wait_until="load")
+        settle(page, LOADED)
+        page.goto(f"{BASE}#/sessions", wait_until="load")
+        settle(page, """() => !!(document.querySelector('.state-chip[data-label="crashed"]')
+                         && document.querySelector('.state-chip[data-label="queued"]')
+                         && document.querySelector('td.s-name > a'))""")
+        found = page.evaluate("""() => {
+          const marker = label => getComputedStyle(document.querySelector(`.state-chip[data-label="${label}"]`), '::before');
+          const wrap = getComputedStyle(document.querySelector('.sessions-wrap'));
+          return { crashed: marker('crashed').borderTopLeftRadius, queued: marker('queued').backgroundColor,
+                   name: getComputedStyle(document.querySelector('td.s-name > a')).fontWeight,
+                   wrapBg: wrap.backgroundColor, wrapBorder: wrap.borderTopWidth, wrapShadow: wrap.boxShadow };
+        }""")
+        check(f"{width}px: the crashed state chip's marker is a diamond", found["crashed"] == "1px", str(found))
+        check(f"{width}px: the queued state chip's marker is a ring", found["queued"] == "rgba(0, 0, 0, 0)", str(found))
+        check(f"{width}px: session names are 600 weight", found["name"] == "600", str(found))
+        if width == 390:
+            check("390px: the Sessions cards sit on the page, not in a bordered box",
+                  found["wrapBg"] == "rgba(0, 0, 0, 0)" and found["wrapBorder"] == "0px"
+                  and found["wrapShadow"] == "none", str(found))
+        context.close()
+    if LIVE_BASE:  # the step in flight: its marker's halo, read with the pulse cancelled
+        context = browser.new_context(viewport={"width": 1440, "height": 900})
+        page = context.new_page()
+        page.goto(f"{LIVE_BASE}#t={TOKEN}", wait_until="load")
+        settle(page, LOADED)
+        page.goto(f"{LIVE_BASE}{LIVE}1", wait_until="load")
+        settle(page, "() => !!document.querySelector('.pipe-current > .pipe-head .pipe-no')")
+        halo = page.evaluate("""() => {
+          const no = document.querySelector('.pipe-current > .pipe-head .pipe-no');
+          if (!no) return null;
+          no.getAnimations().forEach(a => a.cancel());
+          return getComputedStyle(no).boxShadow;
+        }""")
+        check("the running step's marker has its halo", bool(halo) and halo != "none" and "4px" in halo, str(halo))
+        context.close()
 
 
 def snapshot_walk(browser, check) -> None:
@@ -333,6 +383,7 @@ def main() -> int:
             check(f"paused flow at {width}px: the Result's cause is drawn as a pause", head["cause"] == "paused")
             page.screenshot(path=str(SHOTS / f"design-paused-{width}.png"), full_page=True)
             context.close()
+        cascade_checks(browser, check)
         if SNAPSHOTS:
             snapshot_walk(browser, check)
         browser.close()
