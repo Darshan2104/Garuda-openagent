@@ -865,3 +865,119 @@ a { color: var(--accent); }
 .home-list:not(:empty) + .home-status:not(:empty) { margin-top: 10px; }
 .home-error { font-size: 13px; overflow-wrap: anywhere; }
 .home-foot { margin: 10px 0 0; font-size: 13px; }
+
+/* === Sessions, session detail and Approvals pages (views_sessions.js) ===================
+ * One block for the three pages; nothing outside it depends on these rules. */
+#sessions-error[hidden], #inbox-error[hidden], #inbox-empty[hidden], .inbox-expired[hidden],
+#sessions-none[hidden], #sessions-more[hidden], #live-retry[hidden] { display: none; }
+
+/* The list: fits 1440 px without a horizontal scroll; long cells clip with their full text
+ * in the title, and the spend gate is one line (its chips are on the session page). */
+.sessions-table { table-layout: auto; }
+.sessions-table td { vertical-align: top; }
+.sessions-table .s-sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.sessions-table .s-name { max-width: 280px; white-space: normal; overflow-wrap: anywhere; }
+.sessions-table .s-name .s-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sessions-table .s-name code { font: 11px var(--mono); }
+.sessions-table .s-clip { max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
+.sessions-table .s-facts { white-space: normal; min-width: 200px; max-width: 290px; }
+.sessions-table .s-facts .chip { display: inline-block; white-space: nowrap; margin: 0 4px 4px 0; }
+.sessions-table .s-usage { max-width: 210px; white-space: normal; }
+.sessions-table .s-spend { overflow-wrap: anywhere; }
+.sessions-table .s-when { color: var(--muted); font-size: 12px; }
+.sessions-more { display: flex; justify-content: center; margin: 12px 0; }
+
+/* Phone width: each session is a card of label/value lines. */
+@media (max-width: 760px) {
+  .sessions-wrap { overflow-x: visible; }
+  .sessions-table thead { display: none; }
+  .sessions-table, .sessions-table tbody, .sessions-table tr, .sessions-table td { display: block; width: 100%; }
+  .sessions-table tr.session-row {
+    border: 1px solid var(--border); border-radius: var(--radius); margin: 0 0 10px; padding: 8px 10px;
+    background: var(--surface);
+    display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 12px;
+  }
+  /* Wide values span the card; the short ones (state, approvals, times) sit two to a line. */
+  .sessions-table tr.session-row > td.s-name, .sessions-table tr.session-row > td.s-clip,
+  .sessions-table tr.session-row > td.s-facts, .sessions-table tr.session-row > td.s-usage { grid-column: 1 / -1; order: 5; }
+  .sessions-table tr.session-row > td.s-clip { order: 5; }
+  .sessions-table tr.session-row > td[data-th="State"] { order: 1; }
+  .sessions-table tr.session-row > td[data-th="Approvals"] { order: 2; }
+  .sessions-table tr.session-row > td[data-th="Updated"] { order: 3; }
+  .sessions-table tr.session-row > td[data-th="Started"] { order: 4; }
+  .sessions-table td {
+    border: 0; padding: 3px 0; min-width: 0; max-width: none;
+    white-space: normal; overflow-wrap: anywhere; text-align: left;
+  }
+  .sessions-table td.num { text-align: left; }
+  .sessions-table td::before {
+    content: attr(data-th); display: block; color: var(--muted);
+    font: 10px/1.6 var(--mono); text-transform: uppercase; letter-spacing: 0.04em;
+  }
+  .sessions-table td.s-name::before { display: none; }
+  .sessions-table td.s-name { font-size: 15px; padding-bottom: 6px; }
+  .sessions-table .s-name .s-sub, .sessions-table .s-spend { white-space: normal; }
+  .sessions-table .s-facts { min-width: 0; max-width: none; }
+  input[type="search"]#sessions-search { min-width: 0; width: 100%; }
+}
+
+/* One session: the header, the result, a flow's pipeline, then the evidence. */
+.session-grid { display: grid; gap: 14px; margin-top: 14px; }
+.session-grid > div:empty { display: none; }
+.session-grid .flow, .session-grid .starter-result { margin-top: 0; }
+.session-grid h3 { font-size: 13px; margin: 14px 0 6px; }
+.session-grid .chip { display: inline-block; }
+.session-overview { margin-top: 0; }
+.session-overview .task-preview { margin: 4px 0 8px; font-size: 15px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.session-overview .task-full { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow: auto; }
+.session-line { margin: 4px 0 0; overflow-wrap: anywhere; }
+#session-approvals-panel { margin-bottom: 14px; }
+#session-approvals-panel ul { margin: 6px 0 10px; padding-left: 18px; overflow-wrap: anywhere; }
+.session-final { margin-top: 10px; }
+.session-final .final-text {
+  margin: 4px 0 0; padding: 8px 10px; background: var(--surface-2); border-radius: 4px;
+  white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow: auto; font: 13px/1.5 var(--sans);
+}
+#session-files { margin-top: 10px; }
+.file-list { margin: 4px 0 0; padding-left: 18px; columns: 2 240px; font-size: 12px; overflow-wrap: anywhere; }
+.session-cause { margin-top: 10px; border-left: 3px solid var(--err); padding-left: 10px; }
+.session-cause p { margin: 2px 0; }
+.err-text { color: var(--err); }
+.stop-confirm { display: inline-flex; gap: 6px; align-items: baseline; flex-wrap: wrap; }
+.btn.btn-danger { border-color: var(--err); color: var(--err); }
+.live-status { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.session-evidence > summary { cursor: pointer; display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.session-evidence > summary h2 { display: inline; margin: 0; }
+.session-evidence[open] > summary { margin-bottom: 10px; }
+.session-evidence section, .session-evidence .evidence-block { margin-top: 14px; overflow-wrap: anywhere; }
+
+/* A flow as a vertical pipeline; the step in flight is highlighted. */
+.pipeline { list-style: none; margin: 10px 0 0; padding: 0; }
+.pipe-step {
+  position: relative; margin: 0; padding: 8px 10px 10px 40px; border-left: 2px solid var(--border);
+  margin-left: 12px; min-width: 0;
+}
+.pipe-step:last-child { border-left-color: transparent; }
+.pipe-no {
+  position: absolute; left: -13px; top: 6px; width: 24px; height: 24px; border-radius: 12px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font: 11px/1 var(--mono); background: var(--surface); border: 2px solid var(--border); color: var(--muted);
+}
+.pipe-done .pipe-no { border-color: var(--ok); color: var(--ok); }
+.pipe-failed .pipe-no { border-color: var(--err); color: var(--err); }
+.pipe-current { background: color-mix(in srgb, var(--accent) 8%, transparent); border-radius: 0 var(--radius) var(--radius) 0; }
+.pipe-current .pipe-no { border-color: var(--accent); color: var(--accent); }
+.pipe-head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; overflow-wrap: anywhere; }
+.pipe-step .attempts { list-style: none; margin: 6px 0 0; padding: 0; }
+.pipe-step .attempt { padding: 4px 0; border-top: 1px dashed var(--border); overflow-wrap: anywhere; }
+.pipe-step .attempt:first-child { border-top: 0; }
+.pipe-pass { margin-top: 4px; }
+.pipe-step .attempt-head { font-size: 13px; }
+
+/* Approvals: answered cards go away in place; expired ones are listed apart. */
+.inbox-expired { margin-top: 20px; }
+.inbox-expired .approval-item { opacity: 0.75; }
+.approval-task { overflow-wrap: anywhere; }
+.approval-item[data-state="already_answered"], .approval-item[data-state="expired"],
+.approval-item[data-state="owner_gone"], .approval-item[data-state="refused"] { border-color: var(--err); }
+/* === end Sessions, session detail and Approvals pages =================================== */

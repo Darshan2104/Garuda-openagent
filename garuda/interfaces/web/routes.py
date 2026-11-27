@@ -328,18 +328,21 @@ def _queue_or_none():
 
 @route("GET", r"/api/sessions")
 def _sessions(request: Request, ctx: DashboardContext, _match) -> Response:
-    """The shared read model (D.3): the same rows ``garuda sessions --json`` prints."""
+    """The shared read model (D.3): the same rows ``garuda sessions --json`` prints.
+
+    ``offset`` pages back through older sessions; ``q`` (search) and ``state`` (a state
+    label) filter server side across every session, not only the rows a page loaded."""
     limit = request.int_param("limit", reads.DEFAULT_LIMIT)
     if limit is None or limit < 1:
         return invalid("`limit` must be an integer >= 1.")
-    unreadable: list[str] = []
-    metas = ctx.store.list_sessions(limit=min(limit, reads.MAX_LIMIT), unreadable=unreadable)
+    offset = request.int_param("offset", 0)
+    if offset is None or offset < 0:
+        return invalid("`offset` must be a non-negative integer.")
     queue = _queue_or_none()
     queue = QueueOnce(queue) if queue is not None else None
-    rows = rows_isolating(
-        lambda chunk: read_model.sessions(ListedStore(ctx.store, chunk), limit=None, queue=queue),
-        metas, unreadable)
-    return ok({"sessions": rows, "unreadable_sessions": unreadable_report(unreadable)})
+    return ok(reads.session_page(ctx.store, limit=min(limit, reads.MAX_LIMIT), offset=offset,
+                                 query=request.first("q"), label=request.first("state"),
+                                 queue=queue))
 
 
 @route("GET", r"/api/sessions/(?P<sid>[^/]+)")

@@ -71,6 +71,8 @@ def seed(root: Path, workspace: str) -> dict:
     store.update_meta(IDS["flow"], {
         "kind": "flow", "flow": {"name": "review-loop", "steps": ["code", "review"]},
         "flow_state": "running", "review": {"status": "review_approved", "rounds": 1, "history": []},
+        # How much of the change set the approving review saw (#851).
+        "review_approvals": {"code": {"coverage": "partial"}},
         "state": session_state.started()})  # no recorded owner: its process reads unknown
     directory = engine.flow_dir(store, IDS["flow"])
     (directory / "receipts").mkdir(parents=True, exist_ok=True)
@@ -80,6 +82,9 @@ def seed(root: Path, workspace: str) -> dict:
     engine._write_once(directory / "receipts" / "code-1.json", {
         "index": 0, "step": "code", "role": "coder", "attempt": 1, "session_id": IDS["done"],
         "success": True, "inputs": [], "outputs": [ref], "status": "done",
+        # A long step's turn loop (#842), as its receipt records it.
+        "turns": 7, "rotations": 1, "continuations": 5, "harness_sessions": ["h-1", "h-2"],
+        "repairs": [{"turn": 3, "reason": "output_missing", "outcome": "repaired"}],
         "workspace_version_before": "v1", "workspace_version_after": "v2",
         "recorded_at": "2026-10-02T00:00:00+00:00"})
     engine._write_once(directory / "receipts" / "review-1.json", {
