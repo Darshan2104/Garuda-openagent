@@ -457,7 +457,12 @@ class LiveRuns:
         }
 
     async def list_chats(self) -> dict[str, Any]:
-        return {"chats": [chat.as_dict() for chat in self.chats.values()]}
+        # The pending count lets a page that is not watching a chat say it is waiting for an
+        # answer. Listing is not a heartbeat: it touches nothing.
+        return {"chats": [
+            {**chat.as_dict(), "pending_approvals": len(self.approvals.pending(chat.chat_id))}
+            for chat in self.chats.values()
+        ]}
 
     async def touch_chat(self, chat_id: str) -> dict[str, Any] | None:
         chat = self.chats.get(chat_id)

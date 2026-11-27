@@ -64,9 +64,15 @@ RETRY_NOTE = ("[garuda] An earlier attempt of this step failed. Its partial edit
 DEADLINE_STOP = "flow.step_deadline"
 SILENT_STOP = "flow.step_silent"
 LIVENESS_STOPS = {"deadline": DEADLINE_STOP, "silence": SILENT_STOP}
+#: A long step's own pauses (``long_run``): no measured progress, its turn budget,
+#: or a refusal; ``max_hours`` reuses :data:`DEADLINE_STOP`. Never retried.
+NO_PROGRESS_STOP = "flow.step_no_progress"
+MAX_TURNS_STOP = "flow.step_max_turns"
+REFUSED_STOP = "flow.step_refused"
 RESUMABLE_CHECKED_STOPS = {"workspace.readonly_unenforced", "flow.step_failed", "flow.output_missing",
                            "flow.artifact_malformed", "flow.artifact_too_large",
-                           "flow.review_invalid", INTERRUPTED_STOP, DEADLINE_STOP, SILENT_STOP}
+                           "flow.review_invalid", INTERRUPTED_STOP, DEADLINE_STOP, SILENT_STOP,
+                           NO_PROGRESS_STOP, MAX_TURNS_STOP, REFUSED_STOP}
 #: While a tool call is in flight a silence-watched step waits this long (#828).
 DEFAULT_TOOL_SILENCE_MIN = 120
 
@@ -232,6 +238,9 @@ class StepLaunch:
     quota_guard: Any = None
     #: The step's liveness limits (#828); ``None`` runs it as before.
     limits: StepLimits | None = None
+    #: An ACP step's turn spec (:func:`garuda.flows.long_step.turn_spec`): its one
+    #: repair turn (#819) and, with ``long_run``, its turn loop. ``None`` runs one turn.
+    turns: dict | None = None
 
 
 @dataclass
@@ -252,6 +261,9 @@ class StepResult:
     stop_reason: str | None = None
     #: The launcher's own error code, when the step session recorded none.
     error_code: str = ""
+    #: What the step's turns did (:meth:`garuda.flows.long_step.StepTurns.record`),
+    #: with the loop's own ``stop`` when it paused the step; None for one plain turn.
+    turns: dict | None = None
 
 
 Launcher = Callable[[StepLaunch], Awaitable[StepResult]]
@@ -1538,6 +1550,7 @@ class FlowRunner:
         _append(self.dir / JOURNAL, {"event": "receipt", "step": step["id"],
                                      "attempt": attempt, "at": _now()})
         await self._touch()
+        await self._checkpoint(step["id"], attempt, receipt["status"])
         if stop is not None:
             raise stop
         return receipt
@@ -1623,6 +1636,7 @@ class FlowRunner:
                            tried: dict, *, checkpoint=None) -> None:
         """Run ``step`` and its terminal reviewer until approval or the rounds run out."""
         from garuda.context.redact import redact_text
+        from garuda.flows import memory
         from garuda.flows import review as rv
 
         spec = step["review"]
@@ -1668,12 +1682,18 @@ class FlowRunner:
                         "round": pair, "pending": target["id"], "history": history,
                         **prompting.extra_record(extra)}})
                 packet = None
+                prompt_extra = extra
                 if target is terminal:
-                    packet = await self._review_packet(step, terminal, done, spec, reviewer_plan)
+                    packet = await self._review_packet(step, terminal, done, spec, reviewer_plan,
+                                                       history=history)
+                    prompt_extra = prompting.Packet(packet)
+                elif history and isinstance(extra, prompting.Findings):
+                    # Round 2+: what Garuda recorded of the earlier rounds (#816).
+                    prompt_extra = await self._round_brief(step, done, history, extra, rounds)
                 tried[target["id"]] = tried.get(target["id"], 0) + 1
                 receipt = await self._run_step(
                     target, done, lease, attempt=tried[target["id"]],
-                    prompt_extra=extra if target is step else prompting.Packet(packet),
+                    prompt_extra=prompt_extra,
                     review_admission=admit_reviewer if target is terminal else None)
                 done.append(receipt)
             ref = next(art.ArtifactRef.from_dict(o) for o in receipt["outputs"]
@@ -1692,6 +1712,7 @@ class FlowRunner:
             history.append({"round": pair + 1, "verdict": parsed.verdict,
                             "approved": parsed.approved, "findings": parsed.findings,
                             "packet_digest": packet["digest"],
+                            "candidate": memory.candidate_record(packet),
                             **({"structured": parsed.structured}
                                if parsed.structured is not None else {})})
             independence = self._independence(step, terminal, done, spec, reviewed_plan,
@@ -1731,6 +1752,47 @@ class FlowRunner:
                           f"the reviewer still requests changes after {rounds + 1} rounds",
                           step=terminal["id"])
 
+    async def _round_brief(self, step: dict, done: list[dict], history: list,
+                           findings: prompting.Findings, max_rounds: int) -> prompting.Findings:
+        """``findings`` with the round brief for ``step``'s next round (#816).
+
+        Built only from the flow's records: the step's receipts, the review
+        ``history`` (which a continuation checkpoint keeps) and the artifacts
+        of the candidate the latest round reviewed, so a resume or a quota
+        continuation gets the same brief.
+        """
+        from garuda.flows import memory
+
+        def rows() -> list[dict]:
+            try:
+                found = [r for r in receipts(self.store, self.flow_session)
+                         if r.get("step") == step["id"]]
+            except (OSError, ValueError):
+                found = []
+            return found + [r for r in done if r.get("step") == step["id"]]
+
+        rows = await _settled_sync(rows)
+        facts = memory.facts(step=step["id"], round=len(history) + 1, max_rounds=max_rounds,
+                             receipts=rows, history=history)
+        attempt = facts.rounds[-1].candidate_attempt if facts.rounds else None
+        source = None
+        for row in rows:  # the reviewed candidate's receipt, else the latest with outputs
+            if (row.get("attempt") == attempt if attempt is not None
+                    else row.get("outputs") and (source is None
+                                                 or row["attempt"] >= source["attempt"])):
+                source = row
+        notes = []
+        for output in (source or {}).get("outputs", []):
+            ref = art.ArtifactRef.from_dict(output)
+            try:
+                # Notes on earlier work: bound to the workspace it described.
+                text = art.load(self.dir, ref, workspace_version=ref.workspace_version)
+            except art.ArtifactError:
+                continue
+            notes.append(memory.Note(ref.type, ref.producer_step, ref.attempt, text))
+        return prompting.Findings(findings.text,
+                                  memory.coder_brief(facts, notes, findings.text))
+
     def _first_attempt(self, step_id: str, done: list[dict]) -> dict | None:
         """The reviewed step's first attempt in this flow that could have edited.
 
@@ -1769,15 +1831,17 @@ class FlowRunner:
         return session if isinstance(session, str) and session else None
 
     async def _review_packet(self, step: dict, terminal: dict, done: list[dict], spec: dict,
-                             reviewer_plan) -> dict:
+                             reviewer_plan, *, history=()) -> dict:
         """Freeze what the reviewer is shown, from the reviewed step's own records.
 
         Refuses when the workspace no longer is the candidate the reviewed step
         produced; unknown identities and manifests stay explicitly unknown. A
         candidate version that is unknown, or cannot tell workspaces apart,
         leaves the binding unenforced, which a review that must be independent
-        refuses.
+        refuses. From round 2 the packet carries the reviewer's own earlier
+        findings from ``history`` (#816).
         """
+        from garuda.flows import memory
         from garuda.flows import review as rv
         from garuda.flows.review_evidence import config_evidence
         from garuda.workspace.evidence import changed_since_baseline, review_diff_evidence
@@ -1821,6 +1885,9 @@ class FlowRunner:
                       "latest": {"attempt": reviewed.get("attempt"),
                                  "session_id": reviewed.get("session_id")},
                       "baseline_session": base},
+            earlier_reviews=memory.earlier_reviews(memory.facts(
+                step=step["id"], round=len(history) + 1, max_rounds=spec.get("max_rounds", 1),
+                receipts=(), history=history)),
             version_binds=candidate is not None and self._version_binds(),
             reviewer_plan=reviewer_plan.record() if reviewer_plan is not None else None,
             no_edits=self._no_edits(terminal, terminal["role"]),
@@ -1864,12 +1931,46 @@ class FlowRunner:
             attempt += 1
             extra = RETRY_NOTE
 
+    async def _turn_spec(self, step: dict, plan, attempt: int, long, done: list[dict]) -> dict | None:
+        """An ACP flow step's turn spec: its one repair turn (#819) when it declares
+        outputs, and its turn loop with ``long_run``; None runs it as before."""
+        from garuda.flows import long_step
+
+        if (self.launch_kind != "flow" or plan is None or plan.kind != "acp"
+                or (long is None and not step.get("outputs"))):
+            return None
+        base = None
+        if long is not None and attempt > 1:
+            base = self._first_session(await _settled_sync(self._first_attempt, step["id"], done))
+        return long_step.turn_spec(
+            step=step["id"], attempt=attempt, outputs=list(step.get("outputs", [])), run=long,
+            progress_path=str((self.dir / "progress" / f"{step['id']}-{attempt}.jsonl").resolve()),
+            baseline_session=base)
+
     async def _record_step_receipt(self, receipt: dict) -> None:
         step, attempt = receipt["step"], receipt["attempt"]
         await _settled_sync(_write_once, self.dir / "receipts" / _receipt_name(step, attempt), receipt)
         await _settled_sync(_append, self.dir / JOURNAL,
                             {"event": "receipt", "step": step, "attempt": attempt, "at": _now()})
         await self._touch()
+        await self._checkpoint(step, attempt, receipt.get("status"))
+
+    async def _checkpoint(self, step: str, attempt: int, status) -> None:
+        """Checkpoint a worktree flow's workspace once an attempt's receipt is durable.
+
+        Best effort: the receipt is the attempt's record, so a refused
+        checkpoint is noted in the checkpoints file and the flow goes on.
+        Shared-checkout flows have no checkpoints.
+        """
+        if self.execution_workspace is None:
+            return
+        from garuda.flows import checkpoints
+
+        try:
+            await _settled_sync(checkpoints.checkpoint, self.dir, self.workspace,
+                                f"{step} attempt {attempt}: {status}", step=step, attempt=attempt)
+        except Exception as exc:  # noqa: BLE001 - never fail a settled attempt on its checkpoint
+            await _settled_sync(checkpoints.record_failure, self.dir, step, attempt, exc)
 
     async def _run_step(self, step: dict, done: list[dict], lease, *, attempt: int = 1,
                         prompt_extra: str | prompting.Findings | prompting.Packet = "",
@@ -1884,10 +1985,22 @@ class FlowRunner:
                 await self.quota_recovery.validate(self)
             except (OSError, ValueError) as exc:
                 raise FlowStopped("flow.recovery_changed", str(exc), step=step["id"]) from exc
+        from garuda.flows import long_step
+
         role = step["role"]
         no_edits = self._no_edits(step, role)
         limits = step_limits(self.flow, step)
         plan = self._role_plan(role, step=step["id"], no_edits=no_edits)
+        long = long_step.long_run(self.flow, step) if self.launch_kind == "flow" else None
+        if long is not None and (plan is None or plan.kind != "acp"):
+            if "long_run" in step:
+                raise FlowStopped(long_step.UNSUPPORTED_STOP,
+                                  f"step {step['id']} sets long_run, but its role {role} is not "
+                                  "an ACP harness; the turn loop runs ACP steps only",
+                                  step=step["id"])
+            long = None  # a flow's default applies to its ACP steps only
+        if long is not None:
+            limits = long_step.with_deadline(limits, long)
         inputs = await self._inputs(step, done)
         version_before = await self._version_for_flow()
         prompt = self._prompt(step, role, inputs, extra=prompt_extra)
@@ -1896,6 +2009,8 @@ class FlowRunner:
                        "a quota pause. Preserve partial edits and inspect existing work before "
                        "acting; completed steps are not replayed. This is saved workflow context, "
                        "not restoration of hidden model state.")
+        if long is not None:
+            prompt += "\n\n" + long_step.FIRST_TURN_LINE
         guard = await _settled_sync(NoEditsGuard, self.workspace) if no_edits else None
         capability = lease.delegate(f"{self.flow_session}:{step['id']}:{attempt}")
         started: tuple[str, float] | None = None
@@ -1945,7 +2060,8 @@ class FlowRunner:
                 quota_guard=((lambda: self.quota_recovery.before_launch(self, plan))
                              if self.quota_recovery and plan and plan.runtime_id == "codex"
                              else None),
-                limits=limits))
+                limits=limits,
+                turns=await self._turn_spec(step, plan, attempt, long, done)))
         except ConfinementRefused as exc:
             stop = FlowStopped(exc.code, exc.message, step=step["id"])
             # This refusal precedes agent start. Settle the intent so recovery
@@ -2033,6 +2149,14 @@ class FlowRunner:
                 stop = FlowStopped("flow.no_edits_changed", check.summary(), step=step["id"])
         version_after = await self._version_for_flow()
         receipt["workspace_version_after"] = version_after
+        receipt.update(long_step.receipt_fields(outcome.turns))
+        loop_stop = (outcome.turns or {}).get("stop")
+        if stop is None and isinstance(loop_stop, dict) and loop_stop.get("code") in long_step.LOOP_STOPS:
+            # The step's own turn loop paused it (no progress, max_hours, max_turns)
+            # or stopped it on a refusal: resumable, never retried.
+            cause = await _settled_sync(self._step_cause, outcome) if not outcome.success else None
+            stop = FlowStopped(loop_stop["code"], str(loop_stop.get("message") or ""),
+                               step=step["id"], cause=cause)
         if stop is None and outcome.refusal is not None and self.require_owned:
             # The owned worker refused the role (logged-out harness, model not
             # offered, ...): the attempt closed and is bounded like any failed

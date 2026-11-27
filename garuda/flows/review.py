@@ -273,7 +273,7 @@ def build_packet(*, task: str, step: dict, reviewer: dict, spec: dict, candidate
                  changed: list | None, reviewer_plan: dict | None, no_edits: bool,
                  changed_total: int | None = None, version_binds: bool = True,
                  config: dict | None = None, diff: dict | None = None,
-                 attempts: dict | None = None) -> dict:
+                 attempts: dict | None = None, earlier_reviews: dict | None = None) -> dict:
     """The bounded evidence a reviewer is given, with a digest of it.
 
     Built from the reviewed step's own receipt and session records; a manifest
@@ -287,7 +287,10 @@ def build_packet(*, task: str, step: dict, reviewer: dict, spec: dict, candidate
     ``attempts`` names the reviewed step's first and latest attempts the
     change list and excerpts cover and ``baseline_session``, the first session
     of the first attempt, whose baseline both compare the candidate with
-    (version 2, #814).
+    (version 2, #814). ``earlier_reviews`` is the reviewer's own findings of
+    earlier rounds (:func:`garuda.flows.memory.earlier_reviews`, #816); it is
+    present from round 2 only, so a round-1 packet is unchanged, and the digest
+    covers it.
     """
     import hashlib
 
@@ -323,6 +326,8 @@ def build_packet(*, task: str, step: dict, reviewer: dict, spec: dict, candidate
                    "note": "acceptance checks run separately after review settles; "
                            "a review is not verification"},
     }
+    if earlier_reviews is not None:
+        packet["earlier_reviews"] = earlier_reviews
     packet["digest"] = "sha256:" + hashlib.sha256(
         json.dumps(packet, sort_keys=True, default=str).encode()).hexdigest()
     return packet

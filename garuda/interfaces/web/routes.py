@@ -21,12 +21,23 @@ from garuda.core.modes import GATE_FIELDS, MODE_CHOICES, MODE_PRESETS
 from garuda.core.sessions import SessionStore, validate_session_ref
 from garuda.interfaces.web import live as live_module
 from garuda.interfaces.web import reads
+from garuda.interfaces.web.discovery import DiscoveryMemo
 from garuda.interfaces.web.grounding import SourceError
+from garuda.interfaces.web.resilience import (
+    ListedStore,
+    QueueOnce,
+    meta_refusal,
+    projected,
+    projecting_all,
+    rows_isolating,
+)
 from garuda.interfaces.web.security import check_request
+from garuda.interfaces.web.session_index import unreadable_report
 from garuda.interfaces.web.tail import tail_records
 from garuda.interfaces.web.wire import (
     CODE_EXPIRED,
     CODE_READ_ONLY,
+    BadRequest,
     Request,
     Response,
     error,
@@ -65,6 +76,8 @@ class DashboardContext:
     workspace: Path = field(default_factory=lambda: Path.cwd())
     #: Read-only starter requests use the same index allowlist as live requests.
     workspaces: tuple[Path, ...] = ()
+    #: One harness discovery shared by the runtime pages for a few seconds (discovery.py).
+    discovery: DiscoveryMemo = field(default_factory=DiscoveryMemo)
 
     @property
     def allowed_workspaces(self) -> tuple[Path, ...]:
@@ -121,18 +134,45 @@ def dispatch(request: Request, ctx: DashboardContext) -> Response:
             continue
         try:
             return handler(request, ctx, match)
-        except ValueError as exc:
-            # The validators (`validate_session_ref`, the `?file=` enum) signal a bad
-            # request this way, and a bad request is a 400, not a 500.
+        except BadRequest as exc:
+            # Request validation (`_session_ref`, a malformed JSON body, the `?file=` enum)
+            # raises this, and only this is the client's mistake.
             return invalid(str(exc))
+        except TimeoutError:
+            # `call_on_loop` gave up waiting for the agent loop: busy, not broken.
+            logger.warning("Dashboard route %s %s timed out", request.method, request.path)
+            return error("unavailable", "The agent loop did not answer in time; retry.",
+                         status=504)
         except Exception:
+            # Anything else — including a ValueError from reading a damaged record — is
+            # an internal fault: logged here with its traceback, answered with the same
+            # envelope as every other error, and never blamed on the request.
             logger.exception("Dashboard route %s %s failed", request.method, request.path)
-            return error("unavailable", "The dashboard failed to handle this request.", status=500)
+            return error(CODE_INTERNAL, "The dashboard failed to handle this request; "
+                         "the server log has the details.", status=500)
     if matched_path:
         return error(
             "method_not_allowed", f"{request.method} is not supported for this path.", status=405
         )
     return not_found(f"No route for {request.path}.")
+
+
+CODE_INTERNAL = "internal_error"
+
+#: Default and ceiling for the list routes that had no ``limit`` at all.
+LIST_LIMIT = 200
+MAX_LIST_LIMIT = 1000
+
+#: The largest session document ``/raw`` will parse and send.
+MAX_RAW_BYTES = reads.MAX_DOCUMENT_BYTES
+
+
+def _session_ref(value: str) -> str:
+    """A session id from the URL, or a 400: the one request validator most routes share."""
+    try:
+        return validate_session_ref(value)
+    except ValueError as exc:
+        raise BadRequest(str(exc)) from None
 
 
 def requires_write(ctx: DashboardContext) -> Response | None:
@@ -223,8 +263,8 @@ def _config(request: Request, ctx: DashboardContext, _match) -> Response:
     list, so the UI cannot describe a posture the harness does not have.
     """
     models = sorted(
-        {meta.get("model") for meta in ctx.store.list_sessions(limit=reads.MAX_LIMIT)}
-        - {None, ""}
+        {meta["model"] for meta in ctx.store.list_sessions(limit=reads.MAX_LIMIT, unreadable=[])
+         if isinstance(meta.get("model"), str) and meta["model"]}
     )
     return ok(
         {
@@ -292,17 +332,27 @@ def _sessions(request: Request, ctx: DashboardContext, _match) -> Response:
     limit = request.int_param("limit", reads.DEFAULT_LIMIT)
     if limit is None or limit < 1:
         return invalid("`limit` must be an integer >= 1.")
-    return ok({"sessions": read_model.sessions(ctx.store, limit=min(limit, reads.MAX_LIMIT),
-                                               queue=_queue_or_none())})
+    unreadable: list[str] = []
+    metas = ctx.store.list_sessions(limit=min(limit, reads.MAX_LIMIT), unreadable=unreadable)
+    queue = _queue_or_none()
+    queue = QueueOnce(queue) if queue is not None else None
+    rows = rows_isolating(
+        lambda chunk: read_model.sessions(ListedStore(ctx.store, chunk), limit=None, queue=queue),
+        metas, unreadable)
+    return ok({"sessions": rows, "unreadable_sessions": unreadable_report(unreadable)})
 
 
 @route("GET", r"/api/sessions/(?P<sid>[^/]+)")
 def _session(request: Request, ctx: DashboardContext, match) -> Response:
     try:
-        return ok(read_model.session(ctx.store, validate_session_ref(match["sid"]),
-                                     queue=_queue_or_none()))
-    except (FileNotFoundError, ValueError):
+        session_id = validate_session_ref(match["sid"])
+    except ValueError:
         return not_found(f"No session {match['sid']!r}.")
+    refusal = meta_refusal(ctx.store, session_id)
+    if refusal is not None:
+        return refusal
+    return projected(session_id, lambda: ok(read_model.session(ctx.store, session_id,
+                                                                 queue=_queue_or_none())))
 
 
 def _diagnostic_categories(request: Request) -> list[str] | None:
@@ -352,9 +402,14 @@ def _diagnostic_export(request: Request, ctx: DashboardContext, match) -> Respon
 def _inbox(request: Request, ctx: DashboardContext, _match) -> Response:
     """Pending approvals across active sessions, with the digest each answer must bind.
 
-    Every session, not the newest 200: a session parked on an approval stops updating,
-    so a cap by ``updated_at`` would hide exactly the request that is waiting longest."""
-    return ok({"approvals": read_model.inbox(ctx.store, limit=None)})
+    Every session, not ``read_model.inbox``'s newest 200: a session parked on an approval
+    stops updating, so a cap by ``updated_at`` would hide exactly the request that is
+    waiting longest."""
+    unreadable: list[str] = []
+    metas = ctx.store.list_sessions(limit=None, unreadable=unreadable)
+    rows = rows_isolating(lambda chunk: read_model.inbox(ListedStore(ctx.store, chunk), limit=None),
+                          metas, unreadable, newest_last=True)
+    return ok({"approvals": rows, "unreadable_sessions": unreadable_report(unreadable)})
 
 
 @route("GET", r"/api/overview")
@@ -363,7 +418,13 @@ def _overview(request: Request, ctx: DashboardContext, _match) -> Response:
     Selected from every session server side; reads only."""
     from garuda.interfaces.web.overview import overview
 
-    return ok(overview(ctx.store, queue=_queue_or_none()))
+    unreadable: list[str] = []
+    metas = ctx.store.list_sessions(limit=None, unreadable=unreadable)
+    queue = _queue_or_none()
+    queue = QueueOnce(queue) if queue is not None else None
+    payload = projecting_all(lambda chunk: overview(ListedStore(ctx.store, chunk), queue=queue),
+                             metas, unreadable)
+    return ok({**payload, "unreadable_sessions": unreadable_report(unreadable)})
 
 
 _APPROVAL_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
@@ -438,10 +499,15 @@ def _conversation(request: Request, ctx: DashboardContext, match) -> Response:
 
     try:
         session_id = validate_session_ref(match["sid"])
-        return ok(conversation.conversation(ctx.store, session_id, ledger=Ledger(),
-                                            queue=_queue_or_none()))
-    except (FileNotFoundError, ValueError):
+    except ValueError:
         return not_found(f"No session {match['sid']!r}.")
+    refusal = meta_refusal(ctx.store, session_id)
+    if refusal is not None:
+        return refusal
+    # Linked sessions come from a listing; one unreadable sibling must not hide the rest.
+    store = ListedStore(ctx.store)
+    return projected(session_id, lambda: ok(conversation.conversation(
+        store, session_id, ledger=Ledger(), queue=_queue_or_none())))
 
 
 @route("POST", r"/api/sessions/(?P<sid>[^/]+)/cancel")
@@ -484,33 +550,49 @@ def sse_frames(store, session_id: str, offset: int, *, max_seconds: float = STRE
     clock = clock or _time.monotonic
     path = store.events_path(session_id)
     started = last_sent = clock()
-    while True:
-        previous = offset
-        records, offset, malformed = tail_records(path, offset)
-        for end, event in records:
-            yield f"id: {end}\nevent: event\ndata: {json.dumps(event, default=str)}\n\n".encode()
-            last_sent = clock()
-        if malformed:
-            yield (f"id: {offset}\nevent: skipped\ndata: "
-                   f"{json.dumps({'malformed': malformed})}\n\n").encode()
-            last_sent = clock()
-        if not records:
-            try:
-                finished = effective_state(store.load_meta(session_id)).get("work") \
-                    not in ACTIVE_WORK
-            except (OSError, ValueError):
-                finished = True
-            if finished and offset == previous:
-                yield f"id: {offset}\nevent: end\ndata: {{}}\n\n".encode()
+    try:
+        while True:
+            previous = offset
+            records, offset, malformed = tail_records(path, offset)
+            for end, event in records:
+                yield f"id: {end}\nevent: event\ndata: {json.dumps(event, default=str)}\n\n".encode()
+                last_sent = clock()
+            if malformed:
+                yield (f"id: {offset}\nevent: skipped\ndata: "
+                       f"{json.dumps({'malformed': malformed})}\n\n").encode()
+                last_sent = clock()
+            if not records:
+                try:
+                    finished = effective_state(store.load_meta(session_id)).get("work") \
+                        not in ACTIVE_WORK
+                except (OSError, ValueError):
+                    finished = True
+                if finished and offset == previous:
+                    yield f"id: {offset}\nevent: end\ndata: {{}}\n\n".encode()
+                    return
+            now = clock()
+            if now - started >= max_seconds:
                 return
-        now = clock()
-        if now - started >= max_seconds:
-            return
-        if now - last_sent >= heartbeat:
-            yield b": keep-alive\n\n"
-            last_sent = now
-        if not records:
-            sleep(poll)
+            if now - last_sent >= heartbeat:
+                yield b": keep-alive\n\n"
+                last_sent = now
+            if not records:
+                sleep(poll)
+    except Exception:
+        # A StorageError from a protected record, a failing tail read: logged with its
+        # traceback, told to the client as one `error` frame carrying the last good id
+        # (so a reconnect resumes there), then a clean end of the response — never a
+        # connection dropped mid-frame.
+        logger.exception("Dashboard stream for session %s failed", session_id)
+        yield sse_error_frame("The live stream failed; it will reconnect.", offset=offset)
+
+
+def sse_error_frame(message: str, *, offset: int | None = None,
+                    code: str = "stream_failed") -> bytes:
+    """The ``error`` frame a stream ends with when serving it fails."""
+    head = f"id: {offset}\n" if offset is not None else ""
+    data = json.dumps({"error": {"code": code, "message": message}})
+    return f"{head}event: error\ndata: {data}\n\n".encode()
 
 
 @route("GET", r"/api/sessions/(?P<sid>[^/]+)/stream")
@@ -538,13 +620,20 @@ def _memory_proposals(request: Request, ctx: DashboardContext, _match) -> Respon
     (`garuda memory review`); this route cannot change anything."""
     from garuda.context.notes import ProposalStore
 
+    limit = request.int_param("limit", LIST_LIMIT)
+    if limit is None or limit < 1:
+        return invalid("`limit` must be an integer >= 1.")
     try:
         pending = ProposalStore(ctx.store, ctx.workspace).pending()
-    except Exception as exc:
-        return invalid(f"The proposal store is unavailable: {exc}")
+    except Exception:
+        # The store failing is not the request's fault: a 503 with a server-side log.
+        logger.warning("Dashboard could not read the memory proposals", exc_info=True)
+        return error("proposals_unavailable", "The proposal store could not be read; "
+                     "the server log has the details.", status=503)
     return ok({"proposals": [
         {"id": p.id, "scope": p.scope, "text": p.text, "session_id": p.session_id,
-         "state": p.state, "created_at": p.created_at} for p in pending]})
+         "state": p.state, "created_at": p.created_at} for p in pending[:min(limit, MAX_LIST_LIMIT)]],
+        "total": len(pending)})
 
 
 # --- runs --------------------------------------------------------------------
@@ -569,10 +658,13 @@ def _runs(request: Request, ctx: DashboardContext, _match) -> Response:
 
 @route("GET", r"/api/runs/(?P<sid>[^/]+)")
 def _run_detail(request: Request, ctx: DashboardContext, match) -> Response:
-    payload = reads.read_run(ctx.store, match["sid"], readers=ctx.readers)
-    if payload is None:
-        return not_found(f"No session {match['sid']!r}.")
-    return ok(payload)
+    session_id = _session_ref(match["sid"])
+
+    def build() -> Response:
+        payload = reads.read_run(ctx.store, session_id, readers=ctx.readers)
+        return not_found(f"No session {session_id!r}.") if payload is None else ok(payload)
+
+    return projected(session_id, build)
 
 
 @route("GET", r"/api/runs/(?P<sid>[^/]+)/events")
@@ -583,7 +675,7 @@ def _run_events(request: Request, ctx: DashboardContext, match) -> Response:
     if start is None or limit is None:
         return invalid("`start` and `limit` must be non-negative integers.")
     payload = reads.read_events(
-        ctx.store, match["sid"], start=start, limit=limit, readers=ctx.readers
+        ctx.store, _session_ref(match["sid"]), start=start, limit=limit, readers=ctx.readers
     )
     if payload is None:
         return not_found(f"No session {match['sid']!r}.")
@@ -593,7 +685,19 @@ def _run_events(request: Request, ctx: DashboardContext, match) -> Response:
 @route("GET", r"/api/runs/(?P<sid>[^/]+)/raw")
 def _run_raw(request: Request, ctx: DashboardContext, match) -> Response:
     name = request.first("file")
-    document = reads.read_raw(ctx.store, match["sid"], name)
+    if name not in reads.RAW_FILES:
+        return invalid(f"`file` must be one of {', '.join(reads.RAW_FILES)}; got {name!r}.")
+    session_id = _session_ref(match["sid"])
+    try:
+        size = (ctx.store.session_dir(session_id) / name).stat().st_size
+    except OSError:
+        size = 0
+    if size > MAX_RAW_BYTES:
+        # Parsed into memory and re-serialized whole, so a size cap rather than a slice.
+        return error("too_large", f"{name} is {size} bytes, over the {MAX_RAW_BYTES}-byte "
+                     "limit for showing it here; open it from the session directory.",
+                     status=413)
+    document = reads.read_raw(ctx.store, session_id, name)
     if document is None:
         return not_found(f"No readable {name} for session {match['sid']!r}.")
     return ok({"file": name, "content": document})
@@ -608,7 +712,8 @@ def _run_subagent(request: Request, ctx: DashboardContext, match) -> Response:
     separate document, addressed by the sub-session id the parent recorded, and read by the
     same reader as everything else.
     """
-    payload = reads.read_subagent(ctx.store, match["sid"], match["sub"], readers=ctx.readers)
+    payload = reads.read_subagent(ctx.store, _session_ref(match["sid"]),
+                                  _session_ref(match["sub"]), readers=ctx.readers)
     if payload is None:
         return not_found(f"No subagent log {match['sub']!r} under session {match['sid']!r}.")
     return ok(payload)
@@ -626,20 +731,27 @@ def _run_tail(request: Request, ctx: DashboardContext, match) -> Response:
     offset = request.int_param("offset", 0)
     if offset is None:
         return invalid("`offset` must be a non-negative integer.")
-    payload = reads.tail_run(ctx.store, match["sid"], offset=offset)
-    if payload is None:
-        return not_found(f"No session {match['sid']!r}.")
-    return ok(payload)
+    session_id = _session_ref(match["sid"])
+
+    def build() -> Response:
+        payload = reads.tail_run(ctx.store, session_id, offset=offset)
+        return not_found(f"No session {session_id!r}.") if payload is None else ok(payload)
+
+    return projected(session_id, build)
 
 
 @route("GET", r"/api/runs/(?P<sid>[^/]+)/buffers")
 def _run_buffers(request: Request, ctx: DashboardContext, match) -> Response:
-    return ok({"buffers": reads.list_buffers(ctx.store, match["sid"])})
+    limit = request.int_param("limit", LIST_LIMIT)
+    if limit is None or limit < 1:
+        return invalid("`limit` must be an integer >= 1.")
+    buffers = reads.list_buffers(ctx.store, _session_ref(match["sid"]))
+    return ok({"buffers": buffers[:min(limit, MAX_LIST_LIMIT)], "total": len(buffers)})
 
 
 @route("GET", r"/api/runs/(?P<sid>[^/]+)/buffers/(?P<bid>[A-Za-z0-9._-]+)")
 def _run_buffer(request: Request, ctx: DashboardContext, match) -> Response:
-    payload = reads.read_buffer(ctx.store, match["sid"], match["bid"])
+    payload = reads.read_buffer(ctx.store, _session_ref(match["sid"]), match["bid"])
     if payload is None:
         return not_found(f"No buffer {match['bid']!r}.")
     return ok(payload)
@@ -853,6 +965,9 @@ def _approvals(request: Request, ctx: DashboardContext, _match) -> Response:
     # sets its poll interval from these.
     return ok({
         "approvals": ctx.live.approvals.pending(owner),
+        # Who settled each recent ask. The engine words every falsy answer as "User denied",
+        # so this is the only place a reaper's or a timeout's denial can be told apart.
+        "settled": ctx.live.approvals.settled(owner),
         "timeout_seconds": ctx.live.approvals.timeout_seconds,
         "grace_seconds": ctx.live.approvals.grace_seconds,
     })
@@ -872,6 +987,14 @@ def _resolve_approval(request: Request, ctx: DashboardContext, match) -> Respons
         match["ask_id"], body["approved"], loop=ctx.loop,
         owner=body["owner"], digest=body["digest"],
     )
+    if outcome in ("unknown", "already_resolved"):
+        # A settled ask is unparked, so a late second answer finds nothing pending. Say what
+        # actually happened to it rather than "no such approval".
+        record = ctx.live.approvals.settled_ask(match["ask_id"])
+        if record is not None and record["owner"] == body["owner"]:
+            return error("already_resolved",
+                         f"That approval was already settled: {record['summary']}.",
+                         status=409)
     if outcome == "unknown":
         return not_found(f"No pending approval {match['ask_id']!r}.")
     if outcome == "mismatch":
@@ -915,7 +1038,8 @@ def _runtimes(request: Request, ctx: DashboardContext, _match) -> Response:
     from garuda.interfaces.web.runtimes import list_runtimes, login_checks, with_login_checks
 
     workspace = str(ctx.workspace)
-    return ok(with_login_checks(list_runtimes(workspace=workspace, extra=ctx.extra),
+    return ok(with_login_checks(list_runtimes(workspace=workspace, extra=ctx.extra,
+                                              memo=ctx.discovery),
                                 login_checks(ctx.extra, workspace)))
 
 
@@ -1043,10 +1167,9 @@ def _providers(request: Request, ctx: DashboardContext, _match) -> Response:
     from garuda.interfaces.web import providers
     from garuda.interfaces.web.runtimes import list_runtimes, registry_from_context
 
-    workspace = str(ctx.workspace)
-    entries = list_runtimes(workspace=workspace, extra=ctx.extra)
-    manifests = {m.runtime_id: m for m in registry_from_context(ctx.extra, workspace).manifests}
-    return ok(providers.cards(entries, manifests))
+    registry = registry_from_context(ctx.extra, str(ctx.workspace))
+    entries = list_runtimes(registry=registry, memo=ctx.discovery)
+    return ok(providers.cards(entries, {m.runtime_id: m for m in registry.manifests}))
 
 
 @route("POST", r"/api/providers/refresh")
@@ -1057,6 +1180,8 @@ def _providers_refresh(request: Request, ctx: DashboardContext, _match) -> Respo
     refusal = requires_write(ctx)
     if refusal is not None:
         return refusal
+    # An explicit refresh never answers from the shared discovery.
+    ctx.discovery.forget()
     return ok(providers.refresh(str(ctx.workspace), extra=ctx.extra))
 
 
@@ -1066,7 +1191,7 @@ def _runtime_detail(request: Request, ctx: DashboardContext, match) -> Response:
 
     workspace = str(ctx.workspace)
     payload = inspect_runtime(None, match["rid"], workspace=workspace, extra=ctx.extra,
-                              checks=login_checks(ctx.extra, workspace))
+                              memo=ctx.discovery, checks=login_checks(ctx.extra, workspace))
     if payload is None:
         return not_found(f"No runtime {match['rid']!r}.")
     return ok(payload)
@@ -1074,10 +1199,9 @@ def _runtime_detail(request: Request, ctx: DashboardContext, match) -> Response:
 
 @route("GET", r"/api/runs/(?P<sid>[^/]+)/handoff")
 def _handoff_preview(request: Request, ctx: DashboardContext, match) -> Response:
-    from garuda.core.sessions import validate_session_ref
     from garuda.interfaces.web.runtimes import handoff_preview, registry_from_context
 
-    session_id = validate_session_ref(match["sid"])
+    session_id = _session_ref(match["sid"])
     target = request.first("to")
     if not target:
         return invalid("`to` query parameter is required.")
@@ -1096,13 +1220,12 @@ def _handoff_preview(request: Request, ctx: DashboardContext, match) -> Response
 
 @route("POST", r"/api/runs/(?P<sid>[^/]+)/handoff")
 def _handoff_prepare(request: Request, ctx: DashboardContext, match) -> Response:
-    from garuda.core.sessions import validate_session_ref
     from garuda.interfaces.web.runtimes import handoff_prepare, registry_from_context
 
     refusal = requires_write(ctx)
     if refusal is not None:
         return refusal
-    session_id = validate_session_ref(match["sid"])
+    session_id = _session_ref(match["sid"])
     body = request.json_body()
     target = body.get("target") if isinstance(body, dict) else None
     if not target or not isinstance(target, str):
@@ -1122,11 +1245,10 @@ def _handoff_prepare(request: Request, ctx: DashboardContext, match) -> Response
 
 @route("GET", r"/api/runs/(?P<sid>[^/]+)/diff")
 def _run_diff(request: Request, ctx: DashboardContext, match) -> Response:
-    from garuda.core.sessions import validate_session_ref
     from garuda.interfaces.web.runtimes import diff_timeline
     from garuda.workspace.diff import DiffError
 
-    session_id = validate_session_ref(match["sid"])
+    session_id = _session_ref(match["sid"])
     try:
         return ok(diff_timeline(ctx.store, session_id))
     except (DiffError, OSError, ValueError) as exc:
@@ -1135,20 +1257,18 @@ def _run_diff(request: Request, ctx: DashboardContext, match) -> Response:
 
 @route("GET", r"/api/runs/(?P<sid>[^/]+)/recover")
 def _recover_preview(request: Request, ctx: DashboardContext, match) -> Response:
-    from garuda.core.sessions import validate_session_ref
     from garuda.interfaces.web.runtimes import recover_report
 
-    session_id = validate_session_ref(match["sid"])
+    session_id = _session_ref(match["sid"])
     return ok(recover_report(ctx.store, session_id))
 
 
 @route("POST", r"/api/runs/(?P<sid>[^/]+)/recover")
 def _recover_run(request: Request, ctx: DashboardContext, match) -> Response:
-    from garuda.core.sessions import validate_session_ref
     from garuda.interfaces.web.runtimes import recover_report
 
     refusal = requires_write(ctx)
     if refusal is not None:
         return refusal
-    session_id = validate_session_ref(match["sid"])
+    session_id = _session_ref(match["sid"])
     return ok(recover_report(ctx.store, session_id, run=True))

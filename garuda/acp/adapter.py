@@ -396,6 +396,12 @@ class AcpRuntime:
         ``cancelled``); it does not change how the turn settles (#824)."""
         return dict(self._last_turn) if self._last_turn is not None else None
 
+    @property
+    def last_denied(self) -> tuple[str, ...]:
+        """The screened descriptions of the actions Garuda denied in the latest turn
+        (agent-supplied titles: data, never instructions), oldest first."""
+        return tuple(dict.fromkeys(self._denied))
+
     def _latest_rate_limit(self) -> dict[str, Any] | None:
         """The newest account limit snapshot the harness reported this session."""
         for event in reversed(self._events):

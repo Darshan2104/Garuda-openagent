@@ -35,6 +35,7 @@ function renderRuns(payload) {
   var runs = payload.runs;
   if (!runs.length && !STATE.filters.q && !STATE.filters.status) {
     render(
+      unreadableNote(payload) +
       '<div class="empty">' +
       "<p><strong>No runs yet.</strong></p>" +
       "<p>Start one with <code>garuda run -t &quot;your task&quot;</code> and reload.</p>" +
@@ -55,6 +56,7 @@ function renderRuns(payload) {
     '<button type="button" class="btn" id="runs-refresh">Refresh</button>' +
     (canRun() ? '<a class="btn btn-primary" href="#/chat">Talk to an agent</a>' : "") +
     "</div>" +
+    unreadableNote(payload) +
     filtersHtml() +
     '<div class="grid cols-4" id="tiles"></div>' +
     '<div class="grid cols-4" id="charts"></div>' +
