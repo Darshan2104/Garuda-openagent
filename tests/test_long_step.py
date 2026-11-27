@@ -1123,3 +1123,25 @@ async def test_an_owned_step_runs_the_same_hook_and_proves_closure(case, profile
     assert result.closure["process"]["outcome"] == "exited"
     assert not parent._quarantined
     assert progress.exists()
+
+
+def test_an_interrupted_attempts_counts_are_recovered_from_its_progress(tmp_path):
+    progress = tmp_path / "build-1.jsonl"
+    assert long_step.recovered_fields(progress) == {}  # a plain step records none
+    progress.write_text(json.dumps({"event": "start", "attempt": 1, "session_id": "s"}) + "\n")
+    assert long_step.recovered_fields(progress) == {
+        "turns": 0, "harness_sessions": [], "rotations": 0, "continuations": 0,
+        "last_turn_decision": None, "last_turn_at": None, "turn_loop_source": "progress"}
+    rows = [{"turn": 1, "session": 1, "native_session_id": "a", "decision": "next",
+             "reason": "repair"},
+            {"turn": 2, "session": 1, "native_session_id": "a", "decision": "rotate"},
+            {"turn": 3, "session": 2, "native_session_id": None, "decision": "next",
+             "reason": "continue"},
+            {"turn": 4, "session": 3, "native_session_id": "c", "decision": "next",
+             "reason": "continue", "at": "2026-11-27T10:00:00+00:00"}]
+    with open(progress, "a") as handle:
+        handle.write("".join(json.dumps(r) + "\n" for r in rows) + '{"turn": 5, "torn')
+    assert long_step.recovered_fields(progress) == {
+        "turns": 4, "harness_sessions": ["a", None, "c"], "rotations": 1, "continuations": 2,
+        "last_turn_decision": "next", "last_turn_at": "2026-11-27T10:00:00+00:00",
+        "turn_loop_source": "progress"}

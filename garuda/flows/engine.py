@@ -1071,6 +1071,7 @@ class FlowRunner:
         The journal gets the attempt's receipt entry, so it keeps two entries
         per attempt.
         """
+        from garuda.flows import long_step
         from garuda.runtime.process_supervision import CleanupUncertain
 
         step_id, attempt = crash["step"], crash["attempt"]
@@ -1101,6 +1102,9 @@ class FlowRunner:
             "inputs": [], "outputs": [], "recorded_at": _now(), "role_plan": None,
             "evidence_boundary": boundary, "crash": dict(crash),
             **({"progress": f"progress/{progress.name}"} if progress.is_file() else {}),
+            # The dead loop never reported its counts: the last known ones, marked
+            # as recovered from the progress records (``turn_loop_source``).
+            **long_step.recovered_fields(progress),
             "status": "stopped", "stop": _stop_record(stop)}
         await self._record_step_receipt(receipt)
         self._prior_attempts[(step_id, attempt)] = receipt
@@ -2479,6 +2483,14 @@ class FlowRunner:
         version_after = await self._version_for_flow()
         receipt["workspace_version_after"] = version_after
         receipt.update(long_step.receipt_fields(outcome.turns))
+        if interrupted is not None and "turns" not in receipt:
+            # An interrupted loop never reported its counts: the last known ones,
+            # marked as recovered from the attempt's progress records.
+            progress = self.dir / "progress" / f"{step['id']}-{attempt}.jsonl"
+            recovered = long_step.recovered_fields(progress)
+            if recovered:
+                receipt.setdefault("progress", f"progress/{progress.name}")
+                receipt.update(recovered)
         loop_stop = (outcome.turns or {}).get("stop")
         if stop is None and isinstance(loop_stop, dict) and loop_stop.get("code") in long_step.LOOP_STOPS:
             # The step's own turn loop paused it (no progress, max_hours, max_turns)

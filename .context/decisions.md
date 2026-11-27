@@ -5847,6 +5847,55 @@ SDK does not pass it either. The role record on a session lists the patterns
 (`role.approvals_allow`) when there are any. The dashboard's approvals view
 does not yet show `decided_by`.
 
+## 2026-11-27: Redaction keys on credential names and secret-shaped values (#870)
+
+The `credential` pattern in `garuda/context/redact.py` took any word that
+ended in `pass`, `secret` or `token` before `:` or `=` as a key, and any next
+token as its value. Since #812 flow artifacts are redacted before storage, and
+briefs redact again, so a plan line such as `Verification: tests pass: 3
+passed` reached the next agent as `tests [REDACTED:credential] passed`,
+`def run(bypass: bool = False)` lost its parameter, and a diff excerpt with
+such a line was withheld from the reviewer. On main, 37 of the 53 lines of
+ordinary prose and code in the new corpus were redacted.
+
+The regex still finds candidates; `_credential_value` now decides. The key is
+a whole name (it cannot start inside an identifier) whose last part is a
+credential word. Strong words (`password`, `passwd`, `passphrase`, `api_key`,
+`access_key[_id]`, `secret_key`, `private_key`, `client_secret`,
+`auth/access/refresh_token`) are credentials alone. Weak words (`pass`, `pwd`,
+`secret`, `token`) count when they end a compound name (`DB_PASS`,
+`GITHUB_TOKEN`, `self.token`, `x-auth-token`, `dbPassword`) or stand alone
+before `=` (`token=...`, `PASS=...`). A bare weak word before `:`, a weak word
+glued to capitals (`XPASS`, `BYPASS`) and a bare `pwd` (`PWD=/home/me`) need a
+quoted value or a high-entropy one (8+ characters with mixed case and a digit,
+or 16+ characters at least a fifth digits). `bypass`, `compass`, `passport`
+and `password_hash` are never keys.
+
+A value is let through when it is code rather than a literal: a type or literal
+keyword (`str`, `Optional`, `None`, `true`), a call or index (`getpass()`,
+`os.environ["X"]`, `tokens[0]`), a reference (`$DB_PASSWORD`, `${...}`,
+`{{ secrets.X }}`, `%VAR%`, a dotted path such as `settings.SECRET_KEY` or
+`process.env.X`, a credential-named identifier such as `password=password`), a
+placeholder (`<your-password>`, `xxx`, `***`) or punctuation only. A Python or
+TypeScript annotation before `=` is skipped, so `password: str = "x"` is
+judged on `"x"` and now redacted. Everything else fails toward redacting: any
+quoted literal after a credential key, and `password: <any word>`, so prose
+such as `Reset password: the link` is still redacted. `password_hash = ...`
+is not redacted, since a hash is not a credential and the old pattern did not
+redact it either. A rejected candidate is rescanned from its value, so
+`tests pass: token=...` still catches the token.
+
+Two token shapes were tightened as well: `bearer` needs a digit or a dot inside
+the token, or 20+ characters (`bearer authentication` is prose), and `npm_`
+needs 30+ characters (`npm_lifecycle_event`). The `AssertionError: token:
+expected` special case is gone; the weak-key rule covers it. Callers are
+unchanged: findings still count one per match, so `artifacts.store`
+`redactions` and the JSON-aware review redaction (#835) keep their numbers for
+real secrets and now find nothing in ordinary text.
+`runtime/selection/explain.py` keeps its own deliberately broad substring
+screen. The corpus in `tests/test_context_redact.py` holds 57 true positives
+and 53 true negatives, including the live examples from the issue.
+
 ## 2026-11-27: An owned step's approval waits for its broker, not the control socket (#869)
 
 An owned step's worker asks its parent for an approval over the role control

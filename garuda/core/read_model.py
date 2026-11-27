@@ -214,20 +214,61 @@ def quota_limit(meta: dict) -> dict:
             else None}
 
 
+def _limit_failure(meta: dict, stop) -> dict | None:
+    """A checked flow's usage-limit stop: ``flow.step_failed`` whose cause is a harness
+    usage limit (#834 records it so, never ``flow.quota_wait``). Its validated reset and
+    window (``{}`` when the harness reported neither), or ``None`` for any other stop."""
+    from garuda.acp.protocol import rate_limit_fields
+    from garuda.flows.engine import LIMIT_CAUSE_CODES
+
+    if meta.get("flow_state") != "stopped" or not isinstance(stop, dict) \
+            or stop.get("code") != "flow.step_failed":
+        return None
+    cause = stop.get("cause") if isinstance(stop.get("cause"), dict) else {}
+    if cause.get("code") not in LIMIT_CAUSE_CODES:
+        return None
+    limit = rate_limit_fields(cause.get("limit"), validated=True)
+    return {"reset_at": limit.get("resets_at"), "rate_limit_type": limit.get("rate_limit_type")}
+
+
+def _quota_action(flow: str, reset_at, *, automatic: bool) -> str:
+    """What happens next for a usage-limit pause, in one sentence."""
+    if automatic:
+        return "resumes after the reset"
+    when = f"after {_iso(reset_at)}" if type(reset_at) in (int, float) else "after the limit resets"
+    return f"run `garuda flow resume {flow}` {when}"
+
+
 def flow_pause(meta: dict) -> dict | None:
     """Why a stopped flow is paused on a resumable stop, from its recorded fields, or ``None``:
     ``{"kind": "quota", ...}`` (with the reset time and window when recorded) for a
     usage-limit wait, else ``{"kind": <pause kind>}`` for a flow stopped on one of
     :func:`pause_kinds`. The recorded ``outcome`` is left as stored: the run ended without
-    completing, and ``garuda flow resume`` continues it."""
+    completing, and ``garuda flow resume`` continues it.
+
+    A quota pause also says what happens next: ``resume`` is ``automatic`` while quota
+    recovery waits for the reset (an unchecked ``flow.quota_wait``) and ``manual``
+    otherwise, and ``action`` is the sentence (``resumes after the reset``, or ``run
+    `garuda flow resume FLOW` after <reset>``). A checked flow's usage limit settles as
+    ``flow.step_failed`` with cause ``harness.limit_reached`` (#834); that is a quota pause
+    too, with ``resume: manual``, as nothing resumes a checked flow by itself."""
     if meta.get("kind") != "flow":
         return None
     recovery = meta.get("quota_recovery")
     stop = meta.get("flow_stop")
     code = stop.get("code") if isinstance(stop, dict) else None
-    if (isinstance(recovery, dict) and recovery.get("state") == QUOTA_WAIT) or code == QUOTA_STOP:
+    flow = str(meta.get("session_id") or "FLOW_ID")
+    waiting = isinstance(recovery, dict) and recovery.get("state") == QUOTA_WAIT
+    if waiting or code == QUOTA_STOP:
         # The reset time and window only when recorded (a Codex wait records neither).
-        return {"kind": "quota", **{k: v for k, v in quota_limit(meta).items() if v is not None}}
+        found = {k: v for k, v in quota_limit(meta).items() if v is not None}
+        return {"kind": "quota", **found, "resume": "automatic" if waiting else "manual",
+                "action": _quota_action(flow, found.get("reset_at"), automatic=waiting)}
+    limit = _limit_failure(meta, stop)
+    if limit is not None:
+        return {"kind": "quota", **{k: v for k, v in limit.items() if v is not None},
+                "resume": "manual",
+                "action": _quota_action(flow, limit["reset_at"], automatic=False)}
     kinds = pause_kinds()
     if meta.get("flow_state") == "stopped" and code in kinds:
         return {"kind": kinds[code]}
@@ -236,21 +277,34 @@ def flow_pause(meta: dict) -> dict | None:
 
 def _turn_loop(receipt: dict) -> dict | None:
     """A long step's turn-loop facts as its receipt recorded them (#842), or ``None`` when
-    it ran one plain turn. A count of the wrong type reads ``None`` (unknown), never 0."""
+    it ran one plain turn. A count of the wrong type reads ``None`` (unknown), never 0.
+
+    ``source`` is ``loop`` when the finished loop reported the counts and
+    ``progress`` when they were recovered from the attempt's progress records
+    because it was interrupted (SIGTERM, or a crash a resume continued); then
+    ``last_decision`` and ``last_turn_at`` are the last recorded turn's
+    (``None`` for a loop's report)."""
     if not any(key in receipt for key in ("turns", "rotations", "continuations", "repairs")):
         return None
 
     def count(value):
         return value if type(value) is int and value >= 0 else None
 
+    def text(value, limit):
+        return " ".join(value.split())[:limit] if isinstance(value, str) and value else None
+
     repairs = receipt.get("repairs")
     natives = receipt.get("harness_sessions")
+    recovered = receipt.get("turn_loop_source") == "progress"
     return {"turns": count(receipt.get("turns")), "rotations": count(receipt.get("rotations")),
             "continuations": count(receipt.get("continuations")),
             "repairs": len(repairs) if isinstance(repairs, list) else None,
             "repair_outcomes": [r.get("outcome") for r in repairs if isinstance(r, dict)]
             if isinstance(repairs, list) else [],
-            "harness_sessions": len(natives) if isinstance(natives, list) else None}
+            "harness_sessions": len(natives) if isinstance(natives, list) else None,
+            "source": "progress" if recovered else "loop",
+            "last_decision": text(receipt.get("last_turn_decision"), 20) if recovered else None,
+            "last_turn_at": text(receipt.get("last_turn_at"), 40) if recovered else None}
 
 
 def inbox(store, *, limit: int = 200) -> list[dict]:
@@ -435,13 +489,18 @@ def flow_in_flight(store, flow_session: str, meta: dict | None = None) -> dict |
     the flow is stopped with a recorded reason: a quota wait, a step deadline,
     silence or no progress, ...). Unknown facts are ``None``.
 
+    ``running`` is whether the attempt is in flight now: its intent is open and
+    the flow's process is not known to be gone (``process`` not ``exited`` or
+    ``missing``). A paused or stopped flow's view describes its last attempt
+    with ``running: false``; so does an open attempt whose process died.
+
     Silence (#856): ``silence_limit_sec`` and ``tool_silence_limit_sec`` (the
     step's effective ``limits.silence_min`` / ``tool_silence_min`` in seconds,
     ``None`` when not set), ``tool_in_flight`` and ``approval_parked`` (from the
     attempt's status file, :mod:`garuda.flows.live_status`; ``None`` without
     one) and ``silence_state``: ``ok``, ``tool_running``, ``approval_parked``,
     ``warn`` (``idle_sec`` at least 80% of the limit that applies now) or
-    ``over``; ``None`` unless an attempt is running. ``recent_turns`` lists the
+    ``over``; ``None`` unless the attempt is ``running``. ``recent_turns`` lists the
     attempt's last turns, newest last (at most 10, from the progress file's
     tail): ``turn``, ``harness_session``, ``decision``, ``stop_reason``,
     ``elapsed_sec``, ``changed_total``, ``context_used`` and ``at``.
@@ -492,8 +551,10 @@ def flow_in_flight(store, flow_session: str, meta: dict | None = None) -> dict |
         tried = [e.get("attempt") for e in entries
                  if e.get("event") == "intent" and e.get("step") == step and type(e.get("attempt")) is int]
         attempt = max(tried) if tried else None
+    process = effective_state(meta).get("process")
     out: dict[str, Any] = {
-        "state": state, "process": effective_state(meta).get("process"),
+        "state": state, "process": process,
+        "running": open_intent is not None and process not in ("exited", "missing"),
         "step": step if isinstance(step, str) else None, "attempt": attempt,
         "started_at": open_intent.get("at") if open_intent else None,
         "session_id": None, "harness_sessions": None, "turns": None, "rotations": None,
@@ -538,7 +599,7 @@ def flow_in_flight(store, flow_session: str, meta: dict | None = None) -> dict |
                 out["context_used"] = context.get("used")
                 out["context_size"] = context.get("size")
             out["recent_turns"] = [_recent_turn(r) for r in turns[-_RECENT_TURNS:]]
-        if open_intent is not None:
+        if out["running"]:
             from garuda.flows import live_status
 
             status = live_status.read(live_status.path(flow_dir, out["step"], attempt))
@@ -568,7 +629,7 @@ def flow_in_flight(store, flow_session: str, meta: dict | None = None) -> dict |
     if known and open_intent is not None:
         out["last_activity_at"] = _iso(max(known))
         out["idle_sec"] = max(0, int(time.time() - max(known)))
-    if open_intent is not None:
+    if out["running"]:
         out["silence_state"] = silence_state(out)
     try:
         from garuda.flows.checkpoints import listing

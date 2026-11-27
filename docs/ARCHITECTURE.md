@@ -122,6 +122,10 @@ Generated context redaction covers credential identifiers such as `DB_PASSWORD`,
 `AWS_SECRET_ACCESS_KEY`, `OPENAI_API_KEY` and `HF_TOKEN`, including `=` and `:`
 assignments, plus standalone `hf_` and `sk-ant-` token shapes. Both current-task
 and handoff writers redact check evidence and failures before publishing.
+The key must be a whole credential name (`bypass` or `compass` is not one) and
+the value must not be a type, call, reference or placeholder; a bare `pass`,
+`secret`, `token` or `pwd` key, which is also ordinary English or the working
+directory, needs a quoted or high-entropy value (#870).
 This is best-effort pattern redaction, not a guarantee for unknown secret forms.
 Images, PDFs and spreadsheets use `Environment.read_bytes`, which follows the
 backend's file-path policy instead of reading through an unchecked shell command.

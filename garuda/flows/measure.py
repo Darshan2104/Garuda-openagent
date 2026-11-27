@@ -236,6 +236,9 @@ def line(receipt: dict) -> str | None:
         if value == "absent":
             continue
         counts.append(f"{key.replace('_', ' ')} {value if value is not None else '?'}")
+    if receipt.get("turn_loop_source") == "progress" and counts:
+        # An interrupted attempt's last known counts, not a finished loop's report.
+        counts[-1] += " (turn counts recovered from progress records)"
     parts.append(", ".join(counts))
     usage = measure.get("usage")
     if isinstance(usage, dict):

@@ -147,7 +147,45 @@ def test_a_flow_on_a_resumable_pause_says_so_and_keeps_its_outcome(tmp_path):
     assert paused["flow"]["steps"][0]["attempts"][0]["pause"] == "deadline"
     assert rows["failed-flow"]["pause"] is None
     assert read_model.session(store, "failed-flow")["flow"]["steps"][0]["attempts"][0]["pause"] is None
-    assert rows["quota-flow"]["pause"] == {"kind": "quota", "reset_at": 1_900_000_000}
+    assert rows["quota-flow"]["pause"] == {"kind": "quota", "reset_at": 1_900_000_000,
+                                           "resume": "automatic",
+                                           "action": "resumes after the reset"}
+
+
+def test_a_checked_flows_usage_limit_stop_reads_as_a_quota_pause(tmp_path):
+    """A checked flow's Claude usage limit settles as `flow.step_failed` with cause
+    `harness.limit_reached` (#834); the read model presents it as a quota pause that
+    `flow resume` continues after the reset, never as a failure. Read side only: the
+    recorded stop code and outcome are unchanged. A plain step failure stays a failure."""
+    def limit_stop(limit):
+        return {"code": "flow.step_failed", "step": "code", "message": "usage limit",
+                "cause": {"code": "harness.limit_reached", "detail": "limit reached",
+                          **({"limit": limit} if limit is not None else {})}}
+
+    store = SessionStore()
+    _stopped_flow(store, "limit-reset", str(tmp_path),
+                  limit_stop({"resets_at": 1_900_000_000, "rate_limit_type": "five_hour"}))
+    _stopped_flow(store, "limit-no-reset", str(tmp_path), limit_stop(None))
+    _stopped_flow(store, "limit-bad-reset", str(tmp_path),
+                  limit_stop({"resets_at": "soon", "rate_limit_type": "five hour!"}))
+    _stopped_flow(store, "plain-failure", str(tmp_path),
+                  {"code": "flow.step_failed", "step": "code", "message": "it failed",
+                   "cause": {"code": "harness.exit", "detail": "exited 1"}})
+    rows = {row["session_id"]: row for row in read_model.sessions(store, limit=None)}
+
+    reset = read_model.session(store, "limit-reset")
+    assert rows["limit-reset"]["pause"] == reset["pause"] == {
+        "kind": "quota", "reset_at": 1_900_000_000, "rate_limit_type": "five_hour",
+        "resume": "manual",
+        "action": "run `garuda flow resume limit-reset` after 2030-03-17T17:46:40+00:00"}
+    assert (reset["label"], reset["state"]["outcome"]) == ("failed", "failed")
+    assert reset["flow"]["stop"]["code"] == "flow.step_failed"  # as recorded
+    for sid in ("limit-no-reset", "limit-bad-reset"):  # an unvalidated reset is never shown
+        assert rows[sid]["pause"] == {
+            "kind": "quota", "resume": "manual",
+            "action": f"run `garuda flow resume {sid}` after the limit resets"}
+    assert rows["plain-failure"]["pause"] is None
+    assert read_model.flow_pause(store.load_meta("plain-failure")) is None
 
 
 def test_a_flow_totals_its_receipts_measures_like_flow_show(world):
