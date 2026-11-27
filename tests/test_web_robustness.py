@@ -548,7 +548,7 @@ def test_a_cold_detail_probes_only_its_runtime(tmp_path, probes):
 def test_the_providers_refresh_bypasses_the_shared_discovery(tmp_path, probes, monkeypatch):
     from garuda.interfaces.web import providers
 
-    monkeypatch.setattr(providers, "refresh", lambda workspace: {"login": [], "limits": []})
+    monkeypatch.setattr(providers, "refresh", lambda workspace, **_: {"login": [], "limits": []})
     ctx = DashboardContext(port=PORT, token=TOKEN, store=SessionStore(tmp_path / "s"),
                            workspace=tmp_path, allow_run=True)
     call(ctx, "/api/providers")

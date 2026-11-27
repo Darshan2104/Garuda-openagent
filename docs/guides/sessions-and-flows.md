@@ -63,6 +63,11 @@ added up, with `step_sessions`, `reporting_sessions`, `cost_complete` and
 `reported_usage`, never added to Garuda's metered usage; `null` on a session
 that is not a flow.
 
+`event_log` says which logs the session has: `native` (Garuda's own event
+log) and `external` (an external harness's trail). A flow has neither of its
+own, because each step's session keeps its own, so an empty event list there
+does not mean nothing ran.
+
 `sessions show` also says what an external run met on the way:
 `approval_summary` counts its tool approval requests (`requested`, `allowed`,
 `denied`, `all_denied`, and each outcome; timed out, disconnected and cancelled

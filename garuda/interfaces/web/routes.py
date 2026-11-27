@@ -1035,9 +1035,12 @@ def _job_expired(job_id: str) -> Response:
 
 @route("GET", r"/api/runtimes")
 def _runtimes(request: Request, ctx: DashboardContext, _match) -> Response:
-    from garuda.interfaces.web.runtimes import list_runtimes
+    from garuda.interfaces.web.runtimes import list_runtimes, login_checks, with_login_checks
 
-    return ok(list_runtimes(workspace=str(ctx.workspace), extra=ctx.extra, memo=ctx.discovery))
+    workspace = str(ctx.workspace)
+    return ok(with_login_checks(list_runtimes(workspace=workspace, extra=ctx.extra,
+                                              memo=ctx.discovery),
+                                login_checks(ctx.extra, workspace)))
 
 
 def _usage_range(request: Request):
@@ -1066,8 +1069,61 @@ def _usage(request: Request, ctx: DashboardContext, _match) -> Response:
         aliases = verified_aliases(ctx.store.root)
     except ProjectIdentityError:
         return invalid("Project identity recovery cannot be verified; usage grouping is unavailable.")
-    return ok(usage_stats.stats(list(Ledger().records(since=now - 31 * 86400)), name, now,
-                               project_aliases=aliases))
+    records = list(Ledger().records(since=now - 31 * 86400))
+    payload = usage_stats.stats(records, name, now, project_aliases=aliases)
+    return ok(annotate_usage_unknowns(payload, records, name, now, project_aliases=aliases))
+
+
+_TOKEN_KEYS = ("input_tokens", "output_tokens", "total_tokens")
+
+
+def _tokens_state(row: dict, missing_row: dict | None) -> None:
+    counted = (row.get("native_calls") or 0) + (row.get("acp_turns") or 0)
+    missing = ((missing_row.get("native_calls") or 0) + (missing_row.get("acp_turns") or 0)
+               if missing_row else 0)
+    row["tokens_unknown"] = missing
+    row["tokens_state"] = ("none" if not counted else "unknown" if missing >= counted
+                           else "partial" if missing else "known")
+
+
+def annotate_usage_unknowns(payload: dict, records: list[dict], range_name: str, now: float,
+                            *, project_aliases=None) -> dict:
+    """Say which token sums are unknown rather than zero, and what ACP usage exists.
+
+    ``usage_stats`` sums ``input/output/total_tokens`` with ``or 0``, so a range whose calls
+    recorded no token counts reads "0 tokens". The same statistics over only the counted
+    records that carry no token field at all give, row for row, how many of each row's
+    units are unknown; every row gets ``tokens_state`` (none/unknown/partial/known).
+
+    ACP usage is recorded as adapter snapshots (running figures, never summed) until an
+    adapter version's semantics are proved (``observability.acp_usage.PROVED`` is empty),
+    so ``acp_turns`` is 0 by construction. ``acp_reports`` counts the snapshots and the
+    sessions that sent them, so the page can say what it does not meter instead of "0".
+    """
+    from garuda.core import usage_stats
+
+    start, end = usage_stats.window(range_name, now)
+    blank = [r for r in records if r.get("kind") in ("native_model_call", "acp_usage_delta")
+             and all(r.get(k) is None for k in _TOKEN_KEYS)]
+    missing = usage_stats.stats(blank, range_name, now, project_aliases=project_aliases)
+    _tokens_state(payload["measures"], missing["measures"])
+    keyed = {"harness_model": lambda r: (r.get("harness"), r.get("model")),
+             "daily": lambda r: r.get("date"), "by_role": lambda r: r.get("role"),
+             "by_origin": lambda r: r.get("origin"), "by_project": lambda r: r.get("project_id")}
+    for table, key in keyed.items():
+        index = {key(r): r for r in missing.get(table) or []}
+        for row in payload.get(table) or []:
+            _tokens_state(row, index.get(key(row)))
+    snapshots = [r for r in records if r.get("kind") == "acp_usage_snapshot"
+                 and isinstance(r.get("time"), (int, float)) and start <= r["time"] < end]
+    payload["acp_reports"] = {
+        "snapshots": len(snapshots),
+        "sessions": len({r.get("session_id") for r in snapshots if r.get("session_id")}),
+        "per_turn_metered": bool(payload["measures"].get("acp_turns")),
+        "note": "external harnesses' usage reports are adapter snapshots (running figures); "
+                "Garuda does not meter them per turn until an adapter version is proved",
+    }
+    return payload
 
 
 @route("GET", r"/api/usage/export")
@@ -1095,8 +1151,13 @@ def _usage_export(request: Request, ctx: DashboardContext, _match) -> Response:
 def _setup(request: Request, ctx: DashboardContext, _match) -> Response:
     """Diagnostics, effective-config provenance, roles and flows (F.4). Read-only."""
     from garuda.core import setup_view
+    from garuda.interfaces.web.providers import annotate_setup_logins
+    from garuda.interfaces.web.runtimes import login_checks
 
-    return ok(setup_view.setup(str(ctx.workspace)))
+    workspace = str(ctx.workspace)
+    # The same recorded login reading the Runtimes and Providers pages show, with its age.
+    payload = setup_view.setup(workspace)
+    return ok(annotate_setup_logins(payload, login_checks(ctx.extra, workspace)))
 
 
 @route("GET", r"/api/providers")
@@ -1121,15 +1182,16 @@ def _providers_refresh(request: Request, ctx: DashboardContext, _match) -> Respo
         return refusal
     # An explicit refresh never answers from the shared discovery.
     ctx.discovery.forget()
-    return ok(providers.refresh(str(ctx.workspace)))
+    return ok(providers.refresh(str(ctx.workspace), extra=ctx.extra))
 
 
 @route("GET", r"/api/runtimes/(?P<rid>[A-Za-z0-9._-]+)")
 def _runtime_detail(request: Request, ctx: DashboardContext, match) -> Response:
-    from garuda.interfaces.web.runtimes import inspect_runtime
+    from garuda.interfaces.web.runtimes import inspect_runtime, login_checks
 
-    payload = inspect_runtime(None, match["rid"], workspace=str(ctx.workspace), extra=ctx.extra,
-                              memo=ctx.discovery)
+    workspace = str(ctx.workspace)
+    payload = inspect_runtime(None, match["rid"], workspace=workspace, extra=ctx.extra,
+                              memo=ctx.discovery, checks=login_checks(ctx.extra, workspace))
     if payload is None:
         return not_found(f"No runtime {match['rid']!r}.")
     return ok(payload)

@@ -229,6 +229,8 @@ th {
 tbody tr { cursor: pointer; }
 tbody tr:hover { background: var(--surface-2); }
 td.num { text-align: right; font-variant-numeric: tabular-nums; font-family: var(--mono); font-size: 12px; }
+/* A numeric column's header sits over its right-aligned values. */
+th.num { text-align: right; }
 td.task { max-width: 460px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 td.mono, .mono { font-family: var(--mono); font-size: 12px; }
 

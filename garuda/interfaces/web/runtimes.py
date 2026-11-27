@@ -88,9 +88,42 @@ def list_runtimes(
     return [health_of(entry) for entry in found]
 
 
+NOT_CHECKED = {"state": "not_checked", "checked_at": None, "age_seconds": None}
+
+
+def login_checks(extra: dict | None, workspace: str = ".") -> dict[str, dict]:
+    """The one login reading per harness that every page shows, read only (see
+    :func:`garuda.interfaces.web.providers.login_readings`)."""
+    from garuda.interfaces.web.providers import login_readings
+
+    return login_readings(registry_from_context(extra or {}, workspace).manifests)
+
+
+def with_login_checks(entries: list[dict], checks: dict[str, dict]) -> list[dict]:
+    """``entries`` with each harness's ``login_check``. Discovery's own ``auth`` stays in the
+    record for API compatibility; it is an unrecorded, untimed second probe and no page
+    shows it."""
+    for entry in entries:
+        entry["login_check"] = checks.get(entry["runtime_id"], dict(NOT_CHECKED))
+    return entries
+
+
+def _login_guidance(runtime_id: str, check: dict, guidance: list[str],
+                    instructions: str | None) -> list[str]:
+    """``describe_auth`` lines with the login line taken from the recorded check, so the
+    detail card cannot contradict the AUTH column beside it."""
+    state = check.get("state")
+    head = {"authenticated": "logged in", "logged_out": "logged out",
+            "not_checked": "login not checked yet"}.get(state, f"login state {state}")
+    lines = [f"{runtime_id}: {head} (recorded check)"]
+    if state != "authenticated" and instructions:
+        lines.append(f"  to log in: {instructions}")
+    return lines + [line for line in guidance[1:] if not line.startswith("  to log in:")]
+
+
 def inspect_runtime(
     manifest_dicts: list[dict] | None, runtime_id: str, *, workspace: str = ".", extra: dict | None = None,
-    memo=None,
+    memo=None, checks: dict[str, dict] | None = None,
 ) -> dict[str, Any] | None:
     context = extra or (
         {"manifests": manifest_dicts} if manifest_dicts is not None else {}
@@ -107,6 +140,10 @@ def inspect_runtime(
         return None
     record = health_of(entry)
     record["auth_guidance"] = entry.describe_auth()
+    if checks is not None:
+        record["login_check"] = checks.get(runtime_id, dict(NOT_CHECKED))
+        record["auth_guidance"] = _login_guidance(runtime_id, record["login_check"],
+                                                  record["auth_guidance"], entry.login_instructions)
     return record
 
 
