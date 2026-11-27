@@ -408,7 +408,8 @@ def test_overview_finds_crashed_and_waiting_sessions_older_than_the_newest_200(c
     # A crashed session is not running; a waiting one both runs and needs you.
     assert [r["session_id"] for r in payload["running"]["items"]] == ["old-waiting"]
     # Expired requests are counted apart: they will be denied, not answered.
-    assert payload["approvals"] == {"waiting": 1, "expired": 1, "sessions": 1}
+    # `live`: asks this dashboard's own broker holds for flows it started (none here).
+    assert payload["approvals"] == {"waiting": 1, "expired": 1, "sessions": 1, "live": 0}
     assert [r["session_id"] for r in payload["recent"]] == [f"bulk-{i:03d}" for i in range(204, 196, -1)]
     # Rows are the read model's, trimmed: verification stays its own field.
     recent = payload["recent"][0]

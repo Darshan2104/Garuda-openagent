@@ -231,6 +231,26 @@ def _starter_detail(request: Request, ctx: DashboardContext, match) -> Response:
     return scenarios.respond(scenarios.detail, request, ctx, match["starter"])
 
 
+# --- flows: every available flow, read only; start reuses the run-flow starter ----
+
+
+@route("GET", r"/api/flows")
+def _flow_library(request: Request, ctx: DashboardContext, _match) -> Response:
+    from garuda.interfaces.web import flows, scenarios
+
+    return scenarios.respond(flows.library, request, ctx)
+
+
+@route("GET", r"/api/flows/(?P<name>[a-z0-9][a-z0-9_-]{0,47})")
+def _flow_detail(request: Request, ctx: DashboardContext, match) -> Response:
+    from garuda.interfaces.web import flows, scenarios
+
+    try:
+        return scenarios.respond(flows.detail, request, ctx, match["name"])
+    except flows.FlowNotFound:
+        return not_found(f"No flow named {match['name']!r} is available in this workspace.")
+
+
 @route("GET", r"/api/scenario-runs/(?P<sid>[^/]+)")
 def _starter_result(request: Request, ctx: DashboardContext, match) -> Response:
     from garuda.interfaces.web import scenarios
@@ -412,7 +432,13 @@ def _inbox(request: Request, ctx: DashboardContext, _match) -> Response:
     metas = ctx.store.list_sessions(limit=None, unreadable=unreadable)
     rows = rows_isolating(lambda chunk: read_model.inbox(ListedStore(ctx.store, chunk), limit=None),
                           metas, unreadable, newest_last=True)
-    return ok({"approvals": rows, "unreadable_sessions": unreadable_report(unreadable)})
+    from garuda.interfaces.web.operation_approvals import live_approvals, mark_covered
+
+    # `approvals` stays the shared read model's list (what `garuda` reads from session
+    # files); `live` adds what this dashboard's own broker holds for the flows it started,
+    # each naming (`covers`) the step session's file request that is the same ask.
+    return ok({"approvals": rows, "live": mark_covered(ctx, live_approvals(ctx), rows),
+               "unreadable_sessions": unreadable_report(unreadable)})
 
 
 @route("GET", r"/api/overview")
@@ -427,7 +453,19 @@ def _overview(request: Request, ctx: DashboardContext, _match) -> Response:
     queue = QueueOnce(queue) if queue is not None else None
     payload = projecting_all(lambda chunk: overview(ListedStore(ctx.store, chunk), queue=queue),
                              metas, unreadable)
-    return ok({**payload, "unreadable_sessions": unreadable_report(unreadable)})
+    from garuda.interfaces.web.operation_approvals import live_approvals, mark_covered
+
+    # Approvals this dashboard's broker holds for flows it started count as waiting too,
+    # once: a step's own file request for the same ask is not counted again.
+    live = mark_covered(ctx, live_approvals(ctx))
+    covered = [c for row in live for c in row.get("covers", [])]
+    approvals = dict(payload.get("approvals") or {})
+    approvals["live"] = len(live)
+    approvals["waiting"] = max(0, approvals.get("waiting", 0) - len(covered)) + len(live)
+    approvals["sessions"] = (max(0, approvals.get("sessions", 0) - len({c["session_id"] for c in covered}))
+                             + len({row["session_id"] for row in live}))
+    return ok({**payload, "approvals": approvals,
+               "unreadable_sessions": unreadable_report(unreadable)})
 
 
 _APPROVAL_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
