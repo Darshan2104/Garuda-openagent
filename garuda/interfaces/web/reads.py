@@ -24,6 +24,7 @@ from garuda.core.events import SUBAGENT_LOG_DIR
 from garuda.core.sessions import SessionStore, validate_session_ref
 from garuda.eval.dashboard import row_from_session_meta
 from garuda.interfaces.web.tail import tail_jsonl
+from garuda.observability import event_log
 from garuda.observability.lanes import ACP_EVENTS_FILE
 from garuda.observability.trajectory import Run, TrajectoryReader
 
@@ -408,7 +409,7 @@ def external_trail(directory: Path, meta: dict[str, Any], *,
     turns: dict[int, dict[str, int]] = {}
     prompts = 0
     try:
-        with path.open(encoding="utf-8") as handle:
+        with event_log.open_trail(directory) as handle:  # every rotated part, in order
             for line in handle:
                 try:
                     event = json.loads(line)

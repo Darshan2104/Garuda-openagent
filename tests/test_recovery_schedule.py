@@ -318,6 +318,46 @@ def test_install_requires_an_official_codex_executable_without_touching_cron(tmp
     assert called is False
 
 
+def _user_roles(roles: dict) -> None:
+    import yaml
+
+    from garuda.config.garuda_yaml import user_path
+
+    user_path().parent.mkdir(parents=True, exist_ok=True)
+    user_path().write_text(yaml.safe_dump({"version": 1, "roles": roles}))
+
+
+def test_claude_only_roles_install_without_a_codex_executable(tmp_path, monkeypatch):
+    """Claude recovery reads Claude's reported reset, so Codex is not needed (#834)."""
+    _user_roles({"coder": {"harness": "claude"},
+                 "reviewer": {"harness": "claude", "write_policy": "no-edits"}})
+    monkeypatch.setattr(recovery_schedule.shutil, "which", lambda name: None)
+    monkeypatch.setenv("PATH", "/claude/bin:/usr/bin")
+    cron = FakeCrontab(missing=True)
+    monkeypatch.setattr(recovery_schedule.subprocess, "run", cron.run)
+
+    result = recovery_schedule.install(tmp_path / "recovery")
+    assert result["installed"] is True and result["enabled"] is True
+    assert result["codex_executable"] is None
+    wrapper = (tmp_path / "recovery" / "quota-recovery.sh").read_text()
+    assert f"PATH={shlex.quote('/claude/bin:/usr/bin')}" in wrapper
+
+
+@pytest.mark.parametrize("roles", [
+    {"coder": {"harness": "codex"}},
+    {"coder": {"harness": "claude", "fallback": [{"harness": "codex"}]}},
+    {},
+])
+def test_a_codex_role_or_no_roles_still_requires_codex(tmp_path, monkeypatch, roles):
+    if roles:
+        _user_roles(roles)
+    monkeypatch.setattr(recovery_schedule.shutil, "which", lambda name: None)
+    monkeypatch.setattr(recovery_schedule.subprocess, "run",
+                        lambda *a, **k: pytest.fail("crontab must not be touched"))
+    with pytest.raises(FileNotFoundError, match="codex"):
+        recovery_schedule.install(tmp_path / "recovery")
+
+
 def test_malformed_managed_block_refuses_to_rewrite_the_crontab(
     tmp_path, monkeypatch, fake_codex
 ):

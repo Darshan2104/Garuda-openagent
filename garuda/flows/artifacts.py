@@ -56,6 +56,16 @@ step's artifact whose file is still a regular, non-symlink file inside the
 flow directory with the recorded digest and size; a workspace-bound one
 (``patch``, ``review``, ``findings``) must also have been produced against the
 workspace as it is now. A forged, escaping, symlinked or stale input refuses.
+
+A ``patch`` is the producing step's short summary of its change (what changed
+and why, the files touched, what the next step should know), never a diff:
+Garuda attaches the diff it computes itself (#820). Parsing is unchanged, so
+any text in the block is accepted. One exception to the staleness rule: a
+later step that may edit, or that plans, may still read an earlier ``patch``
+after the workspace moved on (``moved_on_ok``); the engine then says so in the
+prompt. A read-only step, a reviewer, and every reader of a ``review`` or
+``findings`` still refuse a stale input. References are unchanged, so
+:data:`ARTIFACT_VERSION` is too.
 """
 
 from __future__ import annotations
@@ -76,6 +86,15 @@ ARTIFACT_VERSION = 1
 #: Artifacts that describe the workspace as it was: stale once it changes. A
 #: plan or notes describe the task and stay usable across a retry (C.7).
 WORKSPACE_BOUND = ("patch", "review", "findings")
+#: Workspace-bound types a later writing or planning step may still read after
+#: the workspace moved on, with a note saying so (#820). A ``review`` or
+#: ``findings`` judges one candidate and is never read past it.
+MOVED_ON_READABLE = ("patch",)
+#: What a ``patch`` block holds (#820): Garuda computes the diff itself.
+PATCH_SUMMARY = ("The patch block is a short summary of your change, not a diff: what "
+                 "changed and why, the files you touched, and anything the next step should "
+                 "know. Do not paste a diff; Garuda attaches the real diff it computes from "
+                 "the workspace.")
 #: An opening (group 1: its attributes) or closing envelope tag.
 _TAG = re.compile(r"<garuda-artifact(\s[^<>]*)?>|</garuda-artifact\s*>")
 _TYPE = re.compile(r'\btype\s*=\s*"([a-z]+)"')
@@ -153,8 +172,14 @@ def instructions(outputs: list[str]) -> str:
     if not outputs:
         return ""
     lines = ["End your answer with one block per output, exactly like this:"]
-    lines += [f'<garuda-artifact type="{t}">\n...your {t}...\n</garuda-artifact>' for t in outputs]
+    # Every placeholder starts with "...your <type>": fake runtimes and existing
+    # tooling key on it to find the blocks a prompt asks for.
+    what = {"patch": ": a short summary of your change, not a diff"}
+    lines += [f'<garuda-artifact type="{t}">\n...your {t}{what.get(t, "")}...\n</garuda-artifact>'
+              for t in outputs]
     lines.append("Only these blocks are passed on; any text outside them is not.")
+    if "patch" in outputs:
+        lines.append(PATCH_SUMMARY)
     if "review" in outputs:
         from garuda.flows.review import FORMAT
 
@@ -234,8 +259,13 @@ def store(flow_dir: Path, *, type: str, content: str, step: str, session_id: str
                        workspace_version=workspace_version, path=rel, redactions=redactions)
 
 
-def load(flow_dir: Path, ref: ArtifactRef, *, workspace_version: str | None) -> str:
-    """The artifact's content, after every check in the module docstring."""
+def load(flow_dir: Path, ref: ArtifactRef, *, workspace_version: str | None,
+         moved_on_ok: bool = False) -> str:
+    """The artifact's content, after every check in the module docstring.
+
+    ``moved_on_ok`` lets a ``patch`` through after the workspace moved on
+    (:func:`validate_content`).
+    """
     if type(ref.version) is not int or ref.version != ARTIFACT_VERSION:
         raise ArtifactError("flow.input_version",
                             f"{ref.type} from {ref.producer_step} is artifact version "
@@ -277,17 +307,29 @@ def load(flow_dir: Path, ref: ArtifactRef, *, workspace_version: str | None) -> 
     finally:
         if directory is not None:
             os.close(directory)
-    return validate_content(ref, data, workspace_version=workspace_version)
+    return validate_content(ref, data, workspace_version=workspace_version,
+                            moved_on_ok=moved_on_ok)
 
 
-def validate_content(ref: ArtifactRef, data: bytes, *, workspace_version: str | None) -> str:
-    """The owner's byte/identity checks for granted reads and execution inputs."""
+def moved_on(ref: ArtifactRef, workspace_version: str | None) -> bool:
+    """Whether a workspace-bound artifact was produced against another workspace version."""
+    return ref.type in WORKSPACE_BOUND and ref.workspace_version != workspace_version
+
+
+def validate_content(ref: ArtifactRef, data: bytes, *, workspace_version: str | None,
+                     moved_on_ok: bool = False) -> str:
+    """The owner's byte/identity checks for granted reads and execution inputs.
+
+    ``moved_on_ok`` is for a later writing or planning step only (#820): a
+    :data:`MOVED_ON_READABLE` artifact from before the workspace moved on is
+    then returned, and the caller must say so. Every other check still holds.
+    """
     if type(ref.version) is not int or ref.version != ARTIFACT_VERSION:
         raise ArtifactError("flow.input_version", "unsupported artifact version")
     if len(data) != ref.size or hashlib.sha256(data).hexdigest() != ref.digest:
         raise ArtifactError("flow.input_forged",
                             f"{ref.path} does not match the digest its step recorded")
-    if ref.type in WORKSPACE_BOUND and ref.workspace_version != workspace_version:
+    if moved_on(ref, workspace_version) and not (moved_on_ok and ref.type in MOVED_ON_READABLE):
         raise ArtifactError(
             "flow.input_stale",
             f"{ref.type} from {ref.producer_step} was produced against another version "

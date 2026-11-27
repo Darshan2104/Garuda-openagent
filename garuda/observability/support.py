@@ -11,6 +11,7 @@ from garuda.core.failure_evidence import (
     SessionFailureEvidence,
     _jsonl,
     _safe_text,
+    acp_trail_coverage,
     unavailable_projection,
 )
 from garuda.core.session_records import BoundedSessionRecords, RecordError, parse_json
@@ -85,6 +86,7 @@ def build_support_bundle(session_dir: str | Path, *, metrics: dict | None = None
         raise ValueError("selected support session identity conflicts with its directory")
     native, native_coverage = _jsonl(records, Path(root.name) / "events.jsonl", limit=4 * 1024 * 1024)
     external, external_coverage = _jsonl(records, Path(root.name) / "acp-events.jsonl", limit=4 * 1024 * 1024)
+    external_coverage = acp_trail_coverage(records, root.name, external_coverage)
     native_kinds, native_coverage = _tally(native, native_coverage)
     external_kinds, external_coverage = _tally(external, external_coverage)
     lanes = []
