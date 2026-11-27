@@ -8,8 +8,8 @@ and slot are released and `flow resume` reruns the step under the original
 check. SIGKILL leaves the flow `running` with a dead owner's lease and slot:
 `garuda runtime recover --session <flow>` releases them only once the owner,
 every step worker, every process carrying its lineage and every recorded
-owned container are proved gone, and `flow resume` then names why that flow
-cannot continue.
+owned container are proved gone, and `flow resume` then continues it with the
+next attempt (#856).
 """
 
 from __future__ import annotations
@@ -261,9 +261,14 @@ def test_sigkill_holdings_are_recovered_only_when_everything_is_gone(
     assert meta["flow_stop"]["step"] == "only"
     assert store.load_meta(step_id)["status"] == "failed"
 
-    # The killed attempt never settled, so its check evidence cannot be proved.
+    # The killed attempt's tree is proved gone (its owned worker ran under the
+    # subreaper), so `flow resume` settles it and runs the step again (#856).
+    _shim(_shim_path, "success", _marker)
     rc, out = _cli(workspace, "flow", "resume", flow_id)
-    assert rc == 2 and "flow.interrupted_unsettled" in out and "step only (attempt 1)" in out, out
+    assert rc == 0, out
+    assert [(r["step"], r["attempt"], r["status"], (r.get("stop") or {}).get("code"))
+            for r in engine.receipts(store, flow_id)] == [
+        ("only", 1, "stopped", "flow.interrupted"), ("only", 2, "done", None)]
 
 
 def test_a_live_flow_owner_is_never_recovered(flow_owner, monkeypatch, capsys):

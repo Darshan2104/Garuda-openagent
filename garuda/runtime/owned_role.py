@@ -216,6 +216,8 @@ async def execute_owned_role(request: OwnedRoleRequest, capability, *, approval=
         await control.guard.stop_heartbeat()
         raise
     process = await LinuxProcessSupervisor().prepare()
+    launch_record = _launch_recorder(payload, request, control)
+    launch_record(phase="prepared", supervisor=dict(process.supervisor))
     started = False
     activation_attempted = False
     normal_result = False
@@ -237,8 +239,12 @@ async def execute_owned_role(request: OwnedRoleRequest, capability, *, approval=
             execution = ProcessRequest(command, request.workspace, timeout=request.timeout,
                                        input_data=encode_document({"request": payload, "control": endpoint}),
                                        purpose="role")
+            # Recorded before activation: a crash after this point leaves a record
+            # whose missing command identity keeps the attempt quarantined.
+            launch_record(phase="activating")
             activation_attempted = True
             await control.guard.race(process.activate(execution))
+            launch_record(phase="active", command=dict(process.command) if process.command else None)
             control.activated()
             terminal = await control.guard.race(process.wait())
             result = control.result
@@ -341,6 +347,35 @@ async def execute_owned_role(request: OwnedRoleRequest, capability, *, approval=
         raise StepInterrupted(StepResult(
             request.session_id, False, "", closure=closure,
             error="the step was interrupted before it finished")) from exc
+
+
+def _launch_recorder(payload, request, control):
+    """Write the attempt's launch record (:mod:`garuda.flows.launches`) as it advances.
+
+    It names the step session, the subreaper supervisor, the worker command and
+    the parent lease owner with their start identities: what a ``flow resume``
+    after a hard crash of the parent needs to prove the attempt's tree gone.
+    Best effort; a record that could not be written only proves nothing.
+    """
+    import datetime as _dt
+
+    from garuda.core.sessions import SessionStore
+    from garuda.flows import launches
+
+    flow = payload["flow"]
+    try:
+        flow_dir = SessionStore(payload["sessions_root"]).session_dir(flow["flow_session"]) / "flow"
+    except (OSError, ValueError):
+        return lambda **_fields: False
+    base = {"session_id": request.session_id, "backend": "linux-subreaper",
+            "started_at": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
+            "parent_owner": {key: control.parent_snapshot["lease"][key]
+                             for key in ("pid", "identity", "pgid", "epoch")}}
+
+    def record(**fields):
+        return launches.write(flow_dir, flow["step"], flow["attempt"], {**base, **fields})
+
+    return record
 
 
 async def launch_owned_step(launch):

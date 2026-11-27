@@ -274,6 +274,8 @@ async def test_a_rotation_brief_is_built_from_the_progress_file_and_the_steps_re
     assert "STEP PROMPT" not in brief and second.prompt.startswith("STEP PROMPT")
     rows = [json.loads(line) for line in
             (tmp_path / "progress" / "build-2.jsonl").read_text().splitlines()]
+    assert rows[0]["event"] == "start"  # written as the attempt starts (#856)
+    rows = rows[1:]
     assert rows[5]["brief"] == brief and rows[2]["brief"] == first.extra["brief"]
 
 
@@ -485,7 +487,9 @@ def _log(state):
 
 def _progress(store, flow_session, step="build", attempt=1):
     path = engine.flow_dir(store, flow_session) / "progress" / f"{step}-{attempt}.jsonl"
-    return path, [json.loads(line) for line in path.read_text().splitlines()]
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    assert rows[0]["event"] == "start"  # the attempt's first line, before turn 1 ends (#856)
+    return path, rows[1:]
 
 
 def _settled(result, store=None):

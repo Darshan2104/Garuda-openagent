@@ -304,6 +304,35 @@ def transient(error: BaseException | None) -> bool:
     return False
 
 
+def _now() -> str:
+    import datetime as _dt
+
+    return _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds")
+
+
+def read_progress(path) -> list[dict]:
+    """An attempt's turn records (``progress/<step>-<attempt>.jsonl``), oldest first.
+
+    Read only and bounded; the ``start`` line and torn or foreign lines are
+    skipped, and an unreadable file has none.
+    """
+    rows = []
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        with os.fdopen(fd, "rb") as handle:
+            data = handle.read(MAX_PROGRESS_BYTES + 65_536)
+    except OSError:
+        return rows
+    for line in data.decode("utf-8", "replace").splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(row, dict) and type(row.get("turn")) is int:
+            rows.append(row)
+    return rows
+
+
 # --- the brief ----------------------------------------------------------------------------
 
 BriefProvider = Callable[[str, dict], str]
@@ -372,6 +401,11 @@ class StepTurns:
         self._bytes = 0
         self._truncated = False
         self._recording = self.run is not None
+        if self._recording:
+            # The attempt's first line, written as its first turn starts, so a
+            # running step is visible before that turn ends (``flow show``).
+            self._log({"event": "start", "at": _now(), "attempt": spec["attempt"],
+                       "session_id": session_id})
 
     # -- what is recorded ------------------------------------------------------------------
 
@@ -458,7 +492,7 @@ class StepTurns:
         if note:
             self._note = note
         problem = output_problem(report.reply, self.outputs) if report.error is None else None
-        entry = {"turn": report.turn, "session": report.harness_sessions,
+        entry = {"turn": report.turn, "at": _now(), "session": report.harness_sessions,
                  "native_session_id": report.native_session_id,
                  "session_turn": report.session_turn,
                  "stop_reason": report.stop_reason, "approval_denied": report.approval_denied,

@@ -8,6 +8,7 @@ admission; the engine remains the sole acceptance owner.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 import uuid
@@ -315,6 +316,29 @@ class FlowExecutionService:
         if (isinstance(policy, dict) and policy.get("kind") == "flow-verification"
                 and meta.get("flow_verification_phase") is None
                 and meta.get("flow_verification_commit") is None):
+            from garuda.flows import crash as crashed
+
+            # A parent that died hard mid-step: continue only on proof that the
+            # attempt's whole process tree is gone (garuda/flows/crash.py).
+            proof = await asyncio.to_thread(crashed.prove, self.store, flow_session, meta)
+            if proof is not None:
+                if recovery_record is not None:
+                    raise engine.FlowStopped("flow.recovery_claim_invalid",
+                                             "checked flows require an explicit resume")
+                from garuda.flows.verification_records import FlowVerificationRecords
+
+                try:
+                    request = FlowVerificationRecords(
+                        self.store.session_dir(flow_session), flow_session).saved_request(meta)
+                except (StorageError, OSError, ValueError) as exc:
+                    raise engine.FlowStopped(
+                        "flow.verification_reconciliation_required",
+                        "the crashed flow's original check request is missing or changed; "
+                        "checks are never replayed without it") from exc
+                return await self._execute(meta["flow"]["name"], meta["task"], _flow_source(meta),
+                                           flow_session=flow_session,
+                                           checks=tuple(request["checks"]),
+                                           saved_request=request, crash=proof)
             _refuse_unsettled_checked(self.store, flow_session, meta)
         if policy is not None:
             from garuda.flows.verification_records import FlowVerificationRecords
@@ -456,7 +480,7 @@ class FlowExecutionService:
                        checks: tuple[str, ...] | None = None,
                        recovery=None, checked_checkpoint=None,
                        saved_request=None, rerun_checks: bool = False,
-                       isolation: str | None = None) -> FlowExecutionResult:
+                       isolation: str | None = None, crash: dict | None = None) -> FlowExecutionResult:
         from garuda.config_sources import SourceCapture
         from garuda.flows.launch import launch_step
         from garuda.flows.quota_recovery import FlowRecovery
@@ -538,7 +562,8 @@ class FlowExecutionService:
                     raise engine.FlowStopped("flow.verification_reconciliation_required",
                                              "the interrupted flow's checks are no longer selected")
                 return await runner.rerun_checks()
-            return await runner.run(resume=resumed, checked_checkpoint=checked_checkpoint)
+            return await runner.run(resume=resumed, checked_checkpoint=checked_checkpoint,
+                                    **({"crash": crash} if crash is not None else {}))
 
         if resumed:
             execution, worktree = _recorded_worktree(self.store.load_meta(flow_session))
@@ -592,16 +617,19 @@ def _refuse_unsettled_checked(store, flow_session: str, meta: dict) -> None:
         raise engine.FlowStopped(
             "flow.recovery_required",
             f"checked flow {flow_session} is still recorded running; if its process was "
-            f"killed, run `garuda runtime recover --session {flow_session}` first")
+            f"killed, run `garuda runtime recover --session {flow_session}` first, which proves "
+            f"its processes gone and releases the workspace, then `garuda flow resume {flow_session}`")
     if state not in {"interrupted", "quarantined"}:
         return
     pending = engine.unsettled_attempts(store, flow_session)
     if not pending:
         return
     step, attempt = pending[0]
+    name = (meta.get("flow") or {}).get("name") or "NAME"
     raise engine.FlowStopped(
         "flow.interrupted_unsettled",
         f"checked flow {flow_session} was {state} while step {step} (attempt {attempt}) was "
         "running and that attempt never settled, so its check evidence cannot be proved; "
-        "checks are never replayed past it: start a new flow", step=step)
+        "checks are never replayed past it. Next: inspect the workspace (`git status`) and "
+        f"start a new flow: `garuda flow run {name} --check ...`", step=step)
 

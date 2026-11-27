@@ -243,3 +243,19 @@ async def test_a_long_run_step_stopped_by_a_claude_limit_pauses_the_flow(repo, t
     assert receipt["stop"]["cause"]["limit"] == {"resets_at": RESETS_AT,
                                                  "rate_limit_type": "five_hour"}
     assert store.load_meta(result.flow_session)["flow_stop"]["code"] == "flow.quota_wait"
+
+
+async def test_a_quota_wait_shows_as_paused_with_its_reset(claude_flow, capsys, monkeypatch):
+    """#856: `flow show`'s live status names the pause and when the limit resets."""
+    from garuda.core.read_model import flow_in_flight
+    from tests.test_runtime_cli import _main
+
+    first = await claude_flow.service.run("pbr", "ship it", str(claude_flow.repo))
+    sid = first.flow.flow_session
+    live = flow_in_flight(SessionStore(), sid)
+    assert live["paused"]["code"] == "flow.quota_wait" and live["paused"]["step"] == "build"
+    assert live["paused"]["reset_at"] == RESETS_AT
+    assert (live["step"], live["attempt"]) == ("build", 1)
+    code, shown = _main(monkeypatch, capsys, "flow", "show", sid)
+    assert code == 0, shown
+    assert f"paused after step build (attempt 1); the limit resets at {RESET_TEXT}" in shown
