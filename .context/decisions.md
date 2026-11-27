@@ -5952,3 +5952,36 @@ margin, so the worker can still report the step's result. Allow-list decisions
 unchanged. `RoleControlClient.approve(action)` without a deadline still works
 for direct callers.
 
+## 2026-11-27: The live step view judges silence and lists recent turns (#856)
+
+The live status (`read_model.flow_in_flight`) said how long a running step had
+been quiet but not whether that was a problem: a long tool call, a parked
+approval and a stuck harness all looked alike, and the turn history needed the
+whole progress file.
+
+Decided, additively: `flow_in_flight` gains `silence_limit_sec` and
+`tool_silence_limit_sec` (the step session's recorded `limits`, from
+`limits.silence_min` / `tool_silence_min`, #833; `null` when not set),
+`tool_in_flight`, `approval_parked`, `silence_state` (`ok | tool_running |
+approval_parked | warn | over`, `warn` from 80% of the limit that applies now,
+`null` unless a step is running; a parked approval wins, as it never counts as
+silence) and `recent_turns` (the last 10 progress turn records, newest last,
+from the existing bounded tail read). `flow show` prints one `silence:` line
+for a running step.
+
+The tool and approval facts live only in the adapter's memory, so the flow
+persists them for read-only readers: `AcpRuntime.report_status(callback)`
+(opt-in, like `watch_silence`) calls `callback(tool_in_flight,
+approval_parked)` from the turn's drain loop when the pair changes and
+`(False, False)` when the turn ends; it also turns on tool-call tracking
+without a silence limit. `run_acp_task(status_report=...)` passes it on. The
+engine sets `StepLaunch.status_path` only for an ACP flow step with `limits`
+or `long_run`; the in-process launcher and the owned worker (request key
+`status_path`, absolute `*.status.json` only) wrap it in
+`garuda.flows.live_status.StatusWriter`, which writes
+`flow/progress/STEP-ATTEMPT.status.json` (`{tool_in_flight, approval_parked,
+updated_at}`) atomically and owner-only, only on change and at most once a
+second; a change inside that second is written when it is up. `garuda run`,
+the SDK and steps without limits pass nothing, so nothing is tracked or
+written and their behaviour is unchanged. A missing or malformed file reads as
+unknown (`null`).

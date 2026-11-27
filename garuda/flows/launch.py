@@ -95,6 +95,7 @@ async def _acp(launch: StepLaunch) -> StepResult:
             **acp_limits(launch.limits),
             **({"after_turn": hook} if hook is not None else {}),
             **({"session_record": linked} if linked is not None else {}),
+            **status_report(getattr(launch, "status_path", None)),
             **allow_list(launch),
         )
     except RecoveryWaiting as exc:
@@ -138,6 +139,15 @@ def acp_limits(limits) -> dict:
         return {}
     return {**({"deadline_sec": limits.deadline_sec} if limits.deadline_sec else {}),
             **({"silence_watchdog": limits.watchdog} if limits.watchdog else {})}
+
+
+def status_report(status_path) -> dict:
+    """``run_acp_task``'s ``status_report`` for a step's status file (#856); none without one."""
+    if not isinstance(status_path, str) or not status_path:
+        return {}
+    from garuda.flows.live_status import StatusWriter
+
+    return {"status_report": StatusWriter(status_path)}
 
 
 def liveness_of(exc: BaseException, limits) -> str | None:

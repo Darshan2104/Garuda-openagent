@@ -413,6 +413,10 @@ def _in_flight_or_none(store, session_id: str, meta: dict) -> dict | None:
 _PAUSED_STATES = frozenset({"stopped", "interrupted", "quarantined"})
 #: Bound on the part of a progress file the live view reads (its tail).
 _PROGRESS_TAIL = 256 * 1024
+#: How many of the attempt's latest turns the live view lists (``recent_turns``).
+_RECENT_TURNS = 10
+#: The share of a silence limit at which a running step's ``silence_state`` warns.
+_SILENCE_WARN = 0.8
 
 
 def _iso(epoch: float | None) -> str | None:
@@ -489,6 +493,17 @@ def flow_in_flight(store, flow_session: str, meta: dict | None = None) -> dict |
     the flow's process is not known to be gone (``process`` not ``exited`` or
     ``missing``). A paused or stopped flow's view describes its last attempt
     with ``running: false``; so does an open attempt whose process died.
+
+    Silence (#856): ``silence_limit_sec`` and ``tool_silence_limit_sec`` (the
+    step's effective ``limits.silence_min`` / ``tool_silence_min`` in seconds,
+    ``None`` when not set), ``tool_in_flight`` and ``approval_parked`` (from the
+    attempt's status file, :mod:`garuda.flows.live_status`; ``None`` without
+    one) and ``silence_state``: ``ok``, ``tool_running``, ``approval_parked``,
+    ``warn`` (``idle_sec`` at least 80% of the limit that applies now) or
+    ``over``; ``None`` unless the attempt is ``running``. ``recent_turns`` lists the
+    attempt's last turns, newest last (at most 10, from the progress file's
+    tail): ``turn``, ``harness_session``, ``decision``, ``stop_reason``,
+    ``elapsed_sec``, ``changed_total``, ``context_used`` and ``at``.
     """
     import json
     import time
@@ -546,7 +561,9 @@ def flow_in_flight(store, flow_session: str, meta: dict | None = None) -> dict |
         "continuations": None, "last_turn_at": None, "last_decision": None,
         "last_stop_reason": None, "context_used": None, "context_size": None, "last_note": None,
         "last_activity_at": None, "idle_sec": None, "deadline_at": None, "progress": None,
-        "last_checkpoint": None, "paused": paused}
+        "last_checkpoint": None, "paused": paused, "silence_limit_sec": None,
+        "tool_silence_limit_sec": None, "tool_in_flight": None, "approval_parked": None,
+        "silence_state": None, "recent_turns": []}
     activity = []
     if isinstance(out["step"], str) and type(attempt) is int:
         from garuda.flows import launches
@@ -581,6 +598,14 @@ def flow_in_flight(store, flow_session: str, meta: dict | None = None) -> dict |
             if context:
                 out["context_used"] = context.get("used")
                 out["context_size"] = context.get("size")
+            out["recent_turns"] = [_recent_turn(r) for r in turns[-_RECENT_TURNS:]]
+        if out["running"]:
+            from garuda.flows import live_status
+
+            status = live_status.read(live_status.path(flow_dir, out["step"], attempt))
+            if status is not None:
+                out["tool_in_flight"] = status["tool_in_flight"]
+                out["approval_parked"] = status["approval_parked"]
         if out["session_id"] is not None:
             try:
                 step_dir = Path(store.session_dir(out["session_id"]))
@@ -592,6 +617,11 @@ def flow_in_flight(store, flow_session: str, meta: dict | None = None) -> dict |
                     activity.append(_mtime(step_dir / name))
             limits = child.get("limits") if isinstance(child, dict) else None
             deadline = limits.get("deadline_sec") if isinstance(limits, dict) else None
+            for key, field in (("silence_sec", "silence_limit_sec"),
+                               ("tool_silence_sec", "tool_silence_limit_sec")):
+                value = limits.get(key) if isinstance(limits, dict) else None
+                if type(value) in (int, float) and value > 0:
+                    out[field] = value
             started = _epoch(out["started_at"])
             if type(deadline) in (int, float) and started is not None and open_intent is not None:
                 out["deadline_at"] = _iso(started + deadline)
@@ -599,6 +629,8 @@ def flow_in_flight(store, flow_session: str, meta: dict | None = None) -> dict |
     if known and open_intent is not None:
         out["last_activity_at"] = _iso(max(known))
         out["idle_sec"] = max(0, int(time.time() - max(known)))
+    if out["running"]:
+        out["silence_state"] = silence_state(out)
     try:
         from garuda.flows.checkpoints import listing
 
@@ -610,6 +642,45 @@ def flow_in_flight(store, flow_session: str, meta: dict | None = None) -> dict |
         out["last_checkpoint"] = {key: last.get(key) for key in
                                   ("n", "step", "attempt", "label", "at", "pruned")}
     return out
+
+
+def _recent_turn(row: dict) -> dict:
+    """One ``recent_turns`` entry from a progress turn record; unknown facts are None."""
+    def number(value):
+        return value if type(value) in (int, float) else None
+
+    context = row.get("context") if isinstance(row.get("context"), dict) else {}
+    return {"turn": row["turn"],
+            "harness_session": row.get("session") if type(row.get("session")) is int else None,
+            "decision": " ".join(row["decision"].split())[:20] if isinstance(row.get("decision"), str) else None,
+            "stop_reason": (" ".join(row["stop_reason"].split())[:40]
+                            if isinstance(row.get("stop_reason"), str) else None),
+            "elapsed_sec": number(row.get("elapsed_sec")),
+            "changed_total": row.get("changed_total") if type(row.get("changed_total")) is int else None,
+            "context_used": context.get("used") if type(context.get("used")) is int else None,
+            "at": row.get("at") if isinstance(row.get("at"), str) else None}
+
+
+def silence_state(live: dict) -> str:
+    """A running step's silence judgement (#856) from its ``flow_in_flight`` fields.
+
+    A parked approval never counts as silence. Otherwise the limit that applies
+    now is ``tool_silence_limit_sec`` while a tool call is in flight and
+    ``silence_limit_sec`` otherwise: ``over`` at it, ``warn`` from 80% of it,
+    else ``tool_running`` or ``ok``. Without a limit or a known idle time it is
+    ``tool_running`` or ``ok``.
+    """
+    if live.get("approval_parked"):
+        return "approval_parked"
+    tool = bool(live.get("tool_in_flight"))
+    limit = live.get("tool_silence_limit_sec") if tool else live.get("silence_limit_sec")
+    idle = live.get("idle_sec")
+    if type(limit) in (int, float) and limit > 0 and type(idle) in (int, float):
+        if idle >= limit:
+            return "over"
+        if idle >= _SILENCE_WARN * limit:
+            return "warn"
+    return "tool_running" if tool else "ok"
 
 
 def _bounded_fields(record: dict, limits) -> dict:

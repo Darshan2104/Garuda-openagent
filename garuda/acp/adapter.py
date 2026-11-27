@@ -190,6 +190,10 @@ class AcpRuntime:
         self._silence: tuple[float | None, float | None] | None = None
         #: Tool calls of the current turn that have not completed or failed.
         self._calls_in_flight: set[str] = set()
+        #: The opt-in status callback (:meth:`report_status`), flows only; ``None``
+        #: (the default) for every caller that did not ask for one.
+        self._status_report = None
+        self._status_reported: tuple[bool, bool] | None = None
 
     def watch_silence(self, *, silence_sec: float | None,
                       tool_silence_sec: float | None) -> None:
@@ -207,6 +211,31 @@ class AcpRuntime:
             if value is not None and not (isinstance(value, (int, float)) and value > 0):
                 raise ValueError("silence limits must be positive seconds or None")
         self._silence = (silence_sec, tool_silence_sec)
+
+    def report_status(self, callback) -> None:
+        """Tell ``callback(tool_in_flight, approval_parked)`` when either changes (#856); flows only.
+
+        ``tool_in_flight`` is whether a tool call of the current turn is in flight
+        (as the silence watchdog counts it), ``approval_parked`` whether a
+        permission request waits for an answer. It is called from the turn's
+        drain loop when the pair changes, and with ``(False, False)`` when the
+        turn ends. A callback that raises is ignored. Without this call nothing
+        is reported and nothing else changes.
+        """
+        self._status_report = callback
+
+    def _report_status(self, *, ended: bool = False) -> None:
+        if self._status_report is None:
+            return
+        state = (False, False) if ended else (bool(self._calls_in_flight),
+                                              bool(self._pending_approvals))
+        if state == self._status_reported:
+            return
+        self._status_reported = state
+        try:
+            self._status_report(*state)
+        except Exception:  # noqa: BLE001 - observability never fails a turn
+            pass
 
     def _silence_limit(self) -> float | None:
         assert self._silence is not None
@@ -1043,6 +1072,13 @@ class AcpRuntime:
     async def _drain_until_done(self, prompt_task: asyncio.Task) -> Any:
         """Feed notifications as they stream, returning the prompt result."""
         assert self._process is not None and self._normalizer is not None
+        try:
+            return await self._drain_turn(prompt_task)
+        finally:
+            self._report_status(ended=True)
+
+    async def _drain_turn(self, prompt_task: asyncio.Task) -> Any:
+        assert self._process is not None and self._normalizer is not None
         heard = time.monotonic()
         while True:
             done, _ = await asyncio.wait({prompt_task}, timeout=0.05)
@@ -1052,12 +1088,14 @@ class AcpRuntime:
                     continue
                 update = (notification.get("params") or {}).get("update")
                 if update:
-                    if self._silence is not None and isinstance(update, dict):
+                    if ((self._silence is not None or self._status_report is not None)
+                            and isinstance(update, dict)):
                         self._track_tool_call(update)
                     self._absorb(self._normalizer.feed(update))
             requests = self._process.drain_requests()
             for request in requests:
                 await self._on_agent_request(request)
+            self._report_status()
             if done:
                 return prompt_task.result()
             if self._silence is not None:

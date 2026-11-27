@@ -145,6 +145,8 @@ def _prepare_owned_step(launch, *, timeout) -> OwnedRoleRequest:
         payload["limits"] = launch.limits.record()
     if getattr(launch, "turns", None) is not None:  # an ACP step's repair turn / turn loop
         payload["turns"] = launch.turns
+    if getattr(launch, "status_path", None) is not None:  # its live status file (#856)
+        payload["status_path"] = launch.status_path
     if launch.worktree_plan is not None:
         from garuda.interfaces.session_service import plan_meta
 

@@ -722,6 +722,7 @@ async def run_acp_task(
     before_prompt=None,
     silence_watchdog: dict | None = None,
     after_turn=None,
+    status_report=None,
     approvals_allow=(),
 ) -> dict[str, Any]:
     """Run one task on an ACP runtime under the same invariants as native.
@@ -747,6 +748,11 @@ async def run_acp_task(
     (:meth:`AcpRuntime.watch_silence`); the session then settles `failed` with
     ``stop_reason: silence`` and ``error_code: run.silence_exceeded``. Without it,
     as for `garuda run` and the SDK, nothing watches the turn.
+
+    ``status_report`` (flows only, #856) is told whether a tool call is in
+    flight and whether an approval is parked when either changes
+    (:meth:`AcpRuntime.report_status`); a flow step passes its attempt's
+    :class:`garuda.flows.live_status.StatusWriter`. Without it nothing is reported.
 
     ``after_turn`` (flows only) is asked after each turn whether to finish, send
     another prompt in the same harness session, or rotate to a fresh harness
@@ -967,6 +973,8 @@ async def run_acp_task(
             runtime = build_runtime()
             if silence_watchdog:
                 runtime.watch_silence(**silence_watchdog)
+            if status_report is not None and hasattr(runtime, "report_status"):
+                runtime.report_status(status_report)
             if allow_list is not None:
                 runtime.allow_commands(allow_list)
             if consult_host is not None and confinement is None:  # no host socket in a container

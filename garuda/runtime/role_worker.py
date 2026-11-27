@@ -111,6 +111,7 @@ async def _execute(payload, control):
                 **({"deadline_sec": limits["deadline_sec"]} if limits.get("deadline_sec") else {}),
                 **({"silence_watchdog": watchdog} if any(watchdog.values()) else {}),
                 **({"after_turn": hook} if hook is not None else {}),
+                **_status_report(request.get("status_path")),
                 **({"approvals_allow": allow} if (allow := step_allow_list(
                     role, no_edits=request["no_edits"])) else {}))
         except RuntimeStartError:
@@ -141,6 +142,18 @@ async def _execute(payload, control):
                    if not success and isinstance(stop_reason, str) else {}),
                 **_turns(hook)}
     raise ValueError("unsupported role kind")
+
+
+def _status_report(status_path) -> dict:
+    """The step's live status writer (#856): an absolute ``*.status.json`` path only."""
+    import os
+
+    from garuda.flows import launch, live_status
+
+    if not (isinstance(status_path, str) and os.path.isabs(status_path)
+            and status_path.endswith(live_status.SUFFIX)):
+        return {}
+    return launch.status_report(status_path)
 
 
 def _turns(hook) -> dict:

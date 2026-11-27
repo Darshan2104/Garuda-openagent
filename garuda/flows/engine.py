@@ -256,6 +256,9 @@ class StepLaunch:
     #: An ACP step's turn spec (:func:`garuda.flows.long_step.turn_spec`): its one
     #: repair turn (#819) and, with ``long_run``, its turn loop. ``None`` runs one turn.
     turns: dict | None = None
+    #: An ACP step's status file (:mod:`garuda.flows.live_status`, #856), absolute: set
+    #: when the step asked for liveness limits or ``long_run``; ``None`` writes none.
+    status_path: str | None = None
 
 
 @dataclass
@@ -2234,6 +2237,15 @@ class FlowRunner:
             progress_path=str((self.dir / "progress" / f"{step['id']}-{attempt}.jsonl").resolve()),
             baseline_session=base, earlier=earlier, review=review)
 
+    def _status_path(self, step: dict, plan, attempt: int, limits) -> str | None:
+        """An ACP flow step's status file (#856) when it asked for liveness limits or
+        ``long_run`` (which always sets a deadline); None otherwise."""
+        if self.launch_kind != "flow" or plan is None or plan.kind != "acp" or limits is None:
+            return None
+        from garuda.flows import live_status
+
+        return str(live_status.path(self.dir, step["id"], attempt).resolve())
+
     async def _record_step_receipt(self, receipt: dict) -> None:
         step, attempt = receipt["step"], receipt["attempt"]
         await _settled_sync(_write_once, self.dir / "receipts" / _receipt_name(step, attempt), receipt)
@@ -2379,7 +2391,8 @@ class FlowRunner:
                              if self.quota_recovery and plan and plan.runtime_id == "codex"
                              else None),
                 limits=limits,
-                turns=await self._turn_spec(step, plan, attempt, long, done, prompt_extra)))
+                turns=await self._turn_spec(step, plan, attempt, long, done, prompt_extra),
+                status_path=self._status_path(step, plan, attempt, limits)))
         except ConfinementRefused as exc:
             stop = FlowStopped(exc.code, exc.message, step=step["id"])
             # This refusal precedes agent start. Settle the intent so recovery

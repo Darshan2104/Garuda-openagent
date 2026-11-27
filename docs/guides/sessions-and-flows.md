@@ -792,6 +792,7 @@ flow build-and-review: running
   live: step build (attempt 2), turn 7 in 2 harness session(s), 1 rotation(s), 5 continuation(s)
     session 3f0c…; started 2026-11-27T10:00:00+00:00; last activity 42s ago (2026-11-27T11:41:18+00:00)
     last turn: next (stop reason end_turn); context 120000/200000 (60%); deadline 2026-11-27T22:00:00+00:00
+    silence: tool_running (idle 42s of 7200s tool-call limit)
   last checkpoint: 3 (build attempt 1: stopped) at 2026-11-27T10:58:02+00:00
 ```
 
@@ -803,6 +804,19 @@ finished`, and the `--json` view says `"running": false`. `running` is true
 only while the attempt's intent is open and the flow's process is not known
 to be gone.
 
+The `silence:` line judges the step's quiet time against its own limits
+(`limits.silence_min`, and `tool_silence_min` while a tool call runs): `ok`,
+`tool_running` (a tool call is in flight), `approval_parked` (a permission
+request waits for a person, which never counts as silence), `warn` (idle for
+at least 80% of the limit that applies now) or `over` (at or past it; the
+watchdog stops the turn). Whether a tool call is in flight or an approval is
+parked comes from the attempt's status file,
+`flow/progress/STEP-ATTEMPT.status.json`
+(`{"tool_in_flight", "approval_parked", "updated_at"}`): the adapter's silence
+watchdog reports both as they change and the flow writes the file atomically,
+owner-only, at most once a second. It is written only for an ACP step with
+`limits` or `long_run`; `garuda run` and the SDK never write one.
+
 The step session is linked when the attempt launches (the attempt's launch
 record, and `flow_step` in the step session from its creation), and the
 attempt's progress file gets a `start` line as its first turn starts, so a step
@@ -811,7 +825,18 @@ reason (`flow.quota_wait`, `flow.step_deadline`, `flow.step_silent`,
 `flow.step_no_progress`, ...) and then `paused after step STEP (attempt N)`,
 with the reset time for a quota wait.
 `garuda flow show --json` carries the same under `live`, and the dashboard
-reads the same view (`in_flight` in the flow read model).
+reads the same view (`in_flight` in the flow read model). Its fields: `state`,
+`process`, `step`, `attempt`, `started_at`, `session_id`, `harness_sessions`,
+`turns`, `rotations`, `continuations`, `last_turn_at`, `last_decision`,
+`last_stop_reason`, `context_used`, `context_size`, `last_note`,
+`last_activity_at`, `idle_sec`, `deadline_at`, `progress`, `last_checkpoint`,
+`paused`; `silence_limit_sec` and `tool_silence_limit_sec` (the step's
+effective limits in seconds, `null` when not set), `tool_in_flight` and
+`approval_parked` (`null` without a status file), `silence_state` (`null`
+unless a step is running); and `recent_turns`, the attempt's last 10 turns,
+newest last, each with `turn`, `harness_session`, `decision`, `stop_reason`,
+`elapsed_sec`, `changed_total`, `context_used` and `at` (read from the
+progress file's tail, never the whole file). Unknown facts are `null`.
 
 ### The repair turn
 
