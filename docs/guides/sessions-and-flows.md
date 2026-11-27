@@ -1015,6 +1015,43 @@ workspace and start a new flow. Flows without `--check`, dashboard-owned and
 queued flows are unchanged. Quota recovery does not apply: it never runs
 checked flows.
 
+#### Usage limits in checked flows
+
+A Claude step of a checked flow (`--check`) that hits its usage limit stops
+with `flow.quota_wait`, as it does without `--check`, and its stop records the
+reset Claude reported (`stop.cause.limit`). The attempt settles like any other
+checked attempt first: its worker and every descendant are proved closed, its
+evidence is taken and its receipt is written, so the journal keeps exactly two
+entries per attempt. Then the `garuda flow run` process waits until two
+minutes after that reset (the margin quota recovery uses for an unchecked
+flow) and continues the flow by itself, exactly as `garuda flow resume` would:
+the same step runs again as the next attempt, under the original checks, from
+the workspace as the stopped attempt left it, and the flow's checks run at the
+end as usual. The new attempt is told it continues after a quota pause (a
+[long step](#long-steps) gets its resume brief, which names the limit and its
+reset). While it waits the process prints
+
+```text
+[garuda] build (attempt 1): paused on the Claude five_hour limit until 2026-11-26 15:00 UTC; this process waits and then continues the flow under its original checks. If it stops, `garuda flow resume FLOW_ID` continues it.
+```
+
+and `garuda flow show` says `paused on a usage limit until <reset>; resumes
+after the reset`. If the limit is hit again, the process waits again, but only
+for a strictly later reset; a reset that did not move on, a reset already
+passed or no reported reset at all leaves the plain resumable `flow.quota_wait`
+stop, which `garuda flow resume` continues whenever you choose. An attempt
+whose process tree was not proved closed is quarantined as before
+(`flow.cleanup_unproved`) and never continued.
+
+If the waiting process stops (Ctrl-C, SIGTERM, a kill or a reboot), the flow
+stays stopped with `flow.quota_wait` and its resume checkpoint. `garuda flow
+resume FLOW_ID` continues it: before the reset it waits for it first, after
+the reset it runs the step at once. While another process is still waiting for
+the reset, `garuda flow resume` refuses with `flow.quota_wait` and names that
+process. A dashboard-started checked flow also records `flow.quota_wait`, but
+nothing waits for it and its resume keeps the existing `flow.operation_managed`
+refusal.
+
 ### Automatic recovery after Codex quota exhaustion
 
 `garuda recovery enable` opts future eligible flows into hourly quota recovery.
@@ -1065,7 +1102,9 @@ it does not signal a flow already running. A lost dispatch owner becomes
 
 Automatic quota recovery does not support standalone `chat` or `run` sessions,
 check-protected or dashboard-owned flows, parallel groups, steps with
-`retries`, or Claude quota stops. If recovery is enabled, owned/check-protected/dashboard
+`retries`, or Claude quota stops of those flows (a checked flow waits out a Claude
+limit itself: [Usage limits in checked flows](#usage-limits-in-checked-flows)).
+If recovery is enabled, owned/check-protected/dashboard
 flows, parallel flows and flows with `retries` publish an `unsupported` recovery reason in `flow show` and the
 web flow detail rather than silently enrolling. See the
 [automation recipe](../use-cases/automate.md#continue-quota-stopped-codex-and-claude-flows)

@@ -352,8 +352,10 @@ class FlowStartGateway:
 
     def _resumable(self, session_id: str, meta: dict) -> None:
         from garuda.flows.engine import FlowStopped, owned_resume_check
+        from garuda.flows.service import _refuse_beside_waiter
 
         try:
+            _refuse_beside_waiter(meta)
             owned_resume_check(self.store, session_id, meta)
         except FlowStopped as exc:
             if exc.code == "flow.recovery_required" and self._active_session(session_id):

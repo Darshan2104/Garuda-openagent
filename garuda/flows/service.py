@@ -101,10 +101,20 @@ class FlowExecutionService:
     async def run(self, name: str, task: str, workspace: str, *,
                   starter_record: dict | None = None,
                   checks: tuple[str, ...] | None = None,
-                  isolation: str | None = None) -> FlowExecutionResult:
-        """Run a flow; ``isolation`` overrides the flow's own (default ``shared``)."""
-        return await self._execute(name, task, workspace, starter_record=starter_record,
-                                   checks=checks, isolation=isolation)
+                  isolation: str | None = None, wait_for_quota: bool = False,
+                  on_quota_wait=None) -> FlowExecutionResult:
+        """Run a flow; ``isolation`` overrides the flow's own (default ``shared``).
+
+        With ``wait_for_quota`` (the CLI's checked runs), a checked flow stopped by a
+        Claude usage limit waits here for the reported reset and then continues under
+        its original checks (:mod:`garuda.flows.checked_quota`); ``on_quota_wait`` is
+        called with each :class:`~garuda.flows.checked_quota.Pause` before it waits.
+        """
+        outcome = await self._execute(name, task, workspace, starter_record=starter_record,
+                                      checks=checks, isolation=isolation)
+        if not wait_for_quota:
+            return outcome
+        return await self._quota_waits(outcome.flow.flow_session, outcome, on_quota_wait)
 
     async def run_prepared(self, plan, context, *, flow_session: str,
                            operation_binding: dict, on_admitted, approval_handler,
@@ -206,6 +216,9 @@ class FlowExecutionService:
             configuration_sources=context.configuration_sources,
             operation_binding=operation_binding, on_admitted=on_admitted,
             approval_handler=approval_handler, prepared_fallbacks=context.fallback_plans)
+        # Continuing a usage-limit pause: its steps get the quota note or brief, as
+        # a checked CLI flow's continuation after its wait does.
+        runner.quota_continued = (meta.get("flow_stop") or {}).get("code") == engine.QUOTA_WAIT_STOP
         result = await runner.run(
             resume=True,
             checked_checkpoint=meta["flow_resume_checkpoint"] if request is not None else None)
@@ -396,7 +409,65 @@ class FlowExecutionService:
                                      "select at most 16 bounded check commands")
 
     async def resume(self, flow_session: str, *, recovery_record=None,
-                     recovery_root=None) -> FlowExecutionResult:
+                     recovery_root=None, wait_for_quota: bool = False,
+                     on_quota_wait=None) -> FlowExecutionResult:
+        """Resume a stopped flow. With ``wait_for_quota`` (as for :meth:`run`) a checked
+        flow stopped by a Claude usage limit whose reset has not passed waits for it
+        first, and a limit hit again waits again."""
+        if not wait_for_quota or recovery_record is not None:
+            return await self._resume(flow_session, recovery_record=recovery_record,
+                                      recovery_root=recovery_root)
+        return await self._quota_waits(flow_session, None, on_quota_wait)
+
+    async def _quota_waits(self, flow_session: str, outcome: FlowExecutionResult | None,
+                           notify) -> FlowExecutionResult:
+        """Wait out each settled checked usage-limit stop, then continue the flow.
+
+        ``outcome`` is the run that stopped, or ``None`` for a resume not started yet.
+        Each continuation is exactly ``garuda flow resume`` (the settled checkpoint, the
+        original checks), marked as a quota continuation for its prompts. A stop that
+        does not qualify (:func:`checked_quota.pending`) is returned as it is.
+        """
+        from garuda.flows import checked_quota
+
+        after = None
+        while True:
+            if outcome is not None and (outcome.flow.stopped is None
+                                        or outcome.flow.stopped.code != checked_quota.QUOTA_STOP):
+                return outcome
+            if outcome is None:
+                try:
+                    meta = await asyncio.to_thread(self.store.load_meta, flow_session)
+                except Exception:
+                    meta = {}  # the resume itself says why the flow cannot be read
+                _refuse_beside_waiter(meta)
+            pause = await asyncio.to_thread(checked_quota.pending, self.store, flow_session,
+                                            after=after)
+            if pause is None:
+                if outcome is not None:
+                    return outcome
+                # Nothing to wait for (yet): resume now; a limit it hits is waited out.
+                outcome = await self._resume(flow_session)
+                continue
+            if not await checked_quota.wait(self.store, pause, notify):
+                # Stopped while waiting, or continued elsewhere: the settled stop stays.
+                return outcome if outcome is not None else self._recorded(flow_session)
+            after = pause.reset_at
+            outcome = await self._resume(flow_session, quota_continued=True)
+
+    def _recorded(self, flow_session: str) -> FlowExecutionResult:
+        """The flow as recorded, with its recorded stop."""
+        meta = self.store.load_meta(flow_session)
+        stop = meta.get("flow_stop") if isinstance(meta.get("flow_stop"), dict) else None
+        stopped = (engine.FlowStopped(str(stop.get("code")), str(stop.get("message") or ""),
+                                      step=stop.get("step"), cause=stop.get("cause"))
+                   if stop is not None and meta.get("flow_state") != "completed" else None)
+        return FlowExecutionResult(
+            engine.FlowResult(flow_session, engine.receipts(self.store, flow_session), stopped),
+            meta.get("review"), meta.get("state"))
+
+    async def _resume(self, flow_session: str, *, recovery_record=None,
+                      recovery_root=None, quota_continued: bool = False) -> FlowExecutionResult:
         from garuda.runtime.strict_store import StorageError
 
         try:
@@ -414,6 +485,7 @@ class FlowExecutionService:
                 "Resume on its session page, or POST /api/scenarios/resume with "
                 f'{{"operation_id": "<new UUIDv4>", "session_id": "{flow_session}"}} to the '
                 "write-mode dashboard that serves its workspace")
+        _refuse_beside_waiter(meta)
         if (isinstance(policy, dict) and policy.get("kind") == "flow-verification"
                 and meta.get("flow_verification_phase") is None
                 and meta.get("flow_verification_commit") is None):
@@ -490,7 +562,7 @@ class FlowExecutionService:
                                            flow_session=flow_session,
                                            checks=tuple(request["checks"]),
                                            checked_checkpoint=meta["flow_resume_checkpoint"],
-                                           saved_request=request)
+                                           saved_request=request, quota_continued=quota_continued)
             classification = recovery["classification"]
             if classification != "uncertain" and meta.get("flow_verification_phase") is not None:
                 rerun = self._rerun_request(flow_session, meta, records)
@@ -581,7 +653,8 @@ class FlowExecutionService:
                        checks: tuple[str, ...] | None = None,
                        recovery=None, checked_checkpoint=None,
                        saved_request=None, rerun_checks: bool = False,
-                       isolation: str | None = None, crash: dict | None = None) -> FlowExecutionResult:
+                       isolation: str | None = None, crash: dict | None = None,
+                       quota_continued: bool = False) -> FlowExecutionResult:
         from garuda.config_sources import SourceCapture
         from garuda.flows.launch import launch_step
         from garuda.flows.quota_recovery import FlowRecovery
@@ -646,6 +719,9 @@ class FlowExecutionService:
                                        verification_cli_checks=checks if request is not None else None,
                                        configuration_sources=capture.facts(),
                                        execution_workspace=execution, worktree_plan=worktree)
+            # A checked flow continued after its in-process quota wait: its prompts
+            # carry the quota note or brief, as a quota recovery continuation's do.
+            runner.quota_continued = quota_continued
             if recovery is not None:
                 runner.quota_recovery = recovery
             elif not resumed:
@@ -703,6 +779,24 @@ class FlowExecutionService:
                 return await execute(path, flow_session, execution, worktree)
         except WorktreeError as exc:
             raise engine.FlowStopped(exc.code, str(exc)) from exc
+
+
+def _refuse_beside_waiter(meta: dict) -> None:
+    """Refuse a resume while another process waits to continue this flow itself."""
+    from garuda.flows import checked_quota
+
+    waiter = checked_quota.live_waiter(meta)
+    if waiter is None:
+        return
+    from garuda.acp.protocol import reset_time_text
+
+    reset = waiter.get("reset_at")
+    when = reset_time_text(int(reset)) if type(reset) is int else "its reset"
+    raise engine.FlowStopped(
+        checked_quota.QUOTA_STOP,
+        f"process {waiter['owner'].get('pid')} is waiting for the usage limit to reset at "
+        f"{when} and continues this flow then; stop that process to resume it now",
+        step=waiter.get("step") if isinstance(waiter.get("step"), str) else None)
 
 
 def _refuse_unsettled_checked(store, flow_session: str, meta: dict) -> None:

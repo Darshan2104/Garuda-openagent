@@ -77,7 +77,8 @@ LIVENESS_STOPS = {"deadline": DEADLINE_STOP, "silence": SILENT_STOP}
 LIMIT_CAUSE_CODES = frozenset({"AcpUsageLimitError", "harness.limit_reached"})
 #: Harnesses whose limit stop pauses the flow with ``flow.quota_wait`` (#834):
 #: Claude reports when its limit resets. Codex keeps ``flow.step_failed`` and its
-#: proved account read.
+#: proved account read. Checked flows too: their stop is a resumable checked stop,
+#: which the checked run waits out itself (:mod:`garuda.flows.checked_quota`).
 PAUSING_LIMIT_RUNTIMES = frozenset({"claude"})
 #: A long step's own pauses (``long_run``): no measured progress, its turn budget,
 #: or a refusal; ``max_hours`` reuses :data:`DEADLINE_STOP`. Never retried.
@@ -87,7 +88,7 @@ REFUSED_STOP = "flow.step_refused"
 RESUMABLE_CHECKED_STOPS = {"workspace.readonly_unenforced", "flow.step_failed", "flow.output_missing",
                            "flow.artifact_malformed", "flow.artifact_too_large",
                            "flow.review_invalid", INTERRUPTED_STOP, DEADLINE_STOP, SILENT_STOP,
-                           NO_PROGRESS_STOP, MAX_TURNS_STOP, REFUSED_STOP}
+                           NO_PROGRESS_STOP, MAX_TURNS_STOP, REFUSED_STOP, "flow.quota_wait"}
 #: A dashboard-owned flow without checks resumes (through its owned gateway, never
 #: ``garuda flow resume``) only from these settled stops: every resumable checked
 #: stop, and a Claude usage-limit pause (#834) once its reset has passed.
@@ -670,6 +671,9 @@ class FlowRunner:
         self._interrupted_acceptance_receipts = None
         self.quota_recovery = None
         self.quota_recovery_status = None
+        #: A checked flow continued after its in-process quota wait
+        #: (:mod:`garuda.flows.checked_quota`): its steps get the quota note or brief.
+        self.quota_continued = False
 
     def _step_cause(self, outcome: StepResult) -> dict | None:
         """Why a failed step stopped (#749): its session's recorded error code and detail.
@@ -708,10 +712,11 @@ class FlowRunner:
     def _limit_pause(self, plan, cause: dict | None) -> bool:
         """A Claude step stopped by its usage limit pauses the flow (#834).
 
-        Not in a checked flow: its resume contract settles ``flow.step_failed``.
+        Checked flows included: ``flow.quota_wait`` is in :data:`RESUMABLE_CHECKED_STOPS`,
+        so the stop is settled with its resume checkpoint like any resumable checked
+        stop, and the checked run waits out the reset (:mod:`garuda.flows.checked_quota`).
         """
         return (plan is not None and plan.runtime_id in PAUSING_LIMIT_RUNTIMES
-                and self.verification_request is None
                 and (cause or {}).get("code") in LIMIT_CAUSE_CODES)
 
     async def _publish(self, session_id: str, updates: dict, *, terminal: bool = False):
@@ -2494,7 +2499,8 @@ class FlowRunner:
         version_before = await self._version_for_flow()
         sizes: list[dict] = []
         quota_note = None
-        if self.quota_recovery is not None and self.quota_recovery.record is not None:
+        if (self.quota_recovery is not None and self.quota_recovery.record is not None) \
+                or self.quota_continued:
             quota_note = QUOTA_NOTE
         retry_note = None
         if long is not None and prompt_extra == RETRY_NOTE:

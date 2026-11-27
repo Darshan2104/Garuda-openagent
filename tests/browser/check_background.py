@@ -296,9 +296,25 @@ with sync_playwright() as p:
     page.unroute("**/approvals/a3", slow_answer)
     page.screenshot(path=str(SHOTS / "background-inbox-answered.png"))
 
-    # A second approver (the terminal) decides first; this page's click must lose. The poll is
-    # paused so it cannot remove the card between the decision and the click.
+    # The answered card must not come back. The page removes it 1.5 s after the answer and
+    # repaints; that repaint once re-added it from the last poll, as a fresh card with live
+    # buttons, until the next poll dropped it (seen on a real dashboard flow, 2026-11-28). The
+    # poll is stopped so only that repaint can act on the list.
+    channel.publish(ApprovalRequest("a4", "bash({'command': 'make release'})", "terminal", "native",
+                    IDS["waiting"]), ceiling="smart", expires_at=time.time() + 3600)
+    check("another request appears", count_is(page, '#inbox-list .approval-item[data-approval="a4"]', 1))
     page.evaluate("STATE.inbox.poller.stop()")
+    page.locator('.approval-item[data-approval="a4"] button[data-act="allow"]').click()
+    check("the answered card goes away", count_is(page, '.approval-item[data-approval="a4"]', 0, timeout=10_000))
+    page.wait_for_timeout(1500)  # observation window: nothing may repaint it back
+    check("and stays away, with no live buttons, until the next poll",
+          page.locator('.approval-item[data-approval="a4"]').count() == 0,
+          page.locator("#inbox-list").inner_text()[:200])
+    check("the header still counts it as answered",
+          text_contains(page, "#inbox-count", "1 waiting · 1 expired"), page.locator("#inbox-count").inner_text())
+
+    # A second approver (the terminal) decides first; this page's click must lose. The poll is
+    # still paused (above) so it cannot remove the card between the decision and the click.
     live = page.locator('.approval-item[data-approval="a1"]')
     channel.decide("a1", "allow", "terminal", None)
     live.locator('button[data-act="deny"]').click()
@@ -340,6 +356,45 @@ with sync_playwright() as p:
         time.sleep(0.2)
     check("Stop signals the verified worker", not alive(WORKER_PID))
     page.screenshot(path=str(SHOTS / "background-stopped.png"))
+
+    # --- a dashboard operation's settled asks say who decided ---------------------------------
+    # The broker's record (GET /api/approvals `settled`) is the only place a person's denial is
+    # told apart from the reaper's; the session page's operation panel showed none of it.
+    operation = "4b1c7e2a-8d3f-4a6b-9c1d-2e3f4a5b6c7d"
+    settled = [
+        {"ask_id": "k1", "owner": operation, "action": "python -m pytest -q", "approved": False,
+         "decided_by": "you", "summary": "denied by you", "settled_at": "2026-11-28T00:30:20+00:00"},
+        {"ask_id": "k2", "owner": operation, "action": "rm -rf build/ <b>x</b>", "approved": False,
+         "decided_by": "stopped_watching",
+         "summary": "denied: the dashboard stopped watching (no heartbeat for 90s)",
+         "settled_at": "2026-11-28T00:34:02+00:00"},
+    ]
+
+    def fake_operation(route):
+        route.fulfill(json={"operation_id": operation, "phase": "terminal", "status": "terminal",
+                            "session_id": IDS["done"], "outcome": "completed", "reason": None,
+                            "duplicate": False, "flow_state": "completed"})
+
+    def fake_approvals(route):
+        route.fulfill(json={"approvals": [], "settled": settled, "timeout_seconds": 300.0,
+                            "grace_seconds": 90.0})
+
+    page.route(f"**/api/scenario-operations/{operation}", fake_operation)
+    page.route(f"**/api/approvals?owner={operation}", fake_approvals)
+    page.goto(f"{BASE}#/sessions/{IDS['done']}?operation={operation}", wait_until="load")
+    check("the operation panel lists its settled asks",
+          count_is(page, "#session-operation #operation-settled li", 2))
+    mine = page.locator('#operation-settled li[data-decided-by="you"]')
+    reaped = page.locator('#operation-settled li[data-decided-by="stopped_watching"]')
+    check("a person's denial reads as theirs", mine.count() == 1 and "denied by you" in mine.inner_text(),
+          mine.inner_text() if mine.count() else "")
+    check("the reaper's denial is not anyone's decision",
+          reaped.count() == 1 and "stopped watching" in reaped.inner_text()
+          and "by you" not in reaped.inner_text() and reaped.locator("b").count() == 0,
+          reaped.inner_text() if reaped.count() else "")
+    page.screenshot(path=str(SHOTS / "background-operation-settled.png"), full_page=True)
+    page.unroute(f"**/api/scenario-operations/{operation}", fake_operation)
+    page.unroute(f"**/api/approvals?owner={operation}", fake_approvals)
 
     # --- the tail resumes without duplicates or gaps -------------------------------------------
     page.goto(f"{BASE}#/sessions", wait_until="load")
