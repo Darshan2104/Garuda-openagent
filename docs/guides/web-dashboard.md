@@ -210,7 +210,10 @@ equivalent `garuda flow run` command with **Copy**, and what to know before
 starting: a step without `deadline_min` is stopped at the backstop (the actual
 minutes), a flow started here is never resumed (`garuda flow resume` refuses
 it), and stopping the dashboard interrupts it. Editing any field discards the
-preview.
+preview. The task the flow receives starts with a title made of the first words
+of your **Task** (lowercase letters and digits only), so its session is named
+after your task, as the equivalent `garuda flow run` command names it (`implement-the-textkit-package-so`,
+then `-2` for the next one), rather than after the starter's instructions.
 
 **Start flow** appears only in write mode on Linux, for a flow the owned engine
 runs (no step retries, no `isolation` other than `shared`, no parallel group, no
