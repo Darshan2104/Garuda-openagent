@@ -168,6 +168,32 @@ with sync_playwright() as p:
         page.click("#conn-retry")
         settle(page, "() => document.getElementById('conn-banner').hidden", timeout=20000)
 
+    # --- 2b. a polling page waits for the one probe and refreshes in place -------------------
+    # Sessions polls its list; while the dashboard is unreachable only the shell's probe goes
+    # out, and on reconnect the list is polled again without re-mounting the page.
+    page.goto(f"{BASE}#/sessions", wait_until="load")
+    page.wait_for_selector("tr.session-row")
+    page.evaluate("document.getElementById('sessions-table').__mounted = true")
+    requests.clear()
+    page.route("**/api/**", lambda route: route.abort("connectionrefused"))
+    expected_failures["on"] = True
+    down_at = time.monotonic()
+    page.click("#sessions-refresh")
+    text_contains(page, "#conn-banner", "Retrying")
+    page.wait_for_timeout(5000)  # an observation window: count what goes out while down
+    sent = [u for t, u in requests if t >= down_at]
+    others = [u for u in sent if not u.endswith("/api/health")]
+    check("while unreachable a polling page sends nothing but the probe",
+          len(others) <= 1, f"{len(others)} non-probe requests: {others}")
+    page.unroute("**/api/**")
+    expected_failures["on"] = False
+    with page.expect_request(lambda r: "/api/sessions?" in r.url, timeout=20000):
+        page.click("#conn-retry")
+    settle(page, "() => document.getElementById('conn-banner').hidden", timeout=20000)
+    check("the list is polled again in place, not re-mounted",
+          page.evaluate("!!(document.getElementById('sessions-table') || {}).__mounted")
+          and page.locator("tr.session-row").count() > 0)
+
     # --- 5. accessible names, live toast, clickable rows, focus ---------------------------------
     page.goto(f"{BASE}#/runs", wait_until="load")
     page.wait_for_selector("#runs-table")
