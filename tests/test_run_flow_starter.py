@@ -488,6 +488,7 @@ def test_pipeline_long_run_moves_the_deadline_and_backstop(ws):
     coder = replace(context.role_plans["coder"], kind="acp", runtime_id="claude")
     (step,) = project(replace(context, role_plans={"coder": coder}))["steps"]
     assert step["long_run"]["applies"] is True and step["long_run"]["max_hours"] == 2
+    assert step["long_run"]["session_hours"] == 2  # the default 4 is at most max_hours (#885)
     assert step["owned_backstop"]["deadline_min"] == 120.0
     assert step["owned_backstop"]["timeout_min"] == 130.0
 

@@ -389,7 +389,11 @@ def _long_run(value, path) -> dict:
 
 
 def _check_long_run(long_run: dict, path: str) -> None:
-    if long_run.get("session_hours", 0) > long_run.get("max_hours", 24):
+    """An explicit ``session_hours`` longer than the effective ``max_hours`` (its
+    default when unset) is refused; an unset one is clamped to it at run time."""
+    from garuda.flows.long_step import DEFAULTS
+
+    if long_run.get("session_hours", 0) > long_run.get("max_hours", DEFAULTS["max_hours"]):
         _fail(f"{path}.session_hours", "must not be longer than max_hours")
 
 

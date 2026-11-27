@@ -303,6 +303,71 @@ def test_the_worker_log_is_bounded(tmp_path):
     assert len(text) < 200 and text.count("[log cut") == 1
 
 
+def _proc_state(pid):
+    try:
+        text = Path(f"/proc/{pid}/stat").read_text()
+    except FileNotFoundError:
+        return None
+    return text[text.rfind(")") + 2:].split()[0]
+
+
+linux_only = pytest.mark.skipif(not os.path.isfile("/proc/self/stat"), reason="reads /proc")
+
+
+@linux_only
+def test_a_spawned_worker_is_reaped_when_it_exits_without_a_later_spawn(monkeypatch):
+    """#884: a worker that exits never lingers as this process's zombie."""
+    monkeypatch.setattr(bg_sessions, "_worker_argv", lambda sid: [sys.executable, "-c", "pass"])
+    process = bg_sessions._spawn_worker("quick")
+    record = bg_sessions.worker_record(process)
+    assert record["pid"] == record["pgid"] == process.pid
+    assert record["identity"] and record["identity"].startswith("linux:")  # read before any reap
+    deadline = time.monotonic() + 20
+    while _proc_state(process.pid) is not None and time.monotonic() < deadline:
+        time.sleep(0.05)  # never os.wait* here: the test must not reap it itself
+    assert _proc_state(process.pid) is None, f"worker left in state {_proc_state(process.pid)}"
+    with pytest.raises(ChildProcessError):
+        os.waitpid(process.pid, os.WNOHANG)
+
+
+def _zombie():
+    """A detached child that has exited and that nothing has reaped yet."""
+    child = subprocess.Popen([sys.executable, "-c", "pass"], start_new_session=True)
+    _wait(lambda: _proc_state(child.pid) == "Z", "the child to become a zombie", timeout=20)
+    return child
+
+
+@linux_only
+def test_a_zombie_worker_reads_as_exited_not_alive(tmp_path):
+    from garuda.runtime import session_state
+    from garuda.runtime.ownership import owner_liveness
+    from garuda.runtime.recovery import _process_identity
+
+    child = _zombie()
+    try:
+        record = {"pid": child.pid, "identity": _process_identity(child.pid), "pgid": child.pid,
+                  "command": None}
+        assert record["identity"]
+        os.kill(child.pid, 0)  # a zombie still answers this
+        assert owner_liveness(record) is False
+        meta = {"background": True, "state": session_state.queued(), "worker": record}
+        meta["state"] = {**meta["state"], "process": "live", "owner": None}
+        assert effective_state(meta)["process"] == "missing"
+
+        store = SessionStore()
+        store.begin("zombie-worker", task="t", model="m", agent="a", workspace=str(tmp_path))
+        store.update_meta("zombie-worker", {"background": True, "state": session_state.queued(),
+                                            "worker": record})
+        signalled = []
+        message = bg_sessions.cancel(store, "zombie-worker", queue=QueueStore(tmp_path / "q"),
+                                     kill=lambda *a: signalled.append(a))
+        assert message == "the worker is not running" and signalled == []
+        assert store.load_meta("zombie-worker")["status"] == "failed"
+        assert _proc_state(child.pid) == "Z"  # liveness checks never reap someone else's child
+    finally:
+        child.wait()
+
+
 def test_a_worker_that_reexecs_keeps_its_identity():
     """macOS: a launcher records the identity right after spawn (`python3.12`), then the stub
     re-executes into the framework binary (`Python`) with the same pid and start time."""
