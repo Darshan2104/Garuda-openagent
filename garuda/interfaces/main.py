@@ -1693,16 +1693,23 @@ def _flow_live_lines(live: dict | None) -> list[str]:
         return " ".join(str(value).split())[:limit]
 
     lines = []
+    # `running` (absent from an older view: then an unsettled attempt is the live one).
+    running = live.get("running", live.get("paused") is None)
     if live.get("step") and (live.get("started_at") or live.get("session_id")):
-        head = f"  live: step {text(live['step'], 80)}"
+        # Nothing runs for a stopped or paused flow (or a dead process): its last attempt.
+        head = f"  {'live' if running else 'last attempt'}: step {text(live['step'], 80)}"
         if live.get("attempt") is not None:
             head += f" (attempt {live['attempt']})"
+        if not running:
+            head += f", {text(live.get('state') or 'not running', 40)}"
+            if live.get("process"):
+                head += f" (process {text(live['process'], 20)})"
         if live.get("turns") is not None:
             head += (f", turn {live['turns']} in {live.get('harness_sessions') or 1} harness "
                      f"session(s), {live.get('rotations') or 0} rotation(s), "
                      f"{live.get('continuations') or 0} continuation(s)")
         else:
-            head += ", no turn finished yet"
+            head += ", no turn finished yet" if running else ", no turn finished"
         lines.append(head)
         detail = []
         if live.get("session_id"):
@@ -2009,6 +2016,18 @@ def run_flow(args) -> int:
         stop_line = _flow_stop_line(meta.get("flow_stop"))
         if stop_line:
             print(stop_line)
+        from garuda.core.read_model import flow_pause
+
+        pause = flow_pause(meta)
+        if isinstance(pause, dict) and pause.get("kind") == "quota":
+            # A usage-limit pause (a checked flow's limit stop included): when, and what next.
+            from garuda.acp.protocol import reset_time_text
+
+            reset = pause.get("reset_at")
+            print("  paused on a usage limit until "
+                  + (reset_time_text(int(reset)) if type(reset) in (int, float)
+                     else "its reset (time not reported)")
+                  + f"; {pause.get('action')}")
         from garuda.core.read_model import flow_in_flight
 
         for line in _flow_live_lines(flow_in_flight(store, args.flow_session, meta)):
@@ -2041,6 +2060,15 @@ def run_flow(args) -> int:
                 extra += (f"; {receipt['turns']} turns, {receipt.get('rotations', 0)} rotations"
                           + "".join(f", repair {r.get('outcome')}" for r in repairs
                                     if isinstance(r, dict)))
+                if receipt.get("turn_loop_source") == "progress":
+                    # Interrupted: the last known counts, not a finished loop's report.
+                    last = receipt.get("last_turn_decision")
+                    extra += (f", {receipt.get('continuations', 0)} continuations (recovered "
+                              "from progress records"
+                              + (f"; last turn {' '.join(str(last).split())[:20]}"
+                                 + (f" at {receipt['last_turn_at']}"
+                                    if isinstance(receipt.get("last_turn_at"), str) else "")
+                                 if last else "") + ")")
             print(f"  {receipt['step']} (attempt {receipt['attempt']}): {receipt['status']}; "
                   f"outputs: {outs}{extra}")
             if (measured := measure.line(receipt)) is not None:

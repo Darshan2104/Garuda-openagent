@@ -460,7 +460,8 @@ def test_overview_reports_resumable_pauses_and_a_flows_step_in_flight(ctx, store
     assert paused["deadline"]["pause"] == {"kind": "deadline"}
     assert paused["deadline"]["flow"]["stop"]["code"] == engine.DEADLINE_STOP
     assert paused["silent"]["pause"] == {"kind": "silence"}
-    assert paused["quota"]["pause"] == {"kind": "quota"}
+    assert paused["quota"]["pause"] == {"kind": "quota", "resume": "automatic",
+                                        "action": "resumes after the reset"}
     assert paused["quota"]["quota_recovery"]["reason"] == "Codex quota exhausted"
     running = {r["session_id"]: r for r in payload["running"]["items"]}
     assert running["running"]["progress"] == {"step": "review", "attempt": 1, "index": 2, "total": 2}

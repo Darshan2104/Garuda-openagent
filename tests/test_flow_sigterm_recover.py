@@ -38,6 +38,51 @@ FLOW = ("version: 1\nroles:\n  slowpoke: {harness: fakeslow}\n"
         "flows:\n  one:\n    steps:\n    - {id: only, role: slowpoke}\n")
 
 
+LONG = ("version: 1\nroles:\n  slowpoke: {harness: fakeslow}\n"
+        "flows:\n  one:\n    steps:\n    - {id: only, role: slowpoke, outputs: [summary],\n"
+        "       long_run: {max_hours: 1, session_turns: 1}}\n")
+
+#: Two finished turns of a long step's attempt, as its turn loop appends them to the
+#: progress file: one in each of two harness sessions (a rotation, then a continuation).
+TURNS = [{"turn": 1, "at": "2026-11-27T10:05:00+00:00", "session": 1,
+          "native_session_id": "native-1", "decision": "rotate", "reason": "session_turns"},
+         {"turn": 2, "at": "2026-11-27T10:09:00+00:00", "session": 2,
+          "native_session_id": "native-2", "decision": "next", "reason": "continue"}]
+
+
+def append_turns(flow_dir, step="only", attempt=1):
+    """Append TURNS to the attempt's progress file once its `start` line is there."""
+    progress = flow_dir / "progress" / f"{step}-{attempt}.jsonl"
+    deadline = time.monotonic() + 30
+    while not progress.is_file():
+        assert time.monotonic() < deadline, "the attempt never wrote its progress file"
+        time.sleep(0.1)
+    with open(progress, "a") as handle:
+        handle.write("".join(json.dumps(row) + "\n" for row in TURNS))
+
+
+def assert_recovered_counts(store, flow_id, receipt):
+    """The interrupted attempt carries the progress file's last known counts, marked."""
+    from garuda.core import read_model
+
+    assert receipt["status"] == "stopped" and receipt["stop"]["code"] == "flow.interrupted"
+    assert {key: receipt.get(key) for key in (
+        "turns", "rotations", "continuations", "harness_sessions", "last_turn_decision",
+        "last_turn_at", "turn_loop_source", "progress")} == {
+        "turns": 2, "rotations": 1, "continuations": 1,
+        "harness_sessions": ["native-1", "native-2"], "last_turn_decision": "next",
+        "last_turn_at": "2026-11-27T10:09:00+00:00", "turn_loop_source": "progress",
+        "progress": "progress/only-1.jsonl"}
+    view = read_model.flow(store, flow_id)
+    loop = view["steps"][0]["attempts"][0]["turn_loop"]
+    assert loop == {"turns": 2, "rotations": 1, "continuations": 1, "repairs": None,
+                    "repair_outcomes": [], "harness_sessions": 2, "source": "progress",
+                    "last_decision": "next", "last_turn_at": "2026-11-27T10:09:00+00:00"}
+    journal = [(e["event"], e["attempt"]) for e in engine.journal(store, flow_id)
+               if e["attempt"] == 1]
+    assert journal == [("intent", 1), ("receipt", 1)]  # still two entries for the attempt
+
+
 def _shim(path, profile, marker):
     path.write_text(f"#!/bin/sh\ntouch {shlex.quote(str(marker))}\n"
                     f"PYTHONPATH={shlex.quote(str(REPO))} exec "
@@ -192,6 +237,34 @@ def test_sigterm_settles_a_checked_flow_as_a_resumable_interrupted_stop(
     assert [(r["step"], r["attempt"], r["status"]) for r in engine.receipts(store, flow_id)] == [
         ("only", 1, "stopped"), ("only", 2, "done")]
     _holdings_free(workspace)
+
+
+def test_a_sigtermed_long_step_keeps_its_turn_counts_from_progress(flow_owner):
+    from garuda.flows.trajectory import export_records
+
+    gy.user_path().write_text(LONG)
+    start, workspace, _shim_path, _marker = flow_owner
+    proc, flow_id = start()
+    store = SessionStore()
+    append_turns(engine.flow_dir(store, flow_id))
+    proc.send_signal(signal.SIGTERM)
+    out = proc.communicate(timeout=120)[0]
+    assert proc.returncode == 143, out
+
+    (receipt,) = engine.receipts(store, flow_id)
+    assert_recovered_counts(store, flow_id, receipt)
+    exported = [r for r in export_records(store, flow_id) if r["record"] == "attempt"]
+    assert exported[0]["turn_loop"]["source"] == "progress"
+    rc, shown = _cli(workspace, "flow", "show", flow_id)
+    assert rc == 0, shown
+    assert ("only (attempt 1): stopped; outputs: -" in shown
+            and "2 turns, 1 rotations, 1 continuations (recovered from progress records; "
+                "last turn next at 2026-11-27T10:09:00+00:00)" in shown), shown
+    assert "live:" not in shown
+    rc, shown = _cli(workspace, "flow", "show", flow_id, "--json")
+    assert rc == 0, shown
+    loop = json.loads(shown)["attempts"][0]["turn_loop"]
+    assert (loop["turns"], loop["source"]) == (2, "progress")
 
 
 def test_sigkill_holdings_are_recovered_only_when_everything_is_gone(

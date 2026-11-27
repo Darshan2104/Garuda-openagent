@@ -436,8 +436,11 @@ unsettled. Only the new phase's receipts decide the verdict.
 SIGTERM or Ctrl-C during a checked step cancels it. Once the step's worker tree
 (and any confinement container) is proved closed, the attempt is recorded as a
 settled `flow.interrupted` stop with its evidence, so `flow resume` reruns it.
-The lease and slot are released, and `flow run` exits 143 on SIGTERM. A flow
-whose process was killed outright stays `running` until
+The lease and slot are released, and `flow run` exits 143 on SIGTERM. A
+[long step](#long-steps) interrupted this way never reports its turn loop's
+counts, so its receipt carries the last known ones from its progress file
+(see [Interrupted attempts' turn counts](#interrupted-attempts-turn-counts)).
+A flow whose process was killed outright stays `running` until
 `garuda runtime recover --session FLOW_ID` proves its owner, step workers,
 lineage descendants and recorded containers are gone. That command releases the
 lease and slot and records the flow `interrupted` (`flow.owner_lost`). A
@@ -792,6 +795,14 @@ flow build-and-review: running
   last checkpoint: 3 (build attempt 1: stopped) at 2026-11-27T10:58:02+00:00
 ```
 
+Only a running attempt gets the `live:` line. When nothing runs (the flow is
+stopped or paused, or its process is gone) the line describes the last
+attempt instead, with the flow's state and process, for example
+`last attempt: step build (attempt 1), stopped (process exited), no turn
+finished`, and the `--json` view says `"running": false`. `running` is true
+only while the attempt's intent is open and the flow's process is not known
+to be gone.
+
 The step session is linked when the attempt launches (the attempt's launch
 record, and `flow_step` in the step session from its creation), and the
 attempt's progress file gets a `start` line as its first turn starts, so a step
@@ -816,6 +827,22 @@ step that changed files during it still stops with `flow.no_edits_changed`.
 This applies to every ACP flow step with outputs, with or without
 `long_run`; a refusal is never repaired, and native steps and parallel group
 members keep today's single turn.
+
+### Interrupted attempts' turn counts
+
+A long step's loop reports its counts in the receipt when it finishes. An
+attempt settled as `flow.interrupted` (SIGTERM or Ctrl-C, or a crash that
+`flow resume` continued) never finishes its loop, so Garuda recovers the last
+known counts from its progress file, `flow/progress/STEP-ATTEMPT.jsonl`: the
+receipt gets `turns`, `rotations`, `continuations` and `harness_sessions`
+(the native session ids) as a finished loop writes them, plus
+`last_turn_decision`, `last_turn_at` and `turn_loop_source: "progress"`. A turn
+still in flight when it stopped has no record and is not counted. The read
+model's `turn_loop` (and so `flow show --json` and `flow export`) carries
+`source` (`loop` or `progress`), `last_decision` and `last_turn_at`; `flow show`
+and its measure line say the counts were recovered from progress records. The
+receipt's status is still `stopped` and the journal keeps two entries per
+attempt.
 
 ### Reviews
 
@@ -943,7 +970,8 @@ whole process tree is gone:
   names the flow.
 
 Then the killed attempt is recorded as stopped with `flow.interrupted` (its
-receipt carries the proof under `crash`, and the journal keeps exactly two
+receipt carries the proof under `crash`, the last known turn counts of a long
+step recovered from its progress file, and the journal keeps exactly two
 entries per attempt), and the step runs again as the next attempt under the
 original checks. A [long step](#long-steps) starts that attempt with a
 brief built from the killed attempt's progress file, saying that attempt was

@@ -78,6 +78,7 @@ def test_a_running_long_step_shows_its_live_status(repo, monkeypatch, capsys):
         "progress": "progress/build-2.jsonl", "started_at": "2026-11-27T10:00:00+00:00",
         "deadline_at": "2026-11-27T11:00:00+00:00", "paused": None}
     assert live["process"] == "live" and isinstance(live["idle_sec"], int)
+    assert live["running"] is True
     assert live["last_activity_at"]
     # The shared read model carries the same view.
     view = read_model.flow(store, flow_id)["in_flight"]
@@ -143,3 +144,56 @@ def test_a_finished_flow_has_no_live_status(repo):
     store, flow_id, _directory = _flow(repo, state="completed")
     assert read_model.flow_in_flight(store, flow_id) is None
     assert read_model.flow(store, flow_id)["in_flight"] is None
+
+
+def test_a_stopped_flow_prints_its_last_attempt_not_a_live_line(repo, monkeypatch, capsys):
+    """A flow stopped before any turn (e.g. role.option_not_applied) runs nothing: `flow
+    show` says so, as `--json` (`process: exited`, `running: false`) does."""
+    stop = {"code": "role.option_not_applied", "step": "build",
+            "message": "role.option_not_applied: the agent reports mode='acceptEdits'"}
+    store, flow_id, directory = _flow(repo, state="stopped", stop=stop)
+    step_id = str(uuid.uuid4())
+    with open(directory / engine.JOURNAL, "a") as journal:
+        for event in ("intent", "receipt"):
+            journal.write(json.dumps({"event": event, "index": 0, "step": "build", "attempt": 1,
+                                      "at": "2026-11-27T12:49:02+00:00"}) + "\n")
+    launches.write(directory, "build", 1, {"session_id": step_id,
+                                           "started_at": "2026-11-27T12:49:03+00:00"})
+    (directory / "receipts" / "build-1.json").write_text(json.dumps(
+        {"index": 0, "step": "build", "attempt": 1, "status": "stopped", "inputs": [],
+         "outputs": [], "session_id": step_id, "stop": stop}))
+
+    code, out = _main(monkeypatch, capsys, "flow", "show", flow_id, "--workspace", str(repo))
+    assert code == 0, out
+    assert "live:" not in out and "no turn finished yet" not in out
+    assert ("last attempt: step build (attempt 1), stopped (process exited), no turn finished"
+            in out)
+    assert "stopped at step build: role.option_not_applied" in out
+    assert "paused after step build (attempt 1)" in out
+    live = read_model.flow_in_flight(store, flow_id)
+    assert (live["state"], live["process"], live["running"]) == ("stopped", "exited", False)
+    assert live["session_id"] == step_id and live["paused"]["code"] == "role.option_not_applied"
+    code, out = _main(monkeypatch, capsys, "flow", "show", flow_id, "--workspace", str(repo),
+                      "--json")
+    assert code == 0, out
+    assert json.loads(out)["live"]["running"] is False
+
+
+def test_a_checked_usage_limit_stop_prints_a_pause_with_its_reset(repo, monkeypatch, capsys):
+    """`flow show` prints a checked flow's usage-limit stop (`flow.step_failed`, cause
+    `harness.limit_reached`) as a pause until the reset and what to run then."""
+    from garuda.acp.protocol import reset_time_text
+
+    stop = {"code": "flow.step_failed", "step": "build", "message": "usage limit",
+            "cause": {"code": "harness.limit_reached",
+                      "limit": {"resets_at": 1_900_000_000, "rate_limit_type": "five_hour"}}}
+    _store, flow_id, _directory = _flow(repo, state="stopped", stop=stop)
+    code, out = _main(monkeypatch, capsys, "flow", "show", flow_id, "--workspace", str(repo))
+    assert code == 0, out
+    assert (f"paused on a usage limit until {reset_time_text(1_900_000_000)}; run "
+            f"`garuda flow resume {flow_id}` after 2030-03-17T17:46:40+00:00") in out
+    plain = {"code": "flow.step_failed", "step": "build", "message": "it failed"}
+    _store, flow_id, _directory = _flow(repo, state="stopped", stop=plain)
+    code, out = _main(monkeypatch, capsys, "flow", "show", flow_id, "--workspace", str(repo))
+    assert code == 0, out
+    assert "paused on a usage limit" not in out

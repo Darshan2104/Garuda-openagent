@@ -25,7 +25,15 @@ import pytest
 
 from garuda.core.sessions import SessionStore
 from garuda.flows import engine, launches
-from tests.test_flow_sigterm_recover import REPO, _cli, _holdings_free, _shim, _wait_gone
+from tests.test_flow_sigterm_recover import (
+    REPO,
+    _cli,
+    _holdings_free,
+    _shim,
+    _wait_gone,
+    append_turns,
+    assert_recovered_counts,
+)
 from tests.test_flow_sigterm_recover import flow_owner as _flow_owner
 
 flow_owner = _flow_owner  # the fixture
@@ -167,6 +175,28 @@ def test_a_long_step_continues_with_the_interrupted_brief(flow_owner, tmp_path):
         assert prompt.count("attempt 1 stopped (flow.interrupted)") == 1
     receipt = engine.receipts(store, flow_id)[0]
     assert receipt["progress"] == "progress/only-1.jsonl"
+
+
+def test_a_crash_continued_long_step_keeps_its_turn_counts_from_progress(flow_owner):
+    from garuda.config import garuda_yaml as gy
+    from garuda.core import read_model
+
+    gy.user_path().write_text(LONG)
+    start, workspace, shim, marker = flow_owner
+    proc, flow_id = start()
+    store = SessionStore()
+    append_turns(engine.flow_dir(store, flow_id))
+    _kill(proc, store, flow_id)
+
+    _shim(shim, "artifacts", marker)
+    rc, out = _cli(workspace, "flow", "resume", flow_id)
+    assert rc == 0, out
+    first, second = engine.receipts(store, flow_id)
+    assert "crash" in first
+    assert_recovered_counts(store, flow_id, first)
+    assert second["status"] == "done" and second.get("turn_loop_source") is None
+    view = read_model.flow(store, flow_id)
+    assert view["steps"][0]["attempts"][1]["turn_loop"]["source"] == "loop"
 
 
 def test_a_live_owner_is_never_continued(flow_owner):

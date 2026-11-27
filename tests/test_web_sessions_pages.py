@@ -251,7 +251,9 @@ def test_a_long_steps_turn_loop_reaches_the_session_detail(ctx, store):
     flow = body(call(ctx, "/api/sessions/long"))["flow"]
     attempt = flow["steps"][0]["attempts"][0]
     assert attempt["turn_loop"] == {"turns": 7, "rotations": 1, "continuations": 5, "repairs": 1,
-                                    "repair_outcomes": ["repaired"], "harness_sessions": 2}
+                                    "repair_outcomes": ["repaired"], "harness_sessions": 2,
+                                    "source": "loop", "last_decision": None,
+                                    "last_turn_at": None}
     assert flow["review_coverage"] == {"code": "partial"}
     plain = body(call(ctx, "/api/sessions/plain"))["flow"]
     assert plain["steps"][0]["attempts"][0]["turn_loop"] is None  # one plain turn: nothing
@@ -339,7 +341,9 @@ def test_a_usage_limit_pause_reports_when_it_resets(ctx, store):
     paused = {r["session_id"]: r["pause"] for r in
               body(call(ctx, "/api/overview"))["attention"]["paused"]["items"]}
     assert paused["limit"] == {"kind": "quota", "reset_at": 1_900_000_000,
-                               "rate_limit_type": "five_hour"}
+                               "rate_limit_type": "five_hour", "resume": "manual",
+                               "action": "run `garuda flow resume limit` after "
+                                         "2030-03-17T17:46:40+00:00"}
     stop = body(call(ctx, "/api/sessions/limit"))["flow"]["stop"]
     assert stop["limit"] == {"resets_at": 1_900_000_000, "rate_limit_type": "five_hour"}
 
