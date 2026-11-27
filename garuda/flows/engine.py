@@ -1571,6 +1571,7 @@ class FlowRunner:
         _append(self.dir / JOURNAL, {"event": "receipt", "step": step["id"],
                                      "attempt": attempt, "at": _now()})
         await self._touch()
+        await self._checkpoint(step["id"], attempt, receipt["status"])
         if stop is not None:
             raise stop
         return receipt
@@ -1973,6 +1974,24 @@ class FlowRunner:
         await _settled_sync(_append, self.dir / JOURNAL,
                             {"event": "receipt", "step": step, "attempt": attempt, "at": _now()})
         await self._touch()
+        await self._checkpoint(step, attempt, receipt.get("status"))
+
+    async def _checkpoint(self, step: str, attempt: int, status) -> None:
+        """Checkpoint a worktree flow's workspace once an attempt's receipt is durable.
+
+        Best effort: the receipt is the attempt's record, so a refused
+        checkpoint is noted in the checkpoints file and the flow goes on.
+        Shared-checkout flows have no checkpoints.
+        """
+        if self.execution_workspace is None:
+            return
+        from garuda.flows import checkpoints
+
+        try:
+            await _settled_sync(checkpoints.checkpoint, self.dir, self.workspace,
+                                f"{step} attempt {attempt}: {status}", step=step, attempt=attempt)
+        except Exception as exc:  # noqa: BLE001 - never fail a settled attempt on its checkpoint
+            await _settled_sync(checkpoints.record_failure, self.dir, step, attempt, exc)
 
     async def _run_step(self, step: dict, done: list[dict], lease, *, attempt: int = 1,
                         prompt_extra: str | prompting.Findings | prompting.Packet = "",

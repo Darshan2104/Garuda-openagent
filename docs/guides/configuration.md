@@ -662,6 +662,26 @@ outside the terminal. It is whole seconds from 30 to 86400 (24 hours), and the
 default is 300. A project file may only lower it: a project value at or above
 yours (or above the default, if you set none) is ignored.
 
+A flow may set `isolation: worktree` so it runs in its own Git worktree from
+your checkout's `HEAD` instead of in your checkout (`shared`, the default):
+
+```yaml
+flows:
+  overnight:
+    isolation: worktree        # or shared (the default); `auto` is not offered
+    steps:
+      - {id: build, role: coder}
+```
+
+`garuda flow run NAME --isolation worktree` (or `--isolation shared`)
+overrides it for one run.
+Your checkout, its index and `HEAD` stay as they are until you merge the flow's
+work; each step attempt is checkpointed and can be rolled back. A flow without
+the key keeps its definition digest. Dashboard flow starts refuse a flow that
+sets `isolation: worktree` (`flow.isolation_unsupported`); run it with
+`garuda flow run`. See
+[Worktree flows and checkpoints](sessions-and-flows.md#worktree-flows-and-checkpoints).
+
 `harnesses.<id>.handshake_timeout_sec` is how long Garuda waits for an
 external (ACP) harness to answer its startup calls (`initialize`,
 `session/new`, `session/load` and setting role options), in whole seconds
