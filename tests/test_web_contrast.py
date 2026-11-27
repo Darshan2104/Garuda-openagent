@@ -58,6 +58,8 @@ MARKS = (
     ("accent", "surface", "active tab underline"),
     ("chart-1", "surface", "chart series 1"), ("chart-2", "surface", "chart series 2"),
     ("chart-5", "surface", "failed bar"),
+    # The live step's context-occupancy meter: the run colour on the meter track.
+    ("st-run-dot", "surface-3", "context meter fill"),
 )
 
 

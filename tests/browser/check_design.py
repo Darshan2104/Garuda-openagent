@@ -35,6 +35,13 @@ ROUTES = ["#/", "#/flows", "#/flows/plan-only", "#/starters", "#/runs", "#/sessi
 TRACES = ["#/runs/b2-rejected-then-passed", "#/runs/j10-external-acp", "#/runs/l12-flow-completed",
           "#/runs/m13-flow-stopped", "#/runs/n14-flow-running"]
 PAUSED = SID + "e2"
+#: The live-step fixtures (check_live_step.py): a flow with a step in flight, a paused flow, a
+#: measured finished flow, and the Overview and Sessions list over them (nested step rows,
+#: folded attention rows, the step-session line), on their own dashboard.
+LIVE_BASE = os.environ.get("GARUDA_CHECK_LIVE_BASE")
+LIVE = "#/sessions/00000000-0000-0000-0000-00000000f00"
+LIVE_ROUTES = [LIVE + "1", LIVE + "3", LIVE + "4", "#/runs/00000000-0000-0000-0000-00000000f001",
+               "#/", "#/sessions"]
 
 LOADED = """() => {
   const view = document.querySelector('#view');
@@ -109,7 +116,8 @@ def main() -> int:
         if not cond:
             problems.append(f"{label} {detail}".strip())
 
-    routes = [(BASE, r) for r in ROUTES] + [(RO_BASE, r) for r in TRACES if RO_BASE]
+    routes = ([(BASE, r) for r in ROUTES] + [(RO_BASE, r) for r in TRACES if RO_BASE]
+              + [(LIVE_BASE, r) for r in LIVE_ROUTES if LIVE_BASE])
     with sync_playwright() as p:
         browser = launch_browser(p)
         for width, height in ((390, 844), (1440, 900)):

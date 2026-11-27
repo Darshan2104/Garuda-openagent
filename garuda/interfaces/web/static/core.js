@@ -397,10 +397,18 @@ function unreadableNote(payload) {
   var info = payload && payload.unreadable_sessions;
   var count = info && typeof info.count === "number" ? info.count : 0;
   if (count < 1) return "";
-  var ids = Array.isArray(info.ids) ? info.ids.join(", ") : "";
-  return '<div class="notice unreadable-note" role="status" title="' + esc(ids) + '">' +
+  var ids = Array.isArray(info.ids) ? info.ids : [];
+  var busy = Array.isArray(info.being_written) ? info.being_written : [];
+  // Each named id links to its session page, which says in one sentence what is wrong.
+  var links = ids.map(function (id) {
+    return '<a class="unreadable-id" href="#/sessions/' + encodeURIComponent(id) + '"><code>' + esc(id) + "</code></a>" +
+      (busy.indexOf(id) >= 0 ? ' <span class="stat-sub">(being written)</span>' : "");
+  }).join(", ");
+  return '<div class="notice unreadable-note" role="status">' +
     esc(count + (count === 1 ? " session" : " sessions") + " could not be read") +
-    '<span class="notice-body"> — left out of this list; the dashboard’s server log says why.</span></div>';
+    '<span class="notice-body"> — left out of this list' + (links ? ": " + links : "") +
+    (count > ids.length ? " and " + esc(count - ids.length) + " more" : "") +
+    ". Open one to see what is wrong with its record.</span></div>";
 }
 
 /* --- lost or missing token --------------------------------------------------

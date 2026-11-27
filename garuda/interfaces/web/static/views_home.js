@@ -127,6 +127,23 @@ function homePatchList(list, items) {
   Object.keys(existing).forEach(function (key) { existing[key].remove(); });
 }
 
+/* A fold row rebuilt by a refresh (its rows changed) reopens if the user had it open. */
+function homeApplyFolds(list) {
+  if (!list) return;
+  if (!list.homeFoldWatch) {
+    list.homeFoldWatch = true;
+    // `toggle` does not bubble: listen in the capture phase.
+    list.addEventListener("toggle", function (event) {
+      var fold = event.target.getAttribute && event.target.getAttribute("data-fold");
+      if (fold) HOME_FOLDS_OPEN[fold] = event.target.open;
+    }, true);
+  }
+  list.querySelectorAll("details[data-fold]").forEach(function (d) {
+    var want = !!HOME_FOLDS_OPEN[d.getAttribute("data-fold")];
+    if (d.open !== want) d.open = want;
+  });
+}
+
 function homeSet(node, html) {
   if (node && node.homeHtml !== html) { node.innerHTML = html; node.homeHtml = html; }
 }
@@ -166,6 +183,52 @@ function homeError(what, err, retry) {
     '<span class="pill failed">error</span> Could not load ' + esc(what) + ": " +
     esc(err && err.message ? err.message : "unavailable") +
     ' <button type="button" class="btn btn-small" data-home-retry="' + esc(retry) + '">Retry</button></div>';
+}
+
+/* A running flow's step in flight, from the shared live view (`in_flight`): its turn count
+ * and last activity, as recorded; nothing when the reader has neither. */
+function homeLiveText(live) {
+  if (!live || live.paused) return "";
+  var parts = [];
+  if (typeof live.turns === "number") parts.push("turn " + live.turns);
+  if (live.last_activity_at) parts.push("last activity " + fmt.when(live.last_activity_at));
+  return parts.length ? ' · <span class="home-live" data-live="flow">' + esc(parts.join(" · ")) + "</span>" : "";
+}
+
+/* The step sessions a running flow launched, nested under it (linked by their recorded
+ * `flow_step`, or the flow's live view naming them), instead of rows of their own. */
+function homeChildrenHtml(children) {
+  if (!children || !children.length) return "";
+  return '<ul class="home-children">' + children.map(function (c) {
+    var link = c.flow_step || {};
+    return '<li class="home-child" data-session="' + esc(c.session_id) + '">↳ ' + homeSessionLink(c) +
+      ' <span class="pill ' + (c.state && c.state.work === "working" ? "running" : "unknown") + '" data-state="' + esc(c.label) + '">' + esc(c.label) + "</span>" +
+      ' <span class="stat-sub">' + (link.step ? "step " + esc(link.step) + (link.attempt ? " (attempt " + esc(link.attempt) + ")" : "") + " · " : "") +
+      esc(identityText(c)) + "</span></li>";
+  }).join("") + "</ul>";
+}
+
+/* --- needs attention: older rows fold ------------------------------------------------------
+ * Rows older than a day fold into one expandable line per kind, newest first; nothing is
+ * hidden or deleted, and a fold the user opened stays open across refreshes. */
+var HOME_FOLD_AGE_MS = 24 * 3600 * 1000;
+var HOME_FOLDS_OPEN = {};
+var HOME_FOLD_WORDS = { crashed: "crashed session", waiting: "waiting session", paused: "paused flow" };
+
+function homeFoldOld(items, rows, kind) {
+  var now = Date.now();
+  var fresh = [], old = [];
+  rows.forEach(function (pair) {
+    var at = new Date(pair.row.updated_at).getTime();
+    (!isNaN(at) && now - at > HOME_FOLD_AGE_MS ? old : fresh).push(pair.item);
+  });
+  fresh.forEach(function (item) { items.push(item); });
+  if (!old.length) return;
+  var inner = old.map(function (item) { return item.html; }).join("");
+  items.push({ key: "fold:" + kind, html: '<li class="home-row home-fold" data-key="fold:' + esc(kind) + '" data-kind="' + esc(kind) + '">' +
+    '<details class="home-fold-details" data-fold="' + esc(kind) + '"><summary>' +
+    esc(homePlural(old.length, HOME_FOLD_WORDS[kind] || kind)) + " older than a day</summary>" +
+    '<ul class="home-list home-fold-list">' + inner + "</ul></details></li>" });
 }
 
 function homeRow(key, kind, html) {
@@ -247,20 +310,23 @@ function homeSessionAttention(o) {
       (a.expired ? " · " + esc(a.expired) + " expired (they will be denied)" : "") + "</span>" +
       '<span class="home-age">' + (oldest ? "session updated " + esc(fmt.when(oldest)) : "") + "</span>"));
   }
+  var crashedRows = [], waitingRows2 = [], pausedRows = [];
   o.attention.crashed.items.forEach(function (r) {
-    items.push(homeRow("crashed:" + r.session_id, "crashed",
+    crashedRows.push({ row: r, item: homeRow("crashed:" + r.session_id, "crashed",
       '<span class="pill failed">crashed</span> ' + homeSessionLink(r) +
       '<span class="home-what">its worker is gone and the work never finished · ' + esc(identityText(r)) + "</span>" +
-      '<span class="home-age">updated ' + esc(fmt.when(r.updated_at)) + "</span>"));
+      '<span class="home-age">updated ' + esc(fmt.when(r.updated_at)) + "</span>") });
   });
+  homeFoldOld(items, crashedRows, "crashed");
   o.attention.waiting.items.forEach(function (r) {
-    items.push(homeRow("waiting:" + r.session_id, "waiting",
+    waitingRows2.push({ row: r, item: homeRow("waiting:" + r.session_id, "waiting",
       '<span class="pill running">waiting</span> ' + homeSessionLink(r) +
       '<span class="home-what">' + (r.approvals_live
         ? 'waiting on ' + esc(homePlural(r.approvals_live, "approval")) + ' · <a href="#/inbox">answer in Approvals</a>'
         : "waiting; no approval is pending for it") + "</span>" +
-      '<span class="home-age">updated ' + esc(fmt.when(r.updated_at)) + "</span>"));
+      '<span class="home-age">updated ' + esc(fmt.when(r.updated_at)) + "</span>") });
   });
+  homeFoldOld(items, waitingRows2, "waiting");
   o.attention.paused.items.forEach(function (r) {
     var stop = (r.flow && r.flow.stop) || {};
     var q = r.quota_recovery || {};
@@ -275,10 +341,30 @@ function homeSessionAttention(o) {
         (PAUSE_KINDS[r.pause.kind] || "paused") +
         (stop.code ? " (<code>" + esc(stop.code) + "</code>)" : "") +
         " · resume with <code>garuda flow resume</code>";
-    items.push(homeRow("paused:" + r.session_id, "paused",
+    pausedRows.push({ row: r, item: homeRow("paused:" + r.session_id, "paused",
       '<span class="pill paused">paused</span> ' + homeSessionLink(r) +
       '<span class="home-what">' + what + "</span>" +
-      '<span class="home-age">updated ' + esc(fmt.when(r.updated_at)) + "</span>"));
+      '<span class="home-age">updated ' + esc(fmt.when(r.updated_at)) + "</span>") });
+  });
+  homeFoldOld(items, pausedRows, "paused");
+  // A running flow step the live view judges near or past its silence limit (#867): the
+  // reader's own silence_state, never a judgement made here.
+  o.running.items.forEach(function (r) {
+    var live = r.in_flight;
+    if (!live || (live.silence_state !== "warn" && live.silence_state !== "over")) return;
+    var over = live.silence_state === "over";
+    var limit = live.tool_in_flight ? live.tool_silence_limit_sec : live.silence_limit_sec;
+    var quiet = typeof live.idle_sec === "number" ? Math.floor(live.idle_sec / 60) : null;
+    var limitMin = typeof limit === "number" ? Math.round(limit / 60) : null;
+    var what = (live.step ? "step " + esc(live.step) + " · " : "") + (over
+      ? "past its silence limit" + (quiet !== null ? " (quiet for " + esc(quiet) + " min" + (limitMin !== null ? ", limit " + esc(limitMin) + " min" : "") + ")" : "")
+      : "quiet for " + (quiet !== null ? esc(quiet) : "?") + " min" + (limitMin !== null ? ", limit " + esc(limitMin) : "") +
+        " — the watchdog will stop the step");
+    items.push(homeRow("quiet:" + r.session_id, over ? "quiet-over" : "quiet",
+      '<span class="pill' + (over ? " failed" : "") + '" data-state="' + (over ? "failed" : "waiting") + '">' +
+      (over ? "silent" : "quiet") + "</span> " + homeSessionLink(r) +
+      '<span class="home-what">' + what + "</span>" +
+      '<span class="home-age">' + (live.last_activity_at ? "last activity " + esc(fmt.when(live.last_activity_at)) : "") + "</span>"));
   });
   [["crashed", "crashed"], ["waiting", "waiting"], ["paused", "paused"]].forEach(function (pair) {
     var list = o.attention[pair[0]];
@@ -330,6 +416,7 @@ function homeRenderAll(state) {
   // Sessions whose records could not be read are left out of every list here; say so.
   homeSet(el("home-unreadable"), unreadableNote(o));
   homePatchList(el("home-attention-list"), attention);
+  homeApplyFolds(el("home-attention-list"));
   var status = [];
   if (state.overviewError) status.push(homeError("sessions", state.overviewError, "overview"));
   else if (!o) status.push(homeStatus("pending", "Loading sessions…"));
@@ -353,8 +440,8 @@ function homeRenderAll(state) {
       homeSessionLink(r) + (r.kind === "flow" ? ' <span class="pill unknown">flow</span>' : "") +
       ' <span class="pill ' + (r.state && r.state.work === "working" ? "running" : "unknown") + '" data-state="' + esc(r.label) + '">' +
       esc(label) + "</span>" +
-      '<span class="home-what stat-sub">' + esc(identityText(r)) + step + "</span>" +
-      '<span class="home-age">' + esc(homeElapsed(r.created_at)) + "</span>");
+      '<span class="home-what stat-sub">' + esc(identityText(r)) + step + homeLiveText(r.in_flight) + "</span>" +
+      '<span class="home-age">' + esc(homeElapsed(r.created_at)) + "</span>" + homeChildrenHtml(r.children));
   }) : [];
   homePatchList(el("home-running-list"), running);
   el("home-running-count").textContent = o ? String(o.running.total) : "";

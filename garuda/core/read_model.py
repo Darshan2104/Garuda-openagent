@@ -683,6 +683,16 @@ def silence_state(live: dict) -> str:
     return "tool_running" if tool else "ok"
 
 
+def _flow_step(record) -> dict | None:
+    """``{flow_session, step, attempt}`` as a step session recorded them, or ``None``."""
+    if not isinstance(record, dict) or not isinstance(record.get("flow_session"), str):
+        return None
+    step, attempt = record.get("step"), record.get("attempt")
+    return {"flow_session": record["flow_session"][:128],
+            "step": step[:80] if isinstance(step, str) else None,
+            "attempt": attempt if type(attempt) is int else None}
+
+
 def _bounded_fields(record: dict, limits) -> dict:
     return {key: (" ".join(str(record[key]).split())[:limit] if record.get(key) else None)
             for key, limit in limits}
@@ -818,6 +828,9 @@ def session_row(store, meta: dict, *, queue_index: dict | None = None, liveness=
         "queue": queue,
         "worker": {"pid": worker.get("pid")} if worker else None,
         "resumed_from": meta.get("resumed_from"),
+        # A flow step's own session names its flow, step and attempt (recorded at creation,
+        # #859): the one link from a step session back to its flow.
+        "flow_step": _flow_step(meta.get("flow_step")),
         "quota_recovery": meta.get("quota_recovery"),
         "usage": UNKNOWN,
         "cost": UNKNOWN,

@@ -304,6 +304,8 @@ def suite(workdir: Path, shots: Path, *, owned_starts: bool) -> list[str]:
                          extra_args=["--allow-workspace", str(workdir)])
         if "read-only" in bases:  # the run traces come from the inspector's fixtures
             env["GARUDA_CHECK_RO_BASE"] = bases["read-only"]
+        if "live-step" in bases:  # a step in flight, paused and measured flows, folded rows
+            env["GARUDA_CHECK_LIVE_BASE"] = bases["live-step"]
         return run_check("check_design.py", port, shots, env)
 
     # --- data correctness: unknowns, outcomes and one login story across pages --
@@ -389,9 +391,21 @@ def suite(workdir: Path, shots: Path, *, owned_starts: bool) -> list[str]:
         port = dashboard(sessions, "web-unreadable.log")
         return run_check("check_unreadable.py", port, shots)
 
+    # --- a flow's step in flight: the shared live view, rendered ----------------
+    def live_step():
+        sessions = workdir / "live-step-sessions"
+        sessions.mkdir()
+        env = {"GARUDA_GLOBAL_SETTINGS": str(workdir / "live-step-settings.yaml"),
+               "GARUDA_CHECK_SESSIONS": str(sessions)}
+        seed(str(HERE / "check_live_step.py"), "--seed", str(sessions), env=env)
+        port = dashboard(sessions, "web-live-step.log", extra_env=env)
+        bases["live-step"] = f"http://127.0.0.1:{port}/"  # check_design.py covers its routes too
+        return run_check("check_live_step.py", port, shots, env)
+
     sections = [
         ("check_inspector.py", inspector),
         ("check_unreadable.py", unreadable),
+        ("check_live_step.py", live_step),
         ("check_live.py", live),
         ("check_runtimes.py", runtimes),
         # sessions, queue and flows: the shared read model, rendered

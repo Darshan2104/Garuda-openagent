@@ -1115,6 +1115,52 @@ tr.session-row[data-pause] { --row-c: var(--st-pause-dot); }
 @keyframes rise { from { opacity: 0; transform: translate(-50%, 8px); } }
 @keyframes fade { from { opacity: 0; } }
 
+/* --- a flow's step in flight (session page "Step in flight" card and the flow trace page's
+ * In progress card: views_sessions.js flowLiveHtml); nested step rows and folded attention
+ * rows on the Overview; the step-session line. Tokens only. --- */
+.live-step-card { box-shadow: var(--shadow-1), inset 3px 0 0 var(--st-run-dot); }
+.live-step-card[data-state="paused"] { box-shadow: var(--shadow-1), inset 3px 0 0 var(--st-pause-dot); }
+.live-step { display: grid; gap: var(--s3); }
+.live-step-head { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px var(--s2); overflow-wrap: anywhere; }
+.live-facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: var(--s2) var(--s5); margin: 0; }
+.live-fact { display: grid; grid-template-columns: 9.5em minmax(0, 1fr); gap: var(--s2); align-items: baseline; min-width: 0; }
+.live-fact dt { font: 600 11px/1.6 var(--sans); text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+.live-fact dd { margin: 0; min-width: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.live-fact[data-live="note"] { grid-column: 1 / -1; }
+.live-note { margin: 2px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; font-style: italic; }
+.live-note-label { display: block; }
+/* Context occupancy: the run colour on the meter track, ringed so the bar reads at 3:1. */
+.live-meter {
+  appearance: none; width: 120px; height: 10px; vertical-align: middle; margin-right: var(--s1);
+  border: 1px solid var(--border-strong); border-radius: 999px; background: var(--surface-3); overflow: hidden;
+}
+.live-meter::-webkit-meter-bar { background: var(--surface-3); border: 0; border-radius: 999px; height: 100%; }
+.live-meter::-webkit-meter-optimum-value,
+.live-meter::-webkit-meter-suboptimum-value,
+.live-meter::-webkit-meter-even-less-good-value { background: var(--st-run-dot); border-radius: 999px; }
+.live-meter::-moz-meter-bar { background: var(--st-run-dot); border-radius: 999px; }
+.live-foot { margin: 0; }
+.live-paused-reason { margin: 0; overflow-wrap: anywhere; }
+.live-resume { margin: 0; }
+.live-resume code { overflow-wrap: anywhere; }
+.pipe-live-note { margin-top: 4px; }
+.flow-step-link { overflow-wrap: anywhere; }
+.home-children { list-style: none; margin: 2px 0 0; padding: 0 0 0 var(--s4); flex-basis: 100%; }
+.home-child { display: flex; flex-wrap: wrap; align-items: center; gap: 4px var(--s2); padding: 4px 0; font-size: 13px; overflow-wrap: anywhere; }
+.home-child .home-name { font-weight: 500; }
+.home-live { color: var(--text); }
+.home-row.home-fold { display: block; }
+.home-row[data-kind="quiet"] { --row-c: var(--st-wait-dot); }
+.home-row[data-kind="quiet-over"] { --row-c: var(--st-fail-dot); }
+.live-turns-block h3 { margin: var(--s2) 0 6px; }
+.live-turns-more > summary { cursor: pointer; color: var(--muted); font-size: 13px; margin-top: var(--s2); }
+.home-fold-details > summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+.home-fold-list { margin: var(--s2) calc(var(--s5) * -1) 0; }
+.unreadable-id code { overflow-wrap: anywhere; }
+@media (max-width: 480px) {
+  .live-fact { grid-template-columns: minmax(0, 1fr); gap: 0; }
+}
+
 /* ===== media queries */
 
 /* Wide windows: the two long lists keep their header in view while scrolling. */

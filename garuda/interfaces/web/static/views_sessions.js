@@ -178,6 +178,15 @@ function approvalsCellHtml(row) {
     (pending > live ? '<div class="s-sub">' + esc(pending - live) + " expired</div>" : "");
 }
 
+/* A flow step's own session names the flow, step and attempt it ran for (`flow_step`, as
+ * recorded at creation); the list and the Overview link it back to its flow. */
+function flowStepLinkHtml(link) {
+  if (!link || !link.flow_session) return "";
+  return '<div class="s-sub flow-step-link">step ' + esc(link.step || "unknown") +
+    (link.attempt ? " (attempt " + esc(link.attempt) + ")" : "") + ' of flow <a href="#/sessions/' +
+    encodeURIComponent(link.flow_session) + '"><code>' + esc(String(link.flow_session).slice(0, 8)) + "</code></a></div>";
+}
+
 function sessionRowHtml(row) {
   var state = row.state || {};
   var id = String(row.session_id || "");
@@ -193,7 +202,8 @@ function sessionRowHtml(row) {
     (row.origin === "consult" ? ' <span class="pill unknown">consult</span>' : "") +
     ' <a class="session-trace stat-sub" href="#/runs/' + encodeURIComponent(id) + '" title="Trace and metrics on Runs">trace</a>' +
     // Two runs of one task have the same name; the id and the task's first words tell them apart.
-    '<div class="s-sub"><code>' + esc(id.slice(0, 8)) + "</code>" + (task ? " · " + esc(task) : "") + "</div></td>" +
+    '<div class="s-sub"><code>' + esc(id.slice(0, 8)) + "</code>" + (task ? " · " + esc(task) : "") + "</div>" +
+    flowStepLinkHtml(row.flow_step) + "</td>" +
     '<td data-th="State"><span class="pill ' + (row.pause ? "paused" : (row.crashed ? "failed" : (state.work === "working" ? "running" : "unknown"))) +
     '" data-state="' + esc(row.pause ? "paused" : row.label) + '">' +
     esc(row.pause ? "paused" : row.label) + "</span>" + (row.queue ? '<div class="s-sub">' + esc(queueText(row.queue)) + "</div>" : "") + "</td>" +
@@ -479,9 +489,10 @@ function attemptHtml(attempt) {
   );
 }
 
-function stepStatus(step, current) {
+function stepStatus(step, current, paused) {
   var attempts = step.attempts || [];
   if (current && current.step === step.id) return { text: "running · attempt " + current.attempt, cls: "running", key: "current" };
+  if (paused && paused.step === step.id) return { text: "paused", cls: "paused", key: "paused" };
   if (!attempts.length) return { text: "not run yet", cls: "unknown", key: "pending" };
   var last = attempts[attempts.length - 1];
   if (last.status === "done") return { text: "done", cls: "success", key: "done" };
@@ -510,7 +521,9 @@ function flowHtml(flow, progress) {
               reviewCoverageHtml(flow.review_coverage) +
               ' <span class="stat-sub">a review is not verification</span></p>' : "") +
     '<ol class="pipeline steps">' + (flow.steps || []).map(function (step, index) {
-      var status = stepStatus(step, progress);
+      var live = flowInFlight(flow);
+      var current = progress || (live ? { step: live.step, attempt: live.attempt } : null);
+      var status = stepStatus(step, current, flowPaused(flow));
       var attempts = step.attempts || [];
       var last = attempts[attempts.length - 1];
       var durations = attempts.map(function (a) { return a.duration_ms; });
@@ -520,13 +533,21 @@ function flowHtml(flow, progress) {
       return '<li class="pipe-step pipe-' + status.key + '" data-step="' + esc(step.id) + '"' +
         (last && status.key !== "current" ? ' data-status="' + esc(last.status) + '"' : "") +
         (last && last.pause && status.key !== "current" ? ' data-pause="' + esc(last.pause) + '"' : "") +
+        // A step the live view says is paused, before (or beyond) a receipt that says so.
+        (status.key === "paused" && !(last && last.pause)
+          ? ' data-pause="' + esc(String((flowPaused(flow) || {}).code || "paused").replace(/^flow\.(step_)?/, "")) + '"' : "") +
         (status.key === "current" ? ' aria-current="step"' : "") + ">" +
         '<div class="pipe-head"><span class="pipe-no">' + (index + 1) + "</span><strong>" + esc(step.id) + "</strong> " +
         '<span class="pill ' + status.cls + '">' + esc(status.text) + "</span>" +
         (last ? ' <span class="stat-sub">' + esc(ranText(last)) + " · " + attempts.length + " attempt" + (attempts.length === 1 ? "" : "s") +
           " · " + esc(total === null ? "duration unknown" : fmt.duration(total)) + "</span>" : "") + "</div>" +
-        (attempts.length ? '<ul class="attempts">' + attempts.map(attemptHtml).join("") + "</ul>"
-                         : (status.key === "current" ? "" : ' <span class="stat-sub">not run yet</span>')) +
+        (attempts.length ? '<ul class="attempts">' + attempts.map(attemptHtml).join("") + "</ul>" : "") +
+        // The step in flight (or paused) is described in its own block; never "not run yet".
+        (status.key === "current" || status.key === "paused"
+          ? '<div class="stat-sub pipe-live-note">' + (status.key === "current" ? "in flight" : "paused") +
+            (live && live.step === step.id && typeof live.turns === "number" ? " · turn " + esc(live.turns) : "") +
+            " · details in the step block above</div>"
+          : (attempts.length ? "" : ' <span class="stat-sub">not run yet</span>')) +
         (passes.length ? '<div class="pipe-pass stat-sub">passes on: ' + passes.map(function (e) {
           return esc(e.type) + " → " + esc(e.to_step);
         }).join(", ") + "</div>" : "") + "</li>";
@@ -538,6 +559,272 @@ function flowHtml(flow, progress) {
         (e.digest ? ' <code class="stat-sub">' + esc(String(e.digest).slice(0, 8)) + "</code>" : "") + "</li>";
     }).join("") + "</ul>" : "") + "</section>"
   );
+}
+
+/* --- a flow step in flight -------------------------------------------------------------
+ * Everything here is the shared live view, `flow.in_flight` (read_model.flow_in_flight,
+ * also `garuda flow show --json` `live`), as it is: this file reads no journal or progress
+ * file of its own. A value the reader returns as null reads "not recorded", never 0. The
+ * agent's own progress note is its words, shown as escaped text and labelled as such. */
+
+/* The step attempt in flight, or null (no live view, or the flow is paused). */
+function flowInFlight(flow) {
+  var live = flow && flow.in_flight;
+  return live && !live.paused && live.step ? live : null;
+}
+
+function flowPaused(flow) {
+  var live = flow && flow.in_flight;
+  return live && live.paused ? live.paused : null;
+}
+
+var LIVE_DECISIONS = {
+  next: "continued with another turn", rotate: "rotated to a fresh harness session",
+  done: "reported the step done", stop: "stopped the loop", repair: "ran a repair turn"
+};
+var LIVE_STOP_REASONS = {
+  end_turn: "the model ended its turn", max_tokens: "the turn hit its output-token limit",
+  max_turn_requests: "the turn hit its request limit", refusal: "the model refused",
+  cancelled: "the turn was cancelled"
+};
+var LIVE_NOTE_PREVIEW = 160;
+
+/* Step sessions' identity (role → harness/model), read once per session from the sessions
+ * list's own row; the page asks for it when a new step session appears. */
+var LIVE_IDENTITY = {};
+
+function liveWords(map, value) {
+  if (value === null || value === undefined || value === "") return null;
+  return map[value] || String(value);
+}
+
+function liveWhenHtml(iso) {
+  return iso ? relativeTimeHtml(iso) + ' <span class="stat-sub">(' + esc(absoluteTime(iso)) + ")</span>"
+             : '<span class="stat-sub">not recorded</span>';
+}
+
+function liveMinutes(seconds) {
+  if (typeof seconds !== "number" || !isFinite(seconds)) return "unknown";
+  if (seconds < 60) return "under a minute";
+  var minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return minutes + " min";
+  var hours = Math.floor(minutes / 60);
+  return hours + "h " + (minutes % 60) + "m";
+}
+
+function liveContextHtml(used, size) {
+  if (typeof used !== "number") return '<span class="stat-sub">not reported</span>';
+  if (typeof size !== "number" || size <= 0) {
+    return esc(fmt.tokens(used)) + ' <span class="stat-sub">of an unreported window</span>';
+  }
+  var pct = Math.round(100 * used / size);
+  return '<meter class="live-meter" min="0" max="' + esc(size) + '" value="' + esc(Math.min(used, size)) + '"' +
+    ' aria-label="context occupancy">' + esc(pct) + "%</meter> " +
+    esc(fmt.tokens(used) + " of " + fmt.tokens(size) + " (" + pct + "%)");
+}
+
+function liveDeadlineHtml(iso) {
+  if (!iso) return '<span class="stat-sub">no deadline set</span>';
+  var at = new Date(iso).getTime();
+  if (isNaN(at)) return '<span class="stat-sub">not recorded</span>';
+  var left = (at - Date.now()) / 1000;
+  return esc(left > 0 ? liveMinutes(left) + " left" : "passed " + liveMinutes(-left) + " ago") +
+    ' <span class="stat-sub">(' + esc(absoluteTime(iso)) + ")</span>";
+}
+
+function liveCheckpointText(cp) {
+  if (!cp) return null;
+  return "#" + knownText(cp.n) + (cp.label ? " " + cp.label : "") +
+    (cp.step ? " · step " + cp.step + (cp.attempt ? " attempt " + cp.attempt : "") : "") +
+    (cp.at ? " · " + fmt.when(cp.at) : "") + (cp.pruned ? " · pruned" : "");
+}
+
+function liveFact(key, label, html) {
+  return '<div class="live-fact" data-live="' + esc(key) + '"><dt>' + esc(label) + "</dt><dd>" + html + "</dd></div>";
+}
+
+/* --- silence and recent turns (#867): `silence_state`, the limits, `recent_turns` ------------
+ * The reader's own judgement, shown as a state; every field may be absent (only ACP flow
+ * steps with limits or long_run report tool and approval state), and then nothing is said. */
+var QUIET_STATES = {
+  ok: { pill: "running", state: "running", word: "within its limit" },
+  tool_running: { pill: "running", state: "running", word: "a tool call is running; the longer tool limit applies" },
+  approval_parked: { pill: "", state: "waiting", word: "waiting on an approval; silence is not counted" },
+  warn: { pill: "", state: "waiting", word: "nearing its silence limit; the watchdog stops the step at the limit" },
+  over: { pill: "failed", state: "failed", word: "past its silence limit" }
+};
+
+/* The silence limit that applies now: the tool limit while a tool call runs. */
+function quietLimit(live) {
+  var limit = live.tool_in_flight ? live.tool_silence_limit_sec : live.silence_limit_sec;
+  return typeof limit === "number" && limit > 0 ? limit : null;
+}
+
+function quietText(live) {
+  var limit = quietLimit(live);
+  if (typeof live.idle_sec !== "number") return limit ? "limit " + liveMinutes(limit) : "";
+  return "quiet for " + liveMinutes(live.idle_sec) + (limit ? " of a " + liveMinutes(limit) + " limit" : "");
+}
+
+function liveQuietFact(live) {
+  var state = live.silence_state;
+  var known = state ? QUIET_STATES[state] : null;
+  if (!state) return "";  // the reader did not judge it: say nothing rather than guess
+  var text = quietText(live);
+  return liveFact("quiet", "Quiet",
+    '<span class="pill ' + esc(known ? known.pill : "unknown") + '" data-state="' + esc(known ? known.state : "unknown") +
+    '" data-silence="' + esc(state) + '">' + esc(state.replace(/_/g, " ")) + "</span> " +
+    (text ? esc(text) + " · " : "") + '<span class="stat-sub">' + esc(known ? known.word : "silence state not recognised") + "</span>");
+}
+
+/* One recent turn in plain words: why the turn ended, then what the loop decided. */
+function turnWords(turn) {
+  var reason = liveWords(LIVE_STOP_REASONS, turn.stop_reason);
+  var decision = liveWords(LIVE_DECISIONS, turn.decision);
+  var words = [reason, decision ? "then " + decision : null].filter(Boolean).join("; ");
+  return words || "not recorded";
+}
+
+function liveTurnRowHtml(turn) {
+  return '<tr data-turn="' + esc(turn.turn) + '"><td data-th="Turn">' + esc(knownText(turn.turn)) + "</td>" +
+    '<td data-th="Harness session">' + esc(knownText(turn.harness_session)) + "</td>" +
+    '<td data-th="What happened">' + esc(turnWords(turn)) + "</td>" +
+    '<td class="num" data-th="Duration">' + esc(typeof turn.elapsed_sec === "number" ? fmt.duration(turn.elapsed_sec * 1000) : "not recorded") + "</td>" +
+    '<td class="num" data-th="Files changed">' + esc(knownText(turn.changed_total)) + "</td>" +
+    '<td class="num" data-th="Context">' + esc(typeof turn.context_used === "number" ? fmt.tokens(turn.context_used) : "not recorded") + "</td></tr>";
+}
+
+function liveTurnsTable(rows, id) {
+  return '<div class="table-wrap"><table class="table table-stack live-turns"' + (id ? ' id="' + id + '"' : "") + '><thead><tr>' +
+    '<th>Turn</th><th>Harness session</th><th>What happened</th><th class="num">Duration</th>' +
+    '<th class="num">Files changed</th><th class="num">Context</th></tr></thead><tbody>' +
+    rows.map(liveTurnRowHtml).join("") + "</tbody></table></div>";
+}
+
+/* The attempt's recent turns, newest first: the last three shown, the rest one click away. */
+function liveTurnsHtml(turns) {
+  if (!Array.isArray(turns) || !turns.length) return "";
+  var newest = turns.slice().reverse();
+  var shown = newest.slice(0, 3), older = newest.slice(3);
+  return '<div class="live-turns-block"><h3>Recent turns</h3>' + liveTurnsTable(shown, "live-turns") +
+    (older.length ? '<details class="live-turns-more" data-key="live-turns-more"><summary>' + esc(older.length) +
+      " earlier turn" + (older.length === 1 ? "" : "s") + "</summary>" + liveTurnsTable(older, "live-turns-older") + "</details>" : "") +
+    "</div>";
+}
+
+/* The paused step: why, when it resumes, and how (only where the engine says it is resumable). */
+function flowPausedBlockHtml(live, flowId) {
+  var paused = live.paused || {};
+  var known = FLOW_STOPS[paused.code] || {};
+  var resume = paused.code === "flow.quota_wait"
+    ? "Quota recovery resumes the flow on its own once the limit resets."
+    : (known.resume ? "Resume with: garuda flow resume " + flowId : "");
+  return '<div class="live-step live-paused" id="flow-live" data-state="paused">' +
+    '<p class="live-paused-reason"><span class="pill paused" data-state="paused">paused</span> <strong>Paused</strong>' +
+    (paused.step || live.step ? " at step " + esc(paused.step || live.step) : "") +
+    (live.attempt ? " (attempt " + esc(live.attempt) + ")" : "") + ": " +
+    esc(paused.message || known.text || paused.code || "no reason recorded") + "</p>" +
+    '<dl class="live-facts">' +
+    (typeof paused.reset_at === "number"
+      ? liveFact("reset_at", "Resets", esc(untilEpochText(paused.reset_at)) + ' <span class="stat-sub">(' +
+          esc(new Date(paused.reset_at * 1000).toLocaleString()) + ")</span>") : "") +
+    (typeof paused.next_check === "number"
+      ? liveFact("next_check", "Next check", esc(untilEpochText(paused.next_check)) + ' <span class="stat-sub">(' +
+          esc(new Date(paused.next_check * 1000).toLocaleString()) + ")</span>") : "") +
+    liveFact("code", "Stop code", "<code>" + esc(paused.code || "unknown") + "</code>") +
+    "</dl>" + (resume ? '<p class="live-resume"><code>' + esc(resume) + "</code></p>" : "") + "</div>";
+}
+
+/* The block for a flow's step in flight, or paused: the session page's "Step in flight" card
+ * and the flow trace page's In progress card draw it through this one function. */
+function flowLiveHtml(row) {
+  var flow = row && row.flow;
+  var live = flow && flow.in_flight;
+  if (!live) {
+    // A running flow whose reader returned nothing: an older flow, or unreadable records.
+    return isActive((row || {}).state) && flow
+      ? '<div class="live-step" id="flow-live" data-state="none"><p class="stat-sub">No live detail ' +
+        "recorded for this step (an older flow, or records the reader could not read).</p></div>"
+      : "";
+  }
+  if (live.paused) return flowPausedBlockHtml(live, row.session_id);
+  var sid = live.session_id;
+  var identity = sid ? LIVE_IDENTITY[sid] : null;
+  var elapsed = live.started_at && !isNaN(new Date(live.started_at).getTime())
+    // Whole minutes: the block's text changes at most once a minute between turns.
+    ? liveMinutes(Math.max(0, (Date.now() - new Date(live.started_at).getTime()) / 1000)) : null;
+  var turns = typeof live.turns === "number"
+    ? esc(live.turns + " turn" + (live.turns === 1 ? "" : "s")) +
+      " · " + esc(knownText(live.rotations) + " rotation" + (live.rotations === 1 ? "" : "s")) +
+      " · " + esc(knownText(live.continuations) + " continuation" + (live.continuations === 1 ? "" : "s")) +
+      (typeof live.harness_sessions === "number" ? ' <span class="stat-sub">in ' +
+        esc(live.harness_sessions) + " harness session" + (live.harness_sessions === 1 ? "" : "s") + "</span>" : "")
+    : '<span class="stat-sub">no turn has finished yet</span>';
+  var decision = liveWords(LIVE_DECISIONS, live.last_decision);
+  var reason = liveWords(LIVE_STOP_REASONS, live.last_stop_reason);
+  var lastTurn = decision || reason
+    ? esc([reason ? "the turn ended because " + reason : null, decision ? "the step " + decision : null]
+        .filter(Boolean).join("; ")) + (live.last_turn_at ? ' <span class="stat-sub">· ' + esc(fmt.when(live.last_turn_at)) + "</span>" : "")
+    : '<span class="stat-sub">not recorded</span>';
+  var activity = live.last_activity_at
+    ? relativeTimeHtml(live.last_activity_at) + (typeof live.idle_sec === "number"
+        ? ' <span class="stat-sub">· idle ' + esc(liveMinutes(live.idle_sec)) + "</span>" : "")
+    : '<span class="stat-sub">not recorded</span>';
+  var note = live.last_note;
+  var noteHtml = note
+    ? liveFact("note", "Agent's note",
+        '<span class="stat-sub live-note-label">the agent\'s own words, not a Garuda fact</span>' +
+        (note.length > LIVE_NOTE_PREVIEW
+          ? '<details class="live-note" data-key="live-note"><summary>' + esc(fmt.truncate(note, LIVE_NOTE_PREVIEW)) +
+            "</summary><p>" + esc(note) + "</p></details>"
+          : '<p class="live-note">' + esc(note) + "</p>"))
+    : "";
+  var checkpoint = liveCheckpointText(live.last_checkpoint);
+  return '<div class="live-step" id="flow-live" data-state="running" data-step="' + esc(live.step) + '">' +
+    '<p class="live-step-head"><span class="pill running" data-state="running">running</span> <strong>' +
+    esc(live.step) + "</strong> · attempt " + esc(knownText(live.attempt)) +
+    " · " + (elapsed ? "running for " + esc(elapsed) : "start not recorded") +
+    (sid ? ' · <a href="#/sessions/' + encodeURIComponent(sid) + '">step session</a> · <a href="#/runs/' +
+      encodeURIComponent(sid) + '">trace</a>' : ' · <span class="stat-sub">step session not created yet</span>') + "</p>" +
+    '<dl class="live-facts">' +
+    liveFact("who", "Runs as", identity ? esc(identity) : '<span class="stat-sub">' +
+      (!sid ? "not recorded yet" : (identity === false ? "reading the step session…"
+        : (identity === "" ? "not recorded" : "shown on the step session's page"))) + "</span>") +
+    liveFact("started", "Started", liveWhenHtml(live.started_at)) +
+    liveFact("turns", "Turns", turns) +
+    liveFact("last_turn", "Last turn", lastTurn) +
+    liveFact("activity", "Last activity", activity) +
+    liveFact("context", "Context occupancy", liveContextHtml(live.context_used, live.context_size)) +
+    liveFact("deadline", "Deadline", liveDeadlineHtml(live.deadline_at)) +
+    liveQuietFact(live) +
+    (checkpoint ? liveFact("checkpoint", "Last checkpoint", esc(checkpoint)) : "") +
+    noteHtml + "</dl>" + liveTurnsHtml(live.recent_turns) +
+    '<p class="stat-sub live-foot">Context occupancy is how full the harness reported its window, not billed ' +
+    "tokens. Recorded by the flow's own progress file and launch record; nothing here is estimated.</p></div>";
+}
+
+/* The session page's card around the block. */
+function sessionLiveStepHtml(row) {
+  var block = flowLiveHtml(row);
+  if (!block) return "";
+  var paused = flowPaused(row.flow);
+  return '<section class="card live-step-card" id="session-live-step" data-state="' + (paused ? "paused" : "running") + '"><h2>' +
+    (paused ? "Step paused" : "Step in flight") + "</h2>" + block + "</section>";
+}
+
+/* Fetch the in-flight step session's identity once (role → harness/model), then repaint. */
+function loadLiveIdentity(page) {
+  var live = page.row && flowInFlight(page.row.flow);
+  var sid = live && live.session_id;
+  if (!sid || sid in LIVE_IDENTITY) return;
+  LIVE_IDENTITY[sid] = false;  // reading
+  api("/api/sessions?limit=1&q=" + encodeURIComponent(sid)).then(function (payload) {
+    var match = (payload.sessions || []).filter(function (r) { return r.session_id === sid; })[0];
+    var role = match && match.role && match.role.name;
+    LIVE_IDENTITY[sid] = match ? (role ? role + " → " : "") + (match.runtime || "native") +
+      (match.model ? "/" + match.model : "") : "";
+    if (STATE.sessionPage === page && page.row) paintHost("session-live-step-host", sessionLiveStepHtml(page.row), { keepSelection: true });
+  }, function () { delete LIVE_IDENTITY[sid]; });
 }
 
 function failureEvidenceHtml(evidence) {
@@ -630,6 +917,10 @@ function reportedUsageHtml(row) {
   var text = null;
   if (flowTotal) {
     if (flowTotal.coverage !== "complete") text = "unknown (usage ledger unreadable)";
+    else if (!flowTotal.step_sessions) {
+      // Step sessions are counted from settled receipts: a step still in flight is not one yet.
+      text = isActive(row.state) ? "none yet — no step has settled" : "no step session recorded";
+    }
     else if (!flowTotal.reporting_sessions) text = "not reported by any of " + flowTotal.step_sessions + " step session(s)";
     else text = (typeof flowTotal.cost_usd === "number" ? "$" + flowTotal.cost_usd.toFixed(4) + (flowTotal.cost_complete ? "" : " (incomplete)") : "cost not reported") +
       " · " + flowTotal.reporting_sessions + " of " + flowTotal.step_sessions + " step sessions reporting" +
@@ -662,6 +953,9 @@ function sessionFailed(row) {
 }
 
 function sessionStreamable(row) {
+  // A flow has no event log of its own: its step in flight has the live block instead of a
+  // panel that would wait forever ("connecting…") on a log that never exists.
+  if (row.kind === "flow") return false;
   return !row.event_log || row.event_log.native || isActive(row.state);
 }
 
@@ -789,6 +1083,7 @@ function sessionOverviewHtml(row) {
       (longer ? '<details data-key="task"><summary>Show the full task</summary><pre class="task-full">' + esc(task) + "</pre></details>" : "") + "</div>"
           : '<p class="stat-sub" id="session-task">Task not recorded.</p>') +
     '<p class="session-line" id="session-identity">' + esc(identityText(row)) + (row.agent ? ' · agent ' + esc(row.agent) : "") + "</p>" +
+    flowStepLinkHtml(row.flow_step) +
     '<p class="session-line stat-sub" id="session-where" title="' + esc(row.workspace || "") + '">' + esc(row.workspace || "workspace not recorded") +
       (row.branch ? " @ " + esc(row.branch) : "") + (row.isolation && row.isolation !== "shared" ? " (" + esc(row.isolation) + ")" : "") +
       (row.queue ? " · queue: " + esc(queueText(row.queue)) : "") + "</p>" +
@@ -858,9 +1153,19 @@ function sessionEvidenceHtml(row) {
 }
 
 /* Replace a host's HTML only when it changed, keeping what the user opened inside it open. */
-function paintHost(id, html) {
+/* Whether the user has text selected inside `node` (a repaint there would drop it). */
+function selectionInside(node) {
+  var selection = typeof window !== "undefined" && window.getSelection ? window.getSelection() : null;
+  return !!(selection && !selection.isCollapsed && selection.anchorNode && node.contains(selection.anchorNode));
+}
+
+function paintHost(id, html, options) {
   var host = el(id);
   if (!host || host.__html === html) return;
+  // In a block that repaints while the user reads it (the step in flight), text being
+  // selected stays put and the next refresh paints the change. Only there: a state change
+  // elsewhere (the label after Stop) must never wait on a stray selection.
+  if (options && options.keepSelection && selectionInside(host)) return;
   var open = {};
   host.querySelectorAll("details[data-key]").forEach(function (d) { open[d.getAttribute("data-key")] = d.open; });
   host.innerHTML = html;
@@ -880,9 +1185,14 @@ function paintSessionPage(page) {
   // Failure evidence leads only when something failed; otherwise it is under the details.
   paintHost("session-failure-host", sessionFailed(row) && row.failure_evidence
     ? '<div class="card">' + failureEvidenceHtml(row.failure_evidence) + "</div>" : "");
+  paintHost("session-live-step-host", sessionLiveStepHtml(row), { keepSelection: true });
   paintHost("session-flow-host", flowHtml(row.flow, row.flow_progress));
+  // What each attempt's receipt measured, and the flow total: the trace page's own table.
+  paintHost("session-measure-host", row.flow && typeof flowMeasuredHtml === "function"
+    ? flowMeasuredHtml(row.flow) : "");
   paintHost("session-usage-host", sessionUsageHtml(row, page.streamable));
   paintHost("session-evidence-body", sessionEvidenceHtml(row));
+  loadLiveIdentity(page);
 }
 
 function sessionDetailView(id) {
@@ -904,7 +1214,8 @@ function sessionDetailView(id) {
       '<div id="session-approvals-host"></div>' +
       '<div id="session-overview-host"></div>' +
       '<div class="session-grid"><div id="session-result-host"></div><div id="session-failure-host"></div>' +
-      '<div id="session-flow-host"></div><div id="starter-result-host"></div>' +
+      '<div id="session-live-step-host"></div>' +
+      '<div id="session-flow-host"></div><div id="session-measure-host"></div><div id="starter-result-host"></div>' +
       (page.streamable ? '<section class="card" id="session-live"><h2>Live events</h2>' +
         '<div class="live-status"><span id="live-events" class="stat-sub" aria-live="polite">connecting…</span> ' +
         '<button type="button" class="btn btn-small" id="live-retry" hidden>Retry now</button></div></section>' : "") +
@@ -929,8 +1240,14 @@ function sessionDetailView(id) {
   }).catch(function (err) {
     if (isSuperseded(err) || STATE.sessionPage !== page) return;
     if (err.status === 401) { render(tokenRequiredPanel()); return; }
-    render('<div class="notice err"><div class="notice-title">Could not load the session</div>' +
-           '<div class="notice-body">' + esc(err.message) + (err.status ? " (" + esc(err.status) + ")" : "") + "</div></div>");
+    // A damaged record is its own answer (typed 409): say what is wrong, in the server's sentence.
+    var unreadable = err.code === "session_unreadable" || err.code === "session_being_written";
+    render('<div class="notice err" id="session-unreadable" data-code="' + esc(err.code || "") + '"><div class="notice-title">' +
+           (err.code === "session_unreadable" ? "This session's record can't be read"
+             : (err.code === "session_being_written" ? "This session is being written; try again in a moment"
+               : "Could not load the session")) + "</div>" +
+           '<div class="notice-body">' + esc(err.message) + (err.status ? " (" + esc(unreadable ? err.code + ", " : "") + esc(err.status) + ")" : "") +
+           '</div><p><a href="#/sessions">All sessions</a></p></div>');
   });
 }
 

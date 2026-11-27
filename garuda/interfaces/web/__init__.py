@@ -158,9 +158,16 @@ async def serve_dashboard(config: DashboardConfig) -> None:
             webbrowser.open(url)
         except Exception:
             logger.debug("Could not open a browser automatically", exc_info=True)
+    # Fill the session cache and the discovery memo off the request path (warmup.py): the
+    # port is already bound, so startup does not wait for it.
+    from garuda.interfaces.web.warmup import Warmer
+
+    warmer = Warmer(ctx)
+    warmer.start()
     try:
         await asyncio.to_thread(server.serve_forever)
     finally:
+        warmer.stop()
         server.shutdown()
         server.server_close()
         if ctx.flow_starts is not None:

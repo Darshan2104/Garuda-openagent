@@ -37,8 +37,13 @@ LIST_CAP = 50
 ROW_FIELDS = (
     "session_id", "name", "kind", "origin", "background", "runtime", "model", "label",
     "crashed", "pause", "state", "verification", "self_check", "queue", "quota_recovery",
-    "created_at", "updated_at",
+    "created_at", "updated_at", "flow_step",
 )
+
+#: What a running flow's row carries from the shared live view (``read_model.flow_in_flight``).
+IN_FLIGHT_FIELDS = ("step", "attempt", "session_id", "turns", "last_activity_at", "idle_sec",
+                    "started_at", "paused", "silence_state", "silence_limit_sec",
+                    "tool_silence_limit_sec", "tool_in_flight", "approval_parked")
 
 # The pause facts live in the shared read model, so the Overview, the session row and
 # `garuda sessions --json` report the same pause. The old names stay importable here.
@@ -71,7 +76,30 @@ def _row(store, meta: dict, queue_index: dict, *, active: bool) -> dict[str, Any
         flow = read_model.flow(store, row["session_id"], meta)
         row["flow"] = {"name": flow.get("name"), "state": flow.get("state"),
                        "stop": flow.get("stop")} if flow else None
+        live = flow.get("in_flight") if flow else None
+        row["in_flight"] = ({k: live.get(k) for k in IN_FLIGHT_FIELDS}
+                            if isinstance(live, dict) else None)
     return row
+
+
+def _nest_steps(running: list[dict]) -> list[dict]:
+    """A running flow's in-flight step session listed under its flow, not beside it.
+
+    Only recorded links: the step session's own ``flow_step.flow_session``, or the flow's
+    live view naming the step session (``in_flight.session_id``). A step session whose flow
+    is not itself listed as running stays a row of its own."""
+    flows = {row["session_id"]: row for row in running if row.get("kind") == "flow"}
+    by_child = {row["in_flight"]["session_id"]: row for row in flows.values()
+                if isinstance(row.get("in_flight"), dict) and row["in_flight"].get("session_id")}
+    top = []
+    for row in running:
+        link = row.get("flow_step") or {}
+        parent = flows.get(link.get("flow_session")) or by_child.get(row["session_id"])
+        if parent is not None and parent is not row:
+            parent.setdefault("children", []).append(row)
+        else:
+            top.append(row)
+    return top
 
 
 def _listing(rows: list[dict]) -> dict[str, Any]:
@@ -124,6 +152,6 @@ def overview(store, *, queue=None, now: float | None = None) -> dict[str, Any]:
         "approvals": approvals,
         "attention": {"crashed": _listing(crashed), "waiting": _listing(waiting),
                       "paused": _listing(paused)},
-        "running": _listing(running),
+        "running": _listing(_nest_steps(running)),
         "recent": recent,
     }
