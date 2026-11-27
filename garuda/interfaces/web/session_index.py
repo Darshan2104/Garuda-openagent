@@ -116,6 +116,8 @@ class CachedSessionStore(SessionStore):
         self._lock = threading.Lock()
         self._entries: dict[str, _Entry] = {}
         self._names: tuple[tuple[int, int], list[str]] | None = None
+        #: ``{session_id: (record key, summarize, value)}`` for :meth:`summaries`.
+        self._summaries: dict[str, tuple] = {}
         #: How many records were parsed off disk; tests assert the cache is used.
         self.reads = 0
 
@@ -125,11 +127,74 @@ class CachedSessionStore(SessionStore):
                       unreadable: list[str] | None = None) -> list[dict]:
         if limit is not None:
             limit = validate_session_limit(limit)
+        scanned = self._scan(unreadable)
+        if scanned is None:
+            return []
+        listable, current, bad = scanned
+        selected = listable if limit is None else listable[:limit]
+        metas = self._materialize(selected, current, bad)
+        with self._lock:
+            self._apply_budget(listable, current)
+        if unreadable is not None:
+            unreadable.extend(bad)
+        return metas
+
+    def summaries(self, summarize, *, unreadable: list[str]) -> list[tuple[str, object]]:
+        """Every listable session, newest first, as ``(session_id, summarize(meta))``.
+
+        For a list that filters and counts over every session but shows one page of it
+        (the Sessions page): ``summarize`` runs only for a record whose cache key changed
+        since it last ran for that record, so a warm request parses no record at all.
+        ``summarize`` must be a pure function of the record; it is memoized by identity,
+        so pass the same (module-level) function each time. Use :meth:`listed` for the
+        records the response then needs in full.
+        """
+        scanned = self._scan(unreadable)
+        if scanned is None:
+            return []
+        listable, current, bad = scanned
+        with self._lock:
+            memo = dict(self._summaries)
+        fresh: dict[str, tuple] = {}
+        out: list[tuple[str, object]] = []
+        for name in listable:
+            key = current[name].key
+            hit = memo.get(name)
+            if hit is not None and hit[0] == key and hit[1] is summarize:
+                fresh[name] = hit
+                out.append((name, hit[2]))
+                continue
+            metas = self._materialize([name], current, bad)
+            if not metas:
+                continue
+            value = summarize(metas[0])
+            fresh[name] = (key, summarize, value)
+            out.append((name, value))
+        with self._lock:
+            self._summaries = fresh
+            self._apply_budget(listable, current)
+        unreadable.extend(bad)
+        return out
+
+    def listed(self, names: list[str], *, unreadable: list[str]) -> list[dict]:
+        """The records of ``names`` (from :meth:`summaries`), as ``list_sessions`` serves them."""
+        with self._lock:
+            current = dict(self._entries)
+        bad: list[str] = []
+        metas = self._materialize([n for n in names if n in current], current, bad)
+        unreadable.extend(bad)
+        return metas
+
+    # --- the cache ------------------------------------------------------------
+
+    def _scan(self, unreadable: list[str] | None):
+        """Stat every session and refresh changed records: ``(listable newest first,
+        entries, unreadable ids)``, or ``None`` when the store does not exist."""
         names = self._listing()
         if names is None:
             with self._lock:
                 self._entries.clear()
-            return []
+            return None
         with self._lock:
             known = dict(self._entries)
         registry = os.path.isdir(self._registry_text)
@@ -147,16 +212,9 @@ class CachedSessionStore(SessionStore):
             raise ValueError(current[malformed[0]].problem)
         listable = [name for name, entry in current.items() if entry.problem is None]
         listable.sort(key=lambda name: current[name].updated_at or "", reverse=True)
-        selected = listable if limit is None else listable[:limit]
-        metas = self._materialize(selected, current, bad)
-        with self._lock:
-            self._apply_budget(listable, current)
         if unreadable is not None:
             unreadable.extend(malformed)
-            unreadable.extend(bad)
-        return metas
-
-    # --- the cache ------------------------------------------------------------
+        return listable, current, bad
 
     def _listing(self) -> list[str] | None:
         """The store root's entries, re-listed only when the root itself changed."""
