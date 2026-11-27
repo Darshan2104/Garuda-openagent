@@ -15,9 +15,22 @@ fixtures (``GARUDA_CHECK_BASE``) and, for the run traces, the inspector's dashbo
 And the paused flow (``overview-flow-deadline``, stopped on a resumable deadline): its header
 says "paused", its stopped step is drawn paused by a data attribute (not ``:has()``, which
 older Firefox lacks), never as an ordinary failure. Fails on any console error.
+
+And four rules that a more specific selector once overrode, so the intended look never showed:
+the running step's marker has its halo; the crashed and queued state filter chips draw a
+diamond and a ring; on a phone the Sessions cards sit on the page, not in a bordered box; and
+session names are 600 weight.
+
+With ``GARUDA_CHECK_SNAPSHOTS=1`` it also screenshots every route and fixture state (the
+paused/replaced flows, the step in flight, approvals, chat, Flows, traces with every turn open,
+the phone menu, the keyboard help, the connection banners, the token page, an empty store) at
+1440x900 and 390x844 in light and dark, animations off, into ``<shots>/snap/``. Under
+``GARUDA_CHECK_CSS_AUDIT`` (``css_audit.py``) each of those is also compared pixel for pixel
+against a baseline stylesheet; that is how a CSS-only refactor proves it changed nothing.
 """
 
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -42,6 +55,15 @@ LIVE_BASE = os.environ.get("GARUDA_CHECK_LIVE_BASE")
 LIVE = "#/sessions/00000000-0000-0000-0000-00000000f00"
 LIVE_ROUTES = [LIVE + "1", LIVE + "3", LIVE + "4", LIVE + "9", "#/sessions/00000000-0000-0000-0000-00000000f00d",
                "#/runs/00000000-0000-0000-0000-00000000f001", "#/", "#/sessions"]
+
+SNAPSHOTS = bool(os.environ.get("GARUDA_CHECK_SNAPSHOTS"))
+#: Extra dashboards the snapshot walk covers when run_checks.py started them.
+FLOWS_BASE = os.environ.get("GARUDA_CHECK_FLOWS_BASE")
+EMPTY_BASE = os.environ.get("GARUDA_CHECK_EMPTY_BASE")
+CHAT_BASE = os.environ.get("GARUDA_CHECK_CHAT_BASE")
+MORE_TRACES = ["#/runs/a1-approved-gate", "#/runs/c3-context-pressure", "#/runs/d4-killed-midrun",
+               "#/runs/e5-rigorous-phases", "#/runs/f6-old-format", "#/runs/g7-truncated",
+               "#/runs/h8-subagent", "#/runs/k11-long-log", "#/runs/no-such-run"]
 
 LOADED = """() => {
   const view = document.querySelector('#view');
@@ -119,6 +141,127 @@ FOCUSED = """() => {
   return { ok: ring || halo, what: el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') +
            (el.getAttribute('href') ? '[href=' + el.getAttribute('href') + ']' : '') };
 }"""
+
+
+def cascade_checks(browser, check) -> None:
+    """Rules a more specific selector used to override: each is drawn as the design says."""
+    from browser_support import settle
+
+    for width in (1440, 390):
+        context = browser.new_context(viewport={"width": width, "height": 900})
+        page = context.new_page()
+        page.goto(f"{BASE}#t={TOKEN}", wait_until="load")
+        settle(page, LOADED)
+        page.goto(f"{BASE}#/sessions", wait_until="load")
+        settle(page, """() => !!(document.querySelector('.state-chip[data-label="crashed"]')
+                         && document.querySelector('.state-chip[data-label="queued"]')
+                         && document.querySelector('td.s-name > a'))""")
+        found = page.evaluate("""() => {
+          const marker = label => getComputedStyle(document.querySelector(`.state-chip[data-label="${label}"]`), '::before');
+          const wrap = getComputedStyle(document.querySelector('.sessions-wrap'));
+          return { crashed: marker('crashed').borderTopLeftRadius, queued: marker('queued').backgroundColor,
+                   name: getComputedStyle(document.querySelector('td.s-name > a')).fontWeight,
+                   wrapBg: wrap.backgroundColor, wrapBorder: wrap.borderTopWidth, wrapShadow: wrap.boxShadow };
+        }""")
+        check(f"{width}px: the crashed state chip's marker is a diamond", found["crashed"] == "1px", str(found))
+        check(f"{width}px: the queued state chip's marker is a ring", found["queued"] == "rgba(0, 0, 0, 0)", str(found))
+        check(f"{width}px: session names are 600 weight", found["name"] == "600", str(found))
+        if width == 390:
+            check("390px: the Sessions cards sit on the page, not in a bordered box",
+                  found["wrapBg"] == "rgba(0, 0, 0, 0)" and found["wrapBorder"] == "0px"
+                  and found["wrapShadow"] == "none", str(found))
+        context.close()
+    if LIVE_BASE:  # the step in flight: its marker's halo, read with the pulse cancelled
+        context = browser.new_context(viewport={"width": 1440, "height": 900})
+        page = context.new_page()
+        page.goto(f"{LIVE_BASE}#t={TOKEN}", wait_until="load")
+        settle(page, LOADED)
+        page.goto(f"{LIVE_BASE}{LIVE}1", wait_until="load")
+        settle(page, "() => !!document.querySelector('.pipe-current > .pipe-head .pipe-no')")
+        halo = page.evaluate("""() => {
+          const no = document.querySelector('.pipe-current > .pipe-head .pipe-no');
+          if (!no) return null;
+          no.getAnimations().forEach(a => a.cancel());
+          return getComputedStyle(no).boxShadow;
+        }""")
+        check("the running step's marker has its halo", bool(halo) and halo != "none" and "4px" in halo, str(halo))
+        context.close()
+
+
+def snapshot_walk(browser, check) -> None:
+    """Every route and fixture state, both sizes, both themes, into ``<shots>/snap/``."""
+    from browser_support import settle
+
+    out = SHOTS / "snap"
+    out.mkdir(exist_ok=True)
+    walk = ([("main", BASE, r) for r in ROUTES]
+            + [("ro", RO_BASE, r) for r in TRACES + MORE_TRACES + ["#/runs"] if RO_BASE]
+            + [("live", LIVE_BASE, r) for r in LIVE_ROUTES if LIVE_BASE]
+            + [("flows", FLOWS_BASE, r) for r in ("#/flows", "#/flows/two-step", "#/flows/review-loop",
+                                                  "#/flows/fan-out") if FLOWS_BASE]
+            + [("empty", EMPTY_BASE, r) for r in ("#/", "#/sessions", "#/runs", "#/inbox", "#/flows",
+                                                  "#/usage") if EMPTY_BASE]
+            + [("chat", CHAT_BASE, "#/chat")] * bool(CHAT_BASE))
+
+    def name(*parts):
+        return "-".join(re.sub(r"[^\w]+", "_", str(p)).strip("_") or "root" for p in parts)
+
+    for width, height in ((1440, 900), (390, 844)):
+        for scheme in ("light", "dark"):
+            context = browser.new_context(viewport={"width": width, "height": height}, color_scheme=scheme)
+            page = context.new_page()
+
+            def shot(*label, page=page, width=width, scheme=scheme):
+                page.evaluate("window.scrollTo(0, 0)")
+                tall = page.evaluate("document.documentElement.scrollHeight")
+                clip = {"x": 0, "y": 0, "width": width, "height": 12000} if tall > 12000 else None
+                page.screenshot(path=str(out / (name(*label, width, scheme) + ".png")), full_page=True,
+                                clip=clip)  # the long log's first 12,000 px: a capture has a limit
+
+            for base in {b for _, b, _ in walk}:
+                page.goto(f"{base}#t={TOKEN}", wait_until="load")
+                settle(page, LOADED)
+            for tag, base, route in walk:
+                page.goto(f"{base}{route}", wait_until="load")
+                check(f"snapshot {tag} {route} {width} {scheme}: loaded", settle(page, LOADED))
+                shot(tag, route)
+                if page.locator("#expand-all").count():  # a trace with every turn open
+                    page.click("#expand-all")
+                    settle(page, "() => !document.querySelector('.turn:not(.open)')")
+                    if page.locator("[data-subagent]").count():
+                        page.locator("[data-subagent]").first.click()
+                        settle(page, "() => !!document.querySelector('.sub-turn')")
+                    shot(tag, route, "open")
+                if tag == "flows" and page.locator("#flow-preview-button").count():
+                    page.locator('[data-field="goal"]').fill("Fix the failing parser test.")
+                    page.locator("#flow-preview-button").click()
+                    settle(page, "() => !!document.querySelector('#flow-command')", timeout=20_000)
+                    shot(tag, route, "preview")
+            # The app's own states: keyboard help, the phone menu, banners, the token page.
+            page.goto(f"{BASE}#/runs", wait_until="load")
+            settle(page, "() => !!document.querySelector('#runs-table')")
+            page.locator("body").press("?")
+            settle(page, "() => !document.getElementById('keys-help').hidden")
+            shot("keys-help")
+            page.keyboard.press("Escape")
+            if width == 390:
+                page.click("#nav-menu")
+                shot("phone-menu")
+                page.keyboard.press("Escape")
+            for reason, refuse in (("down", lambda route: route.abort("connectionrefused")),
+                                   ("busy", lambda route: route.fulfill(status=503, body=""))):
+                page.route("**/api/**", refuse)
+                page.click("#runs-refresh")
+                settle(page, "() => !document.getElementById('conn-banner').hidden")
+                shot("banner", reason)
+                page.unroute("**/api/**")
+                page.click("#conn-retry")
+                settle(page, "() => document.getElementById('conn-banner').hidden", timeout=20_000)
+            page.evaluate("sessionStorage.setItem('garuda_token', 'stale-token-0000')")
+            page.reload(wait_until="load")
+            settle(page, "() => !!document.getElementById('token-panel')")
+            shot("token")
+            context.close()
 
 
 def main() -> int:
@@ -240,6 +383,9 @@ def main() -> int:
             check(f"paused flow at {width}px: the Result's cause is drawn as a pause", head["cause"] == "paused")
             page.screenshot(path=str(SHOTS / f"design-paused-{width}.png"), full_page=True)
             context.close()
+        cascade_checks(browser, check)
+        if SNAPSHOTS:
+            snapshot_walk(browser, check)
         browser.close()
 
     print("\n=== problems ===")
