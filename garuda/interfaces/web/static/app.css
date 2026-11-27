@@ -342,7 +342,10 @@ svg { display: block; width: 100%; height: auto; }
 }
 .trace-facts dt { color: var(--muted); }
 .trace-facts dd { margin: 0; overflow-wrap: anywhere; }
-#external-turns th.num { text-align: right; }
+#external-turns th.num, #flow-measure th.num { text-align: right; }
+#flow-measure .not-recorded { color: var(--muted); font-style: italic; }
+#flow-measure tfoot th { text-align: left; font-weight: 600; }
+#flow-measure tfoot td, #flow-measure tfoot th { border-top: 2px solid var(--border); }
 #external-summary h3 { font-size: 13px; margin: 14px 0 6px; }
 #external-summary .block { margin-top: 10px; }
 #external-summary .block pre { max-height: 320px; overflow: auto; }

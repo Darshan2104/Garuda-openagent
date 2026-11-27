@@ -43,7 +43,14 @@ EXPECT = {
 
 # Fixtures checked on their own below rather than through the per-trace loop: a model name that
 # needs escaping, an external harness's run (no native turns at all) and a 1,500-turn log.
-EXTRA = ("i9-ampersand-model", "j10-external-acp", "k11-long-log")
+EXTRA = ("i9-ampersand-model", "j10-external-acp", "k11-long-log",
+         "l12-flow-completed", "m13-flow-stopped", "n14-flow-running")
+# The flows' step sessions: runs of their own in the list.
+FLOW_STEP_SESSIONS = 7
+LISTED = len(EXPECT) + len(EXTRA) + FLOW_STEP_SESSIONS
+# A flow parent's trace must never say any of these: it has no event log by design.
+NATIVE_LOG_ALARMS = ("No session_end", "empty_log", "No turns in this log",
+                     "No budget snapshots", "Raw events", "0 in / 0 out")
 LONG = "k11-long-log"
 NEEDLE = "needle-7f3a"
 
@@ -64,11 +71,11 @@ with sync_playwright() as p:
     page.goto(f"{BASE}#t={TOKEN}", wait_until="networkidle")
     # The token URL lands on the Overview; the runs list is its own tab.
     page.goto(f"{BASE}#/runs", wait_until="networkidle")
-    count_at_least(page, "#table-card tbody tr", len(EXPECT) + len(EXTRA))
+    count_at_least(page, "#table-card tbody tr", LISTED)
     rows = page.query_selector_all("#table-card tbody tr")
     print(f"runs list: {len(rows)} rows")
-    if len(rows) != len(EXPECT) + len(EXTRA):
-        problems.append(f"expected {len(EXPECT) + len(EXTRA)} runs in the list, found {len(rows)}")
+    if len(rows) != LISTED:
+        problems.append(f"expected {LISTED} runs in the list, found {len(rows)}")
 
     for sid, want in EXPECT.items():
         page.goto(f"{BASE}#/runs/{sid}", wait_until="networkidle")
@@ -351,6 +358,95 @@ with sync_playwright() as p:
         if NEEDLE not in found:
             problems.append("the search through later events did not show the matching event")
     page.screenshot(path=f"{SHOTS}/insp-long.png")
+
+    # --- a flow parent's trace is the flow ------------------------------------------------
+    def flow_page(sid):
+        page.goto(f"{BASE}#/runs/{sid}", wait_until="networkidle")
+        if not settle(page, "() => !!document.querySelector('#flow-summary-card')"):
+            problems.append(f"{sid}: the trace of a flow parent did not render the flow")
+        page.wait_for_load_state("networkidle")
+        text = page.inner_text("#view")
+        for alarm in NATIVE_LOG_ALARMS:
+            if alarm in text:
+                problems.append(f"{sid}: a flow parent's trace says {alarm!r}")
+        zeros = page.evaluate("""() => [...document.querySelectorAll('.stat-value')]
+            .map(n => n.textContent.trim()).filter(v => v === '0')""")
+        if zeros:
+            problems.append(f"{sid}: zero tiles on a flow parent ({len(zeros)})")
+        return text
+
+    flow_page("l12-flow-completed")
+    attempts = page.query_selector_all("#flow-steps .attempt")
+    print(f"\ncompleted flow: {len(attempts)} attempts")
+    if len(attempts) != 4:
+        problems.append(f"the completed flow showed {len(attempts)} attempts, expected 4")
+    for step_sid in ("l12-step-build-1", "l12-step-review-1", "l12-step-build-2", "l12-step-review-2"):
+        for prefix in ("#/runs/", "#/sessions/"):
+            if not page.query_selector(f'#flow-steps a[href="{prefix}{step_sid}"]'):
+                problems.append(f"no link to {prefix}{step_sid} from the flow's trace")
+    if not page.query_selector('#flow-summary-card [data-chip="verification"]') or \
+            not page.query_selector('#flow-summary-card [data-chip="review"]'):
+        problems.append("the flow's verification and review are not shown as separate facts")
+    edges = page.eval_on_selector_all("#flow-edges li", "items => items.map(i => i.textContent)")
+    print(f"artifact edges: {edges}")
+    if len(edges) != 2 or len(set(edges)) != 2:
+        problems.append(f"two rounds' artifact edges are not told apart: {edges}")
+
+    # The Measured table equals the receipts: the fixture's own numbers, and every cell
+    # against the measure the session API passes through from each receipt.
+    cells = page.evaluate("""() => Object.fromEntries([...document.querySelectorAll(
+            '#flow-measure tr.measure-row')].map(r => [r.dataset.step + '-' + r.dataset.attempt,
+            {measured: r.dataset.measured !== 'no', text: r.textContent,
+             values: Object.fromEntries([...r.querySelectorAll('td[data-k]')]
+                       .map(c => [c.dataset.k, c.dataset.v === undefined ? null : c.dataset.v]))}]))""")
+    expect_b1 = {"prompt_chars": "934", "turns": "4", "tool_calls": "4", "duration_ms": "26990",
+                 "peak_context_used": "24445", "cost_usd": "0.0327242"}
+    print(f"measured build #1: {cells.get('build-1', {}).get('values')}")
+    if cells.get("build-1", {}).get("values") != expect_b1:
+        problems.append(f"Measured build #1 does not equal its receipt: {cells.get('build-1')}")
+    review_1 = cells.get("review-1", {}).get("values", {})
+    if review_1.get("peak_context_used") is not None or review_1.get("cost_usd") is not None \
+            or "not recorded" not in cells.get("review-1", {}).get("text", ""):
+        problems.append(f"an attempt with no usage report did not read 'not recorded': {review_1}")
+    review_2 = cells.get("review-2", {})
+    if review_2.get("measured") or "not recorded" not in review_2.get("text", ""):
+        problems.append(f"a receipt with no measure did not read 'not recorded': {review_2}")
+    api_measures = page.evaluate("""async () => {
+        const r = await fetch('/api/sessions/l12-flow-completed',
+                              {headers: {'X-Garuda-Token': TOKEN}}).then(x => x.json());
+        return {total: r.flow.measure, attempts: Object.fromEntries(r.flow.steps.flatMap(
+            s => s.attempts.map(a => [s.id + '-' + a.attempt, a.measure])))};
+    }""")
+    for key, m in api_measures["attempts"].items():
+        values = cells.get(key, {}).get("values", {})
+        if m and (values.get("turns") != str(m["turns"]) or
+                  values.get("tool_calls") != str(m["tool_calls"]) or
+                  values.get("prompt_chars") != str(m["prompt"]["chars"])):
+            problems.append(f"Measured {key} differs from its receipt: {values} vs {m}")
+    total_text = page.inner_text("#flow-measure tfoot")
+    print(f"measured total: {' '.join(total_text.split())}")
+    if "3 of 4 attempts measured" not in total_text or "$0.0617" not in total_text \
+            or "incomplete" not in total_text or api_measures["total"]["reported_cost_usd"] != 0.0616536:
+        problems.append(f"the flow total does not match the receipts' measures: {total_text!r}")
+    note = page.inner_text("#flow-measure-note")
+    for honest in ("estimate", "occupancy, not billable", "not meter", "not recorded"):
+        if honest not in note:
+            problems.append(f"the Measured note does not say {honest!r}")
+    page.screenshot(path=f"{SHOTS}/insp-flow-completed.png", full_page=True)
+
+    flow_page("m13-flow-stopped")
+    stopped = page.inner_text("#flow-stopped") if page.query_selector("#flow-stopped") else ""
+    print(f"stopped flow: {' '.join(stopped.split())}")
+    if "The step failed" not in stopped or "review" not in stopped:
+        problems.append(f"a stopped flow does not say how it stopped: {stopped!r}")
+
+    flow_page("n14-flow-running")
+    progress = page.inner_text("#flow-progress-line") if page.query_selector("#flow-progress-line") else ""
+    print(f"running flow: {progress}")
+    if "Step 2 of 2 in progress: review (attempt 1)" not in progress:
+        problems.append(f"a running flow does not say which step is in progress: {progress!r}")
+    if page.query_selector("#flow-stopped"):
+        problems.append("a running flow was described as stopped")
 
     page.click("#theme-toggle")
     page.wait_for_timeout(250)

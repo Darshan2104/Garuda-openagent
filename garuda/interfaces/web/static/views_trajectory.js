@@ -82,6 +82,7 @@ function loadTrajectory(detailUrl, sources) {
     function (payload) {
       if (!marker.isConnected) return;
       STATE.run = payload;
+      if (isFlowParent(payload)) { loadFlowTrace(payload, sources, marker); return; }
       renderTrajectory(payload, sources);
     },
     function (err) {
@@ -102,6 +103,318 @@ function loadErrorHtml(err) {
     (missing ? "It may have been deleted, or the link came from another session store. " : "") +
     '<a href="#/runs">Back to Runs</a> · <a href="#/sessions">Sessions</a></div></div>'
   );
+}
+
+/* --- a flow parent -----------------------------------------------------------
+ *
+ * A flow's own session has no event log by design: each step runs in a session of its own.
+ * Its trace page is therefore the flow — what was asked, how it ended (outcome, verification
+ * and review as three facts), the steps in order with every attempt and a link to that step
+ * session's own trace, and what the receipts measured. Everything comes from the shared
+ * session read model (`/api/sessions/<id>`, the row `garuda session show --json` prints), so
+ * none of the native-log statements apply: no "No session_end", no "empty log", no zero tiles,
+ * no empty context-pressure or raw-events cards.
+ *
+ * The step pipeline is the session page's own `flowHtml` (views_sessions.js), not a second
+ * rendering of the same data. */
+
+var FLOW_REFRESH_MS = 10000;
+var FLOW_REFRESH_MAX_MS = 60000;
+
+function isFlowParent(payload) {
+  return !!(payload && payload.meta && payload.meta.kind === "flow");
+}
+
+function loadFlowTrace(payload, sources, marker) {
+  var sessionUrl = "/api/sessions/" + encodeURIComponent(payload.run.session_id);
+  return api(sessionUrl).then(
+    function (row) {
+      if (!marker.isConnected) return;
+      renderFlowTrace(payload, row, sources, sessionUrl);
+    },
+    function (err) {
+      if (!marker.isConnected) return;
+      if (err.status === 401) { render(tokenRequiredPanel()); return; }
+      render(loadErrorHtml(err));
+    });
+}
+
+function renderFlowTrace(payload, row, sources, sessionUrl) {
+  var run = payload.run;
+  STATE.raw = null;
+  var region = function (id) { return '<div id="' + id + '"></div>'; };
+  render(
+    '<div class="trace-page trace-flow" id="trace-root">' +
+    '<div class="page-head">' +
+    '<a href="#/runs">← Runs</a>' +
+    "<h1>" + esc(fmt.truncate(run.task, 90)) + "</h1>" +
+    '<span class="trace-status" id="trace-status"></span>' +
+    '<span class="meta">' + esc(run.session_id) + "</span>" +
+    '<a href="#/sessions/' + encodeURIComponent(run.session_id) + '">Session page</a>' +
+    '<span class="meta" id="flow-refresh-meta"></span>' +
+    "</div>" +
+    region("flow-progress") +
+    '<div class="grid cols-4" id="trace-tiles"></div>' +
+    region("flow-summary") +
+    region("flow-steps") +
+    region("flow-measured") +
+    '<div id="starter-result-host"></div><div id="conversation-host"></div>' +
+    "</div>"
+  );
+  var root = el("trace-root");
+  root._row = row;
+  root._refresh = function () { updateFlowTrace(STATE.run, root._row); };
+  updateFlowTrace(payload, row, true);
+  if (typeof loadConversationPanel === "function") loadConversationPanel(run.session_id);
+  loadStarterResult(run.session_id);
+  syncFlowRefresh(row, { detail: sources.detail, session: sessionUrl });
+}
+
+function updateFlowTrace(payload, row, first) {
+  var root = el("trace-root");
+  if (!root || !payload) return;
+  root._row = row;
+  var active = isActive(row.state);
+  var ctx = { live: active };
+  TRACE_DEFERRED = false;
+  keepScrollPosition(function () {
+    patchRegion(el("trace-status"),
+      '<span class="pill ' + flowPillClass(row) + '">' + esc(row.label || "unknown") + "</span>", first);
+    patchRegion(el("flow-progress"), active ? flowProgressHtml(row) : "", first);
+    patchRegion(el("trace-tiles"), flowTilesHtml(payload.run, row, ctx), first);
+    patchRegion(el("flow-summary"), flowSummaryHtml(payload.run, row, ctx), first);
+    patchRegion(el("flow-steps"), flowHtml(row.flow, row.flow_progress), first);
+    patchRegion(el("flow-measured"), flowMeasuredHtml(row.flow), first);
+  });
+  if (TRACE_DEFERRED) retryWhenSelectionClears(root);
+}
+
+function flowPillClass(row) {
+  if (isActive(row.state)) return "running";
+  var outcome = (row.state || {}).outcome;
+  if (outcome === "completed") return "success";
+  if (outcome === "failed" || outcome === "cancelled" || outcome === "refused" || row.crashed) {
+    return "failed";
+  }
+  return "unknown";
+}
+
+/* A running flow: the step in flight, as the read model exposes it (`flow_progress`, from the
+ * flow's journal), and nothing guessed when no step is in flight. */
+function flowProgressHtml(row) {
+  var progress = row.flow_progress;
+  var line = progress
+    ? "Step " + progress.index + " of " + progress.total + " in progress: " + progress.step +
+      " (attempt " + progress.attempt + ")."
+    : "Running; no step is in flight right now (between steps, or checking the result).";
+  return '<div class="card live-card" id="flow-in-progress"><h2>In progress</h2>' +
+    '<p id="flow-progress-line">' + esc(line) + "</p>" + flowInFlightHtml(row) + "</div>";
+}
+
+/* What the step in flight is doing right now. Empty today: a richer live view arrives as a
+ * shared read-model field (`row.flow.in_flight`) from the flow runtime, and this is where it
+ * renders. Deliberately no reader of the progress file of its own here. */
+function flowInFlightHtml(row) {
+  void row;
+  return "";
+}
+
+function flowTilesHtml(run, row, ctx) {
+  var flow = row.flow || {};
+  var steps = flow.steps || [];
+  var done = steps.filter(function (s) {
+    var attempts = s.attempts || [];
+    return attempts.length && attempts[attempts.length - 1].status === "done";
+  }).length;
+  var attempts = steps.reduce(function (n, s) { return n + (s.attempts || []).length; }, 0);
+  var review = flow.review;
+  var took = runDuration(run, ctx);
+  var total = flow.measure || {};
+  var cost = typeof total.reported_cost_usd === "number" ? total.reported_cost_usd : null;
+  return [
+    tile("Steps", done + " of " + steps.length, "steps done"),
+    tile("Attempts", String(attempts),
+         review && review.rounds ? "review rounds: " + review.rounds : "no review rounds recorded"),
+    tile("Duration", took.value, took.note),
+    tile("Reported cost", cost === null ? "not recorded" : fmt.cost(cost),
+         cost === null ? "no step reported a cost"
+           : "adapter-reported, not metered by Garuda" + (total.cost_complete ? "" : " · incomplete"))
+  ].join("");
+}
+
+/* Outcome, verification and review as three separate facts, then how it stopped (one plain
+ * sentence from the recorded flow state and stop code), the task and the final message. */
+function flowSummaryHtml(run, row, ctx) {
+  var state = row.state || {};
+  var flow = row.flow || {};
+  var review = flow.review;
+  var took = runDuration(run, ctx);
+  var stopped = !ctx.live && state.outcome !== "completed";
+  var sentence = stopped && typeof failureSentence === "function" ? failureSentence(row) : null;
+  return (
+    '<div class="card" id="flow-summary-card"><h2>Flow ' + esc(flow.name || "") + "</h2>" +
+    (sentence ? '<div class="notice err" id="flow-stopped"><div class="notice-title">' +
+      esc(sentence.cause) + '</div><div class="notice-body">' + esc(sentence.next) + "</div></div>" : "") +
+    '<dl class="trace-facts">' +
+    "<dt>Outcome</dt><dd>" + chip("outcome", ctx.live ? "in progress" : (state.outcome || "unknown"),
+                                  outcomeClass(state.outcome)) +
+    (flow.state ? " " + chip("flow", flow.state, "chip-off") : "") + "</dd>" +
+    "<dt>Verification</dt><dd>" + verificationChip(row.verification) +
+    ' <span class="stat-sub">whether the result passed its checks</span></dd>' +
+    "<dt>Review</dt><dd>" + (review
+      ? chip("review", reviewLabel(review), "chip-off") + reviewCoverageHtml(flow.review_coverage) +
+        ' <span class="stat-sub">a review is advice, not verification</span>'
+      : '<span class="stat-sub">no review recorded</span>') + "</dd>" +
+    // The Runs list's own figure: a flow ends at the later of its last record and its last
+    // step receipt.
+    "<dt>Duration</dt><dd>" + esc(took.value) + ' <span class="stat-sub">' + esc(took.note) +
+    "</span></dd>" +
+    "</dl>" +
+    '<div class="block block-input"><div class="block-label">task</div><pre>' +
+    esc(run.task || "") + "</pre></div>" +
+    '<div class="block block-output" id="flow-final"><div class="block-label">final message</div>' +
+    (row.final_message ? "<pre>" + esc(row.final_message) + "</pre>"
+      : '<div class="block-note">' + (ctx.live ? "None yet — the flow is still running."
+        : "No final message was stored.") + "</div>") + "</div>" +
+    '<p class="stat-sub">A flow has no event log of its own: each step ran in its own session. ' +
+    "Open a step's trace below for its turns.</p></div>"
+  );
+}
+
+/* --- what the receipts measured (#832) ------------------------------------------------ */
+
+function groupedNumber(value) {
+  return String(value).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
+function measuredCell(key, raw, text) {
+  var known = raw !== null && raw !== undefined;
+  return '<td class="num' + (known ? "" : " not-recorded") + '" data-k="' + esc(key) + '"' +
+    (known ? ' data-v="' + esc(raw) + '"' : "") + ">" + esc(known ? text : "not recorded") + "</td>";
+}
+
+function countCell(key, value) {
+  return measuredCell(key, typeof value === "number" ? value : null,
+                      typeof value === "number" ? groupedNumber(value) : "");
+}
+
+function peakCell(usage) {
+  var peak = usage && typeof usage.peak_context_used === "number" ? usage.peak_context_used : null;
+  var size = usage && typeof usage.context_size === "number" ? usage.context_size : null;
+  return measuredCell("peak_context_used", peak, peak === null ? "" :
+    groupedNumber(peak) + " of " + (size === null ? "unknown" : groupedNumber(size)));
+}
+
+function costCell(cost, complete) {
+  var known = typeof cost === "number";
+  return measuredCell("cost_usd", known ? cost : null,
+    known ? "$" + cost.toFixed(4) + (complete === false ? " (incomplete)" : "") : "");
+}
+
+function promptCell(prompt) {
+  var chars = prompt && typeof prompt.chars === "number" ? prompt.chars : null;
+  return measuredCell("prompt_chars", chars, chars === null ? "" :
+    "~" + groupedNumber(prompt.est_tokens) + " tok · " + groupedNumber(chars) + " chars");
+}
+
+function flowMeasuredHtml(flow) {
+  if (!flow) return "";
+  var rows = [];
+  (flow.steps || []).forEach(function (step) {
+    (step.attempts || []).forEach(function (attempt) {
+      var m = attempt.measure;
+      var usage = m && m.usage;
+      rows.push(
+        '<tr class="measure-row" data-step="' + esc(step.id) + '" data-attempt="' + esc(attempt.attempt) +
+        '"' + (m ? "" : ' data-measured="no"') + "><td>" + esc(step.id) + " #" + esc(attempt.attempt) + "</td>" +
+        (m
+          ? promptCell(m.prompt) + countCell("turns", m.turns) + countCell("tool_calls", m.tool_calls) +
+            measuredCell("duration_ms", typeof m.duration_ms === "number" ? m.duration_ms : null,
+                         typeof m.duration_ms === "number" ? fmt.duration(m.duration_ms) : "") +
+            peakCell(usage) +
+            costCell(usage ? usage.cost_usd : null, usage ? usage.cost_complete : null)
+          : '<td class="not-recorded" colspan="6">not recorded (this receipt predates measuring)</td>') +
+        "</tr>");
+    });
+  });
+  if (!rows.length) return "";
+  var total = flow.measure || {};
+  var measured = total.measured_attempts || 0;
+  var walls = [];
+  (flow.steps || []).forEach(function (s) {
+    (s.attempts || []).forEach(function (a) { if (a.measure) walls.push(a.measure.duration_ms); });
+  });
+  var wallSum = walls.length && walls.every(function (w) { return typeof w === "number"; })
+    ? walls.reduce(function (a, b) { return a + b; }, 0) : null;
+  var totalRow =
+    '<tr class="measure-total"><th scope="row">Flow total · ' + esc(measured) + " of " +
+    esc(total.attempts) + " attempts measured</th>" +
+    (measured
+      ? measuredCell("prompt_chars", total.prompt_chars, "~" + groupedNumber(total.prompt_est_tokens) +
+                     " tok · " + groupedNumber(total.prompt_chars) + " chars") +
+        countCell("turns", total.turns) + countCell("tool_calls", total.tool_calls) +
+        measuredCell("duration_ms", wallSum, wallSum === null ? "" : fmt.duration(wallSum)) +
+        measuredCell("peak_context_used", total.peak_context_used,
+                     typeof total.peak_context_used === "number" ? groupedNumber(total.peak_context_used) +
+                     " (largest)" : "") +
+        costCell(total.reported_cost_usd, total.cost_complete)
+      : '<td class="not-recorded" colspan="6">not recorded</td>') + "</tr>";
+  return (
+    '<div class="card" id="flow-measured-card"><h2>Measured</h2>' +
+    '<div class="table-wrap"><table class="table" id="flow-measure"><thead><tr><th>Attempt</th>' +
+    '<th class="num">Prompt</th><th class="num">Turns</th><th class="num">Tool calls</th>' +
+    '<th class="num">Wall time</th><th class="num">Peak context</th><th class="num">Reported cost</th>' +
+    "</tr></thead><tbody>" + rows.join("") + "</tbody><tfoot>" + totalRow + "</tfoot></table></div>" +
+    '<p class="stat-sub" id="flow-measure-note">From each attempt\'s receipt. Prompt tokens are an ' +
+    "estimate (characters ÷ 4), not a tokenizer count. Peak context is how full the harness " +
+    "reported its context window, which is occupancy, not billable tokens. Cost is what the " +
+    "adapter reported; Garuda did not meter or price it. Anything a receipt did not record reads " +
+    "\"not recorded\", never 0.</p></div>"
+  );
+}
+
+/* --- a running flow refreshes ---------------------------------------------------------
+ * The run detail (its duration once it ends) and the session row, every few seconds while the
+ * flow is active; patched in place like the native trace, so nothing the reader is doing is
+ * reset. Stops when the flow is no longer active, and by navigation (router: stopLive). */
+function syncFlowRefresh(row, urls) {
+  if (!isActive(row.state)) { stopLive(); return; }
+  stopLive();
+  var state = { urls: urls, failures: 0, flow: true };
+  STATE.live = state;
+  STATE.poller = new Poller(function () { return flowPoll(state); }, FLOW_REFRESH_MS);
+  // The page was just drawn from a fresh read: the first refresh waits one interval.
+  STATE.poller.timer = setTimeout(function () { if (STATE.live === state) STATE.poller.start(); },
+                                  FLOW_REFRESH_MS);
+}
+
+function flowPoll(state) {
+  return Promise.all([api(state.urls.detail), api(state.urls.session)])
+    .catch(tagFetchError)
+    .then(function (both) {
+      if (STATE.live !== state) return;
+      state.failures = 0;
+      STATE.poller.interval = FLOW_REFRESH_MS;
+      setText("flow-refresh-meta", "");
+      STATE.run = both[0];
+      updateFlowTrace(both[0], both[1]);
+      if (!isActive(both[1].state)) {
+        stopLive();
+        if (typeof loadConversationPanel === "function") loadConversationPanel(both[0].run.session_id);
+        toast("Flow finished — " + (both[1].label || "done"));
+      }
+    })
+    .catch(function (err) {
+      if (STATE.live !== state) return;
+      if (!err || !err.fromApi) { surface(err); return; }
+      if (err.status === 401) { stopLive(); render(tokenRequiredPanel()); return; }
+      state.failures += 1;
+      STATE.poller.interval = Math.min(FLOW_REFRESH_MAX_MS,
+                                       FLOW_REFRESH_MS * Math.pow(2, state.failures));
+      setText("flow-refresh-meta", err.status
+        ? "the dashboard answered " + err.status + " — retrying"
+        : "can't reach the dashboard — retrying");
+    });
 }
 
 /* --- mounting and updating -------------------------------------------------
@@ -162,6 +475,7 @@ function renderTrajectory(payload, sources) {
   var root = el("trace-root");
   root._external = external;
   root._sources = sources;
+  root._refresh = function () { if (STATE.run) updateTrajectory(STATE.run, sources); };
   root.addEventListener("click", onTraceClick);
   var traj = el("traj");
   if (traj) traj.addEventListener("click", onTurnClick);
@@ -408,7 +722,7 @@ function retryWhenSelectionClears(root) {
     if (selection && !selection.isCollapsed) return;
     document.removeEventListener("selectionchange", onChange);
     root._selectionRetry = null;
-    if (STATE.run) updateTrajectory(STATE.run, root._sources);
+    if (root._refresh) root._refresh();
   };
   root._selectionRetry = onChange;
   document.addEventListener("selectionchange", onChange);
