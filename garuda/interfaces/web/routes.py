@@ -645,12 +645,14 @@ def _memory_proposals(request: Request, ctx: DashboardContext, _match) -> Respon
 @route("GET", r"/api/runs")
 def _runs(request: Request, ctx: DashboardContext, _match) -> Response:
     limit = request.int_param("limit", reads.DEFAULT_LIMIT)
-    if limit is None:
-        return invalid("`limit` must be a non-negative integer.")
+    offset = request.int_param("offset", 0)
+    if limit is None or offset is None:
+        return invalid("`limit` and `offset` must be non-negative integers.")
     return ok(
         reads.list_runs(
             ctx.store,
             limit=limit,
+            offset=offset,
             status=request.first("status"),
             agent=request.first("agent"),
             model=request.first("model"),

@@ -98,9 +98,11 @@ function usageView(range) {
           '</a><div class="chips">' + spendHtml(row.spend) + "</div></div>";
       }).join("") : '<p class="stat-sub">No recorded spend snapshots.</p>';
     }).catch(function (err) {
+      if (isSuperseded(err)) return;
       snapshots.innerHTML = '<p class="stat-sub">' + esc("spend snapshots unavailable") + ": " + esc(err.message) + "</p>";
     });
   }).catch(function (err) {
+    if (isSuperseded(err)) return;
     if (err.status === 401) { render(tokenRequiredPanel()); return; }
     render('<div class="notice err"><div class="notice-title">Could not load usage</div><div class="notice-body">' + esc(err.message) + "</div></div>");
   });
@@ -121,5 +123,5 @@ function downloadUsage(range, format) {
       link.click();
       link.remove();
       setTimeout(function () { URL.revokeObjectURL(link.href); }, 1000);
-    }).catch(function (err) { toast(err.message); });
+    }).catch(function (err) { if (isSuperseded(err)) return; toast(err.message); });
 }

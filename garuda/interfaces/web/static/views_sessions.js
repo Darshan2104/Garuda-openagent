@@ -127,9 +127,14 @@ function firstLine(text) {
 var SESSIONS_PAGE = 50;
 var SESSIONS_POLL_MS = 15000;
 
-function parseSessionQuery(raw) {
-  var params = new URLSearchParams(raw || "");
-  return { q: params.get("q") || "", label: params.get("state") || "" };
+/* The filter from the route's query (router.js routeParams): q, and the state chip as `state`. */
+function parseSessionQuery() {
+  var params = routeParams();
+  return { q: params.q || "", label: params.state || "" };
+}
+
+function sessionRouteParams(filter) {
+  return { q: (filter && filter.q) || "", state: (filter && filter.label) || "" };
 }
 
 function sessionsHash(filter) {
@@ -167,6 +172,7 @@ function sessionRowHtml(row) {
     esc(row.name || id.slice(0, 8)) + "</a>" +
     (row.kind === "flow" ? ' <span class="pill unknown">flow</span>' : "") +
     (row.origin === "consult" ? ' <span class="pill unknown">consult</span>' : "") +
+    ' <a class="session-trace stat-sub" href="#/runs/' + encodeURIComponent(id) + '" title="Trace and metrics on Runs">trace</a>' +
     // Two runs of one task have the same name; the id and the task's first words tell them apart.
     '<div class="s-sub"><code>' + esc(id.slice(0, 8)) + "</code>" + (task ? " · " + esc(task) : "") + "</div></td>" +
     '<td data-th="State"><span class="pill ' + (row.crashed ? "failed" : (state.work === "working" ? "running" : "unknown")) + '">' +
@@ -185,11 +191,12 @@ function sessionRowHtml(row) {
   );
 }
 
-function sessionsView(rawQuery) {
+function sessionsView() {
   stopSessionPages();
+  reconnectInPlace();
   // The hash is the filter: plain #/sessions is unfiltered, so Back to it shows everything.
   // A session page's "All sessions" link returns to the last filter (STATE.filters.sessions).
-  var filter = parseSessionQuery(rawQuery);
+  var filter = parseSessionQuery();
   STATE.filters.sessions = filter;
   var list = STATE.sessionList = { filter: filter, rows: [], counts: {}, total: null, matched: null,
                                    nextOffset: null, seq: 0, inflight: 0, loadingOlder: false,
@@ -197,7 +204,9 @@ function sessionsView(rawQuery) {
   render(
     '<div class="page-head"><h1>Sessions</h1><span class="meta" id="sessions-count">loading…</span>' +
     '<button type="button" class="btn" id="sessions-refresh">Refresh</button></div>' +
-    '<div class="filters"><input type="search" id="sessions-search" aria-label="Search sessions" placeholder="Search name, id, task, model, workspace…  ( / )" value="' + esc(filter.q) + '">' +
+    '<p class="page-lede" id="sessions-lede">State, queue, approvals and control for each session. ' +
+    'Traces and metrics of what each agent did are on <a href="#/runs">Runs</a>.</p>' +
+    '<div class="filters"><input type="search" id="sessions-search" data-route-param aria-label="Search sessions" placeholder="Search name, id, task, model, workspace…  ( / )" value="' + esc(filter.q) + '">' +
     '<div class="state-chips" id="sessions-states"></div></div>' +
     '<div class="notice err" id="sessions-error" hidden></div><div id="sessions-unreadable"></div>' +
     '<div class="table-wrap sessions-wrap"><table class="table sessions-table" id="sessions-table"><thead><tr>' +
@@ -216,7 +225,7 @@ function sessionsView(rawQuery) {
       if (STATE.sessionList !== list) return;
       filter.q = value;
       // Typing replaces the history entry (no hashchange, so the field keeps focus).
-      history.replaceState(null, "", sessionsHash(filter));
+      setRouteParams(sessionRouteParams(filter));
       reloadSessionList(list);
     }, 250);
   });
@@ -224,8 +233,12 @@ function sessionsView(rawQuery) {
     var button = event.target.closest(".state-chip");
     if (!button) return;
     var next = { q: el("sessions-search").value, label: button.getAttribute("data-label") };
-    // A state chip is a new history entry, so Back returns to the previous filter.
-    location.hash = sessionsHash(next);
+    // A state chip is a new history entry, so Back returns to the previous filter; the list
+    // reloads in place (Back and Forward re-mount it from the URL).
+    filter.q = next.q;
+    filter.label = next.label;
+    setRouteParams(sessionRouteParams(filter), { push: true });
+    reloadSessionList(list);
   });
   el("sessions-more").addEventListener("click", function () { loadOlderSessions(list); });
   list.poller = new Poller(function () { return refreshSessionList(list); }, SESSIONS_POLL_MS).start();
@@ -247,6 +260,7 @@ function sessionListRequest(list, url, older) {
     if (!settled()) return null;
     return payload;
   }, function (err) {
+    if (isSuperseded(err)) { settled(); return null; }
     if (settled()) sessionListFailed(list, err);
     return null;
   });
@@ -255,7 +269,8 @@ function sessionListRequest(list, url, older) {
 /* The loaded window again from the top: new sessions appear, changed rows are replaced and
  * the rows loaded through "Load older" stay. */
 function refreshSessionList(list) {
-  if (STATE.sessionList !== list || list.inflight) return;
+  // While unreachable the app's one probe asks (core.js); onReconnect polls again.
+  if (STATE.sessionList !== list || list.inflight || CONNECTION.down) return;
   var limit = Math.min(500, Math.max(SESSIONS_PAGE, list.rows.length));
   return sessionListRequest(list, sessionsUrl(list.filter, 0, limit), false).then(function (payload) {
     if (!payload) return;
@@ -844,6 +859,7 @@ function paintSessionPage(page) {
 
 function sessionDetailView(id) {
   stopSessionPages();
+  reconnectInPlace();
   var page = STATE.sessionPage = { id: id, row: null, stop: { phase: "idle", message: "" }, syncError: null,
                                    refreshing: false, rowPoller: null, tail: null, streamable: false };
   render('<div class="loading">Loading session…</div>');
@@ -880,7 +896,7 @@ function sessionDetailView(id) {
     if (isActive(row.state)) startSessionRowPoller(page);
     if (row.starter_origin) loadStarterResult(row.session_id);
   }).catch(function (err) {
-    if (STATE.sessionPage !== page) return;
+    if (isSuperseded(err) || STATE.sessionPage !== page) return;
     if (err.status === 401) { render(tokenRequiredPanel()); return; }
     render('<div class="notice err"><div class="notice-title">Could not load the session</div>' +
            '<div class="notice-body">' + esc(err.message) + (err.status ? " (" + esc(err.status) + ")" : "") + "</div></div>");
@@ -898,7 +914,7 @@ function startSessionRowPoller(page) {
 }
 
 function refreshSessionRow(page) {
-  if (STATE.sessionPage !== page || page.refreshing) return;
+  if (STATE.sessionPage !== page || page.refreshing || CONNECTION.down) return;
   page.refreshing = true;
   var wasActive = isActive(page.row.state);
   return api("/api/sessions/" + encodeURIComponent(page.id)).then(function (row) {
@@ -916,7 +932,7 @@ function refreshSessionRow(page) {
     }
   }).catch(function (err) {
     page.refreshing = false;
-    if (STATE.sessionPage !== page) return;
+    if (isSuperseded(err) || STATE.sessionPage !== page) return;
     page.syncError = err.message + (err.status ? " (" + err.status + ")" : "");
     paintHost("session-head", sessionHeadHtml(page));
   });
@@ -947,7 +963,7 @@ function onSessionHeadClick(page, event) {
   } else if (target.id === "session-stop-cancel") {
     page.stop = { phase: "idle", message: "" };
   } else if (target.id === "session-stop-confirm" && page.stop.phase === "confirm") {
-    stopBackgroundSession(page);
+    guardAction(target, function () { return stopBackgroundSession(page); }, { busy: "stopping…" });
     return;
   } else {
     return;
@@ -968,7 +984,7 @@ function stopBackgroundSession(page) {
       return refreshSessionRow(page);
     })
     .catch(function (err) {
-      if (STATE.sessionPage !== page) return;
+      if (isSuperseded(err) || STATE.sessionPage !== page) return;
       page.stop = { phase: "error", message: "Stop failed: " + err.message + (err.code ? " (" + err.code + ")" : "") };
       paintHost("session-head", sessionHeadHtml(page));
     });
@@ -1027,7 +1043,7 @@ function sessionTail(id, options) {
   }
   function update(payload) { if (options.onUpdate) options.onUpdate(handle, payload); }
   function poll() {
-    if (handle.stopped || handle.ended || handle.inFlight) return;
+    if (handle.stopped || handle.ended || handle.inFlight || CONNECTION.down) return;
     handle.inFlight = true;
     var poller = handle.poller;
     return api("/api/runs/" + encodeURIComponent(id) + "/tail?offset=" + handle.offset).then(function (payload) {
@@ -1064,7 +1080,7 @@ function sessionTail(id, options) {
       update(payload);
     }, function (err) {
       handle.inFlight = false;
-      if (handle.stopped || poller !== handle.poller) return;
+      if (isSuperseded(err) || handle.stopped || poller !== handle.poller) return;
       handle.connected = false;
       if ([400, 401, 403, 404].indexOf(err.status) >= 0) {
         handle.error = { terminal: true, message: tailErrorMessage(err), status: err.status };
@@ -1097,6 +1113,17 @@ function stopSessionPages() {
 }
 
 function stopSessionStream() { stopSessionPages(); }
+
+// Back from an outage: these pages poll now, in place (their rows are patched, never rebuilt),
+// so the router leaves them mounted (reconnectInPlace above).
+onReconnect(function () {
+  var list = STATE.sessionList;
+  if (list && list.poller) list.poller.now();
+  var page = STATE.sessionPage;
+  if (page && page.rowPoller) page.rowPoller.now();
+  if (page && page.tail) page.tail.retry();
+  if (STATE.inbox && STATE.inbox.poller) STATE.inbox.poller.now();
+});
 
 /* --- the approval inbox (D.5) ---------------------------------------------
  * Lists what is waiting across sessions and sends the person's answer, bound to the request
@@ -1139,6 +1166,7 @@ function approvalRowHtml(a) {
 
 function inboxView() {
   stopSessionPages();
+  reconnectInPlace();
   var inbox = STATE.inbox = { answered: {}, loaded: false, busy: false, poller: null };
   render(
     '<div id="inbox-root"><div class="page-head"><h1>Approvals</h1><span class="meta" id="inbox-count">loading…</span>' +
@@ -1186,7 +1214,7 @@ function syncApprovalCards(list, items) {
 }
 
 function refreshInbox(inbox) {
-  if (STATE.inbox !== inbox || inbox.busy) return;
+  if (STATE.inbox !== inbox || inbox.busy || CONNECTION.down) return;
   inbox.busy = true;
   return api("/api/inbox").then(function (payload) {
     inbox.busy = false;
@@ -1199,7 +1227,7 @@ function refreshInbox(inbox) {
     paintInbox(inbox);
   }).catch(function (err) {
     inbox.busy = false;
-    if (STATE.inbox !== inbox) return;
+    if (isSuperseded(err) || STATE.inbox !== inbox) return;
     if (err.status === 401) { stopSessionPages(); render(tokenRequiredPanel()); return; }
     var box = el("inbox-error");
     if (box) {
@@ -1262,6 +1290,7 @@ function answerInboxApproval(item, allow) {
     }, 1500);
   }).catch(function (err) {
     item.removeAttribute("data-busy");
+    if (isSuperseded(err)) return;
     // Stale page, an earlier answer, an expired request: say so in the server's words. A
     // refused answer cannot succeed on a retry; anything else (the dashboard unreachable) can.
     result.textContent = err.message + " (" + (err.code || "error") + (err.status ? ", " + err.status : "") + ")";
@@ -1402,7 +1431,7 @@ function loadConversationPanel(sessionId) {
   if (!host) return;
   api("/api/sessions/" + encodeURIComponent(sessionId) + "/conversation").then(function (c) {
     if (el("conversation-host") === host) host.innerHTML = conversationPanelHtml(c);
-  }).catch(function () { host.innerHTML = ""; });
+  }).catch(function (err) { if (!isSuperseded(err) && el("conversation-host") === host) host.innerHTML = ""; });
 }
 
 /* --- setup (F.4): read-only ---------------------------------------------------------------
@@ -1553,6 +1582,7 @@ function setupView() {
         function () { toast("Copy is not available here; select the text"); });
     });
   }).catch(function (err) {
+    if (isSuperseded(err)) return;
     if (err.status === 401) { render(tokenRequiredPanel()); return; }
     render('<div class="notice err"><div class="notice-title">Could not load setup</div><div class="notice-body">' + esc(err.message) + "</div></div>");
   });

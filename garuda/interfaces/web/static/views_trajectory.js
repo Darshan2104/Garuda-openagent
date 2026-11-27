@@ -82,10 +82,13 @@ function loadTrajectory(detailUrl, sources) {
     function (payload) {
       if (!marker.isConnected) return;
       STATE.run = payload;
+      // Drawn: a reconnect polls this page in place (below) instead of re-mounting it.
+      reconnectInPlace();
       if (isFlowParent(payload)) { loadFlowTrace(payload, sources, marker); return; }
       renderTrajectory(payload, sources);
     },
     function (err) {
+      if (isSuperseded(err)) return;
       if (!marker.isConnected) return;
       if (err.status === 401) { render(tokenRequiredPanel()); return; }
       render(loadErrorHtml(err));
@@ -133,7 +136,7 @@ function loadFlowTrace(payload, sources, marker) {
       renderFlowTrace(payload, row, sources, sessionUrl);
     },
     function (err) {
-      if (!marker.isConnected) return;
+      if (isSuperseded(err) || !marker.isConnected) return;
       if (err.status === 401) { render(tokenRequiredPanel()); return; }
       render(loadErrorHtml(err));
     });
@@ -396,6 +399,8 @@ function syncFlowRefresh(row, urls) {
 }
 
 function flowPoll(state) {
+  // While the dashboard is unreachable the app's one probe asks (core.js); onReconnect polls.
+  if (CONNECTION.down) return Promise.resolve();
   return Promise.all([api(state.urls.detail), api(state.urls.session)])
     .catch(tagFetchError)
     .then(function (both) {
@@ -412,7 +417,7 @@ function flowPoll(state) {
       }
     })
     .catch(function (err) {
-      if (STATE.live !== state) return;
+      if (isSuperseded(err) || STATE.live !== state) return;
       if (!err || !err.fromApi) { surface(err); return; }
       if (err.status === 401) { stopLive(); render(tokenRequiredPanel()); return; }
       state.failures += 1;
@@ -902,6 +907,11 @@ function startLive(sources, payload) {
   if (state.rows.length) renderLiveRows(state);
 }
 
+// Back from an outage: a live trace (native tail or a running flow) polls at once.
+onReconnect(function () {
+  if (STATE.live && STATE.poller) STATE.poller.now();
+});
+
 /* Mark a rejection as the network's (or the server's), as opposed to a bug in the code that
  * handles the response — only the first kind is "can't reach the dashboard". */
 function tagFetchError(err) {
@@ -916,6 +926,7 @@ function surface(err) {
 }
 
 function livePoll(state) {
+  if (CONNECTION.down) return Promise.resolve();  // the app's probe asks; onReconnect polls
   var join = state.sources.tail.indexOf("?") === -1 ? "?" : "&";
   return api(state.sources.tail + join + "offset=" + state.offset)
     .catch(tagFetchError)
@@ -953,6 +964,7 @@ function livePoll(state) {
       setLiveMeta(liveMetaText(state, payload));
     })
     .catch(function (err) {
+      if (isSuperseded(err)) return;
       if (STATE.live !== state) return;
       if (!err || !err.fromApi) { surface(err); return; }
       if (err.status === 401) { stopLive(); render(tokenRequiredPanel()); return; }
@@ -1719,6 +1731,7 @@ function openSubagent(subSessionId) {
     .then(function (payload) {
       fill(subTraceHtml(payload));
     }, function (err) {
+      if (isSuperseded(err)) return;
       fill('<div class="notice"><div class="notice-body">' +
            esc(err.status === 404
              ? "No trace was kept for this subagent. Runs from before subagent " +
@@ -2025,6 +2038,7 @@ function showBuffer(bufferId) {
         esc(payload.content) + "</pre>";
       el("raw-card").scrollIntoView({ block: "start" });
     }, function (err) {
+      if (isSuperseded(err)) return;
       if (STATE.raw === raw) toast(err.message);
     });
 }
@@ -2069,6 +2083,7 @@ function loadRawEvents(start, quiet) {
       if (!quiet) el("raw-card").scrollIntoView({ block: "start" });
     },
     function (err) {
+      if (isSuperseded(err)) return;
       if (STATE.raw !== raw || !body.isConnected) return;
       body.innerHTML = '<div class="notice err"><div class="notice-body">' +
                        esc(err.message) + "</div></div>";
@@ -2204,6 +2219,7 @@ function searchRawEvents(direction) {
       if (!payload.count) return done(direction > 0 ? origin : from, direction > 0 ? raw.total : origin);
       return step(direction > 0 ? from + payload.count : from);
     }, function (err) {
+      if (isSuperseded(err)) return;
       if (raw.search !== token) return;
       raw.search = null;
       raw.note = "The search stopped: " + err.message;

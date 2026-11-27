@@ -103,6 +103,7 @@ function chatView() {
       }
     })
     .catch(function (err) {
+      if (isSuperseded(err)) return;
       if (err.status === 401) { render(tokenRequiredPanel()); return; }
       render('<div class="page-head"><h1>Chat</h1></div>' +
              '<div class="notice err"><div class="notice-title">Can\'t reach the dashboard</div>' +
@@ -203,6 +204,7 @@ function startChat() {
       if ((location.hash || "") === "#/chat") return openChat(chat.chat_id, chat);
     })
     .catch(function (err) {
+      if (isSuperseded(err)) return;
       if (err.status === 401) { render(tokenRequiredPanel()); return; }
       var node = el("chat-new-state");
       if (node) node.textContent = "Could not start the chat — " + err.code + ": " + err.message;
@@ -346,7 +348,7 @@ function showChatStart() {
   render('<div class="loading">Loading…</div>');
   return api("/api/chat")
     .then(function (payload) { renderChatStart({ chats: payload.chats || [] }); })
-    .catch(function () { renderChatStart({ chats: [] }); });
+    .catch(function (err) { if (isSuperseded(err)) return; renderChatStart({ chats: [] }); });
 }
 
 /* Every chat this tab watches. Ends with the tab: a closed tab still leads to denial. */
@@ -388,6 +390,11 @@ function chatPollNow(chat) {
   chat = chat || STATE.chat;
   if (chat && chat.poller) chat.poller.now();
 }
+
+// Back from an outage: every open chat polls at once instead of waiting out its backoff.
+onReconnect(function () {
+  Object.keys(CHAT_OPEN).forEach(function (id) { chatPollNow(CHAT_OPEN[id]); });
+});
 
 /* Chats this tab keeps alive that are not on screen, with an approval waiting. */
 function waitingChats() {
@@ -470,6 +477,7 @@ function refreshSources() {
       renderSources();
     })
     .catch(function (err) {
+      if (isSuperseded(err)) return;
       // Not worth a banner, but not silence either: a stale list reads as the truth.
       var meta = el("sources-meta");
       if (meta && STATE.chat === chat) meta.textContent = "could not refresh the list — " + err.message;
@@ -532,6 +540,9 @@ function wireChat() {
   el("chat-retry").addEventListener("click", function () {
     var body = el("chat-offline-body");
     if (body) body.textContent = "Retrying…";
+    // While the dashboard is unreachable the app's one probe asks for everyone (core.js);
+    // its answer polls every open chat (below).
+    if (CONNECTION.down) { probeConnection(); return; }
     chatPollNow();
   });
   var box = el("chat-task");
@@ -590,7 +601,7 @@ function uploadOne(chat, file) {
     .then(function (payload) {
       toast("Added " + payload.source.path);
     })
-    .catch(function (err) { toast(file.name + ": " + err.message); });
+    .catch(function (err) { if (isSuperseded(err)) return; toast(file.name + ": " + err.message); });
 }
 
 /* FileReader, and its base64 taken off the data URL. Reading as an ArrayBuffer and encoding
@@ -628,7 +639,7 @@ function addUrlSource() {
       toast("Saved as " + payload.source.path);
       return refreshSources();
     })
-    .catch(function (err) { toast(url + ": " + err.message); })
+    .catch(function (err) { if (isSuperseded(err)) return; toast(url + ": " + err.message); })
     .then(function () {
       chat.fetchingUrl = false;
       var again = el("src-add-url");
@@ -667,6 +678,7 @@ function sendChatTurn() {
       return refreshSources();
     })
     .catch(function (err) {
+      if (isSuperseded(err)) return;
       if (err.status === 404) { chatGone(chat); return; }
       if (err.status === 401) { stopChat(); render(tokenRequiredPanel()); return; }
       toast(err.status === 409
@@ -692,6 +704,7 @@ function stopChatTurn() {
       chatPollNow();
     })
     .catch(function (err) {
+      if (isSuperseded(err)) return;
       if (err.status === 404) { chatGone(chat); return; }
       toast("Could not stop — " + err.code + ": " + err.message);
     })
@@ -709,17 +722,20 @@ function stopChatTurn() {
 function pollChat(chat) {
   if (!chat || CHAT_OPEN[chat.id] !== chat) return Promise.resolve();
   var info, tail;
-  return api("/api/chat/" + encodeURIComponent(chat.id))
+  // {keep: true}: this poll is the heartbeat and outlives the page that started it, so a
+  // navigation should not abort it mid-request (it would only be retried next tick).
+  var keep = { keep: true };
+  return api("/api/chat/" + encodeURIComponent(chat.id), keep)
     .then(function (payload) {
       info = payload;
       return api("/api/runs/" + encodeURIComponent(info.session_id) +
-                 "/tail?offset=" + chat.offset);
+                 "/tail?offset=" + chat.offset, keep);
     })
     .then(function (payload) {
       tail = payload;
       // Polling /api/approvals is what refreshes the heartbeat, so it happens every tick
       // whether or not anything is pending.
-      return api("/api/approvals?owner=" + encodeURIComponent(chat.id));
+      return api("/api/approvals?owner=" + encodeURIComponent(chat.id), keep);
     })
     .then(function (approvals) {
       if (CHAT_OPEN[chat.id] !== chat) return;
@@ -754,6 +770,7 @@ function pollChat(chat) {
       renderOtherChats();
     })
     .catch(function (err) {
+      if (isSuperseded(err)) return;
       if (CHAT_OPEN[chat.id] !== chat) return;
       if (err.status === 401) { stopChat(); render(tokenRequiredPanel()); return; }
       if (err.status === 404 && info === undefined) { chatGone(chat); return; }
@@ -794,7 +811,7 @@ function chatGone(chat) {
   if (mounted && (location.hash || "") === "#/chat") {
     api("/api/chat")
       .then(function (payload) { renderChatStart({ gone: chat.id, chats: payload.chats || [] }); })
-      .catch(function () { renderChatStart({ gone: chat.id, chats: [] }); });
+      .catch(function (err) { if (isSuperseded(err)) return; renderChatStart({ gone: chat.id, chats: [] }); });
   } else {
     toast("Your chat " + chat.id.slice(0, 8) + " is no longer open on the server.");
   }
@@ -1035,6 +1052,7 @@ function answerApproval(card, ask, approved) {
       chatPollNow();
     })
     .catch(function (err) {
+      if (isSuperseded(err)) return;
       var settled = err.status === 409 || err.status === 404 || err.status === 410;
       // The server's own words: it knows whether this was a timeout, the reaper, another tab
       // or a stale card, and one fixed sentence for all of them was a guess.
@@ -1088,6 +1106,7 @@ function endChat() {
       location.hash = "#/runs";
     })
     .catch(function (err) {
+      if (isSuperseded(err)) return;
       chat.ending = false;
       if (err.status === 404) { chatGone(chat); return; }
       // Still open: watch it again.

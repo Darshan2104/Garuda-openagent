@@ -33,7 +33,12 @@ native Garuda agent.
 The command prints a URL with a one-time token (`http://127.0.0.1:8787/#t=…`);
 open that exact URL. It opens on the **Overview**. Press Ctrl-C to stop it: the
 dashboard finishes the flow and chat operations it owns, prints
-`Garuda dashboard stopped.` and exits 0.
+`Garuda dashboard stopped.` and exits 0. Pasting the link into a tab that is
+already open works too: the dashboard takes the token, removes it from the
+address bar and history, and reloads its data. If the dashboard restarted (a new
+token) or the tab never had one, every page shows **This dashboard was
+restarted or the link expired** with a field to paste the new link into; it
+returns to the page you were on.
 
 | Flag | Default | Use |
 |---|---|---|
@@ -55,8 +60,8 @@ dashboard finishes the flow and chat operations it owns, prints
 |---|---|---|
 | Overview | `#/` (also `#/overview`) | The landing page: what needs you, what is running, what finished last, and the health of the harnesses your roles use |
 | Starters | `#/starters`, `#/starters/<id>` | Five packaged journeys, configured readiness, preview/copy, and owned Linux flow starts in write mode |
-| Runs | `#/runs` | Every run: turns, tool calls, diffs, metrics, models used, consults |
-| Sessions | `#/sessions` | Live and past sessions with their state, queue and flow; Stop |
+| Runs | `#/runs` | Traces and metrics of what each agent did: turns, tool calls, diffs, tokens, cost, models used, consults |
+| Sessions | `#/sessions` | State, queue, approvals and control for each session (flow, Stop) |
 | Approvals | `#/inbox` | Every waiting approval; Allow or Deny |
 | Usage | `#/usage` | Totals and breakdowns from the usage ledger; CSV or JSON export |
 | Setup | `#/setup` | Roles, flows, agents, where each value came from, diagnostics |
@@ -66,13 +71,29 @@ dashboard finishes the flow and chat operations it owns, prints
 
 ## Finding your way
 
+Runs and Sessions list the same sessions for different jobs, and each says so
+under its title: Runs for what an agent did, Sessions for what state it is in
+and what you can do about it. Every run row links to its session and every
+session row to its trace.
+
 The **Approvals** tab shows a red count whenever a request is waiting, so a
 parked approval is visible from every page. The count is a read-only poll of
-`/api/inbox` every 20 seconds and pauses while the tab is hidden.
+`/api/inbox` every 20 seconds and pauses while the tab is hidden. On a window
+too narrow for every tab (a phone, a split screen), the tabs fold into one menu
+button that names the current page and carries the same count; `Esc` closes it.
+
+If the dashboard stops answering, one banner says **Can't reach the
+dashboard — is `garuda web` still running? Retrying…** and retries with a
+growing gap (at most 30 seconds); when the dashboard answers, the banner goes
+away and the page reloads its data. With more than 32 connections open at once
+(many tabs), it says **Too many open dashboard tabs** instead and waits as long
+as the dashboard asks. Buttons that change something (Recover, Prepare,
+Providers Refresh) show **working…** and ignore repeat clicks until the request
+finishes; a refusal shows the dashboard's message and error code.
 
 | Key | Does |
 |---|---|
-| `1`–`9`, `0` | Switch to the nth tab (`0` is the tenth, Chat in write mode) |
+| `1`–`9`, `0` | Switch to the nth tab (`0` is the tenth, Chat in write mode); `?` lists them |
 | `/` | Focus the page's search field |
 | `r` | Reload the current view, except Chat or a view with unsubmitted edits |
 | `t` | Toggle light and dark |
@@ -224,7 +245,17 @@ See [Ready-to-use workflows](../use-cases/workflows.md) for the five journeys.
 
 ## Runs
 
-The run list (`#/runs`) counts each run by its recorded **outcome**, so a
+The run list (`#/runs`) covers every session in the store. It loads the newest
+100 that match the search and filters and says how many there are in all
+(**100 of 1,160 runs loaded**); **Load older runs** under the table brings the
+next 100, and the tiles and charts say when they cover only the loaded runs.
+Search matches the task or session id across the whole store. The search, the
+status and the agent are part of the address (`#/runs?q=fib&status=failed`),
+so a filtered list survives a reload, can be shared, and Back undoes a filter.
+Each row shows the whole task with the session's name under it; the task links
+to the trace and the name to the session. On a phone the rows stack.
+
+The list counts each run by its recorded **outcome**, so a
 native run (`success`), an external-harness run or a flow (`completed`) count
 alike. The **Completed** tile is completed ÷ finished runs; it says how runs
 ended, not whether anyone checked the result, so verified runs are counted
@@ -620,7 +651,7 @@ Providers page discards it.
 | `POST /api/scenarios/start` | Write-mode Linux flow admission: exact `operation_id`, `starter_id`, `inputs`, `workspace`, `preview_digest`, and `authority_digest` |
 | `GET /api/scenario-operations/<operation_id>` | Durable admission/flow projection for polling and approval-heartbeat refresh |
 | `GET /api/scenario-runs/<id>` | Shared selected-session evidence; `limit` 1–200 and non-negative `offset`, optional workspace index for names |
-| `GET /api/runs`, `GET /api/runs/<id>` | Runs and one run's trace |
+| `GET /api/runs`, `GET /api/runs/<id>` | Runs (`q`, `status`, `agent`, `model`; `limit` up to 500 and `offset` page the whole store; the reply carries the true `total` and every `agents` name) and one run's trace |
 | `GET /api/runs/<id>/tail` | Poll a run for new events |
 | `GET /api/sessions` | Newest first: `limit` an integer >= 1 (default 100, capped at 500), `offset` >= 0, `q` (search) and `state` (a state label) filter across every session. `sessions` holds each row: the four facts, the derived `crashed` label, queue position, worker, approvals waiting (`approvals_pending`, of which `approvals_live` not expired), agent digest, resume provenance; with `total`, `matched`, `counts` (per state label, after the search), `next_offset` and `unreadable_sessions` |
 | `GET /api/sessions/<id>` | One session, with pending approvals, its stored `final_message`, `files_changed`, `ended_at`/`duration_ms`, `starter_origin` and, for a flow, its steps, attempts, review outcome and `flow_progress` |

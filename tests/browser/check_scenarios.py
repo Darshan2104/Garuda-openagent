@@ -9,7 +9,7 @@ import json
 import os
 from pathlib import Path
 
-from browser_support import launch
+from browser_support import NAV_TIMEOUT_MS, launch, throttle
 from playwright.sync_api import expect, sync_playwright
 
 BASE = os.environ["GARUDA_CHECK_BASE"]
@@ -48,14 +48,16 @@ def main():
         browser = launch(p)
         context = browser.new_context(viewport={"width": 1500, "height": 1100},
                                       permissions=["clipboard-read", "clipboard-write"])
-        page = context.new_page()
+        context.set_default_navigation_timeout(NAV_TIMEOUT_MS)
+        page = throttle(context.new_page())
         page.on("console", lambda m: errors.append(m.text) if m.type in {"error", "warning"} else None)
         page.on("pageerror", lambda e: errors.append(str(e)))
         open_dashboard(page, BASE, "#/starters")
         expect(page.locator('.nav-link[data-nav="starters"]')).to_be_visible(timeout=5000)
         expect(page.locator("#starter-cards section")).to_have_count(5)
         expect(page.locator("#starter-workspace option")).to_have_count(2)
-        assert page.locator('button:has-text("Start")').count() == 0
+        # Within the page: on a narrow window the nav menu button is named after it ("Starters").
+        assert page.locator('#view button:has-text("Start")').count() == 0
         expect(page.locator('[data-starter="build-review"]')).to_contain_text("independent review configured")
         # build-review runs its checks at flow finalization (scenarios/compile.py flow_check_support).
         expect(page.locator('[data-starter="build-review"]')).to_contain_text(
@@ -214,7 +216,7 @@ def main():
         # Readiness labels and remedy order must survive the frontend transport.
         for profile, expected in [("single", "review needs setup"), ("missing", "needs-setup"),
                                   ("waived", "review not independent")]:
-            other = context.new_page()
+            other = throttle(context.new_page())
             other.on("pageerror", lambda e: errors.append(str(e)))
             other.on("console", lambda m: errors.append(m.text) if m.type in {"error", "warning"} else None)
             open_dashboard(other, PROFILES[profile], "#/starters/build-review")

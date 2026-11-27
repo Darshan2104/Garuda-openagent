@@ -163,6 +163,8 @@ def summarize_session(meta: dict[str, Any], store: SessionStore) -> dict[str, An
         # the whole id to link anywhere.
         "session_id": session_id,
         "task": meta.get("task"),
+        # The session's human name, so a row can tell near-identical tasks apart.
+        "name": meta.get("name") if isinstance(meta.get("name"), str) else None,
         "agent": meta.get("agent"),
         "mode": meta.get("mode"),
         "workspace": meta.get("workspace"),
@@ -184,25 +186,31 @@ def list_runs(
     store: SessionStore,
     *,
     limit: int = DEFAULT_LIMIT,
+    offset: int = 0,
     status: str | None = None,
     agent: str | None = None,
     model: str | None = None,
     query: str | None = None,
 ) -> dict[str, Any]:
-    """The run list, newest first, filtered.
+    """The run list, newest first, filtered, as one window of ``limit`` rows from ``offset``.
 
     Filtering happens after the read because ``list_sessions`` is the only thing that
     knows how to sort and how to skip an unreadable session; re-implementing that here
     to push filters down would duplicate its defensive behaviour.
+
+    Every session is filtered before the window is cut, so ``total`` and a search cover
+    the whole store, not only its newest ``MAX_LIMIT`` (a search over 5,000 sessions used
+    to find the matches among the newest 500 and report that as the total). Only the rows
+    the response carries are summarized, since each one stats its log.
     """
     from garuda.interfaces.web.session_index import unreadable_report
 
     limit = max(0, min(limit, MAX_LIMIT))
-    # Read a wider window than requested so filters do not silently return fewer rows
-    # than exist. Still bounded. A session that cannot be read is skipped and counted
-    # rather than failing the whole list.
+    offset = max(0, offset)
+    # Every session, so the total and a search cover the whole store. A session that cannot
+    # be read is skipped and counted rather than failing the whole list.
     unreadable: list[str] = []
-    metas = store.list_sessions(limit=MAX_LIMIT, unreadable=unreadable)
+    metas = store.list_sessions(limit=None, unreadable=unreadable)
     matched = []
     for meta in metas:
         if agent and meta.get("agent") != agent:
@@ -217,17 +225,20 @@ def list_runs(
             continue
         matched.append(meta)
     # Only the rows the response carries are summarized (each one stats its log).
+    window = matched[offset:offset + limit]
     rows = []
-    for meta in matched[:limit]:
+    for meta in window:
         try:
             rows.append(summarize_session(meta, store))
         except Exception:
             name = meta.get("session_id")
             logger.exception("Dashboard could not summarize session %r", name)
             unreadable.append(name if isinstance(name, str) else "?")
-    failed = len(matched[:limit]) - len(rows)
-    return {"runs": rows, "total": len(matched) - failed, "limit": limit,
-            "unreadable_sessions": unreadable_report(unreadable)}
+    failed = len(window) - len(rows)
+    # The agent filter offers every agent in the store, not only those in this window.
+    agents = sorted({a for a in (m.get("agent") for m in metas) if isinstance(a, str) and a})
+    return {"runs": rows, "total": len(matched) - failed, "limit": limit, "offset": offset,
+            "agents": agents, "unreadable_sessions": unreadable_report(unreadable)}
 
 
 def _text(value: Any) -> str:
