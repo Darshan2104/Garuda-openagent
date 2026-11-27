@@ -131,15 +131,96 @@ class FlowExecutionService:
             approval_handler=approval_handler, permission_mode=permission_mode,
             checks=checks)
 
-    async def _run_owned(self, plan, context, *, flow: dict, name: str, flow_session: str,
-                         operation_binding: dict, on_admitted, approval_handler,
-                         permission_mode: str, checks: tuple[str, ...] | None,
-                         launch_kind: str = "flow",
-                         session_name: str | None = None, background_admission=None) -> FlowExecutionResult:
-        """The one owned parent path for dashboard flow and role-run starts."""
-        import sys
+    async def resume_prepared(self, plan, context, *, flow_session: str, start_binding: dict,
+                              operation_binding: dict, on_admitted, approval_handler,
+                              permission_mode: str,
+                              checks: tuple[str, ...] | None = None) -> FlowExecutionResult:
+        """Resume a dashboard-owned flow under the authority its start admitted.
 
+        The owned gateway recompiled ``plan`` from the start's record and proved its
+        digest and authority equal the start's (under the start's server epoch);
+        this repeats the authority comparison, then runs the engine's owned resume:
+        a checked flow from its resume checkpoint under its original checks, a flow
+        without checks from its settled stop. The engine owns the lease and proves
+        the stop resumable again under it. Never a new parent, never a replay.
+        """
+        from garuda.runtime.strict_store import StorageError
+        from garuda.scenarios.compile import LaunchContext
+        from garuda.scenarios.types import LaunchPlan
+
+        if (not isinstance(plan, LaunchPlan) or not isinstance(context, LaunchContext)
+                or plan.kind != "flow" or context.kind != "flow"
+                or context.flow is None or plan.flow != context.flow
+                or plan.target != context.target):
+            raise engine.FlowStopped("flow.prepared_invalid",
+                                     "the resumed starter plan and flow context disagree")
+        owner = start_binding.get("owner") if isinstance(start_binding, dict) else None
+        if not isinstance(owner, dict):
+            raise engine.FlowStopped("flow.resume_record_mismatch",
+                                     "the resumed flow's start binding is invalid")
+        self._validate_owned(plan, context, name=plan.target, flow_session=flow_session,
+                             operation_binding=operation_binding, on_admitted=on_admitted,
+                             approval_handler=approval_handler, permission_mode=permission_mode,
+                             authority_epoch=owner.get("epoch"))
+        if any(start_binding.get(key) != operation_binding[key]
+               for key in ("plan_digest", "authority_digest", "workspace_identity")):
+            raise engine.FlowStopped("flow.resume_record_mismatch",
+                                     "the resume binding disagrees with the flow's start")
+        try:
+            meta = await asyncio.to_thread(self.store.load_meta, flow_session)
+        except StorageError as exc:
+            raise engine.FlowStopped("flow.verification_reconciliation_required",
+                                     "protected flow metadata is unavailable") from exc
+        if meta.get("flow_operation") != start_binding:
+            raise engine.FlowStopped("flow.resume_record_mismatch",
+                                     "the flow's recorded start operation changed")
+        saved = await asyncio.to_thread(engine.owned_resume_check, self.store, flow_session, meta)
+        request = permissions = None
+        if checks is not None:
+            from garuda.core.permissions import PermissionEngine
+
+            self._validate_checks(checks)
+            permissions = PermissionEngine(mode=permission_mode,
+                                           workspace_root=_bound_root(plan.workspace))
+            request = self._freeze_checks(
+                context.resolved, plan.workspace, context.configuration_sources, permissions)
+            if request is None:
+                request = permissions = None
+        if (saved is not None) != (request is not None):
+            raise engine.FlowStopped(
+                "flow.verification_reconciliation_required",
+                "the resumed flow's checks changed since it started; checks are never replayed "
+                "or dropped on a resume")
+        if context.flow.get("isolation", "shared") != "shared":
+            raise engine.FlowStopped("flow.isolation_unsupported",
+                                     "a dashboard flow resumes only in the shared checkout")
         from garuda.flows.launch import launch_step
+
+        runner = engine.FlowRunner(
+            self.store, plan.workspace, plan.target, context.flow, context.resolved,
+            task=plan.task, launcher=launch_step, flow_session=flow_session,
+            verification_request=request, verification_permissions=permissions,
+            verification_cli_checks=checks if request is not None else None,
+            prepared_roles=context.role_plans, runtime_catalog=context.catalog,
+            authority_sources=context.source_facts,
+            configuration_sources=context.configuration_sources,
+            operation_binding=operation_binding, on_admitted=on_admitted,
+            approval_handler=approval_handler, prepared_fallbacks=context.fallback_plans)
+        result = await runner.run(
+            resume=True,
+            checked_checkpoint=meta["flow_resume_checkpoint"] if request is not None else None)
+        meta = self.store.load_meta(result.flow_session)
+        return FlowExecutionResult(result, meta.get("review"), meta.get("state"))
+
+    def _validate_owned(self, plan, context, *, name: str, flow_session: str,
+                        operation_binding: dict, on_admitted, approval_handler,
+                        permission_mode: str, authority_epoch) -> None:
+        """Refuse an owned operation whose plan, binding, ceiling or authority disagree.
+
+        ``authority_epoch`` is the server epoch the admitted authority was digested
+        under: a start's own owner, or for a resume the start it continues.
+        """
+        import sys
 
         binding_fields = {"version", "operation_id", "request_digest", "plan_digest",
                           "authority_digest", "workspace_identity", "owner"}
@@ -178,7 +259,8 @@ class FlowExecutionService:
                 or not isinstance(owner.get("identity"), str) or not owner["identity"]
                 or not isinstance(owner.get("epoch"), str)
                 or re.fullmatch(r"[0-9a-f]{32}", owner["epoch"]) is None
-                or not callable(on_admitted) or not callable(approval_handler)):
+                or not callable(on_admitted) or not callable(approval_handler)
+                or not isinstance(authority_epoch, str)):
             raise engine.FlowStopped("flow.prepared_invalid",
                                      "the admitted role or operation binding disagrees")
         if permission_mode not in {"readonly", "smart", "auto", "yolo"}:
@@ -191,13 +273,26 @@ class FlowExecutionService:
 
         authority = start_authority(
             plan, context, max_permission=permission_mode,
-            server_epoch=owner["epoch"], backend_available=True,
+            server_epoch=authority_epoch, backend_available=True,
             approval_available=True)
         if (not authority["can_start"]
                 or authority["digest"] != operation_binding["authority_digest"]):
             raise engine.FlowStopped("flow.authority_invalid",
                                      "the prepared start exceeds or disagrees with its authority")
 
+    async def _run_owned(self, plan, context, *, flow: dict, name: str, flow_session: str,
+                         operation_binding: dict, on_admitted, approval_handler,
+                         permission_mode: str, checks: tuple[str, ...] | None,
+                         launch_kind: str = "flow",
+                         session_name: str | None = None, background_admission=None) -> FlowExecutionResult:
+        """The one owned parent path for dashboard flow and role-run starts."""
+        from garuda.flows.launch import launch_step
+
+        owner = operation_binding.get("owner") if isinstance(operation_binding, dict) else None
+        self._validate_owned(plan, context, name=name, flow_session=flow_session,
+                             operation_binding=operation_binding, on_admitted=on_admitted,
+                             approval_handler=approval_handler, permission_mode=permission_mode,
+                             authority_epoch=owner.get("epoch") if isinstance(owner, dict) else None)
         if background_admission is not None:
             from garuda.scenarios.background import BackgroundAdmission
 
@@ -244,6 +339,8 @@ class FlowExecutionService:
                 verification_permissions=permissions, prepared_roles=context.role_plans,
                 runtime_catalog=context.catalog, authority_sources=context.source_facts,
                 configuration_sources=context.configuration_sources,
+                verification_cli_checks=(checks if request is not None and launch_kind == "flow"
+                                         and background_admission is None else None),
                 operation_binding=operation_binding, on_admitted=on_admitted,
                 approval_handler=approval_handler, launch_kind=launch_kind,
                 session_name=session_name, execution_workspace=execution, worktree_plan=worktree,
@@ -308,11 +405,15 @@ class FlowExecutionService:
             raise engine.FlowStopped("flow.verification_reconciliation_required",
                                      "protected flow metadata is unavailable") from exc
         policy = meta.get("publication_policy")
-        if isinstance(policy, dict) and policy.get("kind") == "owned-flow":
+        if ((isinstance(policy, dict) and policy.get("kind") == "owned-flow")
+                or isinstance(meta.get("flow_operation"), dict)):
             raise engine.FlowStopped(
                 "flow.operation_managed",
-                "dashboard-owned flow operations are projected from their durable intent; "
-                "they are never resumed automatically")
+                f"flow {flow_session} was started from the dashboard, so only the dashboard's "
+                "owned flow gateway resumes it, under the authority its start admitted: press "
+                "Resume on its session page, or POST /api/scenarios/resume with "
+                f'{{"operation_id": "<new UUIDv4>", "session_id": "{flow_session}"}} to the '
+                "write-mode dashboard that serves its workspace")
         if (isinstance(policy, dict) and policy.get("kind") == "flow-verification"
                 and meta.get("flow_verification_phase") is None
                 and meta.get("flow_verification_commit") is None):

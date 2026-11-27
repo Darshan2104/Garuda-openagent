@@ -88,6 +88,11 @@ RESUMABLE_CHECKED_STOPS = {"workspace.readonly_unenforced", "flow.step_failed", 
                            "flow.artifact_malformed", "flow.artifact_too_large",
                            "flow.review_invalid", INTERRUPTED_STOP, DEADLINE_STOP, SILENT_STOP,
                            NO_PROGRESS_STOP, MAX_TURNS_STOP, REFUSED_STOP}
+#: A dashboard-owned flow without checks resumes (through its owned gateway, never
+#: ``garuda flow resume``) only from these settled stops: every resumable checked
+#: stop, and a Claude usage-limit pause (#834) once its reset has passed.
+QUOTA_WAIT_STOP = "flow.quota_wait"
+OWNED_RESUMABLE_STOPS = frozenset(RESUMABLE_CHECKED_STOPS | {QUOTA_WAIT_STOP})
 #: While a tool call is in flight a silence-watched step waits this long (#828).
 DEFAULT_TOOL_SILENCE_MIN = 120
 
@@ -437,6 +442,123 @@ def unsettled_attempts(store, flow_session: str) -> list[tuple[str, int]]:
             and not (directory / _receipt_name(entry["step"], entry["attempt"])).exists()]
 
 
+def _quota_reset(store, flow_session: str, stop: dict) -> float | None:
+    """When a settled ``flow.quota_wait`` stop may continue: its reported reset plus
+    quota recovery's margin, or ``None`` when the stop recorded no reset."""
+    from garuda.acp.protocol import rate_limit_fields
+    from garuda.flows.quota_recovery import CLAUDE_RESET_MARGIN_SEC
+
+    rows = [r for r in receipts(store, flow_session)
+            if r.get("step") == stop.get("step") and r.get("status") == "stopped"
+            and (r.get("stop") or {}).get("code") == QUOTA_WAIT_STOP]
+    if not rows:
+        return None
+    cause = (rows[-1].get("stop") or {}).get("cause")
+    limit = rate_limit_fields(cause.get("limit"), validated=True) if isinstance(cause, dict) else {}
+    reset = limit.get("resets_at")
+    return None if reset is None else float(reset + CLAUDE_RESET_MARGIN_SEC)
+
+
+def owned_resume_check(store, flow_session: str, meta: dict, *, now: float | None = None):
+    """Refuse a dashboard-owned flow that cannot resume now; return its saved check request.
+
+    Read only. The owned gateway runs it before admitting a resume operation and
+    the engine repeats it under the workspace lease. Only a settled stop that
+    ``garuda flow resume`` would continue for the same kind of flow qualifies:
+    a checked flow needs its resume checkpoint (a resumable checked stop before
+    its checks began); a flow without checks needs a stop in
+    :data:`OWNED_RESUMABLE_STOPS` or an interruption between steps. Running,
+    completed, quarantined and unsettled (launched, never receipted) states
+    refuse; nothing is written to make a state resumable. Returns the checked
+    flow's original check request, or ``None`` for a flow without checks.
+    """
+    import time
+
+    from garuda.runtime.strict_store import StorageError
+
+    state = meta.get("flow_state")
+    policy = meta.get("publication_policy")
+    kind = policy.get("kind") if isinstance(policy, dict) else None
+    if (kind not in {"owned-flow", "flow-verification"}
+            or not isinstance(meta.get("flow_operation"), dict)
+            or "background_operation" in meta or meta.get("launch_kind") == "run"):
+        raise FlowStopped("flow.resume_not_owned",
+                          f"flow {flow_session} was not started by a dashboard flow gateway")
+    if state == "completed":
+        raise FlowStopped("flow.resume_completed",
+                          f"flow {flow_session} already completed; there is nothing to resume")
+    if state == "running":
+        raise FlowStopped(
+            "flow.recovery_required",
+            f"flow {flow_session} is still recorded running; if the dashboard that ran it "
+            f"stopped, run `garuda runtime recover --session {flow_session}` first, which "
+            "proves its processes gone and releases the workspace")
+    if state == "quarantined":
+        raise FlowStopped(
+            "flow.quarantined",
+            f"flow {flow_session} is quarantined: Garuda could not prove a step's process tree "
+            "closed or its evidence complete, so it is never resumed; inspect the workspace "
+            "(`git status`) and start a new flow")
+    if state not in {"stopped", "interrupted"} or meta.get("status") != "failed":
+        raise FlowStopped("flow.stop_not_resumable",
+                          f"flow {flow_session} is {state}; only a settled stop resumes")
+    try:
+        pending = unsettled_attempts(store, flow_session)
+        held = [r for r in receipts(store, flow_session) if r.get("status") == "quarantined"]
+    except (OSError, ValueError) as exc:
+        raise FlowStopped("flow.verification_reconciliation_required",
+                          "the flow's step records are unreadable; it is never resumed") from exc
+    if pending:
+        step, attempt = pending[0]
+        raise FlowStopped(
+            "flow.interrupted_unsettled",
+            f"step {step} (attempt {attempt}) was launched and never settled, so Garuda cannot "
+            "prove its process tree is gone; it is never replayed. Inspect the workspace "
+            "(`git status`) and start a new flow", step=step)
+    if held:
+        raise FlowStopped(
+            "flow.quarantined",
+            f"step {held[0]['step']} (attempt {held[0].get('attempt')}) is quarantined; it is "
+            "never replayed: inspect the workspace and start a new flow", step=held[0]["step"])
+    stop = meta.get("flow_stop") if isinstance(meta.get("flow_stop"), dict) else {}
+    if state == "stopped" and stop.get("code") == QUOTA_WAIT_STOP:
+        try:
+            resume_at = _quota_reset(store, flow_session, stop)
+        except (OSError, ValueError) as exc:
+            raise FlowStopped("flow.verification_reconciliation_required",
+                              "the flow's step records are unreadable; it is never resumed") from exc
+        current = time.time() if now is None else now
+        if resume_at is not None and current < resume_at:
+            raise FlowStopped(
+                "flow.resume_quota_wait",
+                f"flow {flow_session} is paused on a usage limit that resets at "
+                f"{_dt.datetime.fromtimestamp(resume_at, _dt.timezone.utc).isoformat()} "
+                "(with Garuda's margin); resume it after that", step=stop.get("step"))
+    if kind == "flow-verification":
+        from garuda.flows.verification_records import FlowVerificationRecords
+
+        try:
+            request = FlowVerificationRecords(
+                store.session_dir(flow_session), flow_session).resume_request(meta, owned=True)
+        except (StorageError, OSError, ValueError) as exc:
+            raise FlowStopped(
+                "flow.verification_reconciliation_required",
+                "the checked flow's original check request or check records are missing or "
+                "changed; checks are never replayed without them") from exc
+        if request is None:
+            raise FlowStopped(
+                "flow.stop_not_resumable",
+                f"the checked flow {state} with {stop.get('code') or 'no settled stop'} and has "
+                "no resume checkpoint (only a settled step stop before its checks began "
+                "resumes); start a new flow")
+        return request
+    if state == "stopped" and stop.get("code") not in OWNED_RESUMABLE_STOPS:
+        raise FlowStopped("flow.stop_not_resumable",
+                          f"the flow stopped with {stop.get('code')}, which is not resumable; "
+                          "start a new flow")
+    return None
+
+
 def recover(store, flow_session: str) -> list[str]:
     """Quarantine every launched step that has no receipt. Never replays."""
     directory = flow_dir(store, flow_session) / "receipts"
@@ -480,9 +602,10 @@ class FlowRunner:
                  verification_cli_checks: tuple[str, ...] | None = None):
         if (verification_request is None) != (verification_permissions is None):
             raise ValueError("flow verification requires its frozen permission ceiling")
-        if verification_cli_checks is not None and (verification_request is None
-                or operation_binding is not None or background_admission is not None):
-            raise ValueError("a saved check selection requires a standalone checked flow")
+        if verification_cli_checks is not None and (
+                verification_request is None or background_admission is not None
+                or (operation_binding is not None and launch_kind != "flow")):
+            raise ValueError("a saved check selection requires a standalone or owned checked flow")
         if (operation_binding is None) != (on_admitted is None):
             raise ValueError("owned operation binding and admission callback are inseparable")
         if launch_kind not in {"flow", "run"}:
@@ -534,6 +657,11 @@ class FlowRunner:
         self.worktree_plan = worktree_plan
         self.background_admission = background_admission
         self.require_owned = verification_request is not None or operation_binding is not None
+        #: A dashboard-owned flow (not a run parent or a queued background run): it
+        #: settles interruptions and review continuations so its owned gateway can
+        #: resume it, as ``garuda flow resume`` resumes a checked CLI flow.
+        self.owned_flow = (operation_binding is not None and background_admission is None
+                           and launch_kind == "flow")
         self._evidence = None
         self._evidence_count = 0
         self._prior_attempts = {}
@@ -1009,8 +1137,11 @@ class FlowRunner:
 
         try:
             prior = self.store.load_meta(self.flow_session)
-            if self._verification_records().resume_request(prior) != self._resume_request():
+            owned = self.operation_binding is not None
+            if self._verification_records().resume_request(prior, owned=owned) != self._resume_request():
                 raise CorruptRecord("the original check authority or flow definition changed")
+            if owned:
+                self._owned_start(prior)
             checkpoint = prior["flow_resume_checkpoint"]
             baseline = prior["flow_evidence_baseline"]["baseline_digest"]
             entries, attempts = self._checked_history()
@@ -1027,6 +1158,32 @@ class FlowRunner:
         except (StorageError, OSError, ValueError, KeyError, TypeError) as exc:
             raise FlowStopped("flow.verification_reconciliation_required",
                               "original check authority or stopped flow evidence could not be proved") from exc
+
+    def _owned_start(self, prior: dict) -> None:
+        """The resumed flow's recorded start binds the same plan, authority and workspace."""
+        start = prior.get("flow_operation")
+        if (not isinstance(start, dict) or prior.get("workspace") != self.workspace
+                or prior.get("task") != self.task
+                or any(start.get(key) != self.operation_binding.get(key)
+                       for key in ("plan_digest", "authority_digest", "workspace_identity"))):
+            raise FlowStopped("flow.resume_record_mismatch",
+                              "the resumed flow's start record, workspace or task disagrees "
+                              "with this resume")
+
+    def _owned_resume_inputs(self) -> dict:
+        """The stopped owned flow (without checks) this resume continues, proved under its lease."""
+        from garuda.runtime.strict_store import StorageError
+
+        try:
+            prior = self.store.load_meta(self.flow_session)
+        except StorageError as exc:
+            raise FlowStopped("flow.verification_reconciliation_required",
+                              "protected flow metadata is unavailable") from exc
+        self._owned_start(prior)
+        if owned_resume_check(self.store, self.flow_session, prior) is not None:
+            raise FlowStopped("flow.verification_reconciliation_required",
+                              "a checked owned flow resumes only from its checkpoint")
+        return prior
 
     def _crash_inputs(self, crash: dict):
         """The settled history of a checked flow whose parent died mid-step, read only.
@@ -1266,6 +1423,13 @@ class FlowRunner:
         if crash is not None and not crash_resume:
             raise FlowStopped("flow.verification_reconciliation_required",
                               "crash continuation applies only to a checked flow's resume")
+        # A dashboard-owned flow without checks resumes through its owned gateway:
+        # read only until the lease is held, never quarantining or replaying.
+        owned_resume = (resume and not checked_resume and not crash_resume
+                        and self.operation_binding is not None)
+        if owned_resume and (not self.owned_flow or self.verification_request is not None):
+            raise FlowStopped("flow.verification_reconciliation_required",
+                              "a checked owned flow resumes only from its checkpoint")
         if (self.require_owned or self.quota_recovery is not None) and any(
                 step.get("retries") for step in self.steps):
             # An owned or checked flow accounts for every attempt in its evidence
@@ -1274,7 +1438,7 @@ class FlowRunner:
             raise FlowStopped("flow.retries_unsupported",
                               "step retries are not supported in checked, dashboard-owned or "
                               "quota-recovered flows; remove retries or run the flow without them")
-        if resume and not checked_resume and not crash_resume:
+        if resume and not checked_resume and not crash_resume and not owned_resume:
             from garuda.runtime.strict_store import StorageError
 
             try:
@@ -1309,7 +1473,7 @@ class FlowRunner:
         lease.acquire()
         lease.start_heartbeat()
         result = FlowResult(self.flow_session)
-        begun = resume and not checked_resume and not crash_resume
+        begun = resume and not checked_resume and not crash_resume and not owned_resume
         prior = None
         crash_intent = None
         confinement_stop = None
@@ -1344,6 +1508,8 @@ class FlowRunner:
             elif crash_resume:
                 prior, baseline_digest, coverage, existing, crash_intent = await _settled_sync(
                     self._crash_inputs, crash)
+            elif owned_resume:
+                prior = await _settled_sync(self._owned_resume_inputs)
             if self.quota_recovery is not None:
                 from garuda.flows.quota_recovery import RecoveryWaiting
 
@@ -1353,7 +1519,7 @@ class FlowRunner:
                     raise FlowStopped("flow.quota_wait", str(exc)) from exc
                 except (OSError, ValueError) as exc:
                     raise FlowStopped("flow.recovery_changed", str(exc)) from exc
-            if resume and not checked_resume and not crash_resume:
+            if resume and not checked_resume and not crash_resume and not owned_resume:
                 from garuda.runtime.ownership import current_owner
                 from garuda.runtime.session_state import started
 
@@ -1374,6 +1540,18 @@ class FlowRunner:
                         "flow.authority_changed",
                         "admitted starter sources changed before the first step") from exc
             self._validate_operation_workspace()
+            if owned_resume:
+                # Admission of the resume operation: its binding publishes with the
+                # running state, after every check above and before any step.
+                from garuda.runtime.ownership import current_owner
+                from garuda.runtime.session_state import started
+
+                await self._publish(self.flow_session, {
+                    "flow_state": "running", "status": "running", "flow_stop": None,
+                    "flow_resume_operation": dict(self.operation_binding),
+                    "state": started(current_owner().to_dict())})
+                begun = True
+                await self.on_admitted(self.flow_session, self.operation_binding["lease_epoch"])
             if self.verification_request is not None:
                 from garuda.core.acceptance_work import AcceptanceWorkError, owned_call
                 from garuda.workspace.flow_evidence import OwnedFlowEvidence
@@ -1428,8 +1606,13 @@ class FlowRunner:
 
                     await self._publish(self.flow_session, {
                         "flow_state": "running", "status": "running", "flow_stop": None,
-                        "flow_resume_checkpoint": None, "state": started(current_owner().to_dict())})
+                        "flow_resume_checkpoint": None, "state": started(current_owner().to_dict()),
+                        **({"flow_resume_operation": dict(self.operation_binding)}
+                           if self.operation_binding is not None else {})})
                     begun = True
+                    if self.operation_binding is not None:
+                        await self.on_admitted(self.flow_session,
+                                               self.operation_binding["lease_epoch"])
                 else:
                     try:
                         baseline = await self._evidence.begin()
@@ -1945,7 +2128,8 @@ class FlowRunner:
             for target in (step, terminal):
                 if pair == start and pending == terminal["id"] and target is step:
                     continue
-                if self.quota_recovery is not None or self.verification_cli_checks is not None:
+                if (self.quota_recovery is not None or self.verification_cli_checks is not None
+                        or self.owned_flow):
                     await self._publish(self.flow_session, {"flow_continuation": {
                         "version": 1, "build": step["id"], "reviewer": terminal["id"],
                         "round": pair, "pending": target["id"], "history": history,
@@ -2008,7 +2192,8 @@ class FlowRunner:
                     "review": review, "review_approvals": dict(self._review_approvals)})
                 if self.quota_recovery is not None:
                     self.quota_recovery.continuation = None
-                if self.quota_recovery is not None or self.verification_cli_checks is not None:
+                if (self.quota_recovery is not None or self.verification_cli_checks is not None
+                        or self.owned_flow):
                     await self._publish(self.flow_session, {"flow_continuation": None})
                 return
             # The review artifact was redacted when stored; redact again so no
@@ -2413,10 +2598,12 @@ class FlowRunner:
             raise FlowStopped(exc.code, str(exc), step=step["id"]) from exc
         except StepInterrupted as exc:
             # The owned worker tree and its confinement closed under a signal
-            # (#760). Only a checked CLI flow settles that attempt as a
-            # resumable stop; any other caller keeps the cancellation.
-            if not (self.require_owned and self.verification_cli_checks is not None
-                    and self._evidence is not None):
+            # (#760). A checked flow with its evidence, or a dashboard-owned flow
+            # without checks, settles that attempt as a resumable stop; any other
+            # caller keeps the cancellation.
+            if not (self.require_owned and (
+                    (self.verification_cli_checks is not None and self._evidence is not None)
+                    or (self.owned_flow and self.verification_request is None))):
                 raise
             interrupted = exc
             outcome = exc.result

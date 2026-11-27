@@ -1,4 +1,10 @@
-"""Private, at-most-once operation records for a future owned flow gateway.
+"""Private, at-most-once operation records for the owned flow gateway.
+
+Version 1 records a flow or role-run start, version 2 a background run's start
+and version 3 an owned resume of a flow a version-1 start admitted. A resume
+record's ``reserved_session`` is the existing flow session it continues; a
+per-session claim (``resume-<session>.json``) names its latest resume operation,
+so at most one resume of a flow is unfinished while its owner may be alive.
 
 This store records identity and lifecycle facts; reading or advancing an intent
 does not launch, resume, reclaim a lease, or prove descendant closure. Callers
@@ -66,6 +72,18 @@ class IntentStateError(Exception):
     """The requested lifecycle transition is stale or unauthorized."""
 
 
+class ResumeInProgress(IntentConflict):
+    """Another resume operation of the same flow is unfinished and its owner may be alive."""
+
+    def __init__(self, operation_id: str):
+        super().__init__(f"resume operation {operation_id} of this flow is still unfinished")
+        self.operation_id = operation_id
+
+
+#: Phases of an operation that may still act.
+UNFINISHED = frozenset({"prepared", "launch-authorized", "admitted"})
+
+
 def _uuid4(value: object) -> bool:
     if not isinstance(value, str):
         return False
@@ -93,13 +111,21 @@ def _owner(value: object) -> bool:
 def _validate(record: object) -> dict:
     if type(record) is not dict:
         raise CorruptRecord("launch intent has unknown or missing fields")
-    if type(record.get("version")) is not int or record["version"] not in {1, 2}:
+    if type(record.get("version")) is not int or record["version"] not in {1, 2, 3}:
         raise CorruptRecord("launch intent version is unsupported")
-    fields = _FIELDS | {"queue_admission"} if record["version"] == 2 else _FIELDS
+    fields = (_FIELDS | {"queue_admission"} if record["version"] == 2
+              else _FIELDS | {"resumes"} if record["version"] == 3 else _FIELDS)
     if set(record) != fields:
         raise CorruptRecord("launch intent has unknown or missing fields")
     if not _uuid4(record["operation_id"]) or not _uuid4(record["reserved_session"]):
         raise CorruptRecord("launch intent has an invalid operation or session ID")
+    if record["version"] == 3:
+        resumes = record["resumes"]
+        if (type(resumes) is not dict or set(resumes) != {"session_id", "start_operation_id"}
+                or resumes["session_id"] != record["reserved_session"]
+                or not _uuid4(resumes["start_operation_id"])
+                or resumes["start_operation_id"] == record["operation_id"]):
+            raise CorruptRecord("resume intent does not name its flow and start operation")
     if any(type(record[key]) is not str or _DIGEST.fullmatch(record[key]) is None
            for key in ("request_digest", "plan_digest", "authority_digest")):
         raise CorruptRecord("launch intent has an invalid digest")
@@ -324,8 +350,42 @@ class LaunchIntentStore:
     @staticmethod
     def _write(directory_fd: int, operation_id: str, record: dict) -> None:
         encoded = json.dumps(_validate(record), sort_keys=True, separators=(",", ":")).encode()
+        LaunchIntentStore._publish(directory_fd, operation_id, encoded)
+
+    @staticmethod
+    def _read_claim(directory_fd: int, session_id: str) -> str | None:
+        """The operation ID the flow's resume claim names, or ``None`` without a claim."""
+        name = f"resume-{session_id}.json"
+        try:
+            fd = os.open(name, os.O_RDONLY | os.O_NONBLOCK | _NOFOLLOW, dir_fd=directory_fd)
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            raise CorruptRecord(f"cannot open resume claim: {exc}") from exc
+        try:
+            info = os.fstat(fd)
+            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                    or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o600
+                    or info.st_size > 1024):
+                raise CorruptRecord("resume claim is not a small owner-only regular file")
+            raw = os.read(fd, 1025)
+        finally:
+            os.close(fd)
+        try:
+            claim = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_pairs)
+        except (UnicodeError, ValueError) as exc:
+            raise CorruptRecord("resume claim JSON is invalid") from exc
+        if (type(claim) is not dict or set(claim) != {"version", "session_id", "operation_id"}
+                or claim["version"] != 1 or claim["session_id"] != session_id
+                or not _uuid4(claim["operation_id"])):
+            raise CorruptRecord("resume claim is invalid")
+        return claim["operation_id"]
+
+    @staticmethod
+    def _publish(directory_fd: int, stem: str, encoded: bytes) -> None:
         if len(encoded) > _MAX_BYTES:
             raise StorageUnavailable("launch intent exceeds 64 KiB")
+        operation_id = stem
         temporary = f".{operation_id}.{uuid.uuid4().hex}.tmp"
         fd = None
         try:
@@ -392,6 +452,55 @@ class LaunchIntentStore:
                 if any(existing[key] != candidate[key] for key in _IDENTITY):
                     raise IntentConflict("operation ID already names another launch request")
                 return existing, False
+            self._write(directory_fd, operation_id, candidate)
+            return candidate, True
+
+    def prepare_resume(self, *, operation_id: str, session_id: str, start_operation_id: str,
+                       request_digest: str, plan_digest: str, authority_digest: str,
+                       workspace: str, workspace_identity: list[int], compiler_version: int,
+                       catalog_version: int, owner: Owner) -> tuple[dict, bool]:
+        """Prepare a version-3 resume of ``session_id``, at most one unfinished per flow.
+
+        An existing operation with the same identity is returned unchanged; another
+        flow or start under the same ID conflicts. A different resume of the same
+        flow that is unfinished, with an owner not proved dead, raises
+        :class:`ResumeInProgress`. The claim is published before the record, so a
+        failure between them leaves a claim naming no record, which blocks nothing.
+        """
+        if (not isinstance(owner, Owner) or not _owner(owner.to_dict())
+                or owner.pid != os.getpid() or owner_liveness(owner.to_dict()) is not True):
+            raise IntentStateError("launch intent owner identity is not live and proven")
+        with self._locked(create=True) as (directory_fd, store_identity):
+            assert directory_fd is not None
+            candidate = {
+                "version": 3, "operation_id": operation_id,
+                "request_digest": request_digest, "plan_digest": plan_digest,
+                "authority_digest": authority_digest, "workspace": workspace,
+                "workspace_identity": workspace_identity, "store_identity": store_identity,
+                "compiler_version": compiler_version, "catalog_version": catalog_version,
+                "reserved_session": session_id, "owner": owner.to_dict(),
+                "sequence": 0, "phase": "prepared", "session_id": None,
+                "lease_epoch": None, "outcome": None, "reason": None,
+                "resumes": {"session_id": session_id, "start_operation_id": start_operation_id},
+            }
+            _validate(candidate)
+            existing = self._read(directory_fd, operation_id)
+            if existing is not None:
+                if existing["store_identity"] != store_identity:
+                    raise CorruptRecord("launch intent belongs to another session store")
+                if any(existing.get(key) != candidate[key]
+                       for key in _IDENTITY | {"reserved_session", "resumes"}):
+                    raise IntentConflict("operation ID already names another launch request")
+                return existing, False
+            claimed = self._read_claim(directory_fd, session_id)
+            if claimed is not None and claimed != operation_id:
+                active = self._read(directory_fd, claimed)
+                if (active is not None and active["phase"] in UNFINISHED
+                        and owner_liveness(active["owner"]) is not False):
+                    raise ResumeInProgress(claimed)
+            self._publish(directory_fd, f"resume-{session_id}", json.dumps(
+                {"version": 1, "session_id": session_id, "operation_id": operation_id},
+                sort_keys=True, separators=(",", ":")).encode())
             self._write(directory_fd, operation_id, candidate)
             return candidate, True
 

@@ -547,9 +547,12 @@ async def test_gateway_shutdown_closes_an_active_owned_child(tmp_path, monkeypat
         assert response.status in {201, 202}
         projection = await ctx.flow_starts.status(operation_id)
         assert projection["status"] == "terminal"
-        assert projection["outcome"] == "interrupted"
+        # The supervisor proved the cancelled child's tree closed, so the engine
+        # settled the attempt as the resumable stop an owned resume continues.
+        assert projection["outcome"] == "stopped"
         meta = ctx.store.load_meta(projection["session_id"])
-        assert meta["flow_state"] == "interrupted"
+        assert meta["flow_state"] == "stopped"
+        assert meta["flow_stop"]["code"] == "flow.interrupted"
 
         from garuda.interfaces.run_guard import WorkspaceLeaseGuard
 

@@ -289,7 +289,10 @@ step retries (`starter.retries_unsupported`), a flow `isolation` other than
 `shared` (`starter.isolation_unsupported`), parallel groups
 (`starter.parallel_ownership_unavailable`) and a `long_run` step on a non-ACP role
 (`flow.long_run_unsupported`). Run those with the equivalent command in a
-terminal. A dashboard-started flow is never resumed automatically.
+terminal. A dashboard-started flow is never resumed automatically; it resumes
+explicitly through the dashboard's owned resume, under the plan and authority its
+start admitted ([Resume a dashboard flow](../guides/web-dashboard.md#resume-a-dashboard-flow)),
+and `garuda flow resume` refuses it with `flow.operation_managed`.
 
 ## Inspect, interrupt and recover
 

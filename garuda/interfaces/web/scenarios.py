@@ -114,6 +114,28 @@ def start(request, ctx):
               202 if payload.get("status") == "admission-pending" else 200)
 
 
+def resume(request, ctx):
+    """Admit one owned resume of a dashboard-started flow on the server loop."""
+    from garuda.interfaces.web import live as live_module
+    from garuda.scenarios.gateway import FlowResumeRequest, FlowStartError
+
+    if ctx.flow_starts is None or ctx.loop is None:
+        return error("starter.gateway_unavailable",
+                     "The dashboard has no owned flow gateway.", status=503)
+    try:
+        spec = FlowResumeRequest.parse(parse_json(request.body or b"{}"))
+        payload = live_module.call_on_loop(ctx.loop, ctx.flow_starts.resume(spec))
+    except ValueError as exc:
+        return error("flow.resume_invalid", str(exc), status=400)
+    except FlowStartError as exc:
+        return error(exc.code, str(exc), status=exc.status)
+    except TimeoutError:
+        return error("starter.gateway_unavailable",
+                     "The flow gateway did not answer the resume in time.", status=504)
+    return ok(payload, status=201 if payload.get("new") else
+              202 if payload.get("status") == "admission-pending" else 200)
+
+
 def operation(request, ctx, operation_id):
     """Read one operation and refresh its dashboard approval heartbeat."""
     from garuda.interfaces.web import live as live_module

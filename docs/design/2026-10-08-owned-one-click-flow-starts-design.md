@@ -244,6 +244,26 @@ fixtures that manufacture publication/closure receipts:
   report live vendor/Docker/tmux/Harbor/OS coverage accurately. Update adopted
   architecture/reference/roadmap and durable decisions only when behavior lands.
 
+## Owned resume (2026-11)
+
+A dashboard-started flow is resumed only as a version-3 operation of the same
+gateway (`POST /api/scenarios/resume`), never by `garuda flow resume`. The CLI
+cannot reach the loop-owned gateway, its approval broker or its ceiling, so it
+keeps refusing with `flow.operation_managed` and names the owned resume instead.
+A resume intent records the flow session and its start operation; its digests
+are the start's. Admission recompiles the start's record (its compiled task,
+sources and inputs, not re-read) to the start's exact plan digest and recomputes
+the authority digest under the start's server epoch and the current ceiling, so
+a changed definition, role, check or ceiling refuses. A per-flow claim admits at
+most one unfinished resume while its owner may be alive. The engine re-proves
+the stop under the workspace lease and publishes `flow_resume_operation` (the
+start's `flow_operation` stays) before any step; a failure before that binding is
+a proved refusal, after it the ordinary terminal, quarantine or uncertainty
+rules apply and nothing is replayed. Owned flows settle a proved-closed
+interruption as `flow.interrupted` and record review continuations; checked
+owned flows save their check selection and stop checkpoint as checked CLI flows
+do, and resume from that checkpoint under the original checks.
+
 The user approved the shared-gateway approach, Linux-first rollout, and shared
 strict-admission/authority/cleanup prerequisites on 2026-10-12. #336 implemented
 and exercised those prerequisites for flow-kind starts; #316 remains a separate
