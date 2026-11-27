@@ -25,6 +25,8 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from garuda.core import read_model
+
 #: How many finished sessions the page lists.
 RECENT = 8
 #: A ceiling per list, so a store with hundreds of crashed runs still answers with a
@@ -34,67 +36,16 @@ LIST_CAP = 50
 #: The row fields the page renders, all copied from ``session_row``.
 ROW_FIELDS = (
     "session_id", "name", "kind", "origin", "background", "runtime", "model", "label",
-    "crashed", "state", "verification", "self_check", "queue", "quota_recovery",
+    "crashed", "pause", "state", "verification", "self_check", "queue", "quota_recovery",
     "created_at", "updated_at",
 )
 
-QUOTA_WAIT = "waiting-for-quota"
-
-
-#: The stop code a usage-limit pause records (``flows.quota_recovery`` and the engine raise
-#: it by this literal; neither exports a constant for it).
-QUOTA_STOP = "flow.quota_wait"
-
-
-def _pause_kinds() -> dict[str, str]:
-    """``{stop code: pause kind}`` for the stops a flow pauses on, from the engine's own
-    constants: its liveness stops and a long step's loop stops, each kept only while the
-    engine lists it in ``RESUMABLE_CHECKED_STOPS`` (so ``flow resume`` runs the step again).
-    An ordinary failed step is resumable too, but it is a failure, not a pause."""
-    from garuda.flows.engine import LIVENESS_STOPS, RESUMABLE_CHECKED_STOPS
-    from garuda.flows.long_step import LOOP_STOPS
-
-    kinds = {code: kind for kind, code in LIVENESS_STOPS.items()}
-    for code in LOOP_STOPS:
-        kinds.setdefault(code, code.removeprefix("flow.step_"))
-    return {code: kind for code, kind in kinds.items() if code in RESUMABLE_CHECKED_STOPS}
-
-
-def quota_limit(meta: dict) -> dict:
-    """When a usage-limit pause resets, from the quota-recovery record (``reset_at``) or the
-    stop's own cause (``cause.limit.resets_at``), with the limit window; ``None`` values
-    when neither recorded it."""
-    recovery = meta.get("quota_recovery") if isinstance(meta.get("quota_recovery"), dict) else {}
-    stop = meta.get("flow_stop") if isinstance(meta.get("flow_stop"), dict) else {}
-    cause = stop.get("cause") if isinstance(stop.get("cause"), dict) else {}
-    limit = cause.get("limit") if isinstance(cause.get("limit"), dict) else {}
-
-    def stamp(value):
-        return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
-
-    reset = stamp(recovery.get("reset_at"))
-    if reset is None:
-        reset = stamp(limit.get("resets_at"))
-    window = recovery.get("rate_limit_type") or limit.get("rate_limit_type")
-    return {"reset_at": reset, "rate_limit_type": window if isinstance(window, str) else None,
-            "source": recovery.get("quota_source") if isinstance(recovery.get("quota_source"), str)
-            else None}
-
-
-def _pause(meta: dict) -> dict | None:
-    """Why a stopped flow is paused on a resumable stop, from its recorded fields, or ``None``."""
-    if meta.get("kind") != "flow":
-        return None
-    recovery = meta.get("quota_recovery")
-    stop = meta.get("flow_stop")
-    code = stop.get("code") if isinstance(stop, dict) else None
-    if (isinstance(recovery, dict) and recovery.get("state") == QUOTA_WAIT) or code == QUOTA_STOP:
-        # The reset time and window only when recorded (a Codex wait records neither).
-        return {"kind": "quota", **{k: v for k, v in quota_limit(meta).items() if v is not None}}
-    kinds = _pause_kinds()
-    if meta.get("flow_state") == "stopped" and code in kinds:
-        return {"kind": kinds[code]}
-    return None
+# The pause facts live in the shared read model, so the Overview, the session row and
+# `garuda sessions --json` report the same pause. The old names stay importable here.
+_pause = read_model.flow_pause
+_pause_kinds = read_model.pause_kinds
+quota_limit = read_model.quota_limit
+QUOTA_STOP = read_model.QUOTA_STOP
 
 
 def _progress(store, meta: dict) -> dict | None:

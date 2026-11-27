@@ -294,6 +294,18 @@ def suite(workdir: Path, shots: Path, *, owned_starts: bool) -> list[str]:
         return run_check("check_overview.py", port, shots,
                          {**env, "GARUDA_CHECK_EMPTY_BASE": f"http://127.0.0.1:{empty_port}/"})
 
+    # --- design invariants on every page: phone width, pills, chips, focus, paused flows --
+    def design():
+        sessions = workdir / "design" / "sessions"
+        env = {"GARUDA_GLOBAL_SETTINGS": str(workdir / "design" / "settings.yaml")}
+        seed(str(HERE / "seed_sessions.py"), str(sessions), str(workdir), "--overview",
+             "--observability", env=env)
+        port = dashboard(sessions, "web-design.log", extra_env=env,
+                         extra_args=["--allow-workspace", str(workdir)])
+        if "read-only" in bases:  # the run traces come from the inspector's fixtures
+            env["GARUDA_CHECK_RO_BASE"] = bases["read-only"]
+        return run_check("check_design.py", port, shots, env)
+
     # --- data correctness: unknowns, outcomes and one login story across pages --
     def data_correctness():
         # Its own directory: the usage ledger and the login record live beside the settings
@@ -378,6 +390,7 @@ def suite(workdir: Path, shots: Path, *, owned_starts: bool) -> list[str]:
         # consults: nested lanes, rollups, setup and usage by origin
         ("check_consults.py", lambda: seeded("con", "check_consults.py", "--consults")),
         ("check_overview.py", overview),
+        ("check_design.py", design),
         ("check_data_correctness.py", data_correctness),
         ("check_runs_list.py + check_shell.py", shell),
         ("check_scenarios.py", starters),

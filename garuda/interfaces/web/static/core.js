@@ -290,7 +290,7 @@ function loginPill(check) {
 
 function statusPill(status) {
   var cls = STATUS_PILL[status] || "unknown";
-  return '<span class="pill ' + cls + '">' + esc(status || "?") + "</span>";
+  return '<span class="pill ' + cls + '" data-status="' + esc(status || "") + '">' + esc(status || "?") + "</span>";
 }
 
 /* --- polling -------------------------------------------------------------

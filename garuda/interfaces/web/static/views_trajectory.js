@@ -182,7 +182,7 @@ function updateFlowTrace(payload, row, first) {
   TRACE_DEFERRED = false;
   keepScrollPosition(function () {
     patchRegion(el("trace-status"),
-      '<span class="pill ' + flowPillClass(row) + '">' + esc(row.label || "unknown") + "</span>", first);
+      '<span class="pill ' + flowPillClass(row) + '">' + esc(row.pause ? "paused" : (row.label || "unknown")) + "</span>", first);
     patchRegion(el("flow-progress"), active ? flowProgressHtml(row) : "", first);
     patchRegion(el("trace-tiles"), flowTilesHtml(payload.run, row, ctx), first);
     patchRegion(el("flow-summary"), flowSummaryHtml(payload.run, row, ctx), first);
@@ -194,6 +194,7 @@ function updateFlowTrace(payload, row, first) {
 
 function flowPillClass(row) {
   if (isActive(row.state)) return "running";
+  if (row.pause) return "paused";
   var outcome = (row.state || {}).outcome;
   if (outcome === "completed") return "success";
   if (outcome === "failed" || outcome === "cancelled" || outcome === "refused" || row.crashed) {
@@ -256,11 +257,11 @@ function flowSummaryHtml(run, row, ctx) {
   var sentence = stopped && typeof failureSentence === "function" ? failureSentence(row) : null;
   return (
     '<div class="card" id="flow-summary-card"><h2>' + (ctx.live ? "So far" : "How it ended") + "</h2>" +
-    (sentence ? '<div class="notice err" id="flow-stopped"><div class="notice-title">' +
+    (sentence ? '<div class="notice ' + (row.pause ? "paused" : "err") + '" id="flow-stopped"><div class="notice-title">' +
       esc(sentence.cause) + '</div><div class="notice-body">' + esc(sentence.next) + "</div></div>" : "") +
     '<dl class="trace-facts">' +
     "<dt>Outcome</dt><dd>" + chip("outcome", ctx.live ? "in progress" : (state.outcome || "unknown"),
-                                  outcomeClass(state.outcome)) +
+                                  row.pause ? "chip-pause" : outcomeClass(state.outcome)) +
     (flow.state ? " " + chip("flow", flow.state, "chip-off") : "") + "</dd>" +
     "<dt>Verification</dt><dd>" + verificationChip(row.verification) +
     ' <span class="stat-sub">whether the result passed its checks</span></dd>' +
@@ -371,7 +372,7 @@ function flowMeasuredHtml(flow) {
       : '<td class="not-recorded" colspan="6">not recorded</td>') + "</tr>";
   return (
     '<div class="card" id="flow-measured-card"><h2>Measured</h2>' +
-    '<div class="table-wrap"><table class="table" id="flow-measure"><thead><tr><th>Attempt</th>' +
+    '<div class="table-wrap"><table class="table table-stack" id="flow-measure"><thead><tr><th>Attempt</th>' +
     '<th class="num">Prompt</th><th class="num">Turns</th><th class="num">Tool calls</th>' +
     '<th class="num">Wall time</th><th class="num">Peak context</th><th class="num">Reported cost</th>' +
     "</tr></thead><tbody>" + rows.join("") + "</tbody><tfoot>" + totalRow + "</tfoot></table></div>" +

@@ -323,7 +323,7 @@ console.log(JSON.stringify(out));
     assert "recorded <b>message</b>" in out["flow.weird"]["cause"]  # escaped at render time
     assert "40 turns · 0 rotations · 39 continuations · 0 repairs" in out["flow"]
     assert "stopped: flow.step_max_turns — The long step paused: it used its whole turn budget." in out["flow"]
-    assert 'data-chip="coverage">coverage: partial' in out["flow"]
+    assert 'data-chip="coverage"><span class="chip-k">coverage:</span> partial' in out["flow"]
 
 
 def test_a_usage_limit_pause_reports_when_it_resets(ctx, store):

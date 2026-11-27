@@ -115,6 +115,41 @@ def test_a_review_outcome_is_never_verification(world):
          "from_attempt": 1, "to_attempt": 1}]
 
 
+def _stopped_flow(store, sid, ws, stop, **meta):
+    store.begin(sid, task="pause", model="m/x", agent="build", workspace=ws)
+    store.update_meta(sid, {"kind": "flow", "flow": {"name": "f", "steps": ["code"]},
+                            "flow_state": "stopped", "status": "failed",
+                            "state": session_state.finished(success=False), "flow_stop": stop,
+                            **meta})
+    directory = engine.flow_dir(store, sid)
+    (directory / "receipts").mkdir(parents=True, exist_ok=True)
+    engine._write_once(directory / "receipts" / "code-1.json", {
+        "index": 0, "step": "code", "role": "coder", "attempt": 1, "session_id": None,
+        "success": False, "inputs": [], "outputs": [], "status": "stopped", "stop": stop,
+        "workspace_version_before": "v1", "workspace_version_after": "v1"})
+
+
+def test_a_flow_on_a_resumable_pause_says_so_and_keeps_its_outcome(tmp_path):
+    """The session row reports why a stopped flow is paused (`pause`), so the CLI JSON, the
+    session page and the Overview agree; the recorded outcome and label are unchanged. An
+    ordinary failed step is resumable too, but it is a failure, never a pause."""
+    store = SessionStore()
+    deadline = {"code": engine.DEADLINE_STOP, "step": "code", "message": "past its deadline"}
+    failed = {"code": "flow.step_failed", "step": "code", "message": "it failed"}
+    _stopped_flow(store, "paused-flow", str(tmp_path), deadline)
+    _stopped_flow(store, "failed-flow", str(tmp_path), failed)
+    _stopped_flow(store, "quota-flow", str(tmp_path), failed,
+                  quota_recovery={"state": "waiting-for-quota", "reset_at": 1_900_000_000})
+    rows = {row["session_id"]: row for row in read_model.sessions(store, limit=None)}
+    paused = read_model.session(store, "paused-flow")
+    assert rows["paused-flow"]["pause"] == paused["pause"] == {"kind": "deadline"}
+    assert (paused["label"], paused["state"]["outcome"]) == ("failed", "failed")
+    assert paused["flow"]["steps"][0]["attempts"][0]["pause"] == "deadline"
+    assert rows["failed-flow"]["pause"] is None
+    assert read_model.session(store, "failed-flow")["flow"]["steps"][0]["attempts"][0]["pause"] is None
+    assert rows["quota-flow"]["pause"] == {"kind": "quota", "reset_at": 1_900_000_000}
+
+
 def test_a_flow_totals_its_receipts_measures_like_flow_show(world):
     """The web's flow view and `flow show --json` carry one flow-level measure (#832): the
     shared read model totals the receipts exactly as the trajectory summary does."""
