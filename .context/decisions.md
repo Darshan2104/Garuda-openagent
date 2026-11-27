@@ -5874,8 +5874,9 @@ broker's own timeout fires on time, and the harness I/O and the step's
 deadline and silence watchdogs keep working. A lock keeps calls in order.
 
 Liveness is the kernel's. The socket has only the parent at its other end, so
-a parent that dies (or a supervisor whose death takes it down) closes the
-socket, and the waiting `recv` returns at once. `RoleApproval` turns that into
+a parent that dies closes the socket, and the waiting `recv` returns at once.
+A supervisor that dies makes the parent settle the step, which closes the
+socket too. `RoleApproval` turns that into
 `Unanswered(disconnected)`, and a reply that never comes within the deadline
 plus the margin becomes `Unanswered(timeout)`. The broker audits both as
 non-answers, and neither one allows. We considered a heartbeat on the socket
