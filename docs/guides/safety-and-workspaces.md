@@ -369,6 +369,33 @@ output, exits with status 3, and records which paths changed. Nothing is
 reverted: the changes stay for you to inspect. Only a complete, identical
 comparison reports **no changes detected**.
 
+## What a role's allow-list allows
+
+A role's `approvals.allow` (see
+[Commands a flow step may run without you](configuration.md#commands-a-flow-step-may-run-without-you))
+lets an unattended flow step run matching shell commands without anyone
+answering. It is opt-in, set in your user `garuda.yaml` only (a project may
+only remove patterns), and used only by flow steps that may edit.
+
+What it does not do:
+
+- It never allows an edit, delete, move, fetch or any request other than a
+  shell command, nor a command that runs outside the step's workspace.
+- It never allows a command with shell control or expansion characters
+  (`;` `&` `|` `` ` `` `$` `>` `<` `\`, line breaks), whatever the patterns.
+- It never applies to a no-edits step, a read-only (Docker-confined) role,
+  `garuda run` or the SDK.
+
+What it does allow: exactly what you wrote, with your user's rights and no
+confinement. A test runner runs code from the workspace — the tests, a
+`conftest.py`, `package.json` scripts — and the agent may have written that
+code during the step, so allowing `python -m pytest*` or `npm test` lets the
+agent run code of its choosing through that command. Use it in workspaces you
+would let the agent run code in anyway, keep patterns narrow, and prefer
+`isolation: worktree` for long unattended flows. Every allowed command is
+recorded with the pattern that matched, so `sessions show` and the session's
+`approval:*` records show what ran this way.
+
 ## Read-only external harnesses run in Docker
 
 For an external harness, any of `--mode readonly`, `--permission-mode readonly`,

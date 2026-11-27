@@ -71,7 +71,8 @@ does not mean nothing ran.
 `sessions show` also says what an external run met on the way:
 `approval_summary` counts its tool approval requests (`requested`, `allowed`,
 `denied`, `all_denied`, and each outcome; timed out, disconnected and cancelled
-requests count as denied). An ACP run that raised none reads `requested: 0`;
+requests count as denied), and `allow_listed`, when a flow role's allow-list
+allowed any of them. An ACP run that raised none reads `requested: 0`;
 `approval_summary` is `null` only when approvals were not recorded (a native
 run, or one from before they were). A run whose tool calls were refused can still end its
 turn `completed`, so `garuda run` then prints a warning such as `1 of 1 tool
@@ -233,6 +234,17 @@ is a change in the permission ceiling after the request.
 
 Headless runs (`garuda run`, `--bg`) deny approval requests at once, so they
 never wait for an answer.
+
+A flow step has no one to answer either: a foreground step's requests are
+denied, and a background step's wait in the inbox until
+`approvals.park_timeout_sec`. So that an unattended coder can still run its
+tests, a role may list the shell commands it may run without a person
+(`approvals.allow`, see
+[Commands a flow step may run without you](configuration.md#commands-a-flow-step-may-run-without-you)).
+Each command allowed that way is an `approval:*` record with
+`decided_by: allow_list` and the pattern, counts as allowed in
+`approval_summary` (with `allow_listed`), and is not among a long step's
+denied actions. Everything else is denied or parked as before.
 
 ## Flows
 

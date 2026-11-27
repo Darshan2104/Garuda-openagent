@@ -165,6 +165,8 @@ class AcpRuntime:
         self._answer_tasks: set[asyncio.Task] = set()
         self._quota: dict[str, Any] | None = None
         self._consult_host = None
+        #: A flow role's allow-list decision (#861); ``None`` for every other run.
+        self._allow_list = None
         self._agent_info: dict[str, Any] = {}
         # The permission mode checked before the first prompt (#700): whether
         # it was checked, what Garuda set, and what the agent then reported.
@@ -222,6 +224,15 @@ class AcpRuntime:
             self._calls_in_flight.discard(call_id)
         elif kind == "tool_call" or status in ("pending", "in_progress"):
             self._calls_in_flight.add(call_id)
+
+    def allow_commands(self, decide) -> None:
+        """Auto-approve a flow role's allow-listed shell commands (#861); flows only.
+
+        ``decide(action, tool_call)`` (:meth:`ApprovalBroker.allow_list`) returns
+        an allowed, recorded decision or ``None``; ``None`` (and any failure)
+        leaves the ask to the usual handler. Never used with a confined handler.
+        """
+        self._allow_list = decide
 
     def attach_consult(self, host) -> None:
         """Offer the ``consult`` tool to this agent when its adapter identity is proved (G.3)."""
@@ -1120,6 +1131,8 @@ class AcpRuntime:
                 ],
             },
         )
+        if await self._allow_listed(approval_id, tool_call, options, action):
+            return
         if self._confined_approval_handler is not None:
             tool_kind = normalize_tool_kind(tool_call.get("kind"))
             allowed, reason = self._confined_approval_handler(
@@ -1134,6 +1147,34 @@ class AcpRuntime:
             task = asyncio.ensure_future(self._answer_with_handler(approval_id, action))
             self._answer_tasks.add(task)
             task.add_done_callback(self._answer_tasks.discard)
+
+    async def _allow_listed(self, approval_id: str, tool_call: dict[str, Any],
+                            options: list, action: str) -> bool:
+        """Answer an allow-listed command ask (#861); ``False`` leaves it to the handler."""
+        if (self._allow_list is None or self._confined_approval_handler is not None
+                or _pick_option(options, allow=True) is None):
+            return False
+        try:
+            decision = self._allow_list(action, tool_call)
+        except Exception:
+            logger.warning("Allow-list check failed for %s; asking as usual", approval_id,
+                           exc_info=True)
+            return False
+        if not decision:
+            return False
+        self._emit(RuntimeEventKind.LIFECYCLE, {
+            "state": "approval_settled", "approval_id": approval_id,
+            "tool_kind": "execute", "outcome": "allow", "reason": "allow-list",
+        })
+        try:
+            await self.permission_response(approval_id=approval_id, allow=True)
+        except (RuntimeProtocolError, RuntimeStartError, AcpError):
+            return True  # already answered, cancelled, or the process is gone
+        try:
+            decision.acknowledge()
+        except Exception:
+            logger.warning("Recording delivery of %s failed", approval_id, exc_info=True)
+        return True
 
     def _plan_mode_exit(self, tool_call: dict[str, Any]) -> bool:
         """Whether this request asks to leave the harness's plan mode (#771).

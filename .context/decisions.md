@@ -5794,3 +5794,55 @@ lease. To make a step visible before its receipt, unchecked launches also
 write the launch record and the step session carries `flow_step` from its
 creation, and the progress file gets a `start` line (no `turn`, which readers
 already skip) when the attempt starts; turn records gain `at`. All additive.
+
+## 2026-11-27: A flow role may allow-list shell commands (#861)
+
+In a flow nobody answers a harness's `session/request_permission`: a
+foreground step's asks are denied, and a background step's park and then time
+out. A live Claude coder asked to run `python -m pytest tests/test_textkit.py -q`,
+was denied, and still reported a test result. The owner chose an opt-in,
+per-role allow-list over a blanket "allow commands" mode.
+
+`roles.NAME.approvals.allow` is a list of shell-glob patterns (at most 32, each
+at most 200 characters, no duplicates). A pattern that holds a refused
+character could never match and is refused, and so is one whose first word is
+not a literal program name (`*` is not a pattern). Layering reuses the
+`consult` rule in `_narrow_role`: the user file defines the list, and a project
+role may keep a subset or `[]`, or leave the key out and inherit it. Adding a
+pattern, or an allow-list on a role the user did not define, is
+`config.project_widening`. A shared top-level `approvals.allow` was left out:
+the top-level `approvals` block is one a project may lower, and a default for
+every role would reach reviewers and planners too. A role without the key keeps
+its parse, its role digest and every flow digest (golden test).
+
+Matching (`garuda/acp/allow_list.py`) is fail-closed. Only a request whose
+`toolCall.kind` is `execute` and that offers `allow_once` is eligible. The
+command comes from `rawInput.command`, never from the title: a string, a
+`[sh|bash|zsh|dash, -c|-lc, script]` argv (the script), or a list of plain
+words (any quote or space in a word makes it unreadable). A `rawInput.cwd`
+outside the workspace refuses. The raw command must not hold `;` `&` `|`
+backtick `$` `>` `<` `\` or any control character other than tab (so a newline
+cannot hide behind whitespace collapsing), and must be at most 2,000
+characters. It is then trimmed, whitespace is collapsed, and the whole text is
+matched with `fnmatch.fnmatchcase`.
+
+Where: `ApprovalBroker.allow_list()` builds the decision, and the adapter
+(`AcpRuntime.allow_commands`) asks it before the usual handler, after the
+plan-mode and consult checks. A match is recorded first, as an `approval:<id>`
+record with `via: allow_list`, `decided_by: allow_list`, `pattern`, the
+redacted normalized `command` and `tool_kind: execute`. Only then is
+`allow_once` sent. A record that cannot be written leaves the ask to the usual
+path, and so does a cancelled session. The answer goes through
+`permission_response`, so the turn's `_denied` list, the long step's progress
+`denied` and `approval_denied` stay truthful. `approval_summary` adds
+`allow_listed` only when non-zero, so existing summaries are unchanged.
+
+Who: `run_acp_task(approvals_allow=...)` is passed only by flow launches
+(`flows/launch.py` in process, `runtime/role_worker.py` for owned/background
+steps), through `roles.step_allow_list`. It returns nothing for a no-edits step
+or role and for a read-only (confined) role, and `run_acp_task` also ignores it
+whenever the run is read-only or confined. `garuda run --role` does not pass it,
+because an attended run asks a person and a headless one denies as before. The
+SDK does not pass it either. The role record on a session lists the patterns
+(`role.approvals_allow`) when there are any. The dashboard's approvals view
+does not yet show `decided_by`.
