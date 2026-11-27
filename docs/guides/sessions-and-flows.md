@@ -600,8 +600,25 @@ checks.
 In a checked flow the step's worker enforces its deadline itself and exits
 cleanly, so the step stops with `flow.step_deadline` and is not quarantined.
 Its supervisor only kills a worker still running 10 minutes past the deadline.
-A checked step without `deadline_min` keeps the one-hour limit of its worker,
-so set `deadline_min` on any checked step that may run longer.
+
+**A checked step that may run longer than one hour must set
+`limits.deadline_min`.** Without a deadline the step's worker keeps a one-hour
+backstop: at 3,600 seconds the supervisor kills it, and because a killed worker
+cannot prove its cleanup the flow is **quarantined**, as before. The stop
+record says why, and `garuda flow show` prints it:
+
+```text
+flow build-and-review: quarantined
+  stopped at step build: flow.step_backstop: the step ran past the supervisor's 3600 s backstop for a checked step without a deadline and was killed; a checked step that may run longer than that must set limits.deadline_min
+```
+
+With `deadline_min` the backstop moves to the deadline plus 10 minutes (up to
+the 7-day maximum of `deadline_min`), and the step stops cleanly at its
+deadline instead. A step's lease is renewed every 20 seconds against a
+60-second lifetime; a renewal that fails on storage (a lock, read or write
+error) is retried up to 3 times, every attempt within the lifetime the last
+successful renewal gave, before the step is stopped. A lease another session
+took over, or that expired, stops the step at once.
 
 ### Long steps
 
@@ -766,6 +783,19 @@ it is redacted again. The same records give the same brief, so after
 `garuda flow resume` or a quota continuation it is repeated exactly; an
 attempt that stopped after the reviewed candidate (a quota pause) is left to
 the continuation note.
+
+A very large change does not fit: the packet lists at most 200 changed files
+and a bounded budget of diff excerpts, and says `complete: false` when it was
+cut. An approval records how much of the change its packet covered
+(`review_approvals.<step>.coverage`: `complete`, `partial` or `unknown`), and
+`garuda flow show` prints it, so an approval that rests on part of a large
+change is visible:
+
+```text
+  review of build: approved; packet coverage: partial (the review packet did not cover every changed file or diff; the approval rests on part of the change)
+```
+
+The coverage does not change what counts as an approval or the packet's digest.
 
 By default the reviewer must be **independent**: it may not run as the same
 harness and model as the role it reviews, as one of that role's fallbacks, or

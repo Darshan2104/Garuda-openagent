@@ -66,6 +66,11 @@ class FrozenCheck:
         return digest(self.document())
 
 
+#: The trusted ceilings of a check request: 4 h per command, 12 h per phase. The
+#: defaults stay 900 s and 3,600 s; ``check_limits`` in ``garuda.yaml`` moves them.
+LIMIT_MAXIMA = {"timeout": 4 * 3600, "phase_timeout": 12 * 3600, "term_grace": 3, "kill_grace": 3}
+
+
 @dataclass(frozen=True)
 class CheckLimits:
     timeout: float = 900
@@ -76,7 +81,7 @@ class CheckLimits:
     def document(self):
         result = {"timeout": self.timeout, "phase_timeout": self.phase_timeout,
                   "term_grace": self.term_grace, "kill_grace": self.kill_grace}
-        maxima = {"timeout": 900, "phase_timeout": 3600, "term_grace": 3, "kill_grace": 3}
+        maxima = LIMIT_MAXIMA
         if any(type(value) not in (int, float) or not math.isfinite(value)
                or not 0 < value <= maxima[key] for key, value in result.items()):
             raise ValueError("acceptance bounds exceed trusted policy")
@@ -159,7 +164,9 @@ def freeze_resolved_checks(resolved, workspace, source_facts, permissions) -> Fr
             env=tuple(sorted(definition.get("env", {}).items())),
         ))
     sources = tuple(FrozenSource(fact.path, fact.digest) for fact in source_facts)
-    return FrozenCheckRequest.freeze(checks, sources, permissions)
+    configured = gy.check_limits(resolved)
+    limits = CheckLimits(timeout=configured["timeout_sec"], phase_timeout=configured["phase_timeout_sec"])
+    return FrozenCheckRequest.freeze(checks, sources, permissions, limits=limits)
 
 
 @dataclass(frozen=True)

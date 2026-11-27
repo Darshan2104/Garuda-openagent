@@ -148,8 +148,12 @@ def _agent_measurements(store, session_id):
     """Read only the two owned measurement records; other ACP payloads stay out."""
     import json
 
+    from garuda.observability import event_log
+
+    # An ACP trail may be size-rotated into several files; read each, in order.
     paths = [(store.events_path(session_id), "system_prompt", "type"),
-             (store.session_dir(session_id) / "acp-events.jsonl", "outbound_prompt", "kind")]
+             *((path, "outbound_prompt", "kind")
+               for path in event_log.part_paths(store.session_dir(session_id)))]
     for path, expected, discriminator in paths:
         try:
             with path.open(encoding="utf-8") as handle:
