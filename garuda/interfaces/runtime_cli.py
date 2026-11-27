@@ -941,8 +941,15 @@ async def run_acp_task(
             from garuda.workspace.no_edits import deny_all
 
             approval, external_approvals = deny_all, False
+        # A background step's parked asks wait `approvals.park_timeout_sec` (#834).
+        park = {}
+        if external_approvals:
+            from garuda.config.garuda_yaml import park_timeout_sec
+
+            park = {"timeout_sec": park_timeout_sec(workspace)}
         handler, broker = broker_approval_handler(
-            store, session_id, manifest.runtime_id, handler=approval, external=external_approvals
+            store, session_id, manifest.runtime_id, handler=approval, external=external_approvals,
+            **park,
         )
         def make_runtime():
             runtime = build_runtime()

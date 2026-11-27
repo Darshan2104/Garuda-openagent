@@ -16,7 +16,8 @@ WIRE_VERSION = 2
 #: plus the owned backstop margin (`garuda.runtime.owned_role.DEADLINE_MARGIN`), so a checked
 #: step with a deadline past 50 minutes (#828) or a `long_run` step can start at all.
 ROLE_TIMEOUT_CAP = 7 * 24 * 3600 + 600
-REQUEST_LIMITS = {"acceptance": (900, 65_536), "role": (ROLE_TIMEOUT_CAP, 2_097_152)}
+#: A check command may be configured up to 4 h (``check_limits``).
+REQUEST_LIMITS = {"acceptance": (4 * 3600, 65_536), "role": (ROLE_TIMEOUT_CAP, 2_097_152)}
 MAX_REQUEST_BYTES = max(value[1] for value in REQUEST_LIMITS.values())
 
 

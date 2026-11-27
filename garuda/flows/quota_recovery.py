@@ -2,6 +2,13 @@
 
 The scheduler only invokes ``tick``. Flow execution, leases and step receipts
 remain owned by the existing engine. A lost dispatch is never blindly replayed.
+
+Codex availability is proved by its official account read before dispatch.
+Claude has no such read: a Claude step stopped by its typed usage limit
+(``flow.quota_wait`` with the reset the harness reported, #834) waits until
+that reset plus :data:`CLAUDE_RESET_MARGIN_SEC`; with no usable reset it waits
+:data:`CLAUDE_BACKOFF_SEC`. The tick only reads the recorded time; it never
+sends a prompt to find out whether the limit has passed.
 """
 
 from __future__ import annotations
@@ -36,6 +43,12 @@ NON_QUOTA = re.compile(r"cancelled|canceled|permission|denied|approval|internal 
 TICK_OUTCOMES = ("failed", "attention", "dispatched", "dispatch-in-progress",
                  "quota-waiting", "probe-unavailable", "zero-pending", "disabled")
 MAX_HEALTH_REASON = 512
+#: The runtime whose limit stop records its own reset (#834).
+CLAUDE_RUNTIME = "claude"
+#: Resume this long after the reported reset, so the window has really turned over.
+CLAUDE_RESET_MARGIN_SEC = 120
+#: With no usable reset: wait 1 h, 2 h, 4 h, then 8 h between continuation attempts.
+CLAUDE_BACKOFF_SEC = (3600, 7200, 14400, 28800)
 
 
 class RecoveryWaiting(ValueError):
@@ -58,6 +71,52 @@ def next_check(now):
     if local.timestamp() <= now:
         local += timedelta(hours=1)
     return local.timestamp()
+
+
+def claude_limit(stop, failed: dict) -> dict | None:
+    """The validated limit of a settled Claude step that paused on it, else ``None``.
+
+    Only the typed evidence the engine settled counts: a closed ``flow.quota_wait``
+    receipt of a Claude role whose step session recorded a usage-limit error.
+    ``{}`` when the harness reported no reset.
+    """
+    from garuda.acp.protocol import rate_limit_fields
+    from garuda.flows.engine import LIMIT_CAUSE_CODES
+
+    recorded = failed.get("stop") if isinstance(failed.get("stop"), dict) else {}
+    cause = recorded.get("cause") if isinstance(recorded.get("cause"), dict) else {}
+    if not (stop.code == "flow.quota_wait" and stop.step is not None
+            and stop.step == failed.get("step")
+            and (failed.get("role_plan") or {}).get("runtime_id") == CLAUDE_RUNTIME
+            and failed.get("status") == "stopped"
+            and (failed.get("closure") or {}).get("status") == "closed"
+            and recorded.get("code") == "flow.quota_wait"
+            and cause.get("code") in LIMIT_CAUSE_CODES):
+        return None
+    return rate_limit_fields(cause.get("limit"), validated=True)
+
+
+def claude_wait(limit: dict, prior: dict, now: float) -> tuple[dict, str]:
+    """The record fields and reason of a Claude limit pause.
+
+    A reset still in the future is the next check (plus the margin). A missing or
+    already-passed reset backs off by consecutive such pauses of this flow.
+    """
+    from garuda.acp.protocol import reset_time_text
+
+    resets, window = limit.get("resets_at"), limit.get("rate_limit_type")
+    named = f"Claude {window} limit" if window else "Claude usage limit"
+    if resets is not None and resets > now:
+        return ({"quota_source": CLAUDE_RUNTIME, "reset_at": resets, "rate_limit_type": window,
+                 "unknown_reset_pauses": 0, "next_check": resets + CLAUDE_RESET_MARGIN_SEC},
+                f"{named} reached; the step resumes after it resets at {reset_time_text(resets)}")
+    pauses = 1 + (int(prior.get("unknown_reset_pauses") or 0)
+                  if prior.get("quota_source") == CLAUDE_RUNTIME else 0)
+    delay = CLAUDE_BACKOFF_SEC[min(pauses, len(CLAUDE_BACKOFF_SEC)) - 1]
+    return ({"quota_source": CLAUDE_RUNTIME, "reset_at": None, "rate_limit_type": window,
+             "unknown_reset_pauses": pauses, "next_check": now + delay},
+            f"{named} reached with no reported reset; the step is tried again in "
+            f"{delay // 3600} h (pause {pauses})")
 
 
 def workspace_checkpoint(workspace: str) -> str:
@@ -185,7 +244,10 @@ def project(record):
         return None
     fields = ("flow_session", "state", "reason", "next_check", "reset_at", "last_probe",
               "pending_step", "dispatches", "updated_at", "continuation_mode")
-    return {k: record.get(k) for k in fields}
+    view = {k: record.get(k) for k in fields}
+    if record.get("quota_source") == CLAUDE_RUNTIME:  # Codex rows project as before
+        view.update(quota_source=CLAUDE_RUNTIME, rate_limit_type=record.get("rate_limit_type"))
+    return view
 
 
 def tick_health(health):
@@ -274,12 +336,15 @@ class FlowRecovery:
                 plans = {role: runner._role_plan(role) for role in
                          sorted({s["role"] for s in runner.flow["steps"]})}
             runner.prepared_roles = plans
-            if not any(plan and plan.runtime_id == "codex" for plan in plans.values()):
+            runtimes = {plan.runtime_id for plan in plans.values() if plan}
+            if not runtimes & {"codex", CLAUDE_RUNTIME}:
                 await runner._publish(runner.flow_session, {"quota_recovery": {
-                    "state": "unsupported", "reason": "quota recovery currently supports Codex roles"}})
+                    "state": "unsupported",
+                    "reason": "quota recovery currently supports Codex and Claude roles"}})
                 runner.quota_recovery = None
                 return
-            observation = await self.probe()
+            # Only Codex has an account read; a Claude-only flow never probes.
+            observation = await self.probe() if "codex" in runtimes else None
             sources = [asdict(source) for source in capture.facts()]
             sources += [asdict(source) for source in runner.configuration_sources]
             self.admission = {
@@ -293,7 +358,15 @@ class FlowRecovery:
             await runner._publish(runner.flow_session, {"quota_recovery_admission": self.admission})
             await runner._publish(runner.flow_session, {"quota_recovery_root": str(self.records.root.absolute())})
         await self.validate(runner)
-        if self.record is not None:
+        if self.record is not None and self.record.get("quota_source") == CLAUDE_RUNTIME:
+            # The harness said when its limit resets; never resume before that.
+            from garuda.acp.protocol import reset_time_text
+
+            reset = self.record.get("reset_at")
+            if isinstance(reset, (int, float)) and time.time() < reset + CLAUDE_RESET_MARGIN_SEC:
+                raise RecoveryWaiting(f"the Claude usage limit resets at {reset_time_text(reset)}; "
+                                      "the flow is not resumed before then")
+        elif self.record is not None:
             from garuda.observability.limits import recovery_availability
 
             observation = await self.probe()
@@ -356,7 +429,30 @@ class FlowRecovery:
         state, observation = "blocked", self.last_observation
         admission = self.admission or {}
         details = {}
-        if stop.code == "flow.quota_wait" and admission.get("account_digest"):
+        prior = self.records.get(runner.flow_session) or {}
+        limit = claude_limit(stop, failed)
+        claude: dict = {"quota_source": None}
+        if limit is not None:
+            # A settled Claude limit stop: wait for its reported reset (#834).
+            claude = {"quota_source": CLAUDE_RUNTIME, "reset_at": limit.get("resets_at"),
+                      "rate_limit_type": limit.get("rate_limit_type")}
+            try:
+                await self.validate(runner)
+                details = {"evidence": await _settled_sync(evidence, self.sessions, runner.flow_session),
+                           "workspace_checkpoint": await _settled_sync(workspace_checkpoint, runner.workspace)}
+                claude, reason = claude_wait(limit, prior, time.time())
+                state = "waiting-for-quota"
+            except (OSError, ValueError) as exc:
+                reason = str(exc)
+        elif (stop.code == "flow.quota_wait" and stop.step is None and self.record is not None
+              and prior.get("quota_source") == CLAUDE_RUNTIME):
+            # Admission refused a resume before the recorded reset; no step ran.
+            claude = {k: prior.get(k) for k in ("quota_source", "reset_at", "rate_limit_type",
+                                                "unknown_reset_pauses", "next_check")}
+            details = {"evidence": await _settled_sync(evidence, self.sessions, runner.flow_session),
+                       "workspace_checkpoint": await _settled_sync(workspace_checkpoint, runner.workspace)}
+            state = "waiting-for-quota"
+        elif stop.code == "flow.quota_wait" and admission.get("account_digest"):
             details = {"evidence": await _settled_sync(evidence, self.sessions, runner.flow_session),
                        "workspace_checkpoint": await _settled_sync(workspace_checkpoint, runner.workspace)}
             state = "waiting-for-quota"
@@ -376,8 +472,7 @@ class FlowRecovery:
                     reason = str(exc)
             else:
                 reason = why
-        prior = self.records.get(runner.flow_session) or {}
-        record = self.records.update(runner.flow_session, {
+        fields = {
             **details, "state": state, "reason": reason,
             "sessions_root": str(self.sessions.root.resolve()),
             "pending_step": stop.step or prior.get("pending_step"),
@@ -388,7 +483,15 @@ class FlowRecovery:
             "harness_version": admission.get("harness_version"),
             "dispatches": prior.get("dispatches", 0),
             "continuation_mode": "saved-flow-and-workspace-context",
-        }, token=(self.record or {}).get("token"))
+        }
+        if claude.get("quota_source") == CLAUDE_RUNTIME:
+            fields.update(claude, last_probe=None)
+            if state != "waiting-for-quota":
+                fields["next_check"] = None
+        elif prior.get("quota_source") is not None:
+            fields["quota_source"] = None  # a later Codex stop is judged as Codex
+        record = self.records.update(runner.flow_session, fields,
+                                     token=(self.record or {}).get("token"))
         await runner._publish(runner.flow_session, {"quota_recovery": project(record)})
 
     async def completed(self, runner):
@@ -480,18 +583,27 @@ class FlowRecovery:
                 continue
             claimed = None
             try:
-                observation = await self.probe()
-                available, reason = recovery_availability(observation,
-                    account_digest=row.get("account_digest"), harness_version=row.get("harness_version"),
-                    now=time.time())
-                if not available:
-                    row = self.records.update(sid, {"reason": reason, "next_check": next_check(time.time()),
-                        "last_probe": observation.observed_at if observation else None})
-                    publish(row)
-                    outcomes.append(("probe-unavailable" if observation is None else "quota-waiting",
-                                     sid, reason, False))
-                    reports.append(project(row))
-                    continue
+                if row.get("quota_source") == CLAUDE_RUNTIME:
+                    # The recorded reset (or backoff) decides; nothing is probed or prompted.
+                    due = row.get("next_check")
+                    if not isinstance(due, (int, float)) or time.time() < due:
+                        outcomes.append(("quota-waiting", sid, row.get("reason")
+                                         or "waiting for the Claude usage limit to reset", False))
+                        reports.append(project(row))
+                        continue
+                else:
+                    observation = await self.probe()
+                    available, reason = recovery_availability(observation,
+                        account_digest=row.get("account_digest"), harness_version=row.get("harness_version"),
+                        now=time.time())
+                    if not available:
+                        row = self.records.update(sid, {"reason": reason, "next_check": next_check(time.time()),
+                            "last_probe": observation.observed_at if observation else None})
+                        publish(row)
+                        outcomes.append(("probe-unavailable" if observation is None else "quota-waiting",
+                                         sid, reason, False))
+                        reports.append(project(row))
+                        continue
                 claimed = self.records.claim(sid, automatic=True)
                 sessions = SessionStore(root=row["sessions_root"])
                 service = FlowExecutionService(sessions)

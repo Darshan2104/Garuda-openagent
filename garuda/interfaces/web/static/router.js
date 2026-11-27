@@ -145,11 +145,16 @@ function adoptToken(token) {
   location.replace(route);
 }
 
+/* Listening from the start, so a `#t=` link pasted into the token page is seen. While a
+ * boot is in flight a plain hash change is left to it: boot's own navigate() reads the
+ * current hash, and mounting here too mounted the view twice (#840: the second mount's
+ * "Loading…" wiped the first one's table). */
 function onHashChange() {
   var token = hashToken(location.hash);
   if (token !== null) { adoptToken(token); return; }
   if (REBOOT_ON_HASH) { REBOOT_ON_HASH = false; boot(); return; }
   if (navMenuOpen()) setNavMenu(false);
+  if (BOOT.pending) return;
   navigate();
 }
 
@@ -185,9 +190,14 @@ document.addEventListener("submit", function (event) {
 /* --- boot ------------------------------------------------------------------- */
 
 var THEME_READY = false;
+// `seq` lets only the latest boot finish (a token pasted mid-boot starts another one);
+// `pending` is true while one is in flight.
+var BOOT = { seq: 0, pending: false };
 
 function boot() {
   if (!THEME_READY) { initTheme(); THEME_READY = true; }
+  var seq = ++BOOT.seq;
+  BOOT.pending = true;
   // Health and config together: the chat composer is built from config, and rendering it from
   // a second round trip would flash an empty panel on every navigation. A 401 on health is
   // the one error worth replacing the whole view for.
@@ -195,6 +205,8 @@ function boot() {
   Promise.all([api("/api/health", { keep: true }),
                api("/api/config", { keep: true }).catch(function () { return {}; })])
     .then(function (both) {
+      if (seq !== BOOT.seq) return;
+      BOOT.pending = false;
       var health = both[0];
       STATE.config = both[1];
       STATE.health = health;
@@ -212,6 +224,8 @@ function boot() {
       if (INBOX_BADGE) refreshInboxBadge(); else startInboxBadge();
     })
     .catch(function (err) {
+      if (seq !== BOOT.seq) return;
+      BOOT.pending = false;
       if (err.status === 401) {
         authLost();
         var note = el("token-error");

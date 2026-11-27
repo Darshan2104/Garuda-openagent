@@ -333,6 +333,16 @@ def build_packet(*, task: str, step: dict, reviewer: dict, spec: dict, candidate
     return packet
 
 
+def packet_coverage(packet: dict) -> str:
+    """How much of the change set a packet showed: ``partial`` when its changed-file list
+    or its diff excerpts were cut at their bounds (``complete: false``), ``complete``
+    when both are whole, else ``unknown``. Read from the packet; its digest is unchanged."""
+    marks = [(packet.get(part) or {}).get("complete") for part in ("changed", "diff")]
+    if False in marks:
+        return "partial"
+    return "complete" if all(mark is True for mark in marks) else "unknown"
+
+
 def render_packet(packet: dict | None, marker: str | None = None) -> str:
     """The packet as fenced data for the reviewer's prompt (see :mod:`garuda.flows.prompting`)."""
     from garuda.flows.prompting import render_packet as render

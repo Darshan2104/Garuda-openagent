@@ -1040,7 +1040,8 @@ def _runtimes(request: Request, ctx: DashboardContext, _match) -> Response:
     from garuda.interfaces.web.runtimes import list_runtimes, login_checks, with_login_checks
 
     workspace = str(ctx.workspace)
-    return ok(with_login_checks(list_runtimes(workspace=workspace, extra=ctx.extra, memo=ctx.discovery),
+    return ok(with_login_checks(list_runtimes(workspace=workspace, extra=ctx.extra,
+                                              memo=ctx.discovery),
                                 login_checks(ctx.extra, workspace)))
 
 
@@ -1192,7 +1193,7 @@ def _runtime_detail(request: Request, ctx: DashboardContext, match) -> Response:
 
     workspace = str(ctx.workspace)
     payload = inspect_runtime(None, match["rid"], workspace=workspace, extra=ctx.extra,
-                              checks=login_checks(ctx.extra, workspace), memo=ctx.discovery)
+                              memo=ctx.discovery, checks=login_checks(ctx.extra, workspace))
     if payload is None:
         return not_found(f"No runtime {match['rid']!r}.")
     return ok(payload)

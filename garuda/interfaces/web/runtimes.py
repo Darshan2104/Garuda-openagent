@@ -123,7 +123,7 @@ def _login_guidance(runtime_id: str, check: dict, guidance: list[str],
 
 def inspect_runtime(
     manifest_dicts: list[dict] | None, runtime_id: str, *, workspace: str = ".", extra: dict | None = None,
-    checks: dict[str, dict] | None = None, memo=None,
+    memo=None, checks: dict[str, dict] | None = None,
 ) -> dict[str, Any] | None:
     context = extra or (
         {"manifests": manifest_dicts} if manifest_dicts is not None else {}

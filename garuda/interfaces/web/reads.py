@@ -24,6 +24,7 @@ from garuda.core.events import SUBAGENT_LOG_DIR
 from garuda.core.sessions import SessionStore, validate_session_ref
 from garuda.eval.dashboard import row_from_session_meta
 from garuda.interfaces.web.tail import tail_jsonl
+from garuda.observability import event_log
 from garuda.observability.lanes import ACP_EVENTS_FILE
 from garuda.observability.trajectory import Run, TrajectoryReader
 
@@ -220,7 +221,7 @@ def list_runs(
             haystack = f"{_text(meta.get('task'))}\n{_text(meta.get('session_id'))}".lower()
             if query.lower() not in haystack:
                 continue
-        if status and not _matches_status(meta, _state_fields(meta), status):
+        if status and not _matches_status(meta, status):
             continue
         matched.append(meta)
     # Only the rows the response carries are summarized (each one stats its log).
@@ -334,15 +335,23 @@ def _duration_ms(meta: dict[str, Any], store: SessionStore, session_id: str) -> 
     return int((end - start).total_seconds() * 1000)
 
 
-def _matches_status(meta: dict[str, Any], row: dict[str, Any], status: str) -> bool:
+def _matches_status(meta: dict[str, Any], status: str) -> bool:
     """The status filter matches the legacy ``status`` word or the session's state label.
 
     Native runs record ``success`` and external harnesses and flows ``completed`` for the
-    same outcome, so filtering on the stored word alone hid half the finished runs.
+    same outcome, so filtering on the stored word alone hid half the finished runs. Read
+    from the meta alone, so only the rows the response carries are summarized. A record
+    whose state cannot be read is kept, so the summary step reports it as unreadable.
     """
-    if meta.get("status") == status or row.get("state_label") == status:
+    if meta.get("status") == status:
         return True
-    return status == "success" and (row.get("state") or {}).get("outcome") == "completed"
+    try:
+        fields = _state_fields(meta)
+    except Exception:
+        return True
+    if fields["state_label"] == status:
+        return True
+    return status == "success" and (fields["state"] or {}).get("outcome") == "completed"
 
 
 def condenser_threshold(name: str | None) -> float | None:
@@ -411,7 +420,7 @@ def external_trail(directory: Path, meta: dict[str, Any], *,
     turns: dict[int, dict[str, int]] = {}
     prompts = 0
     try:
-        with path.open(encoding="utf-8") as handle:
+        with event_log.open_trail(directory) as handle:  # every rotated part, in order
             for line in handle:
                 try:
                     event = json.loads(line)
