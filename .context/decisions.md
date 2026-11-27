@@ -5363,6 +5363,50 @@ becomes the step's error, `stop.cause.code` fallback and `stop.cause.stop_reason
 (`acp_stop_reason`) for that purpose. A checked step without a deadline still
 has the one-hour worker limit; long checked steps need `deadline_min`.
 
+## 2026-11-27: A flow `patch` is a summary; Garuda attaches the real diff and lets a later writer read it (#820)
+
+The `patch` output instruction (`artifacts.instructions`) now asks for a short
+summary (what changed and why, files touched, what the next step should know)
+and says "Do not paste a diff; Garuda attaches the real diff it computes from
+the workspace" (`artifacts.PATCH_SUMMARY`). Agents had pasted full diffs (one
+large enough to stop a flow with `flow.artifact_too_large`) or hand-written
+ones with wrong hunk headers. Parsing is unchanged: any text in the block is
+the patch, so an old prompt's answer still passes. The placeholder still
+starts with `...your patch` (`...your patch: a short summary of your change,
+not a diff...`): `garuda/acp/fake_agent.py` and other tooling find the blocks a
+prompt asks for by that prefix.
+
+A consumer of a `patch` gets Garuda's own diff of the producing step
+(`FlowRunner._attachments`, rendered by `prompting.diff_body` / `render_diff`
+in a `flow-diff` fence with the prompt's one marker, once per producing step).
+It is the review packet's evidence (#814): `changed_since_baseline` and
+`review_diff_evidence` from the baseline of the first session of the
+producer's first attempt (`_first_attempt`, `_first_session`) to the workspace
+now, so it keeps the packet's bounds (4 KiB per file, 32 KiB, 200 files) and
+withheld secret excerpts, and the rendered text is redacted once more. It is
+computed at consumption, not stored, so receipts and artifact references are
+unchanged. The terminal reviewer gets no `flow-diff` for the step it reviews:
+its packet already carries that diff. A parallel group's members, which get no
+packet, do get it.
+
+A later writing or planning step may read an earlier `patch` after the
+workspace moved on: `artifacts.validate_content(..., moved_on_ok=True)` (and
+`load`) admits a `MOVED_ON_READABLE` type (`patch` only) and the prompt
+carries a `[garuda]` note that the workspace has changed since, with Garuda's
+diff then including the later changes. The engine decides per consuming step
+(`_reads_moved_on`): a step that may edit or that outputs `plan`, and outputs
+no `review` or `findings`; never the terminal reviewer (it always outputs
+`review`) nor a parallel group. `_inputs` decides this from the step itself,
+so its signature is unchanged. Everyone else keeps
+`flow.input_stale`, the terminal review keeps `flow.review_stale_candidate`,
+and `review` / `findings` stay workspace-bound for every reader. Other callers
+of `load` / `validate_content` (starter evidence, the handoff scenario) keep the
+strict default.
+
+`ARTIFACT_VERSION` stays 1: the reference has no new field, the stored content
+is still the block's text, and old flows on disk load and resume as before (a
+resumed writer that consumes an old stale `patch` now runs with the note).
+
 ## 2026-11-27: A Claude usage limit pauses a flow; quota recovery resumes it after the reported reset; the approval park wait is configurable (#834)
 
 Since #824 a Claude limit is typed (`AcpUsageLimitError`, recorded by type name as

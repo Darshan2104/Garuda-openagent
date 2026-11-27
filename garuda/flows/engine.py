@@ -10,7 +10,9 @@ step can keep it.
 For every step attempt:
 
 1. its typed inputs are resolved from earlier receipts and checked
-   (:mod:`garuda.flows.artifacts`) against the workspace as it is now;
+   (:mod:`garuda.flows.artifacts`) against the workspace as it is now (a
+   later writing or planning step may read a ``patch`` past it, told so);
+   each ``patch`` input comes with Garuda's own diff of its producer (#820);
 2. the **intent** is journaled (fsynced) before anything launches;
 3. the step runs as its own session (its own baseline and delta) under the
    role it names; a ``no-edits`` step is compared before and after (C.10);
@@ -875,8 +877,11 @@ class FlowRunner:
             raise
 
     async def _inputs(self, step: dict, done: list[dict]) -> list[tuple[art.ArtifactRef, str]]:
+        """``step``'s checked inputs; a later writer or planner may read a ``patch``
+        past later edits (:meth:`_reads_moved_on`, #820)."""
         from garuda.config.garuda_yaml import input_source
 
+        moved_on_ok = self._reads_moved_on(step, step.get("role"))
         version = await self._version_for_flow()
         resolved = []
         for entry in step.get("inputs", []):
@@ -888,10 +893,55 @@ class FlowRunner:
                                   else f"no earlier step produced a {kind}", step=step["id"])
             for ref in refs:
                 try:
-                    resolved.append((ref, art.load(self.dir, ref, workspace_version=version)))
+                    resolved.append((ref, art.load(self.dir, ref, workspace_version=version,
+                                                   moved_on_ok=moved_on_ok)))
                 except art.ArtifactError as exc:
                     raise FlowStopped(exc.code, str(exc), step=step["id"]) from exc
         return resolved
+
+    def _reads_moved_on(self, step: dict, role: str | None) -> bool:
+        """A writing or planning step that reviews nothing: it may read an earlier
+        ``patch`` after the workspace moved on (#820). A parallel group, a
+        read-only step that does not plan, and any step that outputs a
+        ``review`` or ``findings`` (the terminal reviewer always does) keep the
+        stale refusal."""
+        outputs = step.get("outputs", [])
+        if "parallel" in step or not role or "review" in outputs or "findings" in outputs:
+            return False
+        return not self._read_only(step, role) or "plan" in outputs
+
+    async def _attachments(self, inputs, done: list[dict], *,
+                           reviewed: str | None = None) -> dict[str, prompting.Attached]:
+        """Garuda's own diff of each ``patch`` input's producer, and whether the
+        workspace moved on since it was produced, by ``ref.path`` (#820).
+
+        The diff is the review packet's evidence for that step: every path
+        changed since its first attempt's baseline, in bounded, redacted
+        excerpts. ``reviewed``: the step is the terminal reviewer of that step,
+        whose review packet already carries its diff, so none is added for it.
+        """
+        if self.launch_kind == "run" or not any(ref.type == "patch" for ref, _ in inputs):
+            return {}
+        from garuda.workspace.evidence import changed_since_baseline, review_diff_evidence
+
+        version = await self._version_for_flow()
+        attached, diffs = {}, {}
+        for ref, _ in inputs:
+            if ref.type != "patch":
+                continue
+            if ref.producer_step != reviewed and ref.producer_step not in diffs:
+                first = await _settled_sync(self._first_attempt, ref.producer_step, done)
+                base = self._first_session(first)
+                changed = await _settled_sync(changed_since_baseline, self.store, base,
+                                              self.workspace)
+                # As the review packet: a list computed now is the whole change set.
+                diffs[ref.producer_step] = prompting.diff_body(await _settled_sync(
+                    review_diff_evidence, self.store, base, self.workspace, changed,
+                    changed_total=None if changed is None else len(changed),
+                    changed_complete=None if changed is None else True))
+            attached[ref.path] = prompting.Attached(moved_on=art.moved_on(ref, version),
+                                                    diff=diffs.get(ref.producer_step))
+        return attached
 
     def _read_only(self, step: dict, role: str) -> bool:
         """A ``no-edits`` step or a ``readonly`` role: one that must not change files."""
@@ -899,13 +949,14 @@ class FlowRunner:
         return self._no_edits(step, role) or spec.get("permissions") == "readonly"
 
     def _prompt(self, step: dict, role: str, inputs, *, read_only: bool | None = None,
-                extra=None) -> str:
+                extra=None, attached=None) -> str:
         """The step's prompt (:func:`garuda.flows.prompting.assemble`); ``extra`` ends it."""
         if read_only is None and self.launch_kind != "run":
             read_only = self._read_only(step, role)
         return prompting.assemble(task=self.task, flow=self.name, step=step, role=role,
                                   inputs=inputs, read_only=bool(read_only),
-                                  run=self.launch_kind == "run", extra=extra)
+                                  run=self.launch_kind == "run", extra=extra,
+                                  attached=attached)
 
     # -- running -----------------------------------------------------------------------
 
@@ -1470,6 +1521,7 @@ class FlowRunner:
                                   f"{role} is an external role without permissions: readonly; "
                                   "a parallel reviewer must be confined", step=step["id"])
         inputs = await self._inputs(step, done)
+        attached = await self._attachments(inputs, done)
         version = await self._version_for_flow()
         target = self.dir / "snapshots" / f"{step['id']}-{attempt}"
         target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -1492,7 +1544,7 @@ class FlowRunner:
                                      "step": step["id"], "attempt": attempt, "at": _now()})
         started = (_stamp(), time.monotonic())
         source_guard, snapshot_guard = NoEditsGuard(self.workspace), NoEditsGuard(target)
-        prompt = self._prompt(step, "reviewer", inputs, read_only=True)
+        prompt = self._prompt(step, "reviewer", inputs, read_only=True, attached=attached)
 
         limits = step_limits(self.flow, step)
 
@@ -2022,9 +2074,14 @@ class FlowRunner:
             long = None  # a flow's default applies to its ACP steps only
         if long is not None:
             limits = long_step.with_deadline(limits, long)
+        # The terminal reviewer's packet carries the reviewed step's diff (#820).
+        reviewer = isinstance(prompt_extra, prompting.Packet)
         inputs = await self._inputs(step, done)
+        attached = await self._attachments(
+            inputs, done,
+            reviewed=prompt_extra.packet.get("candidate", {}).get("step") if reviewer else None)
         version_before = await self._version_for_flow()
-        prompt = self._prompt(step, role, inputs, extra=prompt_extra)
+        prompt = self._prompt(step, role, inputs, extra=prompt_extra, attached=attached)
         if self.quota_recovery is not None and self.quota_recovery.record is not None:
             prompt += ("\n\n[garuda] Continue from the retained workflow and current workspace after "
                        "a quota pause. Preserve partial edits and inspect existing work before "
