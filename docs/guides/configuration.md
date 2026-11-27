@@ -565,6 +565,7 @@ roles:
   reviewer: {harness: claude, model_id: <exact-id>, permissions: smart, write_policy: no-edits}
 consults: {max_per_session: 5, timeout_sec: 600, max_answer_chars: 8000}
 sessions: {isolation: auto, keep_days: 30}
+approvals: {park_timeout_sec: 1800}
 ```
 
 How the layers combine (package default, then user, then project, then the
@@ -652,6 +653,14 @@ group is refused when the flow loads, and on a step whose role is native when
 the step starts (`flow.long_run_unsupported`); a flow's default skips native
 steps. See [Long steps](sessions-and-flows.md#long-steps). Without `long_run`
 a step sends one prompt, as before.
+
+`approvals.park_timeout_sec` is how long an approval asked by a background
+run waits in the inbox (the dashboard's Approvals page or
+`garuda approvals answer`) before the request times out and counts as a denial.
+This covers background and dashboard flow steps, whose approvals are answered
+outside the terminal. It is whole seconds from 30 to 86400 (24 hours), and the
+default is 300. A project file may only lower it: a project value at or above
+yours (or above the default, if you set none) is ignored.
 
 A flow may set `isolation: worktree` so it runs in its own Git worktree from
 your checkout's `HEAD` instead of in your checkout (`shared`, the default):

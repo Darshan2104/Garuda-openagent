@@ -766,7 +766,7 @@ check-protected or dashboard-owned flows, parallel groups, steps with
 `retries`, or Claude quota stops. If recovery is enabled, owned/check-protected/dashboard
 flows, parallel flows and flows with `retries` publish an `unsupported` recovery reason in `flow show` and the
 web flow detail rather than silently enrolling. See the
-[automation recipe](../use-cases/automate.md#continue-quota-stopped-codex-flows)
+[automation recipe](../use-cases/automate.md#continue-quota-stopped-codex-and-claude-flows)
 for setup, manual ticks, cancellation, and cron-host limitations.
 
 ### Current limitations
