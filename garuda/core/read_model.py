@@ -531,11 +531,15 @@ MAX_CHANGED_FILES = 50
 
 
 def _stamp(value):
-    from datetime import timezone
+    from datetime import datetime, timezone
 
-    from garuda.eval.costs import parse_timestamp
-
-    parsed = parse_timestamp(value) if isinstance(value, str) else None
+    # Parsed here, not with the benchmark package's helper (agent code never imports it):
+    # ISO 8601, with a trailing Z, is what every session writer stamps.
+    try:
+        parsed = (datetime.fromisoformat(value.replace("Z", "+00:00"))
+                  if isinstance(value, str) else None)
+    except ValueError:
+        parsed = None
     if parsed is not None and parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed

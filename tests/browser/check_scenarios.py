@@ -202,7 +202,11 @@ def main():
         artifact.rename(held_artifact)
         try:
             page.goto(BASE + "#/sessions/" + MANIFEST["plan"])
-            expect(page.locator("#starter-coverage")).to_contain_text("incomplete / unknown")
+            # The card loads after the session row; reading a plan whose bytes are gone is
+            # slower on a CI runner than the default 5 s allows.
+            expect(page.locator("#session-result")).to_be_visible(timeout=20_000)
+            expect(page.locator("#starter-coverage")).to_contain_text("incomplete / unknown",
+                                                                      timeout=20_000)
             expect(page.locator("#starter-implement")).to_have_count(0)
         finally:
             held_artifact.rename(artifact)
