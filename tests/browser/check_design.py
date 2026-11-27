@@ -185,6 +185,36 @@ def main() -> int:
                 page.screenshot(path=str(SHOTS / "design-phone-menu.png"))
                 page.keyboard.press("Escape")
 
+                # --- the Sessions list on a phone: a page of 50 compact cards ----------------
+                for scheme in ("light", "dark"):
+                    page.emulate_media(color_scheme=scheme)
+                    page.goto(f"{BASE}#/overview", wait_until="load")
+                    page.goto(f"{BASE}#/sessions", wait_until="load")
+                    settle(page, "() => document.querySelectorAll('tr.session-row').length >= 50")
+                    cards = page.evaluate("""() => {
+                      const rows = [...document.querySelectorAll('tr.session-row')];
+                      const table = document.querySelector('#sessions-table');
+                      return { count: rows.length, height: table ? table.getBoundingClientRect().height : 0,
+                               tallest: Math.max(...rows.map(r => r.getBoundingClientRect().height)),
+                               sideways: rows.filter(r => r.scrollWidth > r.clientWidth + 1).length,
+                               details: rows.filter(r => r.querySelector('td.s-more details')).length,
+                               hidden: rows.filter(r => getComputedStyle(r.querySelector('td[data-th="Workspace"]')).display !== 'none').length };
+                    }""")
+                    check(f"390px Sessions ({scheme}): 50 cards stay under 9,000 px, each compact",
+                          cards["count"] >= 50 and cards["height"] < 9000 and cards["tallest"] <= 200, str(cards))
+                    check(f"390px Sessions ({scheme}): no card scrolls sideways; the rest is behind details",
+                          cards["sideways"] == 0 and cards["details"] == cards["count"] and cards["hidden"] == 0, str(cards))
+                    page.screenshot(path=str(SHOTS / f"design-sessions-390-{scheme}.png"), full_page=True)
+                    page.screenshot(path=str(SHOTS / f"design-sessions-390-{scheme}-top.png"))
+                    page.click("tr.session-row td.s-more summary")
+                    opened = page.evaluate("""() => { const td = document.querySelector('tr.session-row td.s-more');
+                      const row = td.closest('tr'); return { text: td.innerText, wide: td.getBoundingClientRect().width,
+                      card: row.getBoundingClientRect().width, sideways: row.scrollWidth > row.clientWidth + 1 }; }""")
+                    check(f"390px Sessions ({scheme}): details opens across the card with the workspace and start",
+                          "Workspace" in opened["text"] and "Started" in opened["text"]
+                          and opened["wide"] > opened["card"] * 0.8 and not opened["sideways"], str(opened))
+                page.emulate_media(color_scheme="light")
+
             # --- the paused flow: paused everywhere it is drawn, by attribute -----------------
             page.goto(f"{BASE}{PAUSED}", wait_until="load")
             settle(page, "() => !!document.querySelector('li.pipe-step[data-step=\"code\"]')")

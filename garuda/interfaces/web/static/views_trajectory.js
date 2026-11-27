@@ -186,7 +186,8 @@ function updateFlowTrace(payload, row, first) {
     patchRegion(el("flow-progress"), active ? flowProgressHtml(row) : "", first);
     patchRegion(el("trace-tiles"), flowTilesHtml(payload.run, row, ctx), first);
     patchRegion(el("flow-summary"), flowSummaryHtml(payload.run, row, ctx), first);
-    patchRegion(el("flow-steps"), flowHtml(row.flow, row.flow_progress), first);
+    patchRegion(el("flow-steps"), flowHtml(row.flow, row.flow_progress,
+      { pause: row.pause, id: row.session_id, result: "flow-stopped", resultLabel: "How it ended" }), first);
     patchRegion(el("flow-measured"), flowMeasuredHtml(row.flow), first);
   });
   if (TRACE_DEFERRED) retryWhenSelectionClears(root);

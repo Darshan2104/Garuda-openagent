@@ -105,6 +105,18 @@ if (typeof document !== "undefined" && document.addEventListener) {
   });
 }
 
+/* An in-page link ("see Result"): scroll to it, never a route change (the router owns the
+ * hash, so a bare "#id" would open "No such view"). */
+if (typeof document !== "undefined" && document.addEventListener) {
+  document.addEventListener("click", function (event) {
+    var link = event.target && event.target.closest && event.target.closest("a[data-scroll-to]");
+    if (!link) return;
+    event.preventDefault();
+    var target = document.getElementById(link.getAttribute("data-scroll-to"));
+    if (target && target.scrollIntoView) target.scrollIntoView({ block: "center" });
+  });
+}
+
 /* The pause as one block: why, when (for a usage limit), how it ends, the command to copy. */
 function pauseBlockHtml(pause, stop, flowId, id) {
   var how = pauseResume(pause, flowId);
@@ -297,11 +309,26 @@ function sessionRowHtml(row) {
     esc(where) + (row.branch ? '<div class="s-sub">@ ' + esc(row.branch) + "</div>" : "") + "</td>" +
     '<td class="s-usage" data-th="Usage / cost"><span class="mono">' + esc(row.usage) + " / " + esc(row.cost) + "</span>" +
     (summary ? '<div class="s-sub s-spend" title="' + esc(summary) + '">' + esc(summary) + "</div>" : "") + "</td>" +
-    '<td class="num" data-th="Approvals">' + approvalsCellHtml(row) + "</td>" +
+    '<td class="num s-approvals" data-th="Approvals"' + (row.approvals_pending ? " data-waiting" : "") + ">" +
+      approvalsCellHtml(row) + "</td>" +
     '<td class="s-when" data-th="Updated">' + relativeTimeHtml(row.updated_at) + "</td>" +
     '<td class="s-when" data-th="Started">' + relativeTimeHtml(row.created_at) + "</td>" +
+    sessionRowMoreHtml(row, where, summary) +
     "</tr>"
   );
+}
+
+/* The phone card's "details": what the desktop table shows as columns (workspace, started,
+ * usage / cost and the spend line), one tap away. Hidden at desktop width (app.css), where
+ * those columns are shown; usage / cost is left out when neither is known. */
+function sessionRowMoreHtml(row, where, summary) {
+  var usage = row.usage === "unknown" && row.cost === "unknown" ? "" : row.usage + " / " + row.cost;
+  return '<td class="s-more"><details class="s-details" data-key="s-more:' + esc(row.session_id) + '">' +
+    "<summary>details</summary><dl>" +
+    "<dt>Workspace</dt><dd>" + esc(where) + (row.branch ? " @ " + esc(row.branch) : "") + "</dd>" +
+    "<dt>Started</dt><dd>" + relativeTimeHtml(row.created_at) + "</dd>" +
+    (usage ? '<dt>Usage / cost</dt><dd class="mono">' + esc(usage) + "</dd>" : "") +
+    (summary ? "<dt>Spend</dt><dd>" + esc(summary) + "</dd>" : "") + "</dl></details></td>";
 }
 
 function sessionsView() {
@@ -557,21 +584,54 @@ function reviewCoverageHtml(coverage) {
     ? ' <span class="stat-sub">the reviewer saw only part of the change set ·</span>' : "");
 }
 
-function attemptHtml(attempt) {
+/* An attempt's stop. A paused attempt (its receipt's own pause, or the attempt its flow's
+ * pause stopped on) reads as a pause, pointing to where the pause is said; its raw stop code
+ * stays in the tooltip and in Details and evidence. The red callout is for failures only. */
+function attemptStopHtml(attempt, pauseKind, link, replacedBy) {
+  var stop = attempt.stop;
+  if (!stop) return "";
+  var known = FLOW_STOPS[stop.code];
+  if (replacedBy !== null && replacedBy !== undefined) {
+    // History, not a standing failure: a later attempt of this step succeeded.
+    return '<div class="stat-sub attempt-stop" data-state="replaced" data-code="' + esc(stop.code) + '" title="' +
+      esc("stop code: " + stop.code) + '">' + esc((REPLACED_STOPS[stop.code] || "stopped: " + stop.code) +
+      " · replaced by attempt " + replacedBy) + (known ? " — " + esc(known.text) : "") + "</div>";
+  }
+  if (!pauseKind) {
+    return '<div class="stat-sub attempt-stop">stopped: ' + esc(stop.code) + (known ? " — " + esc(known.text) : "") + "</div>";
+  }
+  return '<div class="stat-sub attempt-stop" data-state="paused" data-code="' + esc(stop.code) + '" title="' +
+    esc("stop code: " + stop.code + (known ? " — " + known.text : "")) + '">' +
+    esc(pauseKind === "quota" ? "stopped on a usage limit" : "stopped: " + (PAUSE_KINDS[pauseKind] || "paused")) +
+    (link ? ' — see <a href="#' + esc(link.id) + '" data-scroll-to="' + esc(link.id) + '">' + esc(link.label) + "</a>" : "") + "</div>";
+}
+
+/* What a replaced attempt's stop was, in a word (the full sentence follows). */
+var REPLACED_STOPS = {
+  "flow.interrupted": "interrupted", "flow.step_deadline": "ran past its deadline",
+  "flow.step_silent": "went silent"
+};
+
+/* `replacedBy`: the number of a later attempt of the same step that succeeded, when there is
+ * one. Its stop is then history, drawn neutral; red is for a failure that stands. */
+function attemptHtml(attempt, flowPause, link, replacedBy) {
   var delta = attempt.delta === null ? "unknown" : (attempt.delta ? "changed" : "unchanged");
+  var replaced = attempt.status !== "done" && replacedBy !== null && replacedBy !== undefined;
+  var pauseKind = replaced ? null : (attempt.pause || (flowPause && flowPause.kind) || null);
   return (
     '<li class="attempt" data-attempt="' + esc(attempt.attempt) + '" data-status="' + esc(attempt.status) + '"' +
-    (attempt.pause ? ' data-pause="' + esc(attempt.pause) + '"' : "") + ">" +
+    (pauseKind ? ' data-pause="' + esc(pauseKind) + '"' : "") +
+    (replaced ? ' data-replaced="' + esc(replacedBy) + '"' : "") + ">" +
     '<div class="attempt-head">attempt ' + esc(attempt.attempt) + " · " + esc(ranText(attempt)) +
-    " " + chip("status", attempt.status, attempt.status === "done" ? "chip-on" : (attempt.pause ? "chip-pause" : "chip-bad")) +
+    " " + chip("status", attempt.status, attempt.status === "done" ? "chip-on"
+      : (replaced ? "chip-off" : (pauseKind ? "chip-pause" : "chip-bad"))) +
     " " + chip("workspace", delta, "chip-off") +
     (attempt.no_edits ? " " + chip("no-edits", attempt.no_edits, attempt.no_edits === "unchanged" ? "chip-on" : "chip-bad") : "") +
     ' <span class="stat-sub">' + esc(attempt.duration_ms === null || attempt.duration_ms === undefined ? "duration unknown" : fmt.duration(attempt.duration_ms)) + "</span>" +
     (attempt.session_id ? ' <a class="btn btn-small attempt-trace" href="#/runs/' + encodeURIComponent(attempt.session_id) + '">Open trace</a>' +
       ' · <a href="#/sessions/' + encodeURIComponent(attempt.session_id) + '">session</a>' : "") + "</div>" +
     turnLoopHtml(attempt.turn_loop) +
-    (attempt.stop ? '<div class="stat-sub attempt-stop">stopped: ' + esc(attempt.stop.code) +
-      (FLOW_STOPS[attempt.stop.code] ? " — " + esc(FLOW_STOPS[attempt.stop.code].text) : "") + "</div>" : "") +
+    attemptStopHtml(attempt, pauseKind, link, replaced ? replacedBy : null) +
     ((attempt.inputs || []).length ? '<div class="stat-sub">in: ' + attempt.inputs.map(function (r) { return esc(artifactText(r)); }).join(", ") + "</div>" : "") +
     ((attempt.outputs || []).length ? '<div class="stat-sub">out: ' + attempt.outputs.map(function (r) { return esc(artifactText(r)); }).join(", ") + "</div>" : "") +
     ((attempt.members || []).length ? '<div class="stat-sub">reviewers: ' + attempt.members.map(function (m) { return esc(m.role) + (m.success ? " ✓" : " ✗"); }).join(", ") + "</div>" : "") +
@@ -599,6 +659,8 @@ function edgeAttempt(attempt) {
 function flowHtml(flow, progress, options) {
   if (!flow) return "";
   options = options || {};
+  // Where the pause is said on this page (the session's Result, the trace's "How it ended").
+  var link = options.pause && options.result ? { id: options.result, label: options.resultLabel || "Result" } : null;
   var review = flow.review;
   var edges = flow.edges || [];
   return (
@@ -632,12 +694,18 @@ function flowHtml(flow, progress, options) {
         '<span class="pill ' + status.cls + '">' + esc(status.text) + "</span>" +
         (last ? ' <span class="stat-sub">' + esc(ranText(last)) + " · " + attempts.length + " attempt" + (attempts.length === 1 ? "" : "s") +
           " · " + esc(total === null ? "duration unknown" : fmt.duration(total)) + "</span>" : "") + "</div>" +
-        (attempts.length ? '<ul class="attempts">' + attempts.map(attemptHtml).join("") + "</ul>" : "") +
+        (attempts.length ? '<ul class="attempts">' + attempts.map(function (a, i) {
+          // The flow's pause names its stopped step: its last attempt is the paused one.
+          var paused = options.pause && flow.stop && flow.stop.step === step.id && i === attempts.length - 1;
+          var later = attempts.slice(i + 1).filter(function (b) { return b.status === "done"; })[0];
+          return attemptHtml(a, paused ? options.pause : null, link, later ? later.attempt : null);
+        }).join("") + "</ul>" : "") +
         // The step in flight is described in its own block, a paused one in the Result (said
         // once, with its command); never "not run yet".
         ((status.key === "paused" || (last && last.pause)) && options.pause
           ? '<div class="stat-sub pipe-pause" data-state="paused" data-resume="' + esc(pauseResume(options.pause, options.id).resume) + '">' +
-            "paused — " + esc(pauseShortText(options.pause)) + ', see <a href="#session-cause">Result</a></div>'
+            "paused — " + esc(pauseShortText(options.pause)) +
+            (link ? ', see <a href="#' + esc(link.id) + '" data-scroll-to="' + esc(link.id) + '">' + esc(link.label) + "</a>" : "") + "</div>"
           : (status.key === "current" || status.key === "paused"
             ? '<div class="stat-sub pipe-live-note">' + (status.key === "current" ? "in flight" : "paused") +
               (live && live.step === step.id && typeof live.turns === "number" ? " · turn " + esc(live.turns) : "") +
@@ -1331,7 +1399,7 @@ function paintSessionPage(page) {
   paintHost("session-failure-host", sessionFailed(row) && !row.pause && row.failure_evidence
     ? '<div class="card">' + failureEvidenceHtml(row.failure_evidence) + "</div>" : "");
   paintHost("session-live-step-host", sessionLiveStepHtml(row), { keepSelection: true });
-  paintHost("session-flow-host", flowHtml(row.flow, row.flow_progress, { pause: row.pause, id: row.session_id }));
+  paintHost("session-flow-host", flowHtml(row.flow, row.flow_progress, { pause: row.pause, id: row.session_id, result: "session-cause" }));
   // What each attempt's receipt measured, and the flow total: the trace page's own table.
   paintHost("session-measure-host", row.flow && typeof flowMeasuredHtml === "function"
     ? flowMeasuredHtml(row.flow) : "");
