@@ -186,6 +186,13 @@ with sync_playwright() as p:
     # The raw-event escape hatch, and the buffer link that expands a [buffer:…] stub.
     page.goto(f"{BASE}#/runs/b2-rejected-then-passed", wait_until="networkidle")
     page.wait_for_selector("#raw-filter")
+    # Every control has an accessible name of its own, not just a placeholder.
+    unnamed = page.evaluate("""() => [...document.querySelectorAll(
+            '#view input, #view select, #view textarea')]
+        .filter(c => !c.getAttribute('aria-label') && !(c.labels && c.labels.length))
+        .map(c => c.id || c.outerHTML.slice(0, 60))""")
+    if unnamed or page.get_by_role("searchbox", name="Filter loaded raw events").count() != 1:
+        problems.append(f"trace controls without an accessible name: {unnamed}")
     # Filtering before anything is loaded searches the first window instead of answering
     # "nothing matches" about zero events.
     page.fill("#raw-filter", "permission_ask")

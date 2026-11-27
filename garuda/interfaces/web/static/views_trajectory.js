@@ -453,7 +453,7 @@ function overviewHtml(traj) {
              esc(FAMILY_ICON[toolFamily(step.name)]) + "</span>";
     }).join("");
     return (
-      '<a class="flow-row" href="#turn-' + turn.index + '" data-scroll="' + turn.index + '">' +
+      '<a class="flow-row" href="#turn-' + esc(turn.index) + '" data-scroll="' + esc(turn.index) + '">' +
       '<span class="flow-no">' + esc(turnNumber(turn)) + "</span>" +
       '<span class="flow-chips">' + (chips || '<span class="fchip f-none">·</span>') + "</span>" +
       '<span class="flow-note">' + esc(flowNote(turn, steps)) + "</span></a>"
@@ -1134,8 +1134,8 @@ function turnCardHtml(turn, previous, traj, ctx) {
     ? Math.round(turn.budget.fraction * 100) + "%" : "—";
 
   return (
-    '<div class="turn" data-turn="' + turn.index + '" id="turn-' + turn.index + '">' +
-    '<button type="button" class="turn-head" data-toggle="' + turn.index + '">' +
+    '<div class="turn" data-turn="' + esc(turn.index) + '" id="turn-' + esc(turn.index) + '">' +
+    '<button type="button" class="turn-head" data-toggle="' + esc(turn.index) + '">' +
     '<span class="turn-no">' + esc(turnNumber(turn)) + "</span>" +
     '<span class="turn-flags">' + turnFlagsHtml(turn, steps, ctx) + "</span>" +
     '<span class="turn-stats">' +
@@ -1147,7 +1147,7 @@ function turnCardHtml(turn, previous, traj, ctx) {
     "</span>" +
     '<span class="turn-caret">▸</span>' +
     "</button>" +
-    '<div class="turn-body" id="turn-body-' + turn.index + '" hidden>' +
+    '<div class="turn-body" id="turn-body-' + esc(turn.index) + '" hidden>' +
     turnBodyHtml(turn, previous, traj, steps, ctx) +
     "</div></div>"
   );
