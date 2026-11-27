@@ -60,7 +60,7 @@ async def _execute(payload, control):
         from garuda.interfaces.runner import run_agent_task
 
         prepared = await activate_agent_plan(native_from_document(request["native"]),
-                                             approval_handler=control.approve, load_project_tools=False)
+                                             approval_handler=control.answerer, load_project_tools=False)
         deadline = limits.get("deadline_sec")
         if deadline:  # the step's own deadline (#828), within any the agent sets
             prepared.config.deadline_sec = min(prepared.config.deadline_sec or deadline, deadline)
@@ -106,7 +106,7 @@ async def _execute(payload, control):
                 admitted_runtime=(role.fallback or {}).get("admitted_runtime"),
                 session_record={**workspace_record, "flow_step": request["flow"]},
                 external_approvals=request.get("external_approvals", False),
-                approval=deny_all if request["no_edits"] else control.approve,
+                approval=deny_all if request["no_edits"] else control.answerer,
                 emit=lambda *_a: None, no_edits=request["no_edits"],
                 **({"deadline_sec": limits["deadline_sec"]} if limits.get("deadline_sec") else {}),
                 **({"silence_watchdog": watchdog} if any(watchdog.values()) else {}),
