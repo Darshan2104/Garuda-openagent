@@ -635,6 +635,32 @@ with `flow.step_deadline` or `flow.step_silent`, and `garuda flow resume` runs
 it again; see [Step limits](sessions-and-flows.md#step-limits). Without
 `limits` a step has no deadline and no silence watchdog, as before.
 
+An external (ACP) step, or a flow as the default for its ACP steps, may set
+`long_run` to run over many turns in one step (whole numbers; `{}` takes every
+default):
+
+```yaml
+      - id: build
+        role: coder
+        outputs: [summary]
+        long_run: {max_hours: 10, session_turns: 15, session_hours: 3,
+                   max_turns: 200, no_progress_turns: 3}
+```
+
+- `max_hours` (1 to 24, default 12): the step's whole budget; it is also its
+  deadline (the shorter of it and `limits.deadline_min`).
+- `session_turns` (1 to 200, default 20) and `session_hours` (1 to 24,
+  default 4, at most `max_hours`): when Garuda starts a fresh harness session.
+- `max_turns` (1 to 1000, default 200): the most turns the step sends.
+- `no_progress_turns` (1 to 50, default 3): turns without a change Garuda can
+  measure before the step pauses.
+
+A step's own keys override the flow's, key by key. `long_run` on a parallel
+group is refused when the flow loads, and on a step whose role is native when
+the step starts (`flow.long_run_unsupported`); a flow's default skips native
+steps. See [Long steps](sessions-and-flows.md#long-steps). Without `long_run`
+a step sends one prompt, as before.
+
 ### Check time limits
 
 A check command may run for 900 seconds and a flow's whole check phase for
@@ -657,6 +683,8 @@ phase that runs out stops verification with `verification.phase_timeout`. The
 limits are part of the flow's frozen check request, so `flow resume` runs the
 original checks under the limits they started with. Which checks run, and the
 trust a project's checks need, are unchanged.
+
+### Harness startup timeout
 
 `harnesses.<id>.handshake_timeout_sec` is how long Garuda waits for an
 external (ACP) harness to answer its startup calls (`initialize`,

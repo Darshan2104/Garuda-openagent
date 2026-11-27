@@ -13,7 +13,7 @@ linux = pytest.mark.skipif(sys.platform != "linux", reason="actual Linux process
 @pytest.mark.asyncio
 async def test_role_budget_and_anonymous_input_do_not_widen_acceptance_limits(tmp_path):
     script = "import os;fd=int(os.environ['GARUDA_OWNED_INPUT_FD']);assert len(os.read(fd,100000))==80000;print('read owned input')"
-    request = ProcessRequest((sys.executable, "-c", script), str(tmp_path), timeout=901,
+    request = ProcessRequest((sys.executable, "-c", script), str(tmp_path), timeout=4 * 3600 + 1,
                              input_data="x" * 80_000, purpose="role")
     async with await LinuxProcessSupervisor().prepare() as process:
         await process.activate(request)
@@ -22,7 +22,7 @@ async def test_role_budget_and_anonymous_input_do_not_widen_acceptance_limits(tm
     assert result.stdout_tail.strip() == "read owned input"
     assert result.cleanup["echild"] is True
     with pytest.raises(ValueError):
-        ProcessRequest(request.run, str(tmp_path), timeout=901).document()
+        ProcessRequest(request.run, str(tmp_path), timeout=4 * 3600 + 1).document()
     with pytest.raises(ValueError):
         ProcessRequest(request.run, str(tmp_path), input_data="x" * 80_000).document()
 
@@ -30,7 +30,7 @@ async def test_role_budget_and_anonymous_input_do_not_widen_acceptance_limits(tm
 @linux
 @pytest.mark.asyncio
 @pytest.mark.parametrize("purpose,timeout,payload", [
-    ("acceptance", 901, None), ("role", 3601, None),
+    ("acceptance", 4 * 3600 + 1, None), ("role", 7 * 24 * 3600 + 601, None),
     ("acceptance", 30, "x" * 65_536), ("unknown", 30, None),
 ], ids=["check-time", "role-time", "check-input", "unknown-purpose"])
 async def test_worker_refuses_invalid_limits_when_the_parent_selector_is_bypassed(

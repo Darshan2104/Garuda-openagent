@@ -65,6 +65,13 @@ def valid_failure(failure) -> bool:
             and failure.get("liveness") in (None, "deadline", "silence"))
 
 
+def valid_turns(record) -> bool:
+    """A worker's turn record (:meth:`garuda.flows.long_step.StepTurns.record`), bounded."""
+    from garuda.flows.long_step import valid_record
+
+    return valid_record(record)
+
+
 def bounded_output(text: str) -> str:
     """The end of ``text`` within :data:`MAX_RESULT_OUTPUT` bytes: flow artifact blocks
     close an answer, so the tail is what a step's outputs come from."""
@@ -221,7 +228,7 @@ class RoleControl:
             return answer if isinstance(answer, Unanswered) else bool(answer)
         if operation == "result" and self.result is None:
             if (not isinstance(value, dict)
-                    or set(value) - {"refusal", "failure"} != {"session_id", "success", "output"}
+                    or set(value) - {"refusal", "failure", "turns"} != {"session_id", "success", "output"}
                     or {"refusal", "failure"} <= set(value)
                     or not isinstance(value["session_id"], str)
                     or type(value["success"]) is not bool or not isinstance(value["output"], str)
@@ -231,7 +238,9 @@ class RoleControl:
                                                 or value["success"] is not False or value["output"]))
                     # A typed failure cause (#828) only ever describes a failed step.
                     or ("failure" in value and (not valid_failure(value["failure"])
-                                                or value["success"] is not False))):
+                                                or value["success"] is not False))
+                    # What an ACP step's turns did (repair turn, turn loop); never with a refusal.
+                    or ("turns" in value and ("refusal" in value or not valid_turns(value["turns"])))):
                 raise ValueError("invalid role result")
             from garuda.core.sessions import validate_session_ref
 

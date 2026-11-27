@@ -532,6 +532,66 @@ error) is retried up to 3 times, every attempt within the lifetime the last
 successful renewal gave, before the step is stopped. A lease another session
 took over, or that expired, stops the step at once.
 
+### Long steps
+
+A step with [`long_run`](configuration.md) runs over many turns of its ACP
+harness instead of one. Its first prompt ends with a `[garuda]` line asking the
+agent to work toward the next milestone and end each turn with a progress
+block, `<garuda-artifact type="progress">…</garuda-artifact>` (never an
+artifact: only the step's declared outputs are passed on). After each turn
+Garuda records its own facts — the harness's stop reason, whether it denied an
+action, the files changed since the step's first attempt began and a hash of
+that change, the turn count and times, and the progress note, redacted — and
+decides:
+
+| After a turn | Garuda |
+|---|---|
+| the harness refused (`refusal`) | stops the step: `flow.step_refused` |
+| every declared output is there (with none declared: `end_turn`) | finishes the step |
+| `max_tokens`, `max_turn_requests`, or `end_turn` without the outputs | sends another turn in the same session, naming the outputs still missing |
+| an action was denied and the turn ended `end_turn` | sends another turn naming the denied action: continue without it, or record that it needs approval |
+| a malformed or too-large output block | asks once for only the blocks (the repair turn below) |
+| the turn ended `cancelled` (the harness closed its session) | starts a fresh session with a brief |
+| `session_turns` or `session_hours` reached, or the harness reports its context 80% full | starts a fresh session with a brief |
+| no measured progress (the change's hash unchanged, no new output) for `no_progress_turns` turns | pauses: `flow.step_no_progress` |
+| `max_hours` or `max_turns` reached | pauses: `flow.step_deadline` or `flow.step_max_turns` |
+| a transient harness error (an exit mid-turn, an overloaded or 5xx API error, a reset connection) | waits 5 s, 30 s, then 120 s and starts a fresh session; the fourth stops the step as today |
+
+Staying in one session keeps the harness's context (and its provider's prompt
+cache); a fresh one costs a new context. A fresh session runs in the same
+Garuda step session — the same lease, evidence baseline and approvals — and
+its first prompt is the step prompt again plus a *brief*: Garuda's own records
+of the step so far (turns, files changed, outputs missing, denied actions and
+the last progress note, fenced as data, at most 6,000 characters). It is not
+restored model state. A usage limit (`harness.limit_reached`) is never retried
+here: the step stops as before.
+
+Every turn is a line in `progress/STEP-ATTEMPT.jsonl` beside the flow's
+receipts (owner-only, at most 2,000 lines, with the brief of each rotation).
+The step's receipt adds `sessions` (its Garuda step session), `harness_sessions`
+(each harness session in order), `turns`, `rotations`, `continuations`,
+`repairs` and `progress`; its status, journal entries (one intent, one receipt)
+and review packet are as for any step. The pauses are ordinary resumable
+stops: `garuda flow resume FLOW_ID` runs the step again as a new attempt, and
+they are never retried by `retries`. A checked step's worker runs the same
+loop; a read-only checked step, whose harness is one confined container,
+continues and repairs in that session but never rotates.
+
+### The repair turn
+
+When a step's turn ended normally but its declared output blocks are missing,
+malformed or too large, Garuda asks the same harness session once, with a
+short `[garuda]` prompt naming what was wrong, for only the blocks and no
+change to files. At most one repair per attempt; the receipt's `repairs` says
+how it went. If the repair does not give good blocks, the original stop
+(`flow.output_missing`, `flow.artifact_malformed`, `flow.artifact_too_large`)
+stands, and a step with `retries` runs again after it. The no-edits check,
+workspace version and candidate are taken after the repair, so a read-only
+step that changed files during it still stops with `flow.no_edits_changed`.
+This applies to every ACP flow step with outputs, with or without
+`long_run`; a refusal is never repaired, and native steps and parallel group
+members keep today's single turn.
+
 ### Reviews
 
 A step with `review: {by: reviewer, max_rounds: 2}` is reviewed by the flow's

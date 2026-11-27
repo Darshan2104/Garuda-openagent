@@ -1858,6 +1858,11 @@ def run_flow(args) -> int:
             ran = "/".join(str(v) for v in (plan.get("runtime_id"), plan.get("model_id")) if v)
             took = receipt.get("duration_ms")
             extra = (f"; {ran}" if ran else "") + (f"; {took / 1000:.1f}s" if type(took) is int else "")
+            if type(receipt.get("turns")) is int:  # a long step's turns or a repair (#819)
+                repairs = receipt.get("repairs") if isinstance(receipt.get("repairs"), list) else []
+                extra += (f"; {receipt['turns']} turns, {receipt.get('rotations', 0)} rotations"
+                          + "".join(f", repair {r.get('outcome')}" for r in repairs
+                                    if isinstance(r, dict)))
             print(f"  {receipt['step']} (attempt {receipt['attempt']}): {receipt['status']}; "
                   f"outputs: {outs}{extra}")
         return 0

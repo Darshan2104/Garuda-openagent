@@ -28,6 +28,7 @@ async def _two_acp_runs(store, workspace, sid):
     from garuda.acp.adapter import AcpRuntime
 
     store.begin(sid, task="fixture", model="external", agent="latest", workspace=str(workspace))
+    polled = 0
     for index in range(2):
         runtime = AcpRuntime([sys.executable, FAKE, "--profile", "resume",
                               "--state-file", str(workspace.parent / f"wire-{index}.json")],
@@ -35,9 +36,15 @@ async def _two_acp_runs(store, workspace, sid):
                              persist_dir=str(store.session_dir(sid)))
         try:
             await runtime.start(task="fixture", session_id=sid)
-            await runtime.prompt(f"request {index}")
+            cursor = 0
+            for turn in range(2):  # several turns, polled by cursor as the turn loop does
+                await runtime.prompt(f"request {index}.{turn}")
+                events, cursor = await runtime.poll_events(cursor)
+                polled += len(events)
         finally:
             await runtime.close()
+        polled += len((await runtime.poll_events(cursor))[0])
+    return polled
 
 
 def _all_rows(directory):
@@ -68,7 +75,7 @@ async def test_a_rotated_trail_is_read_whole_by_every_reader(tmp_path, monkeypat
     store = SessionStore(tmp_path / "sessions")
     monkeypatch.setattr(event_log, "ROTATE_BYTES", 600)
     monkeypatch.setattr(event_log, "KEEP_ROTATED", 1000)
-    await _two_acp_runs(store, workspace, "rotated")
+    polled = await _two_acp_runs(store, workspace, "rotated")
 
     directory = store.session_dir("rotated")
     parts = event_log.part_paths(directory)
@@ -78,14 +85,15 @@ async def test_a_rotated_trail_is_read_whole_by_every_reader(tmp_path, monkeypat
                for path in parts)
     rows = _all_rows(directory)
     kinds = [row["kind"] for row in rows]
-    assert kinds.count("outbound_prompt") == 2
+    assert kinds.count("outbound_prompt") == 4
+    assert polled == len(rows)  # rotation never touches the in-memory cursor the turn loop reads
 
     read = _readers(store, "rotated")
     events, summary = read["export"]
     assert summary["count"] == len(rows) and events == rows
     assert summary["parts"] == len(parts) and summary["pruned"] is False
     assert sum(read["lanes"].external_kinds.values()) == len(rows)
-    assert read["dashboard"]["prompts_sent"] == 2
+    assert read["dashboard"]["prompts_sent"] == 4
     executions = [s for s in read["show"]["segments"] if s["kind"] == "acp_execution"]
     assert len(executions) == 2 and all(s["prompts"] for s in executions)
 

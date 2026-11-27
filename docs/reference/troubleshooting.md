@@ -449,7 +449,8 @@ Click a problem to see the fix.
 ??? question "A flow stops with `flow.output_missing`"
 
     The step didn't end with the `<garuda-artifact type="…">` block the next
-    step needs. For a native role, the block must be in the summary it passes to
+    step needs, and the one repair turn Garuda gives an external (ACP) step did
+    not supply it either (the receipt's `repairs`). For a native role, the block must be in the summary it passes to
     `task_complete`. Give the role an agent that says so; see
     [Level 5](../use-cases/teams.md#run-a-plan-build-review-flow).
 
@@ -474,6 +475,25 @@ Click a problem to see the fix.
     `garuda.yaml` if the work needs longer, then `garuda flow resume FLOW_ID`
     to run the step again. See
     [Step limits](../guides/sessions-and-flows.md#step-limits).
+
+??? question "A flow stops with `flow.step_no_progress`, `flow.step_max_turns` or `flow.step_refused`"
+
+    A `long_run` step paused itself. `flow.step_no_progress`: for
+    `long_run.no_progress_turns` turns nothing Garuda can measure changed (the
+    step's files, its outputs). `flow.step_max_turns`: it used
+    `long_run.max_turns`. A `long_run` step that reaches `long_run.max_hours`
+    stops with `flow.step_deadline`. `flow.step_refused`: the model refused the
+    task, which is never continued. Read the step's progress file
+    (`progress/STEP-ATTEMPT.jsonl` beside the flow's receipts, see `garuda flow
+    show`) for each turn's stop reason, change and progress note, adjust the
+    task or `long_run`, then `garuda flow resume FLOW_ID`. See
+    [Long steps](../guides/sessions-and-flows.md#long-steps).
+
+??? question "A flow stops with `flow.long_run_unsupported`"
+
+    The step sets `long_run`, but its role runs on the native harness. The turn
+    loop runs external (ACP) harness steps only: give the step an ACP role, or
+    remove `long_run` from it.
 
 ??? question "A read-only flow step runs until it hits its turn limit"
 
