@@ -1036,6 +1036,33 @@ tr.session-row[data-pause] { --row-c: var(--st-pause-dot); }
 .starter-diagnostics, .starter-remedies { font-size: 13px; }
 .starter-operation-approvals .notice .btn { margin: var(--s2) var(--s2) 0 0; }
 
+/* --- Flows: the library, a flow's page and the session page's operation panel
+ * (views_flows.js). Everything else is the shared components: .starter-grid cards,
+ * .pipeline/.pipe-step, .starter-form/.starter-preview, .table-stack, .chips, .notice. --- */
+.flow-card h2 a { color: var(--text); text-decoration: none; }
+.flow-card h2 a:hover { color: var(--accent); text-decoration: underline; }
+.flow-card-meta { margin-top: 0; }
+.flow-project-note { flex-basis: 100%; }
+.flow-compact { margin: var(--s3) 0; padding-left: var(--s5); font-size: 13px; }
+.flow-compact li { margin: var(--s1) 0; overflow-wrap: anywhere; }
+.flow-compact-review { color: var(--muted); font-size: 12.5px; }
+.flow-missing, .flow-start-line, .flow-logins { font-size: 13px; }
+.flow-start-line ul { margin-top: var(--s1); }
+.pipe-step > .table-wrap { margin-top: var(--s2); }
+.pipe-detail {
+  display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px var(--s3);
+  margin: var(--s2) 0 0; font-size: 13px;
+}
+.pipe-detail dt { color: var(--muted); }
+.pipe-detail dd { margin: 0; overflow-wrap: anywhere; }
+.flow-unknown { margin-top: var(--s3); font-size: 13px; }
+.flow-disclosures li { margin: var(--s1) 0; }
+:is(#flow-preview, #flow-pipeline, #session-operation-host, .flow-card) code { overflow-wrap: anywhere; }
+#session-operation-host .starter-operation-card { margin-bottom: var(--s4); }
+@media (max-width: 480px) {
+  .pipe-detail { grid-template-columns: minmax(0, 1fr); }
+}
+
 /* --- Setup, Providers, Runtimes, Usage --- */
 .diag-summary { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 var(--s3); }
 .diagnostics, .diag-group-body { list-style: none; margin: 0; padding: 0; }

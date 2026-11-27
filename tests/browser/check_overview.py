@@ -232,7 +232,7 @@ with sync_playwright() as p:
     page.keyboard.press("1")
     page.wait_for_function("location.hash === '#/'")
     page.keyboard.press("2")
-    page.wait_for_function("location.hash === '#/starters'")
+    page.wait_for_function("location.hash === '#/flows'")
     check("number keys follow the new tab order", True)
 
     # --- an empty answer in read-only mode offers no start links ------------------------------
