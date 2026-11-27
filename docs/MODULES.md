@@ -881,6 +881,13 @@ owner becomes `uncertain` without replay. The shared session Stop path revokes
 the same pending record as recovery controls. `default_root()` honors the
 operator's `GARUDA_RECOVERY_ROOT`; a CLI `--root` overrides only that command.
 
+`checked_quota.py` lets a checked CLI flow wait out a Claude usage limit in its own
+process: only a settled `flow.quota_wait` stop (resume checkpoint, closed owned worker,
+evidence boundary, typed limit with a future reset) qualifies; the wait records
+`flow_quota_wait` with its owner, sleeps until the reset plus quota recovery's margin and
+continues through the checked resume path. `FlowExecutionService.run`/`resume` take
+`wait_for_quota` (the CLI passes it); a live waiter makes `resume` refuse.
+
 `service.py::FlowExecutionService` is the shared in-process run/resume facade.
 It resolves effective packaged/configured flows, refuses unknown flows and
 missing roles before engine admission, and returns the engine outcome together

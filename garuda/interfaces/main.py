@@ -2100,15 +2100,29 @@ def run_flow(args) -> int:
             print(line)
         return 0
     terminated: list[bool] = []
+
+    def quota_waiting(pause) -> None:
+        # A checked flow waits out its Claude usage limit in this process.
+        from garuda.acp.protocol import reset_time_text
+
+        window = f"Claude {pause.rate_limit_type} limit" if pause.rate_limit_type else "Claude usage limit"
+        print(f"[garuda] {pause.step} (attempt {pause.attempt}): paused on the {window} until "
+              f"{reset_time_text(pause.reset_at)}; this process waits and then continues the "
+              "flow under its original checks. If it stops, `garuda flow resume "
+              f"{pause.flow_session}` continues it.", file=sys.stderr, flush=True)
+
+    waits = {"wait_for_quota": True, "on_quota_wait": quota_waiting}
     try:
         service = FlowExecutionService(store)
         if args.flow_command == "resume":
-            outcome = asyncio.run(_terminable(lambda: service.resume(args.flow_session), terminated))
+            outcome = asyncio.run(_terminable(lambda: service.resume(args.flow_session, **waits),
+                                              terminated))
         else:
             outcome = asyncio.run(_terminable(lambda: service.run(
                 args.name, args.task, args.workspace, checks=tuple(args.checks),
                 # Only when asked: without the flag the call is the one it always was.
-                **({"isolation": args.isolation} if getattr(args, "isolation", None) else {})),
+                **({"isolation": args.isolation} if getattr(args, "isolation", None) else {}),
+                **(waits if args.checks else {})),
                 terminated))
     except asyncio.CancelledError:
         # SIGTERM reached a point with no settled stop: the engine recorded the

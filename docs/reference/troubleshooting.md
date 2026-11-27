@@ -103,7 +103,9 @@ Click a problem to see the fix.
       (`garuda flow show` prints `limit: five_hour; resets at ...`). Run
       `garuda flow resume` after the reset, or enable
       [quota recovery](../use-cases/automate.md#claude-flows) to resume it
-      automatically. A host error such as `Disk quota
+      automatically. A checked flow (`--check`) waits for the reset in its
+      own `garuda flow run` process and then continues; if that process
+      stopped, `garuda flow resume` continues it. A host error such as `Disk quota
       exceeded (os error 122)` is not typed as a limit: it stays a plain
       `agent error`, so free disk space instead. Error text an agent sends
       back is redacted for secret patterns before Garuda stores or shows it.

@@ -5985,3 +5985,52 @@ second; a change inside that second is written when it is up. `garuda run`,
 the SDK and steps without limits pass nothing, so nothing is tracked or
 written and their behaviour is unchanged. A missing or malformed file reads as
 unknown (`null`).
+
+## 2026-11-28: A checked flow waits out a Claude usage limit and continues under its checks
+
+Since #834 a Claude limit stops an unchecked flow with `flow.quota_wait`, and quota
+recovery's tick continues it 120 s after the reported reset. A checked flow
+(`--check`) kept `flow.step_failed` (`_limit_pause` excluded `verification_request`
+flows) because `flow.quota_wait` was not in `RESUMABLE_CHECKED_STOPS` (so no resume
+checkpoint would be written) and recovery refuses checked flows. The owned worker's
+result was never the gap: the step session records `error_code` and the validated
+`error_limit` for owned and in-process launches alike, and `_step_cause` already put
+`cause.limit` into the checked stop. A long checked run therefore stopped at the
+5-hour limit and waited for a person.
+
+Decided: `_limit_pause` no longer excludes checked flows and `flow.quota_wait` is in
+`RESUMABLE_CHECKED_STOPS`, so a checked limit stop settles exactly like the other
+resumable checked stops: the attempt's tree is proved closed (`_closed_step`) and its
+evidence boundary taken before the receipt, the journal keeps two entries per
+attempt, and the stop gets its `flow_resume_checkpoint`. Continuation is not done by
+the tick (the design rejected a sleeping worker for unchecked recovery because it
+loses recovery when the process exits; a checked flow's continuation needs the
+original check request that only `flow resume` restores, and the process that ran
+the flow is the natural owner). `garuda/flows/checked_quota.py` waits in the CLI's
+`flow run --check` / `flow resume` process (`FlowExecutionService.run/resume(...,
+wait_for_quota=True)`; other in-process callers are unchanged unless they pass it).
+It accepts only a settled stop: stopped, CLI checked (`flow-verification` policy, no
+operation/background/check-phase keys), its checkpoint present, no unsettled intent,
+the journal ending with the receipt of a `claude` attempt stopped `flow.quota_wait`,
+ECHILD closure (`linux-subreaper`, `exited`) and an evidence boundary, a limit cause
+with a validated reset in the future. It sleeps until reset +
+`CLAUDE_RESET_MARGIN_SEC` (in steps of at most 60 s), then requires the same stop and
+checkpoint id before continuing through the unchanged checked resume path
+(`_resume_inputs`, the original request and flow definition, `_evidence.resume`),
+which refuses any change exactly as a manual resume. The runner's `quota_continued`
+gives that continuation the same `QUOTA_NOTE` / `how="quota"` brief as a recovery
+continuation. A repeated limit waits again only for a strictly later reset, so a
+stale reset cannot loop; no reported reset or a passed one leaves the plain
+resumable stop, as an unchecked flow without recovery. There is no maximum wait
+beyond the validated `resets_at` range, as for the unchecked path.
+
+While waiting the process publishes `flow_quota_wait` (step, attempt, reset, window,
+`resume_at`, checkpoint id, owner) and clears it before continuing or when cancelled.
+`read_model.flow_pause` reports `resume: automatic` for a `flow.quota_wait` stop
+while that owner is alive, else `manual`; `flow resume` refuses with
+`flow.quota_wait` beside a live waiter. Killed while waiting, the stop is still the
+settled resumable one: `flow resume` waits for a future reset first, or runs at once
+after it. Dashboard-started checked flows record `flow.quota_wait` (no checkpoint,
+since they have no CLI checks) and keep the `flow.operation_managed` resume refusal;
+nothing waits for them. Codex limits keep `flow.step_failed`. `_limit_failure` stays
+for checked limit stops recorded as `flow.step_failed` before this change.
