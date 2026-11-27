@@ -95,12 +95,17 @@ console.log(JSON.stringify({
   autoPassed: r({kind: "quota", reset_at: now - 600, resume: "automatic"}),
   deadline: r({kind: "deadline"}),
   resetText: context.pauseResetText(now + 12 * 60), passedText: context.pauseResetText(now - 20 * 60),
-  block: context.pauseBlockHtml(Object.assign({}, manual, {action: '<img src=x onerror="1">'}), null, "f-1", "b"),
+  isoFallback: r(Object.assign({}, manual, {reset_at: null, action: "run it after " + new Date((now + 600) * 1000).toISOString()})),
+  block: context.pauseBlockHtml(Object.assign({}, manual, {reset_at: null, action: '<img src=x onerror="1">'}), null, "f-1", "b"),
   autoBlock: context.pauseBlockHtml({kind: "quota", reset_at: now + 600, resume: "automatic"}, null, "f-1")}));
 """)
+    # The reset is known, so the structured fields say it; the recorded sentence is not repeated.
     assert out["manual"] == {"resume": "manual", "text": "run the command after the reset",
-                             "command": "garuda flow resume f-1",
-                             "action": "run `garuda flow resume f-1` after the reset"}
+                             "command": "garuda flow resume f-1", "action": None}
+    # Without one, the sentence is the fallback, its timestamp in local time.
+    assert out["manualUnknown"]["action"] == "run `garuda flow resume f-1` after the reset"
+    assert out["isoFallback"]["action"].startswith("run it after ") and "(in " in out["isoFallback"]["action"]
+    assert "T" not in out["isoFallback"]["action"].split("after ")[1].split(" (")[0]
     assert out["manualPassed"]["text"] == "reset passed; run the command to continue"
     assert out["manualUnknown"]["text"] == "run the command after the limit resets"
     assert out["auto"]["text"] == "resumes automatically after the reset" and out["auto"]["command"] is None
@@ -137,6 +142,7 @@ console.log(JSON.stringify({result: context.sessionResultHtml(row), evidence: co
     assert 'id="failure-evidence"' in out["evidence"]  # inside the collapsed Details and evidence
     assert 'id="failure-evidence"' not in out["failedEvidence"]  # a failure leads with its own card
     assert out["sentence"]["next"] == "Next (resume: manual): run the command after the reset: garuda flow resume f-1."
+    assert "recorded next step" not in result  # the reset is known: no second wording of it
     assert 'class="s-sub s-pause" data-resume="manual"' in out["listRow"] and "resume: manual" in out["listRow"]
 
 
@@ -153,19 +159,85 @@ console.log(JSON.stringify({off: context.flowLiveHtml(row), offInFlight: context
     assert 'id="flow-live"' in out["on"] and out["onInFlight"] is True
 
 
-def test_the_paused_live_block_follows_the_rows_pause():
+def test_a_paused_flow_says_its_pause_once():
+    """The Result holds the pause block; no live card repeats it, and the pipeline's paused step
+    is a short marker pointing there, without the command."""
     out = _node(r"""
 const now = Math.floor(Date.now() / 1000);
-const live = {step: "build", attempt: 1, paused: {code: "flow.step_failed", step: "build",
-  message: "usage limit reached", reset_at: now - 300, next_check: null}};
-const row = pause => ({session_id: "f-2", state: {work: "done"}, flow: {in_flight: live}, pause: pause});
-console.log(JSON.stringify({
-  manual: context.flowLiveHtml(row({kind: "quota", reset_at: now - 300, resume: "manual"})),
-  auto: context.flowLiveHtml(row({kind: "quota", reset_at: now + 300, resume: "automatic"}))}));
+const pause = {kind: "quota", reset_at: now + 600, resume: "manual", action: "x"};
+const live = {step: "build", attempt: 1, running: false, paused: {code: "flow.step_failed", step: "build",
+  message: "usage limit reached", reset_at: now + 600, next_check: null}};
+const flow = {name: "soak", state: "stopped", stop: {code: "flow.step_failed", step: "build"}, in_flight: live,
+  steps: [{id: "build", attempts: [{attempt: 1, status: "stopped", pause: "quota", stop: {code: "flow.step_failed"}}]},
+          {id: "review", attempts: []}]};
+const row = {session_id: "f-2", state: {work: "done"}, flow: flow, pause: pause};
+const quarantined = {session_id: "f-3", state: {work: "done"}, pause: null, flow: {in_flight: {step: "build", attempt: 1,
+  paused: {code: "flow.step_backstop", step: "build", message: "killed", reset_at: null, next_check: null}}}};
+console.log(JSON.stringify({card: context.sessionLiveStepHtml(row), live: context.flowLiveHtml(row),
+  pipeline: context.flowHtml(flow, null, {pause: pause, id: "f-2"}),
+  quarantined: context.flowLiveHtml(quarantined)}));
 """)
-    assert "reset passed; run the command to continue: garuda flow resume f-2" in out["manual"]
-    assert "reset passed at" in out["manual"] and " ago" not in out["manual"]
-    assert "resumes automatically after the reset" in out["auto"] and "flow resume" not in out["auto"]
+    assert out["card"] == "" and out["live"] == ""
+    pipeline = out["pipeline"]
+    assert pipeline.count('class="stat-sub pipe-pause"') == 1
+    assert 'paused — usage limit, see <a href="#session-cause">Result</a>' in pipeline
+    assert "garuda flow resume" not in pipeline and "pause-block" not in pipeline
+    assert "step block above" not in pipeline
+    assert 'id="flow-live"' in out["quarantined"]  # not a pause: its stop keeps its block
+
+
+def test_no_rendered_pause_text_contains_an_iso_timestamp():
+    out = _node(r"""
+const now = Math.floor(Date.now() / 1000);
+const iso = s => new Date((now + s) * 1000).toISOString().replace(/\.\d+Z$/, "+00:00");
+const manual = {kind: "quota", reset_at: now + 720, resume: "manual",
+  action: "run `garuda flow resume f-1` after " + iso(720)};
+const unknown = Object.assign({}, manual, {reset_at: null});
+const stop = {code: "flow.step_failed", step: "build", message: "usage limit; resets at " + iso(720)};
+const row = p => ({session_id: "f-1", kind: "flow", label: "failed", usage: "-", cost: "-",
+  state: {process: "exited", work: "done", outcome: "failed"}, pause: p,
+  flow: {name: "soak", state: "stopped", stop: stop, steps: [{id: "build", attempts: [{attempt: 1, status: "stopped",
+    pause: "quota", stop: {code: "flow.step_failed"}}]}]}});
+const parts = [];
+[manual, unknown, Object.assign({}, manual, {reset_at: now - 600}),
+ {kind: "quota", reset_at: now + 600, resume: "automatic", action: "resumes after " + iso(600)}].forEach(p => {
+  const r = row(p);
+  parts.push(context.pauseBlockHtml(p, stop, "f-1"), context.sessionResultHtml(r), context.sessionRowHtml(r),
+    JSON.stringify(context.failureSentence(r)), context.flowHtml(r.flow, null, {pause: p, id: "f-1"}));
+});
+parts.push(context.flowLiveHtml({session_id: "f-1", state: {work: "done"}, flow: {in_flight: {step: "build",
+  attempt: 1, paused: {code: "flow.step_backstop", step: "build", message: "killed at " + iso(-60), reset_at: null}}}}));
+console.log(JSON.stringify({html: parts.join("\n"), sample: iso(720)}));
+""")
+
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+00:00", out["sample"])
+    text = re.sub(r"<[^>]+>", " ", out["html"])
+    assert not re.search(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}", text), re.findall(r".{40}\d{4}-\d{2}-\d{2}T.{20}", text)
+
+
+def test_an_interrupted_flow_says_what_is_recorded():
+    """flow_state interrupted with no flow_stop: never "It failed; no cause was recorded"."""
+    from garuda.flows.engine import INTERRUPTED_STOP, RESUMABLE_CHECKED_STOPS
+
+    assert INTERRUPTED_STOP in RESUMABLE_CHECKED_STOPS
+    out = _node(r"""
+const base = {session_id: "f-4", kind: "flow", state: {process: "exited", work: "done", outcome: "failed"}, pause: null};
+const settled = Object.assign({}, base, {flow: {state: "interrupted", stop: null, in_flight: null,
+  steps: [{id: "build", attempts: [{attempt: 1, status: "stopped", stop: {code: "flow.interrupted"}}]}]}});
+const open = Object.assign({}, base, {flow: {state: "interrupted", stop: null, steps: [{id: "build", attempts: []}],
+  in_flight: {step: "build", attempt: 2, running: false, paused: null}}});
+const bare = Object.assign({}, base, {flow: {state: "interrupted", stop: null, in_flight: null, steps: []}});
+console.log(JSON.stringify({settled: context.failureSentence(settled), open: context.failureSentence(open),
+  bare: context.failureSentence(bare), resumable: !!context.FLOW_STOPS["flow.interrupted"].resume,
+  result: context.sessionResultHtml(settled)}));
+""")
+    assert out["resumable"] is True
+    assert out["settled"] == {"cause": "Interrupted: the flow's process stopped before step build finished (flow.interrupted).",
+                              "next": "Next: garuda flow resume f-4 runs it again."}
+    assert "step build (attempt 2) was running" in out["open"]["cause"]
+    assert "does not run it again" in out["open"]["next"]
+    assert out["bare"]["cause"].startswith("Interrupted:")
+    assert "no cause was recorded" not in out["result"] and "Interrupted:" in out["result"]
 
 
 def test_an_interrupted_attempts_counts_are_labelled_as_last_known():

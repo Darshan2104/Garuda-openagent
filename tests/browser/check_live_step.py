@@ -22,6 +22,7 @@ builder; the step's progress file is written line by line as the long-step loop 
 
 import json
 import os
+import re
 import sys
 import tempfile
 import time
@@ -318,10 +319,14 @@ def main() -> int:
 
         # --- a paused flow -------------------------------------------------------------------
         page.goto(f"{BASE}#/sessions/{FLOW_PAUSED}", wait_until="load")
-        check("a paused step says why", text_contains(page, '#flow-live[data-state="paused"]', "usage limit reached"))
-        paused = page.locator("#flow-live").inner_text()
+        check("a paused flow says its pause in the Result",
+              text_contains(page, '#session-pause-block[data-resume="automatic"]', "usage limit"))
+        paused = page.locator("#session-pause-block").inner_text()
         check("and when it resets, and that it resumes by itself (resume: automatic)",
               "in 3h" in paused and "resumes automatically after the reset" in paused, paused)
+        check("and only there: no live card repeats it (it is not running)",
+              page.locator("#session-live-step").count() == 0 and page.locator("#flow-live").count() == 0)
+        page.screenshot(path=str(SHOTS / "live-paused-1440-light.png"), full_page=True)
 
         # --- a checked flow paused on a usage limit: resume by hand, after the reset ---------
         page.goto(f"{BASE}#/sessions/{FLOW_LIMIT}", wait_until="load")
@@ -337,13 +342,20 @@ def main() -> int:
               and "usage limit, resets" in block.inner_text() and "(in 1" in block.inner_text()
               and f"garuda flow resume {FLOW_LIMIT}" in block.inner_text()
               and block.locator("button.copy-fix").count() == 1, block.inner_text() if block.count() else "")
-        check("the read model's own next step is shown", row["pause"]["action"] in page.locator("#session-pause-block").inner_text())
+        check("its reset is said from the structured fields, never as a raw timestamp",
+              "recorded next step" not in block.inner_text()
+              and not re.search(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}", page.locator("#view").inner_text()),
+              block.inner_text())
+        check("the pause is said once: no Step paused card", page.locator("#session-live-step").count() == 0)
         check("the header says paused", page.locator("#session-label").inner_text() == "paused")
         check("a pause is not a failure to investigate: its evidence stays collapsed",
               page.locator("#session-failure-host #failure-evidence").count() == 0
               and page.locator("#session-evidence #failure-evidence").count() == 1)
-        check("the paused step says how it resumes in the pipeline",
-              page.locator('#flow-detail .pipe-pause [data-resume="manual"]').count() == 1)
+        marker = page.locator('#flow-detail .pipe-pause[data-resume="manual"]')
+        check("the pipeline's paused step is a short marker pointing to the Result, without the command",
+              marker.count() == 1 and "paused — usage limit, see Result" in marker.inner_text()
+              and "garuda flow resume" not in page.locator("#flow-detail").inner_text(),
+              marker.inner_text() if marker.count() else "")
         page.goto(f"{BASE}#/sessions/{FLOW_LIMIT_PASSED}", wait_until="load")
         check("after the reset it says so, never a negative countdown",
               text_contains(page, "#session-pause-block", "reset passed")
@@ -357,6 +369,12 @@ def main() -> int:
 
         # --- an interrupted attempt: last known counts, from the progress file --------------
         page.goto(f"{BASE}#/sessions/{FLOW_INTERRUPTED}", wait_until="load")
+        page.wait_for_selector("#session-cause")
+        cause = page.locator("#session-cause").inner_text()
+        check("an interrupted flow says what is recorded, not 'no cause was recorded'",
+              "Interrupted: the flow's process stopped before step build finished" in cause
+              and f"garuda flow resume {FLOW_INTERRUPTED} runs it again" in cause
+              and "no cause was recorded" not in cause, cause)
         loop = page.locator('#flow-detail .turn-loop[data-source="progress"]')
         check("an interrupted attempt shows its last known counts, labelled",
               count_is(page, '#flow-detail .turn-loop[data-source="progress"]', 1)
@@ -375,7 +393,6 @@ def main() -> int:
               str(live_dead)[:200])
         check("no Step in flight card and no quiet line for it",
               page.locator("#session-live-step").count() == 0 and page.locator('[data-live="quiet"]').count() == 0)
-        page.screenshot(path=str(SHOTS / "live-paused-1440-light.png"), full_page=True)
 
         # --- a finished flow's measures on its session page ----------------------------------
         page.goto(f"{BASE}#/sessions/{FLOW_DONE}", wait_until="load")
@@ -448,7 +465,7 @@ def main() -> int:
                                     ("live-measured", f"#/sessions/{FLOW_DONE}"),
                                     ("live-overview", "#/"), ("live-sessions", "#/sessions")):
                     page.goto(f"{BASE}{hash_}", wait_until="load")
-                    ready = {"live-step": "#flow-live", "live-trace": "#flow-live", "live-paused": "#flow-live",
+                    ready = {"live-step": "#flow-live", "live-trace": "#flow-live", "live-paused": "#session-pause-block",
                              "live-measured": "#flow-measure", "live-overview": "#home-running-list li",
                              "live-sessions": "tr.session-row", "live-limit": "#session-pause-block",
                              "live-interrupted": ".turn-loop"}[name]

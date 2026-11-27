@@ -503,19 +503,27 @@ A session's page leads with the work, and keeps the evidence below:
   `pause.resume` says (**automatic**: quota recovery resumes it after the
   reset; **manual**: the `garuda flow resume <id>` command, with a Copy
   button, to run after the reset — a checked flow stopped on a usage limit is
-  manual), and the read model's recorded next step (`pause.action`). Once the
-  reset time has passed and nothing resumed it, it says **reset passed; run
-  the command to continue** rather than counting below zero. A pause is not a
-  failure to investigate: its failure evidence stays in the collapsed
-  **Details and evidence**. The same pause and resume show in the header, the
-  paused step of the pipeline, the flow trace, the Overview's paused rows and
-  the Sessions list. A flow paused on its own pause (a usage limit, a
+  manual). Without a recorded reset time it shows the read model's own
+  sentence (`pause.action`), any timestamp in it in local time; a raw
+  timestamp is never shown. Once the reset time has passed and nothing
+  resumed it, it says **reset passed; run the command to continue** rather
+  than counting below zero. A pause is not a failure to investigate: its
+  failure evidence stays in the collapsed **Details and evidence**. The pause
+  is said once, there: a paused flow has no live step card (it is not
+  running), the pipeline's paused step reads **paused — usage limit, see
+  Result**, and the header, the flow trace, the Overview's paused rows and
+  the Sessions list keep one line each. A flow paused on its own pause (a usage limit, a
   deadline, silence, no progress, the turn budget or a refusal) says **paused**
   in its header; its recorded outcome stays as stored (`failed`) and the
   session row's `pause` field says why, the same in `garuda sessions --json`.
   A failed step is a failure, not a pause. An interrupted attempt shows the
   counts its receipt recovered from the step's progress file, labelled **last
   known, from the progress file**, with its last turn's decision and time.
+  A flow whose process stopped mid-step (`interrupted`, no recorded stop) says
+  so: **Interrupted: the flow's process stopped before step build finished**
+  and, for an attempt settled as `flow.interrupted`, that `garuda flow resume
+  <id>` runs it again; a launched attempt that recorded no outcome is never
+  replayed, and the page says that instead.
   A step killed
   by the supervisor's backstop (`flow.step_backstop`) is quarantined instead,
   and the page says to set `limits.deadline_min` for a step that runs that
@@ -540,8 +548,8 @@ A session's page leads with the work, and keeps the evidence below:
   context), three shown and the rest one click away. A field the live view
   does not report (a step without limits, an older flow) leaves its line out
   rather than guessing. The step never reads
-  "not run yet" while it is in flight. A paused step says why, when its limit
-  resets and when quota recovery checks next, and `garuda flow resume <id>`
+  "not run yet" while it is in flight. A step stopped on something that is
+  not a pause (a quarantine) says why here, and `garuda flow resume <id>`
   where the engine lists the stop as resumable. An older flow, or one whose
   records the reader cannot read, says **No live detail recorded for this
   step**. Every value is the shared live view (`garuda flow show --json`'s

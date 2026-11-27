@@ -36,6 +36,11 @@ function pauseText(pause, stop) {
   return (stop && stop.step ? "step " + stop.step + " " : "a step ") + (PAUSE_KINDS[pause.kind] || "paused");
 }
 
+/* The pause in a few words, for a marker that points to the Result. */
+function pauseShortText(pause) {
+  return pause.kind === "quota" ? "usage limit" : (PAUSE_KINDS[pause.kind] || "paused");
+}
+
 /* "resets 13:24 (in 12 min)", or "reset passed at 13:24" once the time is behind us: never a
  * negative countdown. */
 function pauseResetText(resetAt) {
@@ -44,6 +49,25 @@ function pauseResetText(resetAt) {
   if (resetAt * 1000 <= Date.now()) return "reset passed at " + clock;
   var seconds = resetAt - Date.now() / 1000;
   return "resets " + clock + " (" + (seconds < 3600 * 24 ? untilEpochText(resetAt) : at.toLocaleString()) + ")";
+}
+
+/* A recorded sentence may embed an ISO timestamp ("after 2026-11-27T16:31:24+00:00"): the
+ * page shows local time instead, the way it shows every reset ("13:24 (in 12 min)"). */
+var ISO_STAMP = /\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?/g;
+
+function localStampText(epoch) {
+  var at = new Date(epoch * 1000);
+  var clock = at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  var ahead = epoch - Date.now() / 1000;
+  if (ahead > 0 && ahead < 24 * 3600) return clock + " (" + untilEpochText(epoch) + ")";
+  return Math.abs(ahead) < 24 * 3600 ? clock : at.toLocaleString();
+}
+
+function humanStamps(text) {
+  return String(text).replace(ISO_STAMP, function (stamp) {
+    var ms = new Date(stamp).getTime();
+    return isNaN(ms) ? stamp : localStampText(ms / 1000);
+  });
 }
 
 /* How a pause ends, from the read model's `pause.resume` (automatic | manual) and `action`.
@@ -65,8 +89,10 @@ function pauseResume(pause, flowId) {
   } else {
     text = "run the command to continue";
   }
+  // The structured fields say it all when the reset is known; the recorded sentence is the
+  // fallback, with any timestamp in it shown as local time.
   return { resume: resume, text: text, command: resume === "manual" ? command : null,
-           action: typeof pause.action === "string" ? pause.action : null };
+           action: typeof pause.action === "string" && typeof pause.reset_at !== "number" ? humanStamps(pause.action) : null };
 }
 
 if (typeof document !== "undefined" && document.addEventListener) {
@@ -607,14 +633,16 @@ function flowHtml(flow, progress, options) {
         (last ? ' <span class="stat-sub">' + esc(ranText(last)) + " · " + attempts.length + " attempt" + (attempts.length === 1 ? "" : "s") +
           " · " + esc(total === null ? "duration unknown" : fmt.duration(total)) + "</span>" : "") + "</div>" +
         (attempts.length ? '<ul class="attempts">' + attempts.map(attemptHtml).join("") + "</ul>" : "") +
-        // The step in flight (or paused) is described in its own block; never "not run yet".
-        (status.key === "current" || status.key === "paused"
-          ? '<div class="stat-sub pipe-live-note">' + (status.key === "current" ? "in flight" : "paused") +
-            (live && live.step === step.id && typeof live.turns === "number" ? " · turn " + esc(live.turns) : "") +
-            " · details in the step block above</div>"
-          : (attempts.length ? "" : ' <span class="stat-sub">not run yet</span>')) +
+        // The step in flight is described in its own block, a paused one in the Result (said
+        // once, with its command); never "not run yet".
         ((status.key === "paused" || (last && last.pause)) && options.pause
-          ? '<div class="pipe-pause">' + pauseBlockHtml(options.pause, flow.stop, options.id) + "</div>" : "") +
+          ? '<div class="stat-sub pipe-pause" data-state="paused" data-resume="' + esc(pauseResume(options.pause, options.id).resume) + '">' +
+            "paused — " + esc(pauseShortText(options.pause)) + ', see <a href="#session-cause">Result</a></div>'
+          : (status.key === "current" || status.key === "paused"
+            ? '<div class="stat-sub pipe-live-note">' + (status.key === "current" ? "in flight" : "paused") +
+              (live && live.step === step.id && typeof live.turns === "number" ? " · turn " + esc(live.turns) : "") +
+              (status.key === "current" ? " · details in the step block above" : "") + "</div>"
+            : (attempts.length ? "" : ' <span class="stat-sub">not run yet</span>'))) +
         (passes.length ? '<div class="pipe-pass stat-sub">passes on: ' + passes.map(function (e) {
           return esc(e.type) + " → " + esc(e.to_step);
         }).join(", ") + "</div>" : "") + "</li>";
@@ -783,20 +811,16 @@ function liveTurnsHtml(turns) {
 }
 
 /* The paused step: why, when it resumes, and how (only where the engine says it is resumable). */
-function flowPausedBlockHtml(live, flowId, pause) {
+function flowPausedBlockHtml(live, flowId) {
   var paused = live.paused || {};
   var known = FLOW_STOPS[paused.code] || {};
-  // The read model's pause says how it ends (automatic | manual); without one, the engine's
-  // resumable codes are resumed by hand.
-  var how = pause ? pauseResume(pause, flowId) : null;
-  var resume = how ? how.text + (how.command ? ": " + how.command : "")
-    : (paused.code === "flow.quota_wait" ? "Quota recovery resumes the flow on its own once the limit resets."
-      : (known.resume ? "Resume with: garuda flow resume " + flowId : ""));
+  var resume = paused.code === "flow.quota_wait" ? "Quota recovery resumes the flow on its own once the limit resets."
+    : (known.resume ? "Resume with: garuda flow resume " + flowId : "");
   return '<div class="live-step live-paused" id="flow-live" data-state="paused">' +
     '<p class="live-paused-reason"><span class="pill paused" data-state="paused">paused</span> <strong>Paused</strong>' +
     (paused.step || live.step ? " at step " + esc(paused.step || live.step) : "") +
     (live.attempt ? " (attempt " + esc(live.attempt) + ")" : "") + ": " +
-    esc(paused.message || known.text || paused.code || "no reason recorded") + "</p>" +
+    esc(humanStamps(paused.message || known.text || paused.code || "no reason recorded")) + "</p>" +
     '<dl class="live-facts">' +
     (typeof paused.reset_at === "number"
       ? liveFact("reset_at", "Reset", esc(pauseResetText(paused.reset_at)) + ' <span class="stat-sub">(' +
@@ -820,7 +844,9 @@ function flowLiveHtml(row) {
         "recorded for this step (an older flow, or records the reader could not read).</p></div>"
       : "";
   }
-  if (live.paused) return flowPausedBlockHtml(live, row.session_id, row.pause);
+  // A paused flow is not running: its pause is said once, in the Result. A stop the read
+  // model does not call a pause (a quarantine) keeps its block here.
+  if (live.paused) return row.pause ? "" : flowPausedBlockHtml(live, row.session_id);
   // Not running now (its process is gone): no "Step in flight" card, no stale quiet line.
   if (live.running === false) return "";
   var sid = live.session_id;
@@ -1078,6 +1104,37 @@ function flowStopSentence(stop, sessionId, flow) {
            next: known.resume ? "Next: garuda flow resume " + sessionId + " runs the step again." : known.next };
 }
 
+/* A flow whose process stopped mid-step (`flow_state: interrupted`) records no flow_stop: say
+ * what is recorded. An attempt settled as flow.interrupted is run again by `flow resume` (the
+ * engine lists it as resumable, as FLOW_STOPS says); a launched attempt with no receipt is
+ * never replayed (engine.recover quarantines it; a checked flow's crash continuation settles
+ * it and goes on with the next step). */
+function interruptedSentence(row) {
+  var flow = row.flow || {};
+  if (flow.state !== "interrupted") return null;
+  var open = flow.in_flight && !flow.in_flight.paused && flow.in_flight.step ? flow.in_flight : null;
+  if (open) {
+    return { cause: "Interrupted: the flow's process stopped while step " + open.step +
+               (open.attempt ? " (attempt " + open.attempt + ")" : "") + " was running, and that attempt recorded no outcome.",
+             next: "Next: open the step's session below to see what it did; garuda flow resume " + row.session_id +
+               " does not run it again (a launched step without a recorded outcome is never replayed)." };
+  }
+  var last = null;
+  (flow.steps || []).forEach(function (step) {
+    (step.attempts || []).forEach(function (a) { if (a && a.stop) last = { step: step.id, attempt: a }; });
+  });
+  if (!last) {
+    return { cause: "Interrupted: the flow's process stopped; no step attempt recorded why.",
+             next: "Next: garuda flow show " + row.session_id + " lists what was recorded." };
+  }
+  var code = last.attempt.stop.code;
+  var known = FLOW_STOPS[code] || {};
+  return { cause: "Interrupted: the flow's process stopped before step " + last.step + " finished" +
+             (code ? " (" + code + ")" : "") + ".",
+           next: known.resume ? "Next: garuda flow resume " + row.session_id + " runs it again."
+             : "Next: garuda flow resume " + row.session_id + " does not run this stop again; open the step's session below." };
+}
+
 /* Why it failed, in one plain sentence from what was recorded, and what to do next. */
 function failureSentence(row) {
   var evidence = (row.failure_evidence || {}).original_cause || {};
@@ -1091,6 +1148,8 @@ function failureSentence(row) {
   }
   var worded = row.kind === "flow" && flowStop && FLOW_STOPS[flowStop.code] ? flowStopSentence(flowStop, row.session_id, row.flow) : null;
   if (worded) return worded;
+  var interrupted = row.kind === "flow" && !flowStop ? interruptedSentence(row) : null;
+  if (interrupted) return interrupted;
   if (row.crashed) {
     return { cause: "The worker process is gone, and it exited without recording an outcome.",
              next: (row.ownership && row.ownership.reconciliation && row.ownership.reconciliation.path)
@@ -1206,7 +1265,7 @@ function sessionResultHtml(row) {
     var stopped = row.flow && row.flow.stop;
     body += '<div class="session-cause" id="session-cause" data-state="paused">' +
       pauseBlockHtml(row.pause, stopped, row.session_id, "session-pause-block") +
-      (stopped && stopped.message ? '<p class="stat-sub">recorded stop: ' + esc(stopped.message) + "</p>" : "") + "</div>";
+      (stopped && stopped.message ? '<p class="stat-sub">recorded stop: ' + esc(humanStamps(stopped.message)) + "</p>" : "") + "</div>";
   } else if (sessionFailed(row)) {
     var why = failureSentence(row);
     body += '<div class="session-cause" id="session-cause"><p class="err-text">' + esc(why.cause) + "</p>" +
