@@ -32,9 +32,10 @@ CLI request:
 - ``approvals.park_timeout_sec`` (how long a background step's parked approval
   waits for an answer) only lowers: a project value at or above the user's
   (or the 300 s default) is ignored;
-- ``harnesses``, ``sessions.keep_days``, ``fallback`` chains and ``consult``
-  grants are **user-only**: a project may keep a subset or remove them, never
-  add (``config.project_widening``);
+- ``harnesses``, ``sessions.keep_days``, ``fallback`` chains, ``consult``
+  grants and a role's ``approvals.allow`` patterns (#861) are **user-only**: a
+  project may keep a subset or remove them, never add
+  (``config.project_widening``);
 - a legacy settings key in a ``garuda.yaml``, a ``max_parallel`` that
   disagrees with the legacy ``capacity`` setting, or a CLI runtime or model
   that contradicts the selected role is ``config.conflict``.
@@ -205,7 +206,7 @@ def _candidate(value, path) -> dict:
 def _role(value, path) -> dict:
     data = _mapping(value, path, ("harness", "model_id", "effort", "permissions", "write_policy",
                                   "profile", "agent", "fallback", "consult", "description",
-                                  "harness_mode"))
+                                  "harness_mode", "approvals"))
     out: dict[str, Any] = {"harness": _name(data.get("harness"), f"{path}.harness")}
     if "model_id" in data:
         out["model_id"] = _str(data["model_id"], f"{path}.model_id")
@@ -235,7 +236,35 @@ def _role(value, path) -> dict:
                            for i, c in enumerate(data["fallback"])]
     if "consult" in data:
         out["consult"] = _names(data["consult"], f"{path}.consult")
+    if "approvals" in data:
+        out["approvals"] = _role_approvals(data["approvals"], f"{path}.approvals")
     return out
+
+
+def _role_approvals(value, path) -> dict:
+    """A role's ``approvals``: ``allow``, the shell-command patterns an unattended
+    flow step of the role may run without a person (#861; see
+    :mod:`garuda.acp.allow_list`). An empty list allows nothing."""
+    from garuda.acp.allow_list import MAX_PATTERNS, normalize, pattern_problem
+
+    data = _mapping(value, path, ("allow",))
+    if "allow" not in data:
+        _fail(f"{path}.allow", "is required (a list of command patterns; [] for none)")
+    allow = data["allow"]
+    if not isinstance(allow, list):
+        _fail(f"{path}.allow", "must be a list")
+    if len(allow) > MAX_PATTERNS:
+        _fail(f"{path}.allow", f"may hold at most {MAX_PATTERNS} patterns")
+    seen: set[str] = set()
+    for i, pattern in enumerate(allow):
+        _str(pattern, f"{path}.allow[{i}]")
+        problem = pattern_problem(pattern)
+        if problem is not None:
+            _fail(f"{path}.allow[{i}]", problem)
+        if normalize(pattern) in seen:
+            _fail(f"{path}.allow[{i}]", "is a duplicate")
+        seen.add(normalize(pattern))
+    return {"allow": list(allow)}
 
 
 def _artifacts(value, path) -> list[str]:
@@ -723,12 +752,18 @@ def _check_project_ceiling(path: str, wanted: str | None, ceiling: str) -> None:
 
 
 def _narrow_role(name: str, user: dict | None, project: dict, ceiling: str) -> dict:
+    from garuda.acp.allow_list import normalize
+
     path = f"roles.{name}"
     if user is None:
         for key in ("fallback", "consult"):
             if project.get(key):
                 _fail(f"{path}.{key}", f"{key} grants are user-only; a project cannot add them",
                       code="config.project_widening")
+        if (project.get("approvals") or {}).get("allow"):
+            _fail(f"{path}.approvals.allow",
+                  "allow-list patterns are user-only; a project cannot add them",
+                  code="config.project_widening")
         _check_project_ceiling(path, project.get("permissions"), ceiling)
         return project
     role = dict(project)
@@ -751,6 +786,15 @@ def _narrow_role(name: str, user: dict | None, project: dict, ceiling: str) -> d
                   code="config.project_widening")
     elif "consult" in user:
         role["consult"] = user["consult"]
+    if "approvals" in project:
+        mine = {normalize(p) for p in (user.get("approvals") or {}).get("allow", [])}
+        for i, pattern in enumerate(project["approvals"]["allow"]):
+            if normalize(pattern) not in mine:
+                _fail(f"{path}.approvals.allow[{i}]",
+                      "a project may only remove allow-list patterns, never add one",
+                      code="config.project_widening")
+    elif "approvals" in user:
+        role["approvals"] = user["approvals"]
     return role
 
 

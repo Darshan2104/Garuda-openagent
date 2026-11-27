@@ -103,8 +103,17 @@ def approval_summary(meta: dict) -> dict | None:
         return None
     requested = sum(outcomes.values())
     allowed = outcomes.get(ApprovalOutcome.ALLOW.value, 0)
-    return {"requested": requested, "allowed": allowed, "denied": requested - allowed,
-            "all_denied": requested > 0 and allowed == 0, "by_outcome": dict(sorted(outcomes.items()))}
+    summary = {"requested": requested, "allowed": allowed, "denied": requested - allowed,
+               "all_denied": requested > 0 and allowed == 0,
+               "by_outcome": dict(sorted(outcomes.items()))}
+    # Allowed by a flow role's `approvals.allow` without a person (#861); only when any were.
+    allow_listed = sum(1 for key, record in (meta or {}).items()
+                       if key.startswith("approval:") and isinstance(record, dict)
+                       and record.get("decided_by") == "allow_list"
+                       and record.get("outcome") == ApprovalOutcome.ALLOW.value)
+    if allow_listed:
+        summary["allow_listed"] = allow_listed
+    return summary
 
 
 def approval_summary_line(summary: dict | None) -> str | None:

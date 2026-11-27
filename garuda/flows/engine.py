@@ -60,6 +60,12 @@ RETRYABLE_STOPS = frozenset({"flow.step_failed", "flow.output_missing", "flow.ar
                              "flow.artifact_malformed"})
 RETRY_NOTE = ("[garuda] An earlier attempt of this step failed. Its partial edits may already be "
               "in the workspace; inspect existing work before acting.")
+#: Every step a quota continuation runs; a long step's new attempt gets its brief
+#: instead, which names the quota pause (#866).
+QUOTA_NOTE = ("[garuda] Continue from the retained workflow and current workspace after a quota "
+              "pause. Preserve partial edits and inspect existing work before acting; completed "
+              "steps are not replayed. This is saved workflow context, not restoration of hidden "
+              "model state.")
 #: A step stopped by its own liveness limits (#828): its ``deadline_min`` ran out,
 #: or its harness was silent for ``silence_min`` (``tool_silence_min`` while a
 #: tool call ran). Never retried; ``flow resume`` runs the step again.
@@ -1100,33 +1106,51 @@ class FlowRunner:
         self._prior_attempts[(step_id, attempt)] = receipt
         return receipt
 
-    def _interrupted_brief(self, step: dict, previous: int) -> str | None:
-        """The rotation brief for a long step whose previous attempt was interrupted.
+    def _attempt_brief(self, step: dict, attempt: int, *, how: str,
+                       review: dict | None = None) -> str | None:
+        """The brief that starts a long step's new attempt (#866), or None.
 
-        Built by :func:`garuda.flows.memory.rotation_brief` from that attempt's
-        progress file, so the new attempt starts where Garuda's records say the
-        interrupted one got to. None when the previous attempt was not interrupted.
+        :func:`garuda.flows.memory.resume_brief` from the step's records: why it
+        restarted (the previous attempt's receipt: an interruption, a usage limit
+        with when it stopped and when it resets, a quota wait, the loop's own
+        pauses, a failure; ``how`` it came to run again) and what the latest
+        earlier attempt recorded (its turns, the files changed since the first
+        attempt, the last progress note, fenced). Only the attempts since the last
+        one that finished count (a review round's candidate is the round brief's).
+        None for a first attempt, after a finished one, and when no earlier
+        attempt recorded a turn, unless the previous one ended in a turn the loop
+        never records (an interruption or a usage limit).
         """
         from garuda.flows import long_step, memory
         from garuda.flows.prompting import new_marker
 
+        if attempt <= 1:
+            return None
         try:
-            receipt = json.loads((self.dir / "receipts" / _receipt_name(step["id"], previous))
-                                 .read_text(encoding="utf-8"))
+            found = [r for r in receipts(self.store, self.flow_session)
+                     if isinstance(r, dict) and r.get("step") == step["id"]
+                     and type(r.get("attempt")) is int and r["attempt"] < attempt]
         except (OSError, ValueError):
             return None
-        if not isinstance(receipt, dict) or (receipt.get("stop") or {}).get("code") != INTERRUPTED_STOP:
+        rows = {r["attempt"]: r for r in found}
+        previous = rows.get(attempt - 1)
+        if previous is None or previous.get("status") == "done":
             return None
-        rows = long_step.read_progress(self.dir / "progress" / f"{step['id']}-{previous}.jsonl")
-        try:
-            found = list(receipts(self.store, self.flow_session))
-        except (OSError, ValueError):
-            found = []
-        brief = memory.rotation_brief(
-            step=step["id"], attempt=previous, reason="interrupted", records=rows,
-            missing=list(step.get("outputs", [])),
-            earlier=memory.earlier_attempts(found, step=step["id"], before=previous))
-        return brief.render(new_marker(brief.bodies()))
+        floor = max([a for a, r in rows.items() if r.get("status") == "done"]
+                    + [(review or {}).get("reviewed_attempt") or 0])
+        history = [(a, long_step.read_progress(self.dir / "progress" / f"{step['id']}-{a}.jsonl"))
+                   for a in range(max(floor + 1, attempt - memory.EARLIER_KEPT), attempt)]
+        stop = previous.get("stop") if isinstance(previous.get("stop"), dict) else {}
+        unrecorded = (stop.get("code") == INTERRUPTED_STOP
+                      or (stop.get("cause") or {}).get("code") in LIMIT_CAUSE_CODES)
+        if not unrecorded and not any(records for _, records in history):
+            return None
+        brief = memory.resume_brief(
+            step=step["id"], attempt=attempt, why=memory.restart_reason(previous, how=how),
+            history=history, missing=list(step.get("outputs", [])),
+            earlier=memory.earlier_attempts(found, step=step["id"], before=attempt),
+            review=review)
+        return brief.render(new_marker(brief.bodies()))[:long_step.MAX_BRIEF]
 
     async def _stop_checkpoint(self, lease):
         from garuda.core.acceptance_records import digest
@@ -2256,7 +2280,7 @@ class FlowRunner:
                 await self.quota_recovery.validate(self)
             except (OSError, ValueError) as exc:
                 raise FlowStopped("flow.recovery_changed", str(exc), step=step["id"]) from exc
-        from garuda.flows import long_step
+        from garuda.flows import long_step, memory
 
         role = step["role"]
         no_edits = self._no_edits(step, role)
@@ -2280,25 +2304,39 @@ class FlowRunner:
             reviewed=prompt_extra.packet.get("candidate", {}).get("step") if reviewer else None)
         version_before = await self._version_for_flow()
         sizes: list[dict] = []
+        quota_note = None
+        if self.quota_recovery is not None and self.quota_recovery.record is not None:
+            quota_note = QUOTA_NOTE
+        retry_note = None
+        if long is not None and prompt_extra == RETRY_NOTE:
+            # A long step's retry note is its first prompt's only (see below).
+            retry_note, prompt_extra = RETRY_NOTE, ""
         prompt = self._prompt(step, role, inputs, extra=prompt_extra, attached=attached,
                               sizes=sizes)
-        if self.quota_recovery is not None and self.quota_recovery.record is not None:
-            note = ("\n\n[garuda] Continue from the retained workflow and current workspace after "
-                    "a quota pause. Preserve partial edits and inspect existing work before "
-                    "acting; completed steps are not replayed. This is saved workflow context, "
-                    "not restoration of hidden model state.")
-            prompt += note
-            sizes.append({"part": "note", "chars": len(note)})
+        notes: list[str] = []
         if long is not None:
-            prompt += "\n\n" + long_step.FIRST_TURN_LINE
-            sizes.append({"part": "note", "chars": len(long_step.FIRST_TURN_LINE) + 2})
-            if attempt > 1:
-                # The previous attempt was interrupted (a signal, or a crash proved
-                # closed): start from Garuda's records of how far it got.
-                brief = await _settled_sync(self._interrupted_brief, step, attempt - 1)
-                if brief:
-                    prompt += "\n\n" + brief
-                    sizes.append({"part": "note", "chars": len(brief) + 2})
+            # A long step's task prompt ends with the first-turn line; what follows it
+            # is this attempt's first prompt only, never sent again when the turn
+            # loop starts a fresh harness session (long_step.task_prompt, #866).
+            notes.append(long_step.FIRST_TURN_LINE)
+            # A new attempt starts from Garuda's records of the earlier ones: why
+            # it restarted and how far they got. The brief says so for a quota
+            # continuation or a retry, so it replaces that note (one, not two).
+            review = None
+            if isinstance(prompt_extra, prompting.Findings) \
+                    and isinstance(prompt_extra.brief, memory.CoderBrief):
+                review = memory.review_context(prompt_extra.brief.facts)
+            brief = await _settled_sync(
+                self._attempt_brief, step, attempt, review=review,
+                how="quota" if quota_note else "retry" if retry_note else "resume")
+            if brief:
+                quota_note = retry_note = None
+            notes += [note for note in (quota_note, retry_note, brief) if note]
+        elif quota_note:
+            notes.append(quota_note)
+        for note in notes:
+            prompt += "\n\n" + note
+            sizes.append({"part": "note", "chars": len(note) + 2})
         guard = await _settled_sync(NoEditsGuard, self.workspace) if no_edits else None
         capability = lease.delegate(f"{self.flow_session}:{step['id']}:{attempt}")
         started: tuple[str, float] | None = None

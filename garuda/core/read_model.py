@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from garuda.core.spend import SPEND_OPTIONAL_COUNTERS, SPEND_REQUIRED_FIELDS
-from garuda.runtime.session_state import effective_state, is_crashed, summary_label
+from garuda.runtime.session_state import ACTIVE_WORK, effective_state, is_crashed, summary_label
 
 UNKNOWN = "unknown"
 
@@ -154,11 +154,84 @@ def _attempt(receipt: dict) -> dict:
         "delta": None if before is None or after is None else before != after,
         "no_edits": no_edits.get("result"),
         "stop": receipt.get("stop"),
+        # The pause kind when this attempt stopped on one of the engine's resumable pauses
+        # (deadline, silence, no progress, turn budget, refusal); ``None`` otherwise, so a
+        # failed step is never drawn as paused.
+        "pause": _attempt_pause(receipt),
         "turn_loop": _turn_loop(receipt),
         # What the attempt cost and how much context it used (#832); ``None`` for a
         # receipt written before it.
         "measure": receipt.get("measure") if isinstance(receipt.get("measure"), dict) else None,
     }
+
+
+#: The stop code a usage-limit pause records (``flows.quota_recovery`` and the engine raise
+#: it by this literal; neither exports a constant for it).
+QUOTA_STOP = "flow.quota_wait"
+QUOTA_WAIT = "waiting-for-quota"
+
+
+def pause_kinds() -> dict[str, str]:
+    """``{stop code: pause kind}`` for the stops a flow pauses on, from the engine's own
+    constants: its liveness stops and a long step's loop stops, each kept only while the
+    engine lists it in ``RESUMABLE_CHECKED_STOPS`` (so ``flow resume`` runs the step again).
+    An ordinary failed step is resumable too, but it is a failure, not a pause."""
+    from garuda.flows.engine import LIVENESS_STOPS, RESUMABLE_CHECKED_STOPS
+    from garuda.flows.long_step import LOOP_STOPS
+
+    kinds = {code: kind for kind, code in LIVENESS_STOPS.items()}
+    for code in LOOP_STOPS:
+        kinds.setdefault(code, code.removeprefix("flow.step_"))
+    return {code: kind for code, kind in kinds.items() if code in RESUMABLE_CHECKED_STOPS}
+
+
+def _attempt_pause(receipt: dict) -> str | None:
+    stop = receipt.get("stop")
+    code = stop.get("code") if isinstance(stop, dict) else None
+    if receipt.get("status") != "stopped" or not isinstance(code, str):
+        return None
+    return pause_kinds().get(code)
+
+
+def quota_limit(meta: dict) -> dict:
+    """When a usage-limit pause resets, from the quota-recovery record (``reset_at``) or the
+    stop's own cause (``cause.limit.resets_at``), with the limit window; ``None`` values
+    when neither recorded it."""
+    recovery = meta.get("quota_recovery") if isinstance(meta.get("quota_recovery"), dict) else {}
+    stop = meta.get("flow_stop") if isinstance(meta.get("flow_stop"), dict) else {}
+    cause = stop.get("cause") if isinstance(stop.get("cause"), dict) else {}
+    limit = cause.get("limit") if isinstance(cause.get("limit"), dict) else {}
+
+    def stamp(value):
+        return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+    reset = stamp(recovery.get("reset_at"))
+    if reset is None:
+        reset = stamp(limit.get("resets_at"))
+    window = recovery.get("rate_limit_type") or limit.get("rate_limit_type")
+    return {"reset_at": reset, "rate_limit_type": window if isinstance(window, str) else None,
+            "source": recovery.get("quota_source") if isinstance(recovery.get("quota_source"), str)
+            else None}
+
+
+def flow_pause(meta: dict) -> dict | None:
+    """Why a stopped flow is paused on a resumable stop, from its recorded fields, or ``None``:
+    ``{"kind": "quota", ...}`` (with the reset time and window when recorded) for a
+    usage-limit wait, else ``{"kind": <pause kind>}`` for a flow stopped on one of
+    :func:`pause_kinds`. The recorded ``outcome`` is left as stored: the run ended without
+    completing, and ``garuda flow resume`` continues it."""
+    if meta.get("kind") != "flow":
+        return None
+    recovery = meta.get("quota_recovery")
+    stop = meta.get("flow_stop")
+    code = stop.get("code") if isinstance(stop, dict) else None
+    if (isinstance(recovery, dict) and recovery.get("state") == QUOTA_WAIT) or code == QUOTA_STOP:
+        # The reset time and window only when recorded (a Codex wait records neither).
+        return {"kind": "quota", **{k: v for k, v in quota_limit(meta).items() if v is not None}}
+    kinds = pause_kinds()
+    if meta.get("flow_state") == "stopped" and code in kinds:
+        return {"kind": kinds[code]}
+    return None
 
 
 def _turn_loop(receipt: dict) -> dict | None:
@@ -672,6 +745,9 @@ def session_row(store, meta: dict, *, queue_index: dict | None = None, liveness=
         "state": {k: state.get(k) for k in ("process", "work", "outcome")},
         "label": summary_label(state),
         "crashed": is_crashed(state),
+        # A stopped flow on a resumable pause (``flow_pause``); ``None`` while work is
+        # active and for every other session. ``label`` and ``outcome`` stay as recorded.
+        "pause": None if state.get("work") in ACTIVE_WORK else flow_pause(meta),
         "verification": verification,
         "self_check": state.get("self_check"),
         "workspace": meta.get("workspace"),

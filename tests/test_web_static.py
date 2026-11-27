@@ -170,16 +170,17 @@ console.log(JSON.stringify({html, hostileHtml, detailHtml, hostileDetail}));
     assert result.returncode == 0, result.stderr
     rendered = json.loads(result.stdout)
     html, detail = rendered["html"], rendered["detailHtml"]
-    assert 'data-chip="self-check">self-check: no_evidence' in html
-    assert 'data-chip="self-check">self-check: no_evidence' in detail
+    assert 'data-chip="self-check"><span class="chip-k">self-check:</span> no_evidence' in html
+    assert 'data-chip="self-check"><span class="chip-k">self-check:</span> no_evidence' in detail
     # The list carries the spend gate as one line; every chip stays on the session page.
     assert "spend 80 / 400.0k tokens · ≥ $0.0300 (lower bound) of $2.0000 cap" in html
     assert "data-chip=\"token cap\"" not in html
-    assert 'data-chip="token cap">token cap: 400000' in detail
-    assert 'data-chip="scope">scope: &lt;img' in detail
-    assert 'data-chip="cost">cost: unknown' in detail
-    assert "known settled USD (lower bound): 0.03" in detail
-    assert "inherited tokens: unknown" in detail
+    assert 'data-chip="token cap"><span class="chip-k">token cap:</span> 400000' in detail
+    assert 'data-chip="scope"><span class="chip-k">scope:</span> &lt;img' in detail
+    assert 'data-chip="cost"><span class="chip-k">cost:</span> unknown' in detail
+    # The chip key is its own span (styled quieter); the text still reads "key: value".
+    assert 'known settled USD (lower bound):</span> 0.03' in detail
+    assert 'inherited tokens:</span> unknown' in detail
     for hostile in (rendered["hostileHtml"], rendered["hostileDetail"]):
         assert "&lt;img" in hostile
         assert "<img" not in hostile

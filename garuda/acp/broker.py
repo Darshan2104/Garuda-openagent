@@ -81,6 +81,10 @@ class ApprovalRecord:
     ceiling_source: str | None = None
     presented_at: float | None = None
     tool_kind: str | None = None
+    #: Who decided without a person: ``"allow_list"`` (#861), with its pattern.
+    decided_by: str | None = None
+    pattern: str | None = None
+    command: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         record = {
@@ -96,6 +100,8 @@ class ApprovalRecord:
             record["reason"] = self.reason
         if self.tool_kind is not None:
             record["tool_kind"] = self.tool_kind
+        if self.decided_by is not None:
+            record.update(decided_by=self.decided_by, pattern=self.pattern, command=self.command)
         if self.request is not None:
             record.update(request_digest=self.request.digest,
                           ceiling=self.request.ceiling,
@@ -381,6 +387,35 @@ class ApprovalBroker:
             action, "approval", runtime_id, via="confined-readonly", reason=reason, tool_kind=tool_kind,
         )
         return (False, "approval-audit-failed") if error is not None else (allowed, reason)
+
+    def allow_list(self, patterns, workspace, *, session_id: str, runtime_id: str):
+        """``decide(action, tool_call)`` for a flow role's ``approvals.allow`` (#861).
+
+        Returns a :class:`Decision` (allowed, already recorded as an ``approval:*``
+        record with ``decided_by: allow_list`` and the pattern) when the request
+        matches (:func:`garuda.acp.allow_list.match`), else ``None``: the ask then
+        takes the usual path. Nothing is allowed that cannot be recorded, nor
+        after the session's asks were cancelled.
+        """
+        from garuda.acp.allow_list import match
+        from garuda.context.redact import redact_text
+
+        patterns = tuple(patterns)
+
+        def decide(action: str, tool_call: dict) -> Decision | None:
+            found = match(tool_call, patterns, workspace)
+            if (found is None or self._cancelled_reason is not None
+                    or self._store is None or not session_id):
+                return None
+            approval_id = self._next_id()
+            error = self._audit(
+                session_id, approval_id, ApprovalOutcome.ALLOW, action, "approval", runtime_id,
+                via="allow_list", reason=f"matched allow-list pattern {found.pattern!r}",
+                tool_kind="execute", decided_by="allow_list", pattern=found.pattern,
+                command=redact_text(found.command)[0])
+            return None if error is not None else Decision(True, approval_id)
+
+        return decide
 
     def _screen_family(self, family: str, action: str) -> PermissionDecision:
         if family == "terminal":

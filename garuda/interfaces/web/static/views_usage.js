@@ -8,6 +8,12 @@
 
 var USAGE_RANGES = ["24h", "7d", "30d"];
 
+/* A tile's figure: the number large, a " known + N …" qualifier under it in the same text. */
+function tileFigureHtml(text) {
+  var at = String(text).indexOf(" known + ");
+  return at < 0 ? esc(text) : esc(text.slice(0, at)) + ' <span class="tile-qual">' + esc(text.slice(at + 1)) + "</span>";
+}
+
 function costText(cost) {
   if (!cost || cost.state === "none") return "—";
   if (cost.state === "unknown") return "unknown";
@@ -41,8 +47,9 @@ function usageRangeLinks(active) {
 }
 
 function measureRowHtml(label, m) {
-  return "<tr><td>" + label + '</td><td class="num">' + esc(m.native_calls) + '</td><td class="num">' + esc(m.acp_turns) +
-    '</td><td class="num">' + esc(tokensText(m)) + '</td><td class="num">' + esc(costText(m.cost)) + "</td></tr>";
+  return "<tr><td>" + label + '</td><td class="num" data-th="Native calls">' + esc(m.native_calls) +
+    '</td><td class="num" data-th="ACP turns">' + esc(m.acp_turns) + '</td><td class="num" data-th="Tokens">' +
+    esc(tokensText(m)) + '</td><td class="num" data-th="Cost">' + esc(costText(m.cost)) + "</td></tr>";
 }
 
 function usageView(range) {
@@ -52,7 +59,7 @@ function usageView(range) {
     var share = s.work_type_share;
     var tableHead = "<thead><tr><th>Name</th><th class=\"num\">Native calls</th><th class=\"num\">ACP turns</th><th class=\"num\">Tokens</th><th class=\"num\">Cost</th></tr></thead>";
     function table(id, rows, nameOf) {
-      return '<div class="table-wrap"><table class="table" id="' + id + '">' + tableHead + "<tbody>" +
+      return '<div class="table-wrap"><table class="table table-stack" id="' + id + '">' + tableHead + "<tbody>" +
         rows.map(function (r) { return measureRowHtml(esc(nameOf(r)), r); }).join("") + "</tbody></table></div>";
     }
     render(
@@ -63,8 +70,8 @@ function usageView(range) {
       '<div class="grid cols-4" id="usage-tiles">' +
       '<div class="tile"><div class="tile-label">Native calls</div><div class="tile-value" id="tile-native">' + esc(s.measures.native_calls) + "</div></div>" +
       acpTurnsTile(s) +
-      '<div class="tile"><div class="tile-label">Tokens</div><div class="tile-value" id="tile-tokens">' + esc(tokensText(s.measures)) + "</div></div>" +
-      '<div class="tile"><div class="tile-label">Cost</div><div class="tile-value" id="tile-cost">' + esc(costText(s.measures.cost)) + "</div></div></div>" +
+      '<div class="tile"><div class="tile-label">Tokens</div><div class="tile-value" id="tile-tokens">' + tileFigureHtml(tokensText(s.measures)) + "</div></div>" +
+      '<div class="tile"><div class="tile-label">Cost</div><div class="tile-value" id="tile-cost">' + tileFigureHtml(costText(s.measures.cost)) + "</div></div></div>" +
       '<p class="stat-sub" id="usage-excluded">Left out: ' + esc(s.excluded.snapshots) + " snapshot(s) — " + esc(s.excluded.reason) +
       ". Median per native call: " + esc(s.median.tokens_per_native_call === null ? "—" : (s.measures.tokens_state === "known" ? fmt.tokens(s.median.tokens_per_native_call) : "unknown (not every call recorded tokens)")) + " tokens, " +
       esc(s.median.native_call_duration_ms === null ? "—" : fmt.duration(s.median.native_call_duration_ms)) + ".</p>" +
@@ -74,10 +81,11 @@ function usageView(range) {
         return "<tr><td>" + esc(r.work_type) + '</td><td class="num">' + esc(r.native_calls) + '</td><td class="num">' +
                (r.share === null ? "—" : esc(Math.round(r.share * 1000) / 10) + "%") + "</td></tr>";
       }).join("") + "</tbody></table>" : '<p class="stat-sub">No native calls in this range.</p>') + "</div>" +
-      '<div class="card"><h2>Harness × model</h2><div class="table-wrap"><table class="table" id="harness-model-table"><thead><tr><th>Harness</th><th>Model</th><th class="num">Native calls</th><th class="num">ACP turns</th><th class="num">Tokens</th><th class="num">Cost</th></tr></thead><tbody>' +
+      '<div class="card"><h2>Harness × model</h2><div class="table-wrap"><table class="table table-stack" id="harness-model-table"><thead><tr><th>Harness</th><th>Model</th><th class="num">Native calls</th><th class="num">ACP turns</th><th class="num">Tokens</th><th class="num">Cost</th></tr></thead><tbody>' +
       s.harness_model.map(function (r) {
-        return "<tr><td>" + esc(r.harness) + "</td><td>" + esc(r.model) + '</td><td class="num">' + esc(r.native_calls) + '</td><td class="num">' + esc(r.acp_turns) +
-               '</td><td class="num">' + esc(tokensText(r)) + '</td><td class="num">' + esc(costText(r.cost)) + "</td></tr>";
+        return '<tr><td data-th="Harness">' + esc(r.harness) + '</td><td data-th="Model">' + esc(r.model) +
+               '</td><td class="num" data-th="Native calls">' + esc(r.native_calls) + '</td><td class="num" data-th="ACP turns">' + esc(r.acp_turns) +
+               '</td><td class="num" data-th="Tokens">' + esc(tokensText(r)) + '</td><td class="num" data-th="Cost">' + esc(costText(r.cost)) + "</td></tr>";
       }).join("") + "</tbody></table></div></div>" +
       '<div class="card" id="daily-card">' + bars(s.daily.map(function (d) { return { value: d.total_tokens, label: d.date + ": " + tokensText(d) + " tokens" }; }),
         { title: "Tokens per day (UTC)", emptyNote: s.measures.tokens_state === "unknown" ? "Calls in this range recorded no token counts." : "No usage in this range." }) + "</div>" +

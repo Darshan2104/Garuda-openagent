@@ -272,13 +272,11 @@ function homeSessionAttention(o) {
           : "waiting for quota" + (q.reason ? ": " + esc(q.reason) : "")) +
         (q.next_check ? " · next check " + esc(new Date(q.next_check * 1000).toLocaleString()) : "")
       : (stop.step ? "step " + esc(stop.step) + " " : "a step ") +
-        ({ deadline: "ran past its deadline", silence: "went silent past its limit",
-           no_progress: "made no measurable progress", max_turns: "used its whole turn budget",
-           refused: "was refused by its harness" }[r.pause.kind] || "paused") +
+        (PAUSE_KINDS[r.pause.kind] || "paused") +
         (stop.code ? " (<code>" + esc(stop.code) + "</code>)" : "") +
         " · resume with <code>garuda flow resume</code>";
     items.push(homeRow("paused:" + r.session_id, "paused",
-      '<span class="pill unknown">paused</span> ' + homeSessionLink(r) +
+      '<span class="pill paused">paused</span> ' + homeSessionLink(r) +
       '<span class="home-what">' + what + "</span>" +
       '<span class="home-age">updated ' + esc(fmt.when(r.updated_at)) + "</span>"));
   });
@@ -377,7 +375,7 @@ function homeRenderAll(state) {
     var outcome = (r.state && r.state.outcome) || "unknown";
     return homeRow("recent:" + r.session_id, "recent",
       homeSessionLink(r) + (r.kind === "flow" ? ' <span class="pill unknown">flow</span>' : "") +
-      '<span class="home-chips">' + chip("outcome", outcome, outcomeClass(outcome)) + " " + verificationChip(r.verification) + "</span>" +
+      '<span class="home-chips">' + chip("outcome", outcome, r.pause ? "chip-pause" : outcomeClass(outcome)) + " " + verificationChip(r.verification) + "</span>" +
       '<span class="home-what stat-sub">' + esc(identityText(r)) + "</span>" +
       '<span class="home-age">' + esc(fmt.when(r.updated_at)) + "</span>");
   }) : [];

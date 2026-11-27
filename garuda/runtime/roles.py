@@ -119,6 +119,9 @@ class RolePlan:
     agent_permission_mode: str | None = None
     #: Native resolved source held for execution only; never serialized in record().
     agent_spec: AgentSpec | None = field(default=None, repr=False, compare=False)
+    #: ``approvals.allow``: shell-command patterns an unattended flow step of this role
+    #: may run without a person (#861, :mod:`garuda.acp.allow_list`); empty for none.
+    approvals_allow: tuple[str, ...] = ()
 
     #: Start-time trusted alias/disablement evidence, never persisted or compared.
     #: Review preflight uses this same non-executing registry as role resolution.
@@ -142,6 +145,8 @@ class RolePlan:
                "digest": self.digest, "provenance": self.provenance}
         if self.fallback is not None:
             out["fallback"] = self.fallback
+        if self.approvals_allow:
+            out["approvals_allow"] = list(self.approvals_allow)
         if self.agent_digest is not None:
             out["agent"] = {"name": self.profile, "digest": self.agent_digest}
             if self.instructions:
@@ -198,6 +203,7 @@ def plan_role(resolved, catalog) -> RolePlan | None:
         profile=spec.get("profile"), harness_mode=spec.get("harness_mode"), digest=digest,
         provenance={k: resolved.provenance[k] for k in keys},
         harness=resolved.config.get("harnesses", {}).get(spec["harness"], {}),
+        approvals_allow=tuple((spec.get("approvals") or {}).get("allow", ())),
     )
     harness_mode(plan)  # a mode the role may not use refuses before anything starts
     return plan
@@ -210,6 +216,22 @@ def acp_permission(plan: RolePlan | None = None, *, mode: str | None = None,
         return "readonly"
     return min((plan.permissions if plan else None) or "smart", ceiling or "yolo",
                key=PERMISSIONS.index)
+
+
+def step_allow_list(plan: RolePlan | None, *, no_edits: bool = False) -> tuple[str, ...]:
+    """The ``approvals.allow`` patterns a flow step of ``plan`` may use (#861).
+
+    None for a no-edits step or role and for a read-only (confined) role: those
+    never run an ask without a person, allow-listed or not.
+    """
+    allow = tuple(getattr(plan, "approvals_allow", ()) or ())
+    if not allow or no_edits or plan.write_policy == "no-edits":
+        return ()
+    if plan.kind == "acp" and acp_permission(plan, no_edits=no_edits) == "readonly":
+        return ()
+    if plan.permissions == "readonly":
+        return ()
+    return allow
 
 
 def required_authority(plan: RolePlan, *, no_edits: bool = False,

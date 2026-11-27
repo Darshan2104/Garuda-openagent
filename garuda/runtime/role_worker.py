@@ -82,6 +82,7 @@ async def _execute(payload, control):
     if request["kind"] == "acp":
         from garuda.interfaces.runtime_cli import run_acp_task
         from garuda.runtime.protocol import AgentRuntimeError, RuntimeStartError
+        from garuda.runtime.roles import step_allow_list
         from garuda.workspace.no_edits import deny_all
 
         watchdog = {key: limits.get(key) for key in ("silence_sec", "tool_silence_sec")}
@@ -110,7 +111,9 @@ async def _execute(payload, control):
                 **({"deadline_sec": limits["deadline_sec"]} if limits.get("deadline_sec") else {}),
                 **({"silence_watchdog": watchdog} if any(watchdog.values()) else {}),
                 **({"after_turn": hook} if hook is not None else {}),
-                **_status_report(request.get("status_path")))
+                **_status_report(request.get("status_path")),
+                **({"approvals_allow": allow} if (allow := step_allow_list(
+                    role, no_edits=request["no_edits"])) else {}))
         except RuntimeStartError:
             raise  # a refusal before launch keeps its own code
         except AgentRuntimeError as exc:
