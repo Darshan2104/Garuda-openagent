@@ -46,8 +46,13 @@ function starterReadinessHtml(state) {
 
 function starterWorkspaceHtml(selected) {
   var rows = (STATE.config && STATE.config.workspaces) || [];
-  return '<label class="starter-workspace">Workspace <select id="starter-workspace">' + rows.map(function (r) {
-    return '<option value="' + esc(r.index) + '"' + (r.index === selected ? " selected" : "") + '>' + esc(r.path) + "</option>";
+  var current = rows.filter(function (r) { return r.index === selected; })[0];
+  // A native select cannot wrap: each option shows the end of its path (the part that tells
+  // two workspaces apart) and carries the whole path as its title, as does the select.
+  return '<label class="starter-workspace">Workspace <select id="starter-workspace"' +
+    (current ? ' title="' + esc(current.path) + '"' : "") + ">" + rows.map(function (r) {
+    return '<option value="' + esc(r.index) + '" title="' + esc(r.path) + '"' + (r.index === selected ? " selected" : "") + '>' +
+      esc(fmt.tail(r.path, 48)) + "</option>";
   }).join("") + "</select></label>";
 }
 
@@ -122,7 +127,7 @@ function starterFormHtml(state) {
     '<div class="row"><button type="submit" class="btn btn-primary" id="starter-preview-button">Preview command</button>' +
     '<button type="button" class="btn" id="starter-example">Load reconnect example</button></div></form>' +
     (entry.id === "build-review" ? '<div class="starter-build-check"><h3>Build and check · no review</h3><p>Use the current goal and constraints with the coder role instead of an independent review.</p><label>Explicit checks <textarea id="starter-remedy-checks" rows="2" placeholder="One command per line"></textarea></label><button type="button" class="btn" id="starter-build-check">Preview Build and check</button></div>' : "") +
-    '<div id="starter-preview" aria-live="polite"><p class="stat-sub">Preview starts nothing. Preview again after sources or configuration change.</p></div>' +
+    '<div class="starter-preview" id="starter-preview" aria-live="polite"><p class="stat-sub">Preview starts nothing. Preview again after sources or configuration change.</p></div>' +
     '<div id="starter-operation" aria-live="polite"></div></section>';
 }
 

@@ -251,6 +251,9 @@ def main(argv: list[str] | None = None) -> int:
                         help="`multi-turn` leaves the workspace unchanged.")
     parser.add_argument("--approval-kind",
                         help="Request this ACP tool kind before producing the reply.")
+    parser.add_argument("--approval-command",
+                        help="The request's title and `rawInput.command` (#861), like "
+                             "claude-agent-acp's Bash asks; without it no rawInput is sent.")
     parser.add_argument("--initial-mode", default=None,
                         help="Report this session mode at session/new and session/load "
                              "(the `config-options` profile's mode before any set); `ask` by "
@@ -393,6 +396,7 @@ def main(argv: list[str] | None = None) -> int:
                                         or profile in ("write-anyway", "probe-writes")) else None,
                     state_file=args.state_file, artifact_padding=args.artifact_padding,
                     approval_kind=args.approval_kind, report_usage=args.report_usage,
+                    approval_command=args.approval_command,
                     tool_seconds=args.tool_seconds,
                 )
             elif method == "session/cancel":
@@ -428,10 +432,13 @@ MODE_AUTHORITY = {"ask": "readonly", "edit": "smart", "judge": "auto", "everythi
 
 def _request_permission(
     session_id: str, title: str, kind: str | None, *, cwd: str | None,
+    command: str | None = None,
 ) -> bool | None:
     tool_call = {"toolCallId": "c-apr", "title": title}
     if kind is not None:
         tool_call["kind"] = kind
+    if command is not None:
+        tool_call["rawInput"] = {"command": command, "description": "fake"}
     _update(session_id, {"sessionUpdate": "tool_call", **tool_call,
                          "kind": "execute" if kind is None else kind, "status": "pending"})
     _send({
@@ -660,7 +667,7 @@ def _handle_prompt(
     profile: str, call_id: int, params: dict, *, cwd: str | None = None,
     state_file: str | None = None, artifact_padding: int = 0,
     approval_kind: str | None = None, report_usage: bool = False,
-    tool_seconds: float = 2.0,
+    tool_seconds: float = 2.0, approval_command: str | None = None,
 ) -> None:
     session_id = params.get("sessionId", "")
     text = _prompt_text(params.get("prompt"))
@@ -669,8 +676,9 @@ def _handle_prompt(
                              "cost": {"amount": 0.0025, "currency": "USD"},
                              "_meta": {"_claude/model": "fake-model-1"}})
     if profile == "approval" or approval_kind is not None:
-        title = text if profile == "approval" else "pwd"
-        allowed = _request_permission(session_id, title, approval_kind, cwd=cwd)
+        title = approval_command or (text if profile == "approval" else "pwd")
+        allowed = _request_permission(session_id, title, approval_kind, cwd=cwd,
+                                      command=approval_command)
         # Like Codex refusing a sandbox escalation, a denial can end the turn.
         if allowed is None or (not allowed and (profile != "approval" or text.startswith("abort"))):
             _result(call_id, {"stopReason": "cancelled"})
