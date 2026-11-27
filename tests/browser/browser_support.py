@@ -26,6 +26,16 @@ def launch(playwright, **kwargs):
     return playwright.chromium.launch(channel=channel, **kwargs)
 
 
+def throttle(page):
+    """Slow the page's CPU by ``GARUDA_CHECK_CPU_THROTTLE`` (e.g. 4) to shake out races that a
+    loaded CI runner hits and a fast laptop does not. Chromium only; a no-op when unset."""
+    rate = float(os.environ.get("GARUDA_CHECK_CPU_THROTTLE") or 0)
+    if rate > 1:
+        session = page.context.new_cdp_session(page)
+        session.send("Emulation.setCPUThrottlingRate", {"rate": rate})
+    return page
+
+
 def settle(page, expression: str, arg=None, timeout: float = DEFAULT_TIMEOUT_MS) -> bool:
     """Wait until the JavaScript predicate ``expression`` holds; ``False`` if it never does."""
     try:
