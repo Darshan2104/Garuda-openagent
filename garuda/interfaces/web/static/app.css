@@ -326,6 +326,28 @@ svg { display: block; width: 100%; height: auto; }
   .trajectory.with-lane { grid-template-columns: 1fr; }
 }
 
+/* The trace page is a column of regions that a live refresh patches in place. Spacing is the
+ * column gap, so an empty region takes no room and a redrawn one cannot change its margins.
+ * The browser's own scroll anchoring is off here because the view anchors the scroll itself
+ * on every patch; both doing it would move the page twice. */
+.trace-page { display: flex; flex-direction: column; gap: 14px; overflow-anchor: none; }
+.trace-page > :empty { display: none; }
+.trace-page > .page-head { margin-bottom: 0; }
+.trace-page .live-card { margin-bottom: 0; }
+.trace-page > div > .notice { margin-bottom: 0; }
+.trace-page > div > .notice + .notice { margin-top: 10px; }
+.trace-status { display: inline-flex; gap: 8px; align-items: baseline; }
+.trace-facts {
+  display: grid; grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 14px; margin: 0 0 10px; font-size: 13px;
+}
+.trace-facts dt { color: var(--muted); }
+.trace-facts dd { margin: 0; overflow-wrap: anywhere; }
+#external-turns th.num { text-align: right; }
+#external-summary h3 { font-size: 13px; margin: 14px 0 6px; }
+#external-summary .block { margin-top: 10px; }
+#external-summary .block pre { max-height: 320px; overflow: auto; }
+
 .phase-head {
   display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
   padding: 8px 12px; margin-top: 6px;
@@ -675,6 +697,17 @@ label.btn { display: inline-flex; align-items: center; }
 .live-card { margin-bottom: 14px; }
 .live-body { max-height: 260px; overflow-y: auto; }
 .live-body .raw-row { grid-template-columns: 70px 150px minmax(0, 1fr); }
+
+/* On a phone the three columns left the payload a few characters wide: time and type share
+ * the first line, and the payload takes the full width under them. */
+@media (max-width: 600px) {
+  .live-body .raw-row, #raw-body .raw-row {
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: 2px 10px;
+  }
+  .live-body .raw-row .raw-idx, #raw-body .raw-row .raw-idx { text-align: left; }
+  .live-body .raw-row .raw-payload, #raw-body .raw-row .raw-payload { grid-column: 1 / -1; }
+}
 
 /* --- raw events --- */
 

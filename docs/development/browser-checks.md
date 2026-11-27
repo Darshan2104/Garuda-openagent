@@ -31,11 +31,11 @@ The `browser checks` job in `.github/workflows/ci.yml` runs the suite on `ubuntu
 | File | Role |
 |---|---|
 | `seed_fixtures.py` | Sessions for approvals, diffs, gates, cancellation, legacy logs, and nested subagents. |
-| `fake_run.py` | Writes a live `EventStore` run for tailing checks. |
+| `fake_run.py` | Writes a live `EventStore` run; `--stepped` lets the check advance it one step per stdin line, so no check depends on wall-clock pacing. |
 | `serve_chat.py` | Uses a `ScriptModel` and stubbed URL fetcher; no provider call or API key. |
 | `browser_support.py` | Shared by the checks: which browser to launch, and waiting for a condition instead of a fixed time. |
-| `check_inspector.py` | Trace and subagent rendering. |
-| `check_live.py` | Tail refresh, expansion state, and polling lifecycle. |
+| `check_inspector.py` | Trace and subagent rendering, escaping, external-harness summary, raw-event filter range, a 1,500-turn trace, missing-run links. |
+| `check_live.py` | Live refresh that keeps the reader's place (raw filter, focus, selection, scroll), no stop alarms while live, outage backoff, polling lifecycle. |
 | `check_chat.py` | Browser upload, URL grounding, approvals, and collapsed labelled child previews: accepted submit advances the turn, literal HTML, expansion before queued toggle events and across polls, newest text visible, parent separation and removal at completion. |
 | `seed_sessions.py`, `check_sessions.py` | Sessions view over fixtures written by the production session, queue, flow and approval writers: states (queued with position, derived crashed, completed, working, waiting), unknown usage/cost, a self-check not shown as verification, and a flow's steps, attempts, edges, deltas and separate review badge. |
 | `check_unreadable.py` | One damaged session (`meta.json` is `[]`) beside a readable run: the Overview, Runs, Sessions and Approvals pages still render, list the readable run, and each says "1 session could not be read" with the id in its tooltip. |
