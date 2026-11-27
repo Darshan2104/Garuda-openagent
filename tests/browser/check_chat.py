@@ -472,9 +472,20 @@ with sync_playwright() as p:
         problems.append("an unreachable dashboard was not shown")
     if "working" in state_text:
         problems.append("the page kept saying 'working…' with the dashboard unreachable")
-    if len(hits) > 4:
-        problems.append(f"no backoff while unreachable: {len(hits)} requests in 5s"
-                        " (doubling from 0.9s allows 4)")
+    # One backed-off probe asks for the whole app while it is unreachable (core.js api()):
+    # after the requests already in flight when it went away, only /api/health goes out,
+    # at 1 s then 2 s; no poller runs its own retry loop against the dead server.
+    def endpoint(url):
+        return url.split("/api/", 1)[-1].split("?")[0]
+
+    probes = [url for url in hits if endpoint(url) == "health"]
+    others = [url for url in hits if endpoint(url) != "health"]
+    print("  per endpoint:", {name: [endpoint(u) for u in hits].count(name) for name in {endpoint(u) for u in hits}})
+    if len(probes) > 3:
+        problems.append(f"the connection probe did not back off: {len(probes)} probes in 5s")
+    if len(others) > 2:
+        problems.append(f"pollers kept retrying while unreachable: {len(others)} non-probe requests "
+                        f"in 5s ({sorted({endpoint(u) for u in others})})")
     page.screenshot(path=f"{SHOTS}/chat-offline.png", full_page=True)
     page.unroute("**/api/**")
     if page.query_selector("#chat-retry"):

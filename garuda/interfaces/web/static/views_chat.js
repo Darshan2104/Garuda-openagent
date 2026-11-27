@@ -391,6 +391,11 @@ function chatPollNow(chat) {
   if (chat && chat.poller) chat.poller.now();
 }
 
+// Back from an outage: every open chat polls at once instead of waiting out its backoff.
+onReconnect(function () {
+  Object.keys(CHAT_OPEN).forEach(function (id) { chatPollNow(CHAT_OPEN[id]); });
+});
+
 /* Chats this tab keeps alive that are not on screen, with an approval waiting. */
 function waitingChats() {
   return Object.keys(CHAT_OPEN).map(function (id) { return CHAT_OPEN[id]; })
@@ -534,6 +539,9 @@ function wireChat() {
   el("chat-retry").addEventListener("click", function () {
     var body = el("chat-offline-body");
     if (body) body.textContent = "Retrying…";
+    // While the dashboard is unreachable the app's one probe asks for everyone (core.js);
+    // its answer polls every open chat (below).
+    if (CONNECTION.down) { probeConnection(); return; }
     chatPollNow();
   });
   var box = el("chat-task");

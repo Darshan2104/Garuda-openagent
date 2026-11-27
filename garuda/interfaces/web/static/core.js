@@ -108,6 +108,12 @@ function api(path, opts) {
   var method = opts.method || "GET";
   var tied = method === "GET" && !opts.keep;
   var current = tied ? viewGuard() : function () { return true; };
+  // While the dashboard is unreachable, one backed-off probe asks for everyone: a read fails
+  // here without a request, so N pollers do not become N retry loops against a dead server.
+  // A view's own backoff still runs on these failures; onReconnect() is the all-clear.
+  // Writes still go out (a user's click is worth one real attempt, and its success ends
+  // the outage early).
+  if (CONNECTION.down && method === "GET") return Promise.reject(connectionDownError());
   var headers = { "X-Garuda-Token": TOKEN };
   if (opts.body) headers["Content-Type"] = "application/json";
   return fetch(path, {
@@ -148,6 +154,14 @@ function api(path, opts) {
     // browser's own words ("Failed to fetch", "Load failed") say nothing a user can act on.
     throw unreachableError();
   });
+}
+
+function connectionDownError() {
+  var tabs = CONNECTION.reason === "too_many_connections";
+  var err = new Error(tabs ? TOO_MANY_TABS : UNREACHABLE);
+  err.code = tabs ? "too_many_connections" : "network";
+  err.status = 0;
+  return err;
 }
 
 function unreachableError() {
@@ -457,6 +471,7 @@ function onReconnect(fn) {
 }
 
 function connectionLost(err) {
+  CONNECTION.reason = (err && err.code) || "network";
   showConnectionBanner(err);
   if (CONNECTION.down) return;
   CONNECTION.down = true;
@@ -479,6 +494,7 @@ function probeConnection() {
   fetch("/api/health", { headers: { "X-Garuda-Token": TOKEN }, cache: "no-store" }).then(function (response) {
     if (isConnectionLimit(response, null)) {
       var err = { code: "too_many_connections", retryAfter: retryAfterSeconds(response) };
+      CONNECTION.reason = err.code;
       showConnectionBanner(err);
       scheduleProbe(err.retryAfter);
       return;
@@ -486,6 +502,7 @@ function probeConnection() {
     connectionRestored();
     if (response.status === 401) authLost();
   }, function () {
+    CONNECTION.reason = "network";
     showConnectionBanner({ code: "network" });
     scheduleProbe();
   });
