@@ -142,7 +142,7 @@ function api(path, opts) {
         connectionLost(err);
       } else {
         if (CONNECTION.down) connectionRestored();
-        if (response.status === 401) authLost();
+        if (response.status === 401) confirmAuthLost();
       }
       throw err;
     }, function () {
@@ -423,6 +423,20 @@ function tokenRequiredPanel() {
     '<p class="stat-sub" id="token-error" role="alert"></p>' +
     "</div>"
   );
+}
+
+/* A 401 from one request is confirmed with /api/health before the whole page is replaced:
+ * a refused token fails every route, so health refuses it too; anything narrower stays that
+ * view's to report (the session tail says so in its own status line). */
+var AUTH_CHECK = { running: false };
+
+function confirmAuthLost() {
+  if (AUTH_CHECK.running || el("token-panel")) return;
+  AUTH_CHECK.running = true;
+  fetch("/api/health", { headers: { "X-Garuda-Token": TOKEN }, cache: "no-store" }).then(function (response) {
+    AUTH_CHECK.running = false;
+    if (response.status === 401) authLost();
+  }, function () { AUTH_CHECK.running = false; });
 }
 
 /* Show the token state once, remembering the page to come back to. */
