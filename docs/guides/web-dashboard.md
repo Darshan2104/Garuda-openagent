@@ -370,7 +370,11 @@ separately. Turns, tokens, cost and duration a run never recorded (an
 external harness or a flow records no turns or tokens) show as **—** or
 **unknown**, never 0; totals say how many runs they cover. A flow's duration
 runs from its start to its last step receipt. The status filter matches the
-outcome: **completed** finds native and external runs alike.
+outcome: **completed** finds native and external runs alike. A flow paused on
+a resumable stop is drawn **paused** with its reason and how it resumes
+(`pause`, the same field as the Sessions rows), in the list and in its run's
+header; like the Sessions list, its filter and the outcome counts read its
+recorded outcome (`failed`), so **failed** finds it.
 
 A run's page (`#/runs/<id>`) shows live turns, model thinking where available,
 tool calls, approvals, completion checks, diffs, metrics, and nested subagent

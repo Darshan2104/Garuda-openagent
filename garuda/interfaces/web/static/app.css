@@ -768,7 +768,7 @@ a.attempt-trace { margin-left: 4px; }
 .s-clip { max-width: 180px; overflow: hidden; text-overflow: ellipsis; color: var(--muted); font-size: 12.5px; }
 .s-facts { white-space: normal; min-width: 200px; max-width: 290px; }
 /* A pause line in the State cell wraps rather than widening the table past the window. */
-.sessions-table .s-pause { white-space: normal; max-width: 190px; }
+:is(.sessions-table, .runs-table) .s-pause { white-space: normal; max-width: 190px; }
 /* The phone card's details disclosure; the desktop table shows these as columns. */
 .sessions-table td.s-more { display: none; }
 .s-facts .chip { display: table; margin: 0 0 3px; }
