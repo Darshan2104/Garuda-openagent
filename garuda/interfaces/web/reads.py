@@ -717,13 +717,15 @@ def session_page(store: SessionStore, *, limit: int, offset: int = 0, query: str
             text, state_label, ok = _list_summary(meta)
             if ok and state_label is None:
                 state_label = _live_label(meta)
-            entries.append((meta.get("session_id"), text, state_label, ok))
+            # Keyed by position: a damaged record's session_id need not be a string.
+            entries.append((len(entries), text, state_label, ok))
     needle = (query or "").strip().lower()
     counts: dict[str, int] = {}
-    matched: list[str] = []
+    matched: list = []
     total = 0
-    for name, text, state_label, ok in entries:
+    for key, text, state_label, ok in entries:
         if not ok or state_label is None:
+            name = key if isinstance(key, str) else metas[key].get("session_id")
             logger.warning("Dashboard could not read the state of session %r", name)
             unreadable.append(name if isinstance(name, str) else "?")
             continue
@@ -733,13 +735,12 @@ def session_page(store: SessionStore, *, limit: int, offset: int = 0, query: str
         counts[state_label] = counts.get(state_label, 0) + 1
         if label and state_label != label:
             continue
-        matched.append(name)
+        matched.append(key)
     selected = matched[offset:offset + limit]
     if hasattr(store, "listed"):
         page = store.listed(selected, unreadable=unreadable)
     else:
-        wanted = set(selected)
-        page = [m for m in metas if m.get("session_id") in wanted]
+        page = [metas[key] for key in selected]
     index = read_model._queue_index(queue)
     rows = rows_isolating(
         lambda chunk: [read_model.listed_row(store, meta, queue_index=index) for meta in chunk],
