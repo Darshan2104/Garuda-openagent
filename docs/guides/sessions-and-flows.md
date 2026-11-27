@@ -748,6 +748,29 @@ they are never retried by `retries`. A checked step's worker runs the same
 loop; a read-only checked step, whose harness is one confined container,
 continues and repairs in that session but never rotates.
 
+#### Live status
+
+While a step runs, `garuda flow show FLOW_ID` prints what it is doing now,
+read only (it takes no lease and writes nothing):
+
+```text
+flow build-and-review: running
+  live: step build (attempt 2), turn 7 in 2 harness session(s), 1 rotation(s), 5 continuation(s)
+    session 3f0c…; started 2026-11-27T10:00:00+00:00; last activity 42s ago (2026-11-27T11:41:18+00:00)
+    last turn: next (stop reason end_turn); context 120000/200000 (60%); deadline 2026-11-27T22:00:00+00:00
+  last checkpoint: 3 (build attempt 1: stopped) at 2026-11-27T10:58:02+00:00
+```
+
+The step session is linked when the attempt launches (the attempt's launch
+record, and `flow_step` in the step session from its creation), and the
+attempt's progress file gets a `start` line as its first turn starts, so a step
+is visible before its first turn ends. A paused flow prints its stop code and
+reason (`flow.quota_wait`, `flow.step_deadline`, `flow.step_silent`,
+`flow.step_no_progress`, ...) and then `paused after step STEP (attempt N)`,
+with the reset time for a quota wait.
+`garuda flow show --json` carries the same under `live`, and the dashboard
+reads the same view (`in_flight` in the flow read model).
+
 ### The repair turn
 
 When a step's turn ended normally but its declared output blocks are missing,
@@ -865,7 +888,47 @@ Before each step starts, Garuda records that it is about to run it; after
 it ends, it writes an immutable receipt. If Garuda is killed in between, that
 step is **quarantined** and never run again automatically. `garuda flow
 resume FLOW_ID` continues after the last step that has a receipt; with a
-quarantined step it refuses, so you can look at the workspace first.
+quarantined step it refuses, so you can look at the workspace first. The
+refusal names the step and attempt, says what is uncertain (a flow without
+`--check` cannot prove that step's processes are gone) and what to run next.
+
+#### Crash continuation (checked flows)
+
+A checked flow (`--check`) runs each step in an owned worker under a Linux
+subreaper. When its `garuda` process dies hard mid-step (SIGKILL, the OOM
+killer, a reboot), `garuda flow resume FLOW_ID` continues it without a manual
+`garuda runtime recover`, but only when Garuda can **prove** that the step's
+whole process tree is gone:
+
+- the attempt's launch record (`flow/launches/STEP-ATTEMPT.json`) shows it
+  ran under the subreaper, and its supervisor and worker pids, with their
+  recorded start times, no longer match live processes;
+- the flow's process and the lease owner the step ran under are dead, and no
+  live process carries that owner's lineage (a helper that left the process
+  tree with `setsid` still does);
+- what `garuda runtime recover` proves holds: every step worker is gone, every
+  recorded confinement container is absent, and the dead owner's workspace
+  lease and capacity slots are released; afterwards no live lease or slot
+  names the flow.
+
+Then the killed attempt is recorded as stopped with `flow.interrupted` (its
+receipt carries the proof under `crash`, and the journal keeps exactly two
+entries per attempt), and the step runs again as the next attempt under the
+original checks. A [long step](#long-steps) starts that attempt with a
+rotation brief built from the killed attempt's progress file, saying the
+previous run of the step was interrupted, so it picks up from Garuda's records
+of how far it got.
+
+If anything cannot be proved, nothing is written: the attempt stays
+quarantined and the refusal (`flow.interrupted_unsettled`, or
+`flow.recovery_required` while the flow's process may still run) says what is
+uncertain and which command comes next. For example, a survivor that still
+carries the flow's lineage is named by pid; stop it and resume again. An
+attempt with no launch record (a flow started before this release, or a crash
+while the worker was being activated) can never be continued: inspect the
+workspace and start a new flow. Flows without `--check`, dashboard-owned and
+queued flows are unchanged. Quota recovery does not apply: it never runs
+checked flows.
 
 ### Automatic recovery after Codex quota exhaustion
 

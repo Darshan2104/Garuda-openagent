@@ -5745,6 +5745,56 @@ after the candidate (for example a quota-paused one), and labels its file list
 "as Garuda measured them after turn N". Restating the round facts would spend
 budget twice and could drift when the two are trimmed differently.
 
+## 2026-11-27: A hard-killed checked flow continues on proof; `flow show` shows the live step (#856)
+
+A checked flow whose parent died hard (SIGKILL, OOM, reboot) mid-step had no
+way forward: `flow resume` refused `flow.recovery_required`, and after
+`garuda runtime recover` it refused `flow.interrupted_unsettled` ("start a new
+flow"), although the step ran under the owned worker's Linux subreaper.
+
+Decided: `flow resume` of such a flow (new `garuda/flows/crash.py`, called from
+`FlowExecutionService.resume`) continues it only on proof that the attempt's
+whole tree is gone. The proof needs facts nothing recorded before, so the
+owned launch path now writes a per-attempt **launch record**
+(`flow/launches/STEP-ATTEMPT.json`, new `garuda/flows/launches.py`): the step
+session id, backend `linux-subreaper`, the supervisor identity once prepared,
+`phase: activating` before activation and the worker command identity after,
+and the parent lease owner. Proof: the journal ends with the only unsettled
+intent; the flow's owner is dead; the record shows the subreaper and a usable
+supervisor (and command, when activation began); supervisor, worker and lease
+owner are dead by pid and start identity (`owner_liveness`, which also checks
+the groups they led); then exactly what `runtime recover` proves (step workers
+gone, recorded containers absent, dead-owner leases and slots reclaimed under
+the lineage scan); then `descendant_scan` of the lease owner is empty and no
+live lease or slot names the flow. Any gap writes nothing and raises
+`flow.interrupted_unsettled` (or `flow.recovery_required` while the owner may
+live) naming the uncertainty and the next command. A record in
+`phase: activating` without a command is refused: the worker may exist with
+an unknown identity. A missing record (older Garuda) is refused too.
+
+On proof, `FlowRunner.run(crash=...)` reopens the evidence like a checked
+resume, but the trust anchor is the on-disk history, not a stop checkpoint:
+the original check request must be unchanged, the journal must be the settled
+pairs plus the one intent, and the boundaries must cover exactly the settled
+attempts (a parent killed between a boundary and its receipt is refused). The
+crashed attempt gets a boundary of the workspace as it was left and a receipt
+(`stopped`, `flow.interrupted`, `crash`: the proof; no `closure`, since there
+is no ECHILD receipt), so the journal keeps two entries per attempt; the step
+runs again as the next attempt. A `long_run` step's next attempt after any
+`flow.interrupted` attempt appends `memory.rotation_brief` (reason
+`interrupted`) built from that attempt's progress file. Unchecked flows keep
+the quarantine; the message now says what is uncertain and to start a new
+flow. Quota recovery does not apply (it never runs checked flows).
+
+Live status: one read-only function, `read_model.flow_in_flight`, surfaced as
+`flow()["in_flight"]`, printed by `flow show` and as `live` in `--json`, for
+the dashboard to reuse. It reads the journal's open intent, the launch record,
+the progress file tail, the step session meta and record mtimes; it takes no
+lease. To make a step visible before its receipt, unchecked launches also
+write the launch record and the step session carries `flow_step` from its
+creation, and the progress file gets a `start` line (no `turn`, which readers
+already skip) when the attempt starts; turn records gain `at`. All additive.
+
 ## 2026-11-27: A flow role may allow-list shell commands (#861)
 
 In a flow nobody answers a harness's `session/request_permission`: a

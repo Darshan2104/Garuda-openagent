@@ -362,3 +362,13 @@ def test_garuda_run_with_the_role_still_asks(tmp_path, monkeypatch, capsys):
     meta, (record,) = _approvals()
     assert record["outcome"] == "deny" and "decided_by" not in record
     assert meta["role"]["approvals_allow"] == [PYTEST]
+
+
+def test_an_owned_worker_gets_the_role_allow_list():
+    """The owned (checked/background) worker thaws the role it was sent and uses its list."""
+    from garuda.runtime.role_request import freeze_role, role_from_document
+    from garuda.runtime.roles import step_allow_list
+
+    thawed = role_from_document(json.loads(json.dumps(freeze_role(_plan()))))
+    assert step_allow_list(thawed) == (PYTEST,)
+    assert step_allow_list(thawed, no_edits=True) == ()

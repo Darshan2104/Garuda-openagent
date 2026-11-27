@@ -85,9 +85,15 @@ def _no_real_harness_login_check(monkeypatch):
     unstubbed test would pass or fail with the host's login state. A shipped
     harness's check reads "could not run" (``failed``), as on a host without
     the harness. A test's own fake CLI (any other command) still runs.
+
+    Runtime discovery runs the same check through its own probe runner; on a
+    host whose harness is installed but logged out it records
+    ``unauthenticated``, and selection then refuses that harness as
+    ``harness.logged_out``. There a shipped harness's check likewise reads
+    "could not run", which leaves its login state ``unknown``.
     """
     try:
-        from garuda.acp import login_probe
+        from garuda.acp import catalog, login_probe
     except ImportError:  # a minimal job without the runtime's dependencies
         return
     real = login_probe._run
@@ -96,6 +102,12 @@ def _no_real_harness_login_check(monkeypatch):
         return None if argv and argv[0] in _SHIPPED_PROBES else real(argv, timeout)
 
     monkeypatch.setattr(login_probe, "_run", run)
+    real_probe = catalog._run_probe
+
+    def run_probe(argv, *, timeout):
+        return None if argv and argv[0] in _SHIPPED_PROBES else real_probe(argv, timeout=timeout)
+
+    monkeypatch.setattr(catalog, "_run_probe", run_probe)
 
 
 @pytest.fixture

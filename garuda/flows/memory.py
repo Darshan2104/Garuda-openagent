@@ -372,6 +372,8 @@ REASONS = {
     "session_turns": "it reached its turn budget",
     "session_hours": "it reached its time budget",
     "context": "its context was nearly full",
+    "interrupted": ("the previous run of this step was interrupted (Garuda's process stopped "
+                    "before that attempt settled) and this is a new attempt"),
 }
 #: The most earlier attempts a turn spec carries for the brief (the latest ones).
 EARLIER_KEPT = 32

@@ -224,16 +224,22 @@ Click a problem to see the fix.
     recorded as a settled `flow.interrupted` stop, the lease and slot are
     released, the command exits 143, and `garuda flow resume FLOW_ID` reruns
     the step under the original checks. If the flow was killed outright
-    (`kill -9`) it stays `running` with a `lease.stale` and `capacity.stale`
-    entry. `garuda runtime recover --session FLOW_ID` then releases them only
-    when the flow's owner, every step worker, every process carrying its
-    lineage, and every Docker container a confined step recorded are proved
-    gone. Otherwise the refusal names the survivor, or gives the
-    `docker rm -f NAME` to run. Recovery records the flow `interrupted`
-    (`flow.owner_lost`). A checked flow killed mid-step can't be resumed,
-    because that attempt never settled and its check evidence can't be proved.
-    `flow resume` says so with `flow.interrupted_unsettled`, so start a new
-    flow. Running `runtime recover` on a step session points you at its flow.
+    (`kill -9`, the OOM killer, a reboot) it stays `running` with a
+    `lease.stale` and `capacity.stale` entry. Run
+    `garuda flow resume FLOW_ID`: it does what `garuda runtime recover
+    --session FLOW_ID` does, releasing them only when the flow's owner, every
+    step worker, every process carrying its lineage, and every Docker
+    container a confined step recorded are proved gone, then also proves the
+    killed attempt's subreaper supervisor and worker gone by their recorded
+    pids and start times. With all of that proved it records the attempt as
+    stopped (`flow.interrupted`) and runs the step again as the next attempt
+    (see [Crash continuation](../guides/sessions-and-flows.md#crash-continuation-checked-flows)).
+    Otherwise it refuses with `flow.interrupted_unsettled`, says what is
+    uncertain and what to run: a survivor is named by pid (stop it and resume
+    again), a container comes with the `docker rm -f NAME` to run, and an
+    attempt with no launch record (started by an older Garuda, or killed while
+    its worker was being activated) can't be continued, so start a new flow.
+    Running `runtime recover` on a step session points you at its flow.
 
     A SIGTERM during the **check phase** (every step done) records the flow
     `interrupted`. `garuda flow resume FLOW_ID` runs the checks again on the
@@ -502,6 +508,20 @@ Click a problem to see the fix.
     show`) for each turn's stop reason, change and progress note, adjust the
     task or `long_run`, then `garuda flow resume FLOW_ID`. See
     [Long steps](../guides/sessions-and-flows.md#long-steps).
+
+??? question "A long flow step looks stuck"
+
+    `garuda flow show FLOW_ID` prints its live status: the step and attempt,
+    the turn and harness sessions, how long ago it last did anything (its
+    progress file and event log), its last context use, its deadline and the
+    last checkpoint; `--json` has the same under `live`. A step with no turn
+    finished yet is still listed, from the moment it launched. If the last
+    activity is old and the step has `limits.silence_min`, the silence
+    watchdog stops it with `flow.step_silent`; without it, stop the flow
+    (Ctrl-C or SIGTERM settles a checked step as `flow.interrupted`) and
+    `garuda flow resume FLOW_ID`. A paused flow prints its stop code and the
+    step and attempt it paused after, and for `flow.quota_wait` when the limit
+    resets.
 
 ??? question "A flow stops with `flow.long_run_unsupported`"
 
