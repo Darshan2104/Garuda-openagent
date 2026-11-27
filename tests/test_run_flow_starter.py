@@ -307,8 +307,11 @@ def test_equivalent_command_round_trips_through_the_real_cli_parser(ws):
         {"run": "python -m pytest -q"}, {"run": "ruff check ."}]
     assert all(c["execution"] == "available-at-flow-finalization" for c in plan.checks)
     assert plan.provenance["verification"] == "from-acceptance-receipt"
-    # The task is the brief plus the framed field, exactly what every start delivers.
-    assert plan.task.startswith(catalog.brief_text(catalog.load_catalog()["run-flow"]).strip())
+    # The task is a title from the user's own words, the brief, then the framed field, exactly
+    # what every start delivers.
+    title, blank, rest = plan.task.split("\n", 2)
+    assert (title, blank) == ("keep caf touch no second", "")
+    assert rest.startswith(catalog.brief_text(catalog.load_catalog()["run-flow"]).strip())
     assert '<starter-field name="goal" label="Task">' in plan.task
 
 
@@ -488,6 +491,7 @@ def test_pipeline_long_run_moves_the_deadline_and_backstop(ws):
     coder = replace(context.role_plans["coder"], kind="acp", runtime_id="claude")
     (step,) = project(replace(context, role_plans={"coder": coder}))["steps"]
     assert step["long_run"]["applies"] is True and step["long_run"]["max_hours"] == 2
+    assert step["long_run"]["session_hours"] == 2  # the default 4 is at most max_hours (#885)
     assert step["owned_backstop"]["deadline_min"] == 120.0
     assert step["owned_backstop"]["timeout_min"] == 130.0
 
@@ -806,3 +810,49 @@ async def test_real_http_start_runs_a_user_defined_two_step_flow(tmp_path, monke
         await ctx.live.aclose()
         server.shutdown()
         server.server_close()
+
+
+def test_a_run_flow_session_is_named_after_the_users_task_not_the_brief(ws, tmp_path):
+    """Every dashboard flow was named `carry-out-the-supplied-task[-N]`: the store slugs the
+    first words of the task, and the compiled task began with the starter's brief. It now leads
+    with a title from the user's own task, so the name is the one `garuda flow run --task GOAL`
+    gives, with the same `-2` suffix rule."""
+    from garuda.core.project_identity import slugify
+    from garuda.core.sessions import SessionStore
+
+    goal = "Implement the textkit package so tests/test_textkit.py passes.\nThree milestones."
+    plan, _context = compile_with_context("run-flow", {"flow": "mine", "goal": goal}, ws)
+    assert plan.task.split("\n", 1)[0] == "implement the textkit package so"
+    store = SessionStore(tmp_path / "sessions")
+    names = []
+    for sid in ("00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"):
+        store.begin(sid, task=plan.task, model="flow", agent="flow:mine", workspace=str(ws))
+        names.append(store.load_meta(sid)["name"])
+    assert names == [slugify(goal), slugify(goal) + "-2"] == [
+        "implement-the-textkit-package-so", "implement-the-textkit-package-so-2"]
+    # The user's text itself stays fenced as data below the brief.
+    assert "<starter-field name=\"goal\" label=\"Task\">\n| Implement the textkit" in plan.task
+
+
+def test_a_task_with_no_slug_words_keeps_the_brief_first(ws):
+    plan, _context = compile_with_context("run-flow", {"flow": "mine", "goal": "¿¡ — ✓"}, ws)
+    assert plan.task.startswith(catalog.brief_text(catalog.load_catalog()["run-flow"]).strip())
+
+
+def test_a_role_run_session_is_named_after_the_users_goal_not_the_brief(ws, tmp_path):
+    """Role runs from Starters were `carry-out-the-supplied-task[-N]` too."""
+    from garuda.core.project_identity import slugify
+    from garuda.core.sessions import SessionStore
+
+    goal = "Create forty notes files one per call"
+    plan, _context = compile_with_context("run-with-role", {"goal": goal, "role": "coder"}, ws)
+    assert plan.task.split("\n", 1)[0] == "create forty notes files one"
+    assert plan.task.split("\n", 2)[2].startswith(
+        catalog.brief_text(catalog.load_catalog()["run-with-role"]).strip())
+    store = SessionStore(tmp_path / "sessions")
+    names = []
+    for sid in ("00000000-0000-4000-8000-000000000003", "00000000-0000-4000-8000-000000000004"):
+        store.begin(sid, task=plan.task, model="flow", agent="flow:run:coder", workspace=str(ws))
+        names.append(store.load_meta(sid)["name"])
+    assert names == [slugify(goal), slugify(goal) + "-2"] == [
+        "create-forty-notes-files-one", "create-forty-notes-files-one-2"]

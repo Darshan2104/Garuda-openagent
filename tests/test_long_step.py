@@ -88,6 +88,28 @@ def test_bad_long_run_is_refused_with_its_full_path(long_run, path):
     assert caught.value.path == path
 
 
+def test_session_hours_is_at_most_max_hours_unless_set():
+    """#885: an unset session_hours takes the default 4 or max_hours, whichever is shorter."""
+    for flow, step, hours in [
+            ({}, {"long_run": {"max_hours": 1}}, 1),
+            ({"long_run": {"max_hours": 3}}, {"long_run": {}}, 3),
+            ({"long_run": {"max_hours": 2}}, {"long_run": {"max_hours": 10}}, 4),
+            ({}, {"long_run": {"max_hours": 2, "session_hours": 2}}, 2)]:
+        parsed = gy.parse(_flow_config({**flow, "steps": [{"role": "coder", **step}]}))
+        resolved = gy.resolve(parsed, None).config["flows"]["f"]
+        run = long_step.long_run(resolved, resolved["steps"][0])
+        assert run.session_hours == hours and run.record()["session_hours"] == hours
+    # An explicit one longer than max_hours is refused when the flow loads, and by the
+    # engine for a definition that skipped the loader.
+    with pytest.raises(GarudaConfigError) as caught:
+        gy.parse(_flow_config({"steps": [{"role": "coder", "long_run": {"session_hours": 13}}]}))
+    assert caught.value.code == "config.invalid"
+    assert caught.value.path == "flows.f.steps[0].long_run.session_hours"
+    with pytest.raises(engine.FlowStopped) as stopped:
+        long_step.long_run({}, {"id": "x", "long_run": {"max_hours": 1, "session_hours": 2}})
+    assert stopped.value.code == "flow.long_run_invalid"
+
+
 def test_a_parallel_group_and_a_merged_override_are_checked():
     with pytest.raises(GarudaConfigError) as caught:
         gy.parse(_flow_config({"steps": [{"parallel": ["coder", "planner"],

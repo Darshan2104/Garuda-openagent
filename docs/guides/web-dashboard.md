@@ -211,7 +211,12 @@ starting: a step without `deadline_min` is stopped at the backstop (the actual
 minutes), a flow started here resumes only through a write-mode dashboard's
 owned resume ([Resume a dashboard flow](#resume-a-dashboard-flow); `garuda flow
 resume` refuses it with `flow.operation_managed`), and stopping the dashboard
-interrupts it. Editing any field discards the preview.
+interrupts it. Editing any field discards the preview. The task the flow receives starts with a title made of the first words
+of your **Task** (lowercase letters and digits only), so its session is named
+after your task, as the equivalent `garuda flow run` command names it (`implement-the-textkit-package-so`,
+then `-2` for the next one), rather than after the starter's instructions. A
+role run from **Starters** (**Run a task as a chosen role**) is named after its
+**Goal** the same way when **Session name** is left empty.
 
 **Start flow** appears only in write mode on Linux, for a flow the owned engine
 runs (no step retries, no `isolation` other than `shared`, no parallel group, no

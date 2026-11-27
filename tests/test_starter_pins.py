@@ -50,7 +50,8 @@ PINS = {
         "plan-change": "bd8c0d4321b29e35b44a3fa2932fdb9c000d8642e5eaa40b3f656af3bb91ad64",
         "plan-feedback": "9560ec057fdc4dda5b5e4918fb49f3144454a2fcc73fda86c2f13fc4604479bf",
         "refusals": "299630589b6938fd618ec74c8ba70e8e2b156acb96fc706180223486b150be5e",
-        "run-with-role": "eeb2f12885657e71c3b66a5415b02a39b664ba0bed50cdb5c857d2fc3cd07511",
+        # Moved on purpose: the session is named after the user's task (#886).
+        "run-with-role": "eb022cd2c0dc8ff76f3efe743e5a9c5b0ef7cf00575874791d6535350f2a3a99",
     },
     "checked": {
         "ask-role": "c3d9ad3e28becf8ef9309327dc078a08b5866db52c417ac3dd6eeafe88d2e8cf",
@@ -58,7 +59,8 @@ PINS = {
         "plan-change": "6f22f7e823fe5a223ab4b6b24e2ffb373ebd9f1af6aa6e867881438519a1d65a",
         "plan-feedback": "a57aa04f407e3186e28ade5a096e513bca56ea3a073a88965a1a4539d1b9146c",
         "refusals": "299630589b6938fd618ec74c8ba70e8e2b156acb96fc706180223486b150be5e",
-        "run-with-role": "4db27b12a943f77054039421db8f03106d3d3947d03eb240df48a15ee8a2710b",
+        # Moved on purpose: the session is named after the user's task (#886).
+        "run-with-role": "2af91e67eae97e3d493e6bef8e3968fe5bdae2744f570f7ac6ab2fdb88b70b4b",
     },
 }
 

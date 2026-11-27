@@ -141,12 +141,20 @@ def long_run(flow: dict, step: dict) -> LongRun | None:
 
     if "long_run" not in step and "long_run" not in flow:
         return None
-    merged = {**DEFAULTS, **(flow.get("long_run") or {}), **(step.get("long_run") or {})}
+    configured = {**(flow.get("long_run") or {}), **(step.get("long_run") or {})}
+    merged = {**DEFAULTS, **configured}
     for key, value in merged.items():
         if key not in DEFAULTS or isinstance(value, bool) or not isinstance(value, (int, float)) \
                 or not value > 0:
             raise FlowStopped("flow.long_run_invalid",
                               f"long_run.{key} must be a positive number", step=step.get("id"))
+    if "session_hours" not in configured:
+        # The default session length is at most the step's whole budget (#885).
+        merged["session_hours"] = min(merged["session_hours"], merged["max_hours"])
+    elif merged["session_hours"] > merged["max_hours"]:
+        raise FlowStopped("flow.long_run_invalid",
+                          "long_run.session_hours must not be longer than max_hours",
+                          step=step.get("id"))
     return LongRun(**merged)
 
 
