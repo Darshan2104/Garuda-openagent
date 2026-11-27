@@ -464,7 +464,11 @@ line, approvals waiting (expired ones counted apart), and when each was
 updated and started. Each name has the session's short id and the first words
 of its task beneath it, so two runs of one task are told apart. The header
 says how many are shown out of how many exist; **Load older** fetches the next
-page. The table fits a laptop screen; on a phone each session is a card.
+page. The table fits a laptop screen; on a phone each session is a compact
+card: name, state and when it was updated; runtime, role and model;
+outcome and verification as two separate indicators; approvals only when one
+waits; workspace, start and usage/cost (left out when both are unknown) behind
+**details**.
 
 Search (name, id, task, model, agent, role, runtime, workspace or branch) and
 the state chips (**crashed 3**, **working 1**…) filter on the server, across
@@ -511,7 +515,9 @@ A session's page leads with the work, and keeps the evidence below:
   failure evidence stays in the collapsed **Details and evidence**. The pause
   is said once, there: a paused flow has no live step card (it is not
   running), the pipeline's paused step reads **paused — usage limit, see
-  Result**, and the header, the flow trace, the Overview's paused rows and
+  Result**, its stopped attempt reads **stopped on a usage limit — see
+  Result** in the pause style (the raw stop code in its tooltip; the red
+  callout is for failures only), and the header, the flow trace, the Overview's paused rows and
   the Sessions list keep one line each. A flow paused on its own pause (a usage limit, a
   deadline, silence, no progress, the turn budget or a refusal) says **paused**
   in its header; its recorded outcome stays as stored (`failed`) and the

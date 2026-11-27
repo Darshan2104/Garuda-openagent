@@ -174,16 +174,51 @@ const row = {session_id: "f-2", state: {work: "done"}, flow: flow, pause: pause}
 const quarantined = {session_id: "f-3", state: {work: "done"}, pause: null, flow: {in_flight: {step: "build", attempt: 1,
   paused: {code: "flow.step_backstop", step: "build", message: "killed", reset_at: null, next_check: null}}}};
 console.log(JSON.stringify({card: context.sessionLiveStepHtml(row), live: context.flowLiveHtml(row),
-  pipeline: context.flowHtml(flow, null, {pause: pause, id: "f-2"}),
+  pipeline: context.flowHtml(flow, null, {pause: pause, id: "f-2", result: "session-cause"}),
   quarantined: context.flowLiveHtml(quarantined)}));
 """)
     assert out["card"] == "" and out["live"] == ""
     pipeline = out["pipeline"]
     assert pipeline.count('class="stat-sub pipe-pause"') == 1
-    assert 'paused — usage limit, see <a href="#session-cause">Result</a>' in pipeline
+    assert ('paused — usage limit, see <a href="#session-cause" data-scroll-to="session-cause">Result</a>'
+            in pipeline)
     assert "garuda flow resume" not in pipeline and "pause-block" not in pipeline
     assert "step block above" not in pipeline
     assert 'id="flow-live"' in out["quarantined"]  # not a pause: its stop keeps its block
+
+
+def test_a_paused_attempt_reads_as_a_pause_not_a_failure():
+    """The attempt a flow's pause stopped on (or one whose receipt carries `pause`) shows its stop
+    in the pause style, pointing to where the pause is said; its raw code stays in the tooltip.
+    Only a real failure gets the red callout and the red status chip."""
+    out = _node(r"""
+const now = Math.floor(Date.now() / 1000);
+const pause = {kind: "quota", reset_at: now + 600, resume: "manual"};
+const stopped = n => ({attempt: n, status: "stopped", stop: {code: "flow.step_failed"}});
+const flow = {name: "soak", state: "stopped", stop: {code: "flow.step_failed", step: "build"},
+  in_flight: {step: "build", attempt: 2, running: false, paused: {code: "flow.step_failed", step: "build"}},
+  steps: [{id: "build", attempts: [stopped(1), stopped(2)]}, {id: "review", attempts: []}]};
+const own = {name: "soak", state: "stopped", stop: null, in_flight: null,
+  steps: [{id: "build", attempts: [{attempt: 1, status: "stopped", pause: "deadline", stop: {code: "flow.step_deadline"}}]}]};
+console.log(JSON.stringify({
+  paused: context.flowHtml(flow, null, {pause: pause, id: "f-9", result: "session-cause"}),
+  trace: context.flowHtml(flow, null, {pause: pause, id: "f-9", result: "flow-stopped", resultLabel: "How it ended"}),
+  failed: context.flowHtml(Object.assign({}, flow, {in_flight: null}), null, {}),
+  own: context.flowHtml(own, null, {})}));
+""")
+    paused = out["paused"]
+    second = paused.split('data-attempt="2"')[1].split("</li>")[0]
+    assert 'data-pause="quota"' in second.split(">")[0]
+    assert 'class="stat-sub attempt-stop" data-state="paused" data-code="flow.step_failed"' in second
+    assert "stopped on a usage limit — see" in second and 'data-scroll-to="session-cause"' in second
+    assert 'title="stop code: flow.step_failed — The step failed."' in second
+    assert "chip-bad" not in second and "stopped: flow.step_failed" not in second
+    first = paused.split('data-attempt="1"')[1].split("</li>")[0]
+    assert "stopped: flow.step_failed — The step failed." in first  # an earlier, real failure
+    assert 'data-scroll-to="flow-stopped">How it ended</a>' in out["trace"]
+    assert out["failed"].count("stopped: flow.step_failed — The step failed.") == 2  # no pause: failures
+    assert 'data-pause="deadline"' in out["own"] and "stopped: ran past its deadline" in out["own"]
+    assert "chip-bad" not in out["own"]
 
 
 def test_no_rendered_pause_text_contains_an_iso_timestamp():
