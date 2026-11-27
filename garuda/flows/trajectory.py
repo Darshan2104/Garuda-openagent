@@ -114,17 +114,34 @@ def steps_reported_usage_line(total: dict | None) -> str:
 
 
 def _events(store, session_id: str) -> tuple[list[dict], dict]:
-    """The session's persisted ACP event trail, bounded, as it was written."""
-    path = Path(store.session_dir(session_id)) / "acp-events.jsonl"
-    if not path.is_file():
+    """The session's persisted ACP event trail, bounded, as it was written.
+
+    The trail may be size-rotated into several files (``event_log``); they are
+    read in order under one byte bound, oldest first.
+    """
+    from garuda.observability import event_log
+
+    directory = Path(store.session_dir(session_id))
+    paths = event_log.part_paths(directory)
+    if not paths:
         return [], {"source": None, "count": 0, "by_kind": {}, "omitted": 0, "unreadable": 0}
     rows, by_kind, omitted, unreadable = [], {}, 0, 0
-    with path.open("rb") as handle:
-        data = handle.read(MAX_EVENT_BYTES + 1)
-    truncated = len(data) > MAX_EVENT_BYTES
-    lines = data[:MAX_EVENT_BYTES].splitlines()
-    if truncated and lines:
-        lines.pop()  # a line cut at the byte bound is not a record
+    lines, budget, truncated = [], MAX_EVENT_BYTES, False
+    for path in paths:
+        if budget <= 0:
+            truncated = True
+            break
+        with path.open("rb") as handle:
+            data = handle.read(budget + 1)
+        cut = len(data) > budget
+        part = data[:budget].splitlines()
+        if cut and part:
+            part.pop()  # a line cut at the byte bound is not a record
+        lines.extend(part)
+        budget -= min(len(data), budget)
+        if cut:
+            truncated = True
+            break
     for line in lines:
         try:
             row = json.loads(line)
@@ -140,9 +157,12 @@ def _events(store, session_id: str) -> tuple[list[dict], dict]:
             rows.append(row)
         else:
             omitted += 1
+    facts = event_log.trail_facts(directory)
     return rows, {"source": "acp-events.jsonl", "count": len(rows) + omitted,
                   "by_kind": by_kind, "omitted": omitted, "unreadable": unreadable,
-                  "truncated": truncated}
+                  "truncated": truncated,
+                  **({"parts": facts["parts"], "pruned": facts["pruned"]}
+                     if facts["parts"] > 1 or facts["pruned"] else {})}
 
 
 def _session(store, session_id: str | None, rows: list[dict] | None) -> tuple[dict | None, list]:

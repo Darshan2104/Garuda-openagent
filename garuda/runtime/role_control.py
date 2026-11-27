@@ -17,8 +17,13 @@ from garuda.runtime.process_supervision import CleanupUncertain
 from garuda.workspace.lease import LeaseError
 
 CONTROL_LIMIT = 65_536
-#: The most bytes of step output a role child may hand back.
-MAX_RESULT_OUTPUT = 32_768
+#: The most bytes of step output a role child may hand back: above a whole flow
+#: artifact (64,000 characters, at most 256,000 UTF-8 bytes), so a checked step's
+#: largest artifact arrives intact.
+MAX_RESULT_OUTPUT = 262_144
+#: The one request allowed past CONTROL_LIMIT is the result: its output escaped as
+#: JSON (at most 6 bytes per output byte) plus the request's own fields.
+RESULT_REQUEST_LIMIT = 6 * MAX_RESULT_OUTPUT + CONTROL_LIMIT
 #: The most characters of a responder's non-answer reason relayed to a role child.
 MAX_UNANSWERED_REASON = 1_024
 #: The most characters of a worker's typed refusal message (#738).
@@ -122,7 +127,7 @@ class RoleControl:
             os.chmod(self._directory.name, 0o700)
             self.path = str(Path(self._directory.name) / "control.sock")
             self._server = await asyncio.start_unix_server(
-                self._connection, path=self.path, limit=CONTROL_LIMIT)
+                self._connection, path=self.path, limit=RESULT_REQUEST_LIMIT)
             os.chmod(self.path, 0o600)
         except BaseException:
             await self.guard.release()
@@ -156,9 +161,12 @@ class RoleControl:
                 raw = await reader.readline()
                 if not raw:
                     return
-                if len(raw) > CONTROL_LIMIT:
+                if len(raw) > RESULT_REQUEST_LIMIT:
                     raise ValueError("oversized control request")
                 request = json.loads(raw)
+                if len(raw) > CONTROL_LIMIT and (not isinstance(request, dict)
+                                                 or request.get("op") != "result"):
+                    raise ValueError("oversized control request")
                 if (not isinstance(request, dict)
                         or set(request) != {"nonce", "sequence", "op", "value"}
                         or not isinstance(request["nonce"], str)
@@ -300,7 +308,7 @@ class RoleControlClient:
     def _exchange(self, op, value, *, unanswered=False):
         message = {"nonce": self.nonce, "sequence": self.sequence, "op": op, "value": value}
         raw = json.dumps(message, allow_nan=False).encode() + b"\n"
-        if len(raw) > CONTROL_LIMIT:
+        if len(raw) > (RESULT_REQUEST_LIMIT if op == "result" else CONTROL_LIMIT):
             raise LeaseError("oversized role control request")
         self._socket.sendall(raw)
         self.sequence += 1

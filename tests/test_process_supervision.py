@@ -291,7 +291,7 @@ async def test_supervisor_death_cannot_claim_that_its_writer_stopped(tmp_path):
 
 @linux
 @pytest.mark.asyncio
-@pytest.mark.parametrize("limit", [float("nan"), float("inf"), True, 0, 901])
+@pytest.mark.parametrize("limit", [float("nan"), float("inf"), True, 0, 4 * 3600 + 1])
 async def test_invalid_runtime_bound_cannot_activate_a_prepared_worker(tmp_path, limit):
     async with await LinuxProcessSupervisor().prepare() as owned:
         with pytest.raises(ValueError):

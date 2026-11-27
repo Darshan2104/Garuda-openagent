@@ -1404,8 +1404,12 @@ def _accept_session(args, session_id: str | None) -> None:
         workspace = store.load_meta(session_id).get("workspace") or args.workspace
     except Exception:
         return
-    checks = checks_with_authority(getattr(args, "_config", None))
-    verification = accept(store, session_id, workspace, checks)
+    from garuda.config.garuda_yaml import check_limits
+
+    resolved = getattr(args, "_config", None)
+    checks = checks_with_authority(resolved)
+    verification = accept(store, session_id, workspace, checks,
+                          timeout=check_limits(resolved)["timeout_sec"])
     out = sys.stderr if getattr(args, "json", False) else sys.stdout
     if checks:
         print(f"[garuda] verification: {verification['status']}"
@@ -1421,13 +1425,17 @@ def _save_external_trajectory(args, session_id: str) -> None:
     import sys
 
     from garuda.core.sessions import SessionStore
-    from garuda.observability.lanes import ACP_EVENTS_FILE
+    from garuda.observability import event_log
 
-    trail = (getattr(args, "_store", None) or SessionStore()).session_dir(
-        session_id) / ACP_EVENTS_FILE
+    # A size-rotated trail is several files; the saved trajectory is all of them, in order.
+    parts = event_log.part_paths((getattr(args, "_store", None) or SessionStore()).session_dir(
+        session_id))
     try:
-        if trail.is_file():
-            shutil.copyfile(trail, args.trajectory)
+        if parts:
+            with open(args.trajectory, "wb") as out:
+                for part in parts:
+                    with part.open("rb") as source:
+                        shutil.copyfileobj(source, out)
     except OSError as exc:
         print(f"[garuda] trajectory not saved to {args.trajectory}: {exc.strerror or exc}",
               file=sys.stderr)
@@ -1707,6 +1715,23 @@ def _flow_stop_line(stop) -> str | None:
     return line
 
 
+def _review_approval_lines(meta: dict) -> list[str]:
+    """Each recorded review approval, and whether its packet covered the whole change set."""
+    approvals = meta.get("review_approvals")
+    lines = []
+    for step, approval in sorted(approvals.items()) if isinstance(approvals, dict) else ():
+        if not isinstance(approval, dict) or approval.get("status") != "review_approved":
+            continue
+        coverage = approval.get("coverage")
+        note = {"partial": " (the review packet did not cover every changed file or diff; "
+                           "the approval rests on part of the change)",
+                "unknown": " (whether the review packet covered the whole change is unknown)"}
+        lines.append(f"  review of {' '.join(str(step).split())[:80]}: approved"
+                     + (f"; packet coverage: {coverage}{note.get(coverage, '')}"
+                        if coverage in ("complete", "partial", "unknown") else ""))
+    return lines
+
+
 def _flow_verification_lines(store, flow_session: str, meta: dict) -> list[str]:
     """A checked flow's verdict and each check's outcome, read only (#752)."""
     from garuda.flows.trajectory import verification
@@ -1931,6 +1956,8 @@ def run_flow(args) -> int:
                 print(f"  Claude {window} limit resets at {reset_time_text(int(recovery['reset_at']))}")
         for line in _flow_verification_lines(store, args.flow_session, meta):
             print(line)
+        for line in _review_approval_lines(meta):
+            print(line)
         for receipt in engine.receipts(store, args.flow_session):
             outs = ", ".join(o["type"] for o in receipt.get("outputs", [])) or "-"
             plan = receipt.get("role_plan") if isinstance(receipt.get("role_plan"), dict) else {}
@@ -1972,8 +1999,10 @@ def run_flow(args) -> int:
         print("Error: flow.verification_reconciliation_required: protected flow evidence is unavailable",
               file=sys.stderr)
         return 2
-    except CleanupUncertain:
-        print("Error: flow.cleanup_unproved: owned flow work did not settle", file=sys.stderr)
+    except CleanupUncertain as exc:
+        stop = getattr(exc, "stop", None)  # a known cause, e.g. the 1 h backstop of a checked step
+        print(f"Error: flow.cleanup_unproved: {stop['message']}" if isinstance(stop, dict)
+              else "Error: flow.cleanup_unproved: owned flow work did not settle", file=sys.stderr)
         return 2
     result = outcome.flow
     for receipt in result.receipts:

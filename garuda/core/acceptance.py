@@ -171,15 +171,18 @@ def verification_from(receipts: list[dict]) -> dict:
     return {"status": "unavailable", "code": "verification.no_trusted_check"}
 
 
-def accept(store, session_id: str, workspace, checks: list[tuple[dict, str]]) -> dict:
+def accept(store, session_id: str, workspace, checks: list[tuple[dict, str]], *,
+           timeout: float = 900.0) -> dict:
     """Run every acceptance check for a finished session and record the result.
 
     ``checks`` pairs each check with its authority. The session's outcome and
     self-check are left exactly as they were; only verification changes.
+    ``timeout`` bounds each check command (``check_limits.timeout_sec``).
     """
     meta = store.load_meta(session_id)
     changed = [str(p) for p in (meta.get("delta_changed") or [])]
-    receipts = [run_check(check, authority, workspace, changed) for check, authority in checks]
+    receipts = [run_check(check, authority, workspace, changed, timeout=timeout)
+                for check, authority in checks]
     verification = verification_from(receipts)
 
     def update(current):

@@ -1373,6 +1373,9 @@ class FlowRunner:
                 "flow_state": "quarantined" if uncertain else "interrupted",
                 "status": "failed",
                 "state": interrupted(cancelled=isinstance(exc, asyncio.CancelledError))}
+            if isinstance(exc, CleanupUncertain) and isinstance(getattr(exc, "stop", None), dict):
+                # The same quarantine, with its known cause (a supervisor backstop) recorded.
+                updates["flow_stop"] = dict(exc.stop)
             if self._interrupted_acceptance_receipts is not None:
                 updates["acceptance_receipts"] = self._interrupted_acceptance_receipts
             await self._publish(
@@ -1804,6 +1807,7 @@ class FlowRunner:
                           "independence": independence}
                 self._review_approvals[step["id"]] = {
                     **review, "candidate": packet["candidate"], "packet_digest": packet["digest"],
+                    "coverage": rv.packet_coverage(packet),
                     "policy": dict(spec), "reviewer": {
                         "step": terminal["id"], "session_id": receipt["session_id"],
                         "attempt": receipt["attempt"]}}
