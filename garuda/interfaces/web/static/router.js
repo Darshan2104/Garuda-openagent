@@ -28,11 +28,11 @@ var ROUTES = [
 function navigate() {
   // stopLive() clears STATE.live as well as the poller: an in-flight poll checks that
   // reference to decide whether its response is still wanted, so leaving it set lets a late
-  // response render into the view that replaced it. stopChat() is the same idea for the chat
-  // poller — and leaving that one running would keep refreshing the heartbeat for a chat
-  // nobody is looking at, which is precisely what the reaper is for.
+  // response render into the view that replaced it. leaveChat() unmounts the chat but keeps
+  // its heartbeat while a turn runs or an approval waits: the chat lives on the server either
+  // way, and stopping here denied the user's own approval. Closing the tab still stops it.
   stopLive();
-  stopChat();
+  leaveChat();
   if (typeof stopSessionStream === "function") stopSessionStream();
   stopStarterViews();
   stopHomeView();
@@ -74,6 +74,10 @@ function boot() {
         if (chatLink) chatLink.hidden = true;
       }
       navigate();
+      // Listen only from here: a hash change before health answered is already covered by
+      // the navigate() above (it reads the current hash). Listening earlier mounted that
+      // view twice, and the second mount's "Loading…" wiped the first one's table.
+      if (!boot.listening) { boot.listening = true; window.addEventListener("hashchange", navigate); }
       startInboxBadge();
     })
     .catch(function (err) {
@@ -186,5 +190,4 @@ el("keys-help").addEventListener("click", function (event) {
   if (event.target === el("keys-help")) toggleKeysHelp(false);
 });
 
-window.addEventListener("hashchange", navigate);
 boot();

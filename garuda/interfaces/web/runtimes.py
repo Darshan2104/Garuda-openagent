@@ -75,13 +75,17 @@ def _require_target(registry: RuntimeRegistry, target_id: str):
 
 
 def list_runtimes(
-    manifest_dicts: list[dict] | None = None, *, workspace: str = ".", extra: dict | None = None
+    manifest_dicts: list[dict] | None = None, *, workspace: str = ".", extra: dict | None = None,
+    memo=None, registry: RuntimeRegistry | None = None,
 ) -> list[dict[str, Any]]:
     context = extra or (
         {"manifests": manifest_dicts} if manifest_dicts is not None else {}
     )
-    registry = registry_from_context(context, workspace)
-    return [health_of(entry) for entry in _discovered(registry)]
+    if registry is None:
+        registry = registry_from_context(context, workspace)
+    # `memo` (the dashboard's DiscoveryMemo) shares one discovery between pages.
+    found = memo.get(registry) if memo is not None else _discovered(registry)
+    return [health_of(entry) for entry in found]
 
 
 NOT_CHECKED = {"state": "not_checked", "checked_at": None, "age_seconds": None}
@@ -119,13 +123,18 @@ def _login_guidance(runtime_id: str, check: dict, guidance: list[str],
 
 def inspect_runtime(
     manifest_dicts: list[dict] | None, runtime_id: str, *, workspace: str = ".", extra: dict | None = None,
-    checks: dict[str, dict] | None = None,
+    memo=None, checks: dict[str, dict] | None = None,
 ) -> dict[str, Any] | None:
     context = extra or (
         {"manifests": manifest_dicts} if manifest_dicts is not None else {}
     )
     registry = registry_from_context(context, workspace)
-    found = {entry.runtime_id: entry for entry in _discovered(registry)}
+    # The shared discovery when there is one; otherwise probe only the runtime named.
+    shared = memo.peek(registry) if memo is not None else None
+    if shared is None:
+        shared = discover([m for m in registry.manifests if m.runtime_id == runtime_id],
+                          disabled=registry.disabled_ids)
+    found = {entry.runtime_id: entry for entry in shared}
     entry = found.get(runtime_id)
     if entry is None:
         return None

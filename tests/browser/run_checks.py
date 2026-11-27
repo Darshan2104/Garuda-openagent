@@ -341,8 +341,17 @@ def suite(workdir: Path, shots: Path, *, owned_starts: bool) -> list[str]:
              str(workspace), TOKEN], port, workdir / "web-chat.log", what="chat dashboard"))
         return run_check("check_chat.py", port, shots)
 
+    # --- one damaged session: every list still renders and says so ------------
+    def unreadable():
+        sessions = workdir / "unreadable-sessions"
+        sessions.mkdir()
+        seed(str(HERE / "check_unreadable.py"), "--seed", str(sessions))
+        port = dashboard(sessions, "web-unreadable.log")
+        return run_check("check_unreadable.py", port, shots)
+
     sections = [
         ("check_inspector.py", inspector),
+        ("check_unreadable.py", unreadable),
         ("check_live.py", live),
         ("check_runtimes.py", runtimes),
         # sessions, queue and flows: the shared read model, rendered

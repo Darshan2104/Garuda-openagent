@@ -64,6 +64,14 @@ def test_public_profile_sets_are_pinned():
         "silent",
         "long-tool",
         "parked-approval",
+        "multi-turn",
+        "no-progress",
+        "max-tokens-then-done",
+        "deny-end-turn",
+        "cancel-then-done",
+        "transient-then-done",
+        "missing-then-repair",
+        "malformed-on-repair",
     }
     assert set(PROFILES) == set(BASE_PROFILES) | {
         "capabilities-full",

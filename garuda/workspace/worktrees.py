@@ -188,6 +188,10 @@ def remove_worktree(plan_meta: dict, *, force: bool = False) -> None:
                 f"{path} holds work that was never published; merge it or pass --force",
             )
     git(repo, "worktree", "remove", "--force", path, check=False)
+    if not Path(path).exists():
+        from garuda.flows.checkpoints import prune_refs
+
+        prune_refs(repo, Path(path).name)  # a flow's checkpoints go with its worktree
 
 
 @dataclass
