@@ -298,20 +298,11 @@ def _sessions(request: Request, ctx: DashboardContext, _match) -> Response:
 
 @route("GET", r"/api/sessions/(?P<sid>[^/]+)")
 def _session(request: Request, ctx: DashboardContext, match) -> Response:
-    from garuda.observability.lanes import ACP_EVENTS_FILE
-
     try:
-        session_id = validate_session_ref(match["sid"])
-        row = read_model.session(ctx.store, session_id, queue=_queue_or_none())
+        return ok(read_model.session(ctx.store, validate_session_ref(match["sid"]),
+                                     queue=_queue_or_none()))
     except (FileNotFoundError, ValueError):
         return not_found(f"No session {match['sid']!r}.")
-    # Which logs this session has: the live stream reads only the native one, so a flow
-    # (which has none) or an external harness (whose trail is separate) read "0 events".
-    row["event_log"] = {
-        "native": ctx.store.events_path(session_id).is_file(),
-        "external": (ctx.store.session_dir(session_id) / ACP_EVENTS_FILE).is_file(),
-    }
-    return ok(row)
 
 
 def _diagnostic_categories(request: Request) -> list[str] | None:
