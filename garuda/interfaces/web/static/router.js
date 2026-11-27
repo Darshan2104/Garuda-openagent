@@ -227,6 +227,8 @@ function boot() {
       }
       navigate();
       if (INBOX_BADGE) refreshInboxBadge(); else startInboxBadge();
+      // Operations this tab started or opened keep their approvals alive from any page.
+      resumeOperationWatch();
     })
     .catch(function (err) {
       if (seq !== BOOT.seq) return;
@@ -283,7 +285,9 @@ function refreshInboxBadge() {
   if (CONNECTION.down) return Promise.resolve();
   return api("/api/inbox", { keep: true }).then(function (payload) {
     if (INBOX_BADGE) INBOX_BADGE.interval = BADGE_BASE_MS;
-    var count = (payload && payload.approvals ? payload.approvals : []).filter(function (a) { return !a.expired; }).length;
+    var count = (payload && payload.approvals ? payload.approvals : []).filter(function (a) { return !a.expired; }).length +
+      // and the asks this dashboard's broker holds for flows it started (never expired here)
+      (payload && payload.live ? payload.live.length : 0);
     ["nav-inbox-count", "nav-menu-count"].forEach(function (id) {
       var badge = el(id);
       if (!badge) return;

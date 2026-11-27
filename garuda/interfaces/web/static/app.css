@@ -1131,9 +1131,19 @@ a:focus-visible, button:focus-visible, summary:focus-visible, [tabindex]:focus-v
 .flow-unknown { margin-top: 12px; font-size: 13px; }
 .flow-logins { font-size: 13px; }
 .flow-disclosures li { margin: 4px 0; }
+#flow-preview code, #session-operation-host code { overflow-wrap: anywhere; }
 #session-operation-host .starter-operation-card { margin-bottom: 16px; }
 @media (max-width: 480px) {
   .pipe-detail { grid-template-columns: minmax(0, 1fr); }
   .pipe-step { padding-left: 28px; }
+  /* A step's roles stack into labelled cells instead of scrolling sideways. */
+  .flow-members thead { display: none; }
+  .flow-members, .flow-members tbody, .flow-members tr, .flow-members td { display: block; }
+  .flow-members tr { padding: 6px 0; border-bottom: 1px solid var(--border); }
+  .flow-members td { padding: 2px 0; border: 0; }
+  .flow-members td::before {
+    content: attr(data-label); display: block;
+    font: 10px/1.4 var(--mono); text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted);
+  }
 }
 /* === end Flows page ===================================================================== */

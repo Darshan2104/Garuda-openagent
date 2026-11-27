@@ -252,3 +252,55 @@ async def test_non_linux_write_mode_is_copy_only(write_context, monkeypatch):
     row = _body(await asyncio.to_thread(_get, ctx, "/api/flows/mine"))["flow"]
     assert row["start"]["supported"] is False
     assert "starter.ownership_unavailable" in {r["code"] for r in row["start"]["reasons"]}
+
+
+# -- approvals of dashboard-started flows, visible beside the session-file ones -----------
+
+
+def _post(ctx, path, payload):
+    headers = {"host": f"127.0.0.1:{PORT}", TOKEN_HEADER: TOKEN, "origin": f"http://127.0.0.1:{PORT}"}
+    return dispatch(Request("POST", path, headers=headers, body=json.dumps(payload).encode()), ctx)
+
+
+async def test_inbox_and_overview_list_the_broker_asks_of_dashboard_operations(write_context, monkeypatch):
+    import uuid
+
+    ctx = write_context
+    workspace = str(ctx.allowed_workspaces[0])
+    operation, outside = str(uuid.uuid4()), str(uuid.uuid4())
+    session = str(uuid.uuid4())
+    records = {operation: {"workspace": workspace, "session_id": session},
+               outside: {"workspace": "/elsewhere", "session_id": str(uuid.uuid4())}}
+    monkeypatch.setattr(ctx.flow_starts.intents, "read", lambda owner: records.get(owner))
+    broker = ctx.live.approvals
+    tasks = [asyncio.create_task(broker.make_handler(owner, lambda: None)(f"bash(echo {owner[:4]})"))
+             for owner in (operation, outside, uuid.uuid4().hex)]  # the last: a chat's ask
+    await asyncio.sleep(0)
+    seen = dict(broker._seen)
+
+    inbox = _body(await asyncio.to_thread(_get, ctx, "/api/inbox"))
+    assert inbox["approvals"] == []  # the shared read model's list is untouched
+    (live,) = inbox["live"]
+    assert (live["owner"], live["operation_id"], live["session_id"], live["source"]) == (
+        operation, operation, session, "dashboard-operation")
+    assert live["grace_seconds"] == broker.grace_seconds and live["digest"]
+    overview = _body(await asyncio.to_thread(_get, ctx, "/api/overview"))
+    assert overview["approvals"]["live"] == 1 and overview["approvals"]["waiting"] == 1
+    assert dict(broker._seen) == seen  # listing refreshes no heartbeat
+
+    stale = await asyncio.to_thread(_post, ctx, f"/api/approvals/{live['ask_id']}",
+                                    {"approved": True, "owner": live["owner"], "digest": "0" * 64})
+    assert stale.status == 409 and _body(stale)["error"]["code"] == "approval_mismatch"
+    answered = await asyncio.to_thread(_post, ctx, f"/api/approvals/{live['ask_id']}",
+                                       {"approved": True, "owner": live["owner"], "digest": live["digest"]})
+    assert answered.status == 200, answered.body
+    assert await asyncio.wait_for(tasks[0], 5) is True
+    assert broker.settled(operation)[0]["decided_by"] == "you"
+    assert _body(await asyncio.to_thread(_get, ctx, "/api/inbox"))["live"] == []
+    for task in tasks[1:]:
+        task.cancel()
+    await asyncio.gather(*tasks[1:], return_exceptions=True)
+
+
+def test_a_read_only_inbox_lists_no_dashboard_asks(context):
+    assert _body(_get(context, "/api/inbox"))["live"] == []

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 from pathlib import Path
 
 from playwright.sync_api import expect, sync_playwright
@@ -85,16 +86,97 @@ def main() -> None:
         assert starts[-1]["inputs"]["flow"] == "plan-only"
         panel = page.locator("#session-operation-host")
         expect(panel.locator("[data-flow-approval]")).to_have_count(2, timeout=30_000)
-        expect(panel).to_contain_text("answered here, not in the Approvals inbox")
+        expect(panel).to_contain_text("here or on the Approvals page")
         panel.locator('[data-flow-approval][data-approved="true"]').click()
         expect(panel).to_contain_text("terminal", timeout=60_000)
         expect(panel).to_contain_text("completed")
         expect(page.locator("#flow-run-again")).to_have_attribute(
-            "href", re.compile(r"^#/flows/plan-only\?workspace=0$"), timeout=20_000)
+            "href", re.compile(r"^#/flows/plan-only\?workspace=0&from=[0-9a-f-]+$"), timeout=20_000)
         page.screenshot(path=str(SHOTS / "owned-flow-start-flows-page.png"), full_page=True)
+
+        # Run again fills the recorded task to edit, and never previews by itself.
+        page.locator("#flow-run-again").click()
+        expect(page.locator('[data-field="goal"]')).to_have_value(
+            "Approve one flow started from the Flows page", timeout=20_000)
+        expect(page.locator("#flow-prefilled")).to_be_visible()
+        assert page.locator("#flow-command").count() == 0
         assert not errors, errors
+
+        # The heartbeat follows the user: wander off for longer than the grace window, the
+        # approval still waits, the badge counts it, Approvals answers it.
+        operation = start_from_flows(page, "Wait while the user is on other pages")
+        grace = context.request.get(
+            BASE + "api/approvals?owner=" + operation,
+            headers={"X-Garuda-Token": TOKEN}).json()["grace_seconds"]
+        page.goto(BASE + "#/runs")
+        page.wait_for_timeout(grace * 1000 * 0.8)  # an observation window, not a wait
+        page.goto(BASE + "#/usage")
+        page.wait_for_timeout(grace * 1000 * 0.8)
+        expect(page.locator("#nav-inbox-count")).to_have_text("1", timeout=30_000)
+        pending = live_asks(context, operation)
+        assert len(pending) == 1, pending
+        page.goto(BASE + "#/inbox")
+        item = page.locator('#inbox-list [data-live="1"]')
+        expect(item).to_have_count(1, timeout=20_000)
+        expect(item).to_contain_text("dashboard flow")
+        item.locator('[data-act="allow"]').click()
+        expect(item).to_contain_text("allowed")
+        settle_operation(context, operation, "completed")
+        decided = approvals_for(context, operation)["settled"]
+        assert [row["decided_by"] for row in decided] == ["you"], decided
+        assert not errors, errors
+
+        # A closed tab stops watching: its waiting approval is denied as "stopped watching".
+        operation = start_from_flows(page, "Abandon this flow's approval")
+        page.close()
+        # Watched only through GET /api/inbox, which refreshes no heartbeat (the operation
+        # and approvals reads would keep it alive).
+        deadline = time.monotonic() + grace * 6
+        while live_asks(context, operation) and time.monotonic() < deadline:
+            time.sleep(0.5)
+        assert not live_asks(context, operation), "the abandoned approval was never denied"
+        settle_operation(context, operation, "completed")
+        decided = approvals_for(context, operation)["settled"]
+        assert [row["decided_by"] for row in decided] == ["stopped_watching"], decided
         browser.close()
-    print("Owned flow Start, approval, duplicate, progress, stale preview and the Flows page: passed in Chrome")
+    print("Owned flow Start, approval, duplicate, progress, stale preview, the Flows page and "
+          "the app-level approval heartbeat: passed in Chrome")
+
+
+def start_from_flows(page, task: str) -> str:
+    """Preview and start plan-only from the Flows page; the operation id, its approval waiting."""
+    page.goto(BASE + "#/flows/plan-only?workspace=0")
+    page.locator('[data-field="goal"]').fill(task)
+    page.locator("#flow-preview-button").click()
+    expect(page.locator("#flow-start")).to_be_visible(timeout=20_000)
+    page.locator("#flow-start").click()
+    page.wait_for_url(re.compile(r".*\?operation=[0-9a-f-]+$"), timeout=20_000)
+    operation = page.url.rsplit("operation=", 1)[1]
+    expect(page.locator("#session-operation-host [data-flow-approval]")).to_have_count(2, timeout=30_000)
+    return operation
+
+
+def approvals_for(context, operation: str) -> dict:
+    return context.request.get(BASE + "api/approvals?owner=" + operation,
+                               headers={"X-Garuda-Token": TOKEN}).json()
+
+
+def live_asks(context, operation: str) -> list:
+    """The ask as GET /api/inbox lists it for any tab (this read refreshes no heartbeat)."""
+    inbox = context.request.get(BASE + "api/inbox", headers={"X-Garuda-Token": TOKEN}).json()
+    return [row for row in inbox["live"] if row["owner"] == operation]
+
+
+def settle_operation(context, operation: str, outcome: str, timeout: float = 60) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        row = context.request.get(BASE + "api/scenario-operations/" + operation,
+                                  headers={"X-Garuda-Token": TOKEN}).json()
+        if row.get("status") == "terminal":
+            assert row.get("outcome") == outcome, row
+            return
+        time.sleep(0.5)
+    raise AssertionError(f"operation {operation} did not settle within {timeout}s")
 
 
 if __name__ == "__main__":

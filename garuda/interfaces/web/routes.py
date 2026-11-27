@@ -432,7 +432,12 @@ def _inbox(request: Request, ctx: DashboardContext, _match) -> Response:
     metas = ctx.store.list_sessions(limit=None, unreadable=unreadable)
     rows = rows_isolating(lambda chunk: read_model.inbox(ListedStore(ctx.store, chunk), limit=None),
                           metas, unreadable, newest_last=True)
-    return ok({"approvals": rows, "unreadable_sessions": unreadable_report(unreadable)})
+    from garuda.interfaces.web.operation_approvals import live_approvals
+
+    # `approvals` stays the shared read model's list (what `garuda` reads from session
+    # files); `live` adds what this dashboard's own broker holds for the flows it started.
+    return ok({"approvals": rows, "live": live_approvals(ctx),
+               "unreadable_sessions": unreadable_report(unreadable)})
 
 
 @route("GET", r"/api/overview")
@@ -447,7 +452,16 @@ def _overview(request: Request, ctx: DashboardContext, _match) -> Response:
     queue = QueueOnce(queue) if queue is not None else None
     payload = projecting_all(lambda chunk: overview(ListedStore(ctx.store, chunk), queue=queue),
                              metas, unreadable)
-    return ok({**payload, "unreadable_sessions": unreadable_report(unreadable)})
+    from garuda.interfaces.web.operation_approvals import live_approvals
+
+    # Approvals this dashboard's broker holds for flows it started count as waiting too.
+    live = live_approvals(ctx)
+    approvals = dict(payload.get("approvals") or {})
+    approvals["live"] = len(live)
+    approvals["waiting"] = approvals.get("waiting", 0) + len(live)
+    approvals["sessions"] = approvals.get("sessions", 0) + len({row["session_id"] for row in live})
+    return ok({**payload, "approvals": approvals,
+               "unreadable_sessions": unreadable_report(unreadable)})
 
 
 _APPROVAL_ID = re.compile(r"^[A-Za-z0-9_-]{1,64}$")

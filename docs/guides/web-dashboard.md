@@ -178,12 +178,17 @@ without errors. It sends the `run-flow` starter's preview and authority digests
 with one operation id, reused on a retry, so a repeated click returns the same
 flow. Once admitted, the page opens the flow's session at
 `#/sessions/<id>?operation=<uuid>`, whose operation panel shows the operation and
-its approvals: **Allow** or **Deny** them there; they are not in **Approvals**.
-That page keeps them waiting while it is open; about 90 seconds after it stops
-checking (you navigate away or close it), a waiting approval is denied and the
-step sees the denial, while the flow keeps running. Return through the link with
-`?operation=` to see it again. A finished run's starter card offers **Run again**,
-back to the flow with the workspace selected.
+its approvals: **Allow** or **Deny** them there or on **Approvals**, which lists
+them beside the session-file requests (marked **dashboard flow**, linking to the
+session) and counts them in the nav badge and the Overview. Such an approval is
+held by this dashboard, not a session file: an answer is the decision at once,
+bound to the ask's owner and digest, so any tab that lists it may answer it. Every
+run a tab started or opened stays watched from any page of that tab, even
+hidden; about 90 seconds after no dashboard tab is watching a run (its tabs were
+closed), a waiting approval is denied, recorded as "stopped watching", and the
+step sees the denial while the flow keeps running. A finished run's starter card
+offers **Run again**, back to the flow with the workspace selected and the
+recorded task filled in to edit.
 
 Everything else is copy-only, with its reason: a read-only dashboard
 (`dashboard.read_only`), a host without the Linux supervisor
@@ -715,8 +720,8 @@ Providers page discards it.
 | `GET /api/sessions/<id>/stream` | Live events as server-sent events (the session page polls `/api/runs/<id>/tail` instead) |
 | `GET /api/sessions/<id>/conversation` | The Models used, links and lanes data |
 | `POST /api/sessions/<id>/cancel` | Stop a background session (write) |
-| `GET /api/overview` | The Overview's session sections, selected from every session: crashed, waiting and paused sessions (each list `items`, at most 50, and `total`), running sessions with a flow's in-flight step, the last 8 finished, and approval counts |
-| `GET /api/inbox` | Every pending approval across every session, with the digest an answer must bind |
+| `GET /api/overview` | The Overview's session sections, selected from every session: crashed, waiting and paused sessions (each list `items`, at most 50, and `total`), running sessions with a flow's in-flight step, the last 8 finished, and approval counts (`waiting` includes `live`, the asks this dashboard holds for flows it started) |
+| `GET /api/inbox` | Every pending approval across every session, with the digest an answer must bind (`approvals`, from the session files, as the CLI reads them), and `live`: the asks this dashboard holds for flows and runs it started, each with its `owner`, `digest`, operation, session and the broker's timeout and grace; listing them refreshes no heartbeat |
 | `POST /api/sessions/<id>/approvals/<approval>` | Answer one: `{"allow": true, "digest": "…"}` (write) |
 | `GET /api/usage?range=24h\|7d\|30d` | Usage statistics |
 | `GET /api/usage/export?range=…&format=csv\|json` | Usage export |

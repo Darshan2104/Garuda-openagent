@@ -1150,9 +1150,37 @@ function expiryText(expiresAt) {
                      : "expired " + ageText(-seconds);
 }
 
-function approvalKey(a) { return a.session_id + "\u0000" + a.approval_id + "\u0000" + a.digest; }
+function approvalKey(a) {
+  return a.source === "dashboard-operation" ? "live\u0000" + a.ask_id + "\u0000" + a.digest
+    : a.session_id + "\u0000" + a.approval_id + "\u0000" + a.digest;
+}
+
+/* An ask a dashboard-started flow is waiting on, held by this dashboard's broker (GET
+ * /api/inbox `live`). Unlike a session-file request it is answered at once (the answer is
+ * the decision, bound to the ask's owner and digest), and it is denied as "stopped
+ * watching" when no tab has kept its run watched for the grace window. */
+function liveApprovalRowHtml(a) {
+  var buttons = canAnswer()
+    ? '<button type="button" class="btn btn-primary" data-act="allow">Allow</button> ' +
+      '<button type="button" class="btn" data-act="deny">Deny</button>'
+    : '<span class="stat-sub">read-only dashboard</span>';
+  var where = a.session_id ? '#/sessions/' + encodeURIComponent(a.session_id) + "?operation=" + encodeURIComponent(a.operation_id) : "";
+  return (
+    '<li class="approval-item" data-live="1" data-ask="' + esc(a.ask_id) + '" data-owner="' + esc(a.owner) +
+    '" data-digest="' + esc(a.digest) + '">' +
+    "<div><strong>" + (where ? '<a href="' + where + '">' + esc(a.name || String(a.session_id).slice(0, 8)) + "</a>"
+                              : esc(a.name || "dashboard operation")) + "</strong> " +
+    '<span class="chip chip-off">dashboard flow</span> <span class="stat-sub">waiting ' + esc(fmt.duration(a.waiting_ms || 0)) +
+    " · answered here at once · denied after " + esc(a.timeout_seconds) + " s unanswered, or " + esc(a.grace_seconds) +
+    " s after no dashboard tab is watching its run</span></div>" +
+    (a.task ? '<div class="stat-sub approval-task">' + esc(fmt.truncate(a.task, 140)) + "</div>" : "") +
+    "<pre>" + esc(a.action) + "</pre>" +
+    '<div class="approval-actions">' + buttons + ' <span class="stat-sub approval-result" aria-live="polite"></span></div></li>'
+  );
+}
 
 function approvalRowHtml(a) {
+  if (a.source === "dashboard-operation") return liveApprovalRowHtml(a);
   var buttons = canAnswer() && !a.expired
     ? '<button type="button" class="btn btn-primary" data-act="allow">Approve</button> ' +
       '<button type="button" class="btn" data-act="deny">Deny</button>'
@@ -1224,7 +1252,11 @@ function refreshInbox(inbox) {
   return api("/api/inbox").then(function (payload) {
     inbox.busy = false;
     if (STATE.inbox !== inbox) return;
-    var all = (payload.approvals || []).filter(function (a) { return !inbox.answered[approvalKey(a)]; });
+    // This dashboard's own asks first (they expire with the heartbeat), then the session files'.
+    var live = (payload.live || []).map(function (a) { return Object.assign({ source: "dashboard-operation" }, a); });
+    // Listing an ask here opens its run in this tab: the app-level watcher keeps it alive.
+    live.forEach(function (a) { if (typeof watchOperation === "function") watchOperation(a.owner); });
+    var all = live.concat(payload.approvals || []).filter(function (a) { return !inbox.answered[approvalKey(a)]; });
     inbox.items = all;
     inbox.loaded = true;
     paintHost("inbox-unreadable", unreadableNote(payload));
@@ -1275,6 +1307,7 @@ function answerInboxApproval(item, allow) {
   item.setAttribute("data-busy", "1");
   buttons.forEach(function (b) { b.disabled = true; });
   result.textContent = "sending…";
+  if (item.hasAttribute("data-live")) return answerLiveApproval(inbox, item, allow, result, buttons);
   return api("/api/sessions/" + encodeURIComponent(item.getAttribute("data-session")) +
              "/approvals/" + encodeURIComponent(item.getAttribute("data-approval")), {
     method: "POST", body: { allow: allow, digest: item.getAttribute("data-digest") }
@@ -1301,6 +1334,38 @@ function answerInboxApproval(item, allow) {
     result.textContent = err.message + " (" + (err.code || "error") + (err.status ? ", " + err.status : "") + ")";
     item.setAttribute("data-state", err.code || "error");
     if (err.status !== 409 && err.status !== 410) {
+      item.removeAttribute("data-state");
+      buttons.forEach(function (b) { b.disabled = false; });
+    }
+  });
+}
+
+/* A dashboard ask is answered through the broker, bound to its owner and digest; the answer
+ * is the decision. The same in-flight guard and error display as a session-file answer. */
+function answerLiveApproval(inbox, item, allow, result, buttons) {
+  return api("/api/approvals/" + encodeURIComponent(item.getAttribute("data-ask")), {
+    method: "POST", body: { approved: allow, owner: item.getAttribute("data-owner"), digest: item.getAttribute("data-digest") }
+  }).then(function () {
+    item.removeAttribute("data-busy");
+    item.setAttribute("data-state", "recorded");
+    result.textContent = allow ? "allowed" : "denied";
+    if (typeof refreshInboxBadge === "function") refreshInboxBadge();
+    if (!inbox || STATE.inbox !== inbox) return;
+    inbox.answered[item.__key] = true;
+    paintInboxCount(inbox);
+    toast(allow ? "Allowed: the flow continues" : "Denied: the step sees the denial");
+    setTimeout(function () {
+      if (STATE.inbox !== inbox) return;
+      item.remove();
+      if (inbox.items) paintInbox(inbox);
+    }, 1500);
+  }).catch(function (err) {
+    item.removeAttribute("data-busy");
+    if (isSuperseded(err)) return;
+    result.textContent = err.message + " (" + (err.code || "error") + (err.status ? ", " + err.status : "") + ")";
+    item.setAttribute("data-state", err.code || "error");
+    // Settled already, or not this ask: a retry cannot succeed. Anything else can.
+    if (err.status !== 409 && err.status !== 404) {
       item.removeAttribute("data-state");
       buttons.forEach(function (b) { b.disabled = false; });
     }

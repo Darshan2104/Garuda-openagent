@@ -167,17 +167,21 @@ function flowInputText(input) {
 }
 
 function flowMembersHtml(members) {
+  // data-label: at phone width each row stacks into labelled cells (app.css, Flows block).
+  function cell(label, html) { return '<td data-label="' + label + '">' + html + "</td>"; }
   return '<div class="table-wrap"><table class="starter-bindings flow-members"><thead><tr><th>Role</th><th>Runtime / model</th>' +
     "<th>Effort</th><th>Permission: configured → effective</th><th>Writes</th><th>Fallbacks</th></tr></thead><tbody>" +
     (members || []).map(function (m) {
       var perm = m.permission || {};
-      return '<tr data-role="' + esc(m.role) + '"><td>' + esc(m.role) + "</td><td>" + esc(m.runtime_id || "unknown") + " / " +
-        esc(m.model_id || "harness default") + (m.harness_mode ? " · mode " + esc(m.harness_mode) : "") + "</td><td>" +
-        esc(m.effort || "default") + "</td><td>" + esc(perm.configured || "unset") + " → " + esc(perm.effective || "unknown") +
-        "</td><td>" + esc((m.write_policy || {}).effective || "unknown") + "</td><td>" +
-        ((m.fallbacks || []).length ? m.fallbacks.map(function (f) {
+      return '<tr data-role="' + esc(m.role) + '">' + cell("Role", esc(m.role)) +
+        cell("Runtime / model", esc(m.runtime_id || "unknown") + " / " + esc(m.model_id || "harness default") +
+          (m.harness_mode ? " · mode " + esc(m.harness_mode) : "")) +
+        cell("Effort", esc(m.effort || "default")) +
+        cell("Permission", esc(perm.configured || "unset") + " → " + esc(perm.effective || "unknown")) +
+        cell("Writes", esc((m.write_policy || {}).effective || "unknown")) +
+        cell("Fallbacks", (m.fallbacks || []).length ? m.fallbacks.map(function (f) {
           return esc(f.runtime_id) + (f.model_id ? "/" + esc(f.model_id) : "") + " (" + esc(f.permission || "unknown") + ")";
-        }).join(", ") : "none") + "</td></tr>";
+        }).join(", ") : "none") + "</tr>";
     }).join("") + "</tbody></table></div>";
 }
 
@@ -256,10 +260,32 @@ function flowDetailView(name) {
       flowFormHtml());
     wireFlowWorkspace("#/flows/" + encodeURIComponent(name));
     wireFlowForm(state);
+    prefillFlowTask(state, routeParams().from);
   }).catch(function (err) {
     if (isSuperseded(err) || STATE.flowView !== state) return;
     if (err.status === 401) { render(tokenRequiredPanel()); return; }
     render(starterErrorHtml(err) + '<p><a class="btn" href="#/flows?workspace=' + esc(workspace) + '">All flows</a></p>');
+  });
+}
+
+/* "Run again" carries the session it came from (?from=<id>): its recorded task, when the
+ * starter recorded one for this flow, fills the Task field to edit. It never previews. */
+function prefillFlowTask(state, sessionId) {
+  if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(sessionId || "")) return;
+  api("/api/scenario-runs/" + encodeURIComponent(sessionId) + "?workspace=" + encodeURIComponent(state.workspace)).then(function (row) {
+    if (STATE.flowView !== state || !row || row.starter_id !== "run-flow" || !row.flow || row.flow.name !== state.name) return;
+    if (typeof row.goal !== "string" || !row.goal) return;
+    var field = el("flow-form") && el("flow-form").querySelector('[data-field="goal"]');
+    if (!field || field.value) return;  // never over what the user already typed
+    field.value = row.goal;
+    var note = document.createElement("p");
+    note.className = "stat-sub";
+    note.id = "flow-prefilled";
+    note.innerHTML = "Task filled from the run in session <code>" + esc(String(sessionId).slice(0, 8)) +
+      "</code>. Edit it, then preview.";
+    field.parentElement.insertAdjacentElement("afterend", note);
+  }, function (err) {
+    if (isSuperseded(err)) return;  // a missing record leaves the field empty
   });
 }
 
@@ -330,16 +356,17 @@ function flowIdentitiesHtml(data) {
   ((data.pipeline || {}).steps || []).forEach(function (step) {
     (step.members || []).forEach(function (member) {
       var admitted = envelope ? (envelope.flow.steps || []).filter(function (s) { return s.index === step.index && s.role === member.role; })[0] : null;
-      rows.push('<tr data-step="' + esc(step.id) + '" data-role="' + esc(member.role) + '"><td>' + esc(step.id) + "</td><td>" + esc(member.role) +
-        "</td><td>" + esc(((roles[member.role] || {}).runtime_id) || member.runtime_id || "unknown") + " / " +
-        esc(((roles[member.role] || {}).model_id) || member.model_id || "harness default") + "</td><td>" +
-        esc((member.permission || {}).configured || "unset") + "</td><td>" +
+      rows.push('<tr data-step="' + esc(step.id) + '" data-role="' + esc(member.role) + '">' +
+        '<td data-label="Step">' + esc(step.id) + '</td><td data-label="Role">' + esc(member.role) +
+        '</td><td data-label="Runtime / model">' + esc(((roles[member.role] || {}).runtime_id) || member.runtime_id || "unknown") + " / " +
+        esc(((roles[member.role] || {}).model_id) || member.model_id || "harness default") + '</td><td data-label="Configured permission">' +
+        esc((member.permission || {}).configured || "unset") + '</td><td data-label="Effective permission">' +
         esc(admitted ? admitted.permission : ((member.permission || {}).effective || "unknown")) + "</td></tr>");
     });
   });
   return '<h3>Who runs each step</h3><p class="stat-sub">' + (ceiling ? "Dashboard permission ceiling: <code>" + esc(ceiling) +
     "</code>. A step above it refuses the start." : "No ceiling applies to a copied command; the dashboard ceiling applies only to starts here.") + "</p>" +
-    '<div class="table-wrap"><table class="starter-bindings" id="flow-identities"><thead><tr><th>Step</th><th>Role</th><th>Runtime / model</th>' +
+    '<div class="table-wrap"><table class="starter-bindings flow-members" id="flow-identities"><thead><tr><th>Step</th><th>Role</th><th>Runtime / model</th>' +
     "<th>Configured permission</th><th>Effective permission</th></tr></thead><tbody>" + rows.join("") + "</tbody></table></div>";
 }
 
@@ -367,8 +394,8 @@ function flowDisclosuresHtml(data) {
   notes.push('<li id="flow-no-resume">A flow started here is never resumed: <code>garuda flow resume</code> refuses it ' +
     "(<code>flow.operation_managed</code>, or a check-record refusal for a flow with checks) and the dashboard does not relaunch it. " +
     "Start a new run instead. A flow run from the copied command resumes as usual.</li>");
-  notes.push('<li id="flow-foreground">Stopping the dashboard (<code>garuda web</code>) interrupts a flow started here. Closing this browser tab does not; ' +
-    "an approval that waits while nobody has the run open is denied after about 90 seconds.</li>");
+  notes.push('<li id="flow-foreground">Stopping the dashboard (<code>garuda web</code>) interrupts a flow started here. Closing the browser tab does not; ' +
+    "its approvals wait on any page of an open dashboard tab and in Approvals, and are denied about 90 seconds after no tab is watching the run.</li>");
   return '<h3>Before you start</h3><ul class="flow-disclosures">' + notes.join("") + "</ul>";
 }
 
@@ -419,6 +446,8 @@ function requestFlowStart(state) {
     operation_id: operation.id, starter_id: "run-flow", inputs: state.previewInputs, workspace: state.workspace,
     preview_digest: state.preview.plan.digest, authority_digest: state.preview.authority.digest
   }}).then(function (row) {
+    // Remembered for this tab before anything else: its approvals now stay alive on any page.
+    watchOperation(row.operation_id);
     if (!stillHere() || STATE.flowView !== state || state.operation !== operation) return;
     followFlowOperation(state, row);
   }, function (err) {
@@ -468,6 +497,7 @@ var OPERATION_POLL_MS = 1500;
 
 function startSessionOperation(page, operationId) {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(operationId)) return;
+  watchOperation(operationId);
   var panel = page.operation = { id: operationId, approvals: [], done: false, grace: null, poller: null };
   panel.poller = new Poller(function () { return pollSessionOperation(page, panel); }, OPERATION_POLL_MS, {
     hiddenInterval: 15000,
@@ -519,5 +549,93 @@ function flowRunAgainHtml(row) {
   if (row.starter_id !== "run-flow" || !row.flow || !row.flow.name) return "";
   var workspace = ((STATE.config && STATE.config.workspaces) || []).find(function (w) { return w.path === row.workspace; });
   if (!workspace) return "";
-  return '<a class="btn" id="flow-run-again" href="' + flowHref(row.flow.name, workspace.index) + '">Run again</a>';
+  return '<a class="btn" id="flow-run-again" href="' + flowHref(row.flow.name, workspace.index) +
+    "&from=" + encodeURIComponent(row.session_id) + '">Run again</a>';
 }
+
+/* --- the app-level operation watcher ------------------------------------------
+ * A flow or run started from this dashboard asks its approvals through the dashboard's
+ * broker, owned by its operation id, and the broker denies them ("stopped watching") once
+ * nobody has asked about that owner for its grace window (about 90 s). So every operation
+ * this tab started or opened (a Flows or Starters start, a session page reached with
+ * ?operation=, an ask listed on the Approvals page) is remembered for this tab
+ * (sessionStorage) and polled by one poller that survives navigation between pages and
+ * keeps running in a hidden tab, as a chat's heartbeat does. It stops for an operation once
+ * that settles (or is gone), and sends nothing while the dashboard is unreachable; a
+ * reconnect polls at once. Closing the tab stops it: its asks are then denied after the
+ * grace window, recorded as "stopped watching", never as anyone's decision. */
+
+var OPERATION_WATCH = { ids: null, poller: null, key: "garuda_operations" };
+var OPERATION_WATCH_MS = 5000;
+var OPERATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+function watchedOperations() {
+  if (OPERATION_WATCH.ids === null) {
+    var ids = [];
+    try { ids = JSON.parse(sessionStorage.getItem(OPERATION_WATCH.key) || "[]"); } catch (e) { ids = []; }
+    OPERATION_WATCH.ids = Array.isArray(ids) ? ids.filter(function (id) { return OPERATION_ID.test(id); }).slice(0, 50) : [];
+  }
+  return OPERATION_WATCH.ids;
+}
+
+function saveWatchedOperations() {
+  try { sessionStorage.setItem(OPERATION_WATCH.key, JSON.stringify(watchedOperations())); } catch (e) { /* this page only */ }
+}
+
+function watchOperation(id) {
+  if (!OPERATION_ID.test(id || "")) return;
+  var ids = watchedOperations();
+  if (ids.indexOf(id) === -1) { ids.push(id); saveWatchedOperations(); }
+  resumeOperationWatch();
+}
+
+function unwatchOperation(id) {
+  var ids = watchedOperations();
+  var at = ids.indexOf(id);
+  if (at !== -1) { ids.splice(at, 1); saveWatchedOperations(); }
+}
+
+function resumeOperationWatch() {
+  if (OPERATION_WATCH.poller || !watchedOperations().length) return;
+  OPERATION_WATCH.poller = new Poller(tickOperationWatch, OPERATION_WATCH_MS, {
+    hiddenInterval: 15000,
+    keepAliveHidden: function () { return watchedOperations().length > 0; }
+  }).start();
+}
+
+function tickOperationWatch() {
+  var ids = watchedOperations().slice();
+  if (!ids.length) {
+    if (OPERATION_WATCH.poller) { OPERATION_WATCH.poller.stop(); OPERATION_WATCH.poller = null; }
+    return;
+  }
+  if (CONNECTION.down) return;
+  var waiting = 0, grace = null;
+  return Promise.all(ids.map(function (id) {
+    // Both reads name the owner, so each refreshes its heartbeat ({keep: true}: they belong
+    // to the app, not to the page on screen).
+    return Promise.all([
+      api("/api/scenario-operations/" + encodeURIComponent(id), { keep: true }),
+      api("/api/approvals?owner=" + encodeURIComponent(id), { keep: true })
+    ]).then(function (both) {
+      waiting += (both[1].approvals || []).length;
+      if (typeof both[1].grace_seconds === "number") grace = both[1].grace_seconds;
+      if (OPERATION_SETTLED.indexOf(both[0].status) !== -1) unwatchOperation(id);
+    }, function (err) {
+      // Gone, out of scope or not this dashboard's: stop. A transient failure retries.
+      if (err && err.status && err.status < 500 && err.status !== 429) unwatchOperation(id);
+      if (err && err.code === "read_only") unwatchOperation(id);
+    });
+  })).then(function () {
+    // Beat at least three times per grace window, whatever the broker publishes; hidden
+    // tabs too, as far as the browser lets their timers run.
+    var poller = OPERATION_WATCH.poller;
+    if (poller && grace) {
+      poller.interval = Math.max(500, Math.min(OPERATION_WATCH_MS, grace * 1000 / 3));
+      poller.hiddenInterval = Math.max(poller.interval, Math.min(15000, grace * 1000 / 3));
+    }
+    if (waiting && typeof refreshInboxBadge === "function") refreshInboxBadge();
+  });
+}
+
+onReconnect(function () { if (OPERATION_WATCH.poller) OPERATION_WATCH.poller.now(); });

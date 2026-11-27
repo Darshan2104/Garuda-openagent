@@ -17,6 +17,10 @@ from garuda.acp.fake_agent import MODE_AUTHORITY as FAKE_AGENT_MODES
 from garuda.config import garuda_yaml as gy
 from garuda.interfaces.web import DashboardConfig, build_context
 from garuda.interfaces.web import http as http_module
+from garuda.interfaces.web.approvals import ApprovalBroker
+
+#: The approval heartbeat grace window, shortened for the browser checks.
+GRACE_SECONDS = 8.0
 
 
 class ModelEndpoint(BaseHTTPRequestHandler):
@@ -110,6 +114,12 @@ async def main() -> None:
         port=port, token=token, sessions_dir=sessions, allow_run=True,
         workspaces=(workspace,), open_browser=False, max_permission="smart")
     ctx = build_context(config, loop=asyncio.get_running_loop())
+    # Short approval windows so the heartbeat checks run in seconds: published by
+    # /api/approvals, so the client and the check read them rather than the defaults.
+    broker = ApprovalBroker(timeout=120.0, grace=GRACE_SECONDS)
+    ctx.live.approvals = broker
+    ctx.flow_starts.approvals = broker
+    ctx.live.reap_interval_seconds = 1.0
     server, bound = http_module.bind(ctx, port)
     print(json.dumps({"port": bound, "workspace": str(workspace)}), flush=True)
     try:
