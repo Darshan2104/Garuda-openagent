@@ -124,7 +124,8 @@ def test_a_crash_without_a_launch_record_is_never_continued(flow_owner):
 
 
 LONG = ("version: 1\nroles:\n  slowpoke: {harness: fakeslow}\n"
-        "flows:\n  one:\n    steps:\n    - {id: only, role: slowpoke, long_run: {max_hours: 1}}\n")
+        "flows:\n  one:\n    steps:\n    - {id: only, role: slowpoke, outputs: [summary],\n"
+        "       long_run: {max_hours: 1, session_turns: 1}}\n")
 
 
 def test_a_long_step_continues_with_the_interrupted_brief(flow_owner, tmp_path):
@@ -148,9 +149,22 @@ def test_a_long_step_continues_with_the_interrupted_brief(flow_owner, tmp_path):
     shim.chmod(shim.stat().st_mode | stat.S_IXUSR)
     rc, out = _cli(workspace, "flow", "resume", flow_id)
     assert rc == 0, out
-    first_prompt = json.loads(state.read_text())["log"][0]["prompt"]
-    assert "continuing step `only` (attempt 1)" in first_prompt
-    assert "the previous run of this step was interrupted" in first_prompt
+    log = json.loads(state.read_text())["log"]
+    first_prompt = log[0]["prompt"]
+    assert first_prompt.count("[garuda] This is ") == 1
+    assert ("[garuda] This is attempt 2 of step `only`, a new attempt in a fresh harness "
+            "session: attempt 1 was interrupted") in first_prompt
+    # #866: each later fresh session (session_turns: 1) carries only its own brief,
+    # built fresh; the interruption appears once, as an earlier attempt.
+    assert len(log) == 3 and len({entry["session"] for entry in log}) == 3
+    for entry in log[1:]:
+        prompt = entry["prompt"]
+        assert prompt.count("[garuda] This step may take several turns") == 1
+        assert prompt.count("[garuda] This is ") == 1
+        assert "[garuda] This is a fresh harness session continuing step `only` (attempt 2)" \
+            in prompt
+        assert "was interrupted" not in prompt
+        assert prompt.count("attempt 1 stopped (flow.interrupted)") == 1
     receipt = engine.receipts(store, flow_id)[0]
     assert receipt["progress"] == "progress/only-1.jsonl"
 

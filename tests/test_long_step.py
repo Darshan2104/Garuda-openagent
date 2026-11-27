@@ -9,6 +9,7 @@ scripted multi-turn profiles of ``garuda.acp.fake_agent``.
 import asyncio
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -538,6 +539,10 @@ async def test_a_rotation_starts_a_new_harness_session_with_the_brief(repo, tmp_
     log = _log(state)
     assert [entry["session"] for entry in log] == [first, first, second]
     brief_prompt = log[2]["prompt"]
+    # #866: every fresh-session prompt has the first-turn line once, and one brief.
+    for entry in (log[0], log[2]):
+        assert entry["prompt"].count(long_step.FIRST_TURN_LINE) == 1
+    assert brief_prompt.count("[garuda] This is ") == 1
     assert "fresh harness session continuing step `build`" in brief_prompt
     assert "it reached its turn budget" in brief_prompt
     assert '2 in total): "work-1.txt", "work-2.txt"' in brief_prompt
@@ -783,8 +788,10 @@ async def test_a_round_two_long_build_gets_a_rotation_brief_consistent_with_its_
                                "review": {"round": 2, "max_rounds": 1, "reviewed_attempt": 1}}
     round_brief = prompt[prompt.index("[garuda] This is round "):]
     brief = rotation.extra["brief"]
-    # The rotation prompt re-sends the step prompt, round brief included, exactly once.
-    assert rotation.prompt == "\n\n".join([prompt, long_step.FIRST_TURN_LINE, brief])
+    # The rotation prompt re-sends the step prompt, round brief and first-turn line
+    # included, exactly once (#866).
+    assert rotation.prompt == "\n\n".join([prompt, brief])
+    assert rotation.prompt.count(long_step.FIRST_TURN_LINE) == 1
     assert rotation.prompt.count("[garuda] This is round 2 of the review") == 1
     assert "This is round 2 of the review of step `build` (at most 2 rounds)" in round_brief
     assert "attempt 1 done" in round_brief
@@ -799,6 +806,254 @@ async def test_a_round_two_long_build_gets_a_rotation_brief_consistent_with_its_
     assert ('(as Garuda measured them after turn 2, change hash ' in brief
             and '2 in total): "build-1.txt", "build-2.txt"' in brief)
     assert len(brief) <= memory.BUDGET
+
+
+# --- a new attempt's first prompt, and its rotations (#866) -----------------------------
+
+RESETS_AT = 1795705200  # 2026-11-26 15:00 UTC, as in tests/test_flow_claude_quota.py
+HEADER = "[garuda] This is "  # the first line of every brief
+
+
+def _scripted(plays, prompts):
+    """A launcher that runs each attempt's real turn hook over scripted turns
+    (``plays[attempt]``) and records every prompt the harness would be sent."""
+    from garuda.workspace import evidence
+
+    async def launcher(launch):
+        sid = str(uuid.uuid4())
+        store, workspace = SessionStore(), Path(launch.workspace)
+        store.begin(sid, task="t", model="m", agent="a", workspace=str(workspace))
+        evidence.begin_session_evidence(store, sid, workspace, "local")
+        hook = StepTurns(launch.turns, step_prompt=launch.prompt, store=store,
+                         workspace=str(workspace), session_id=sid)
+        sent = prompts.setdefault(launch.attempt, [launch.prompt])
+        try:
+            return await plays[launch.attempt](hook, workspace, sent, store, sid)
+        finally:
+            evidence.finish_session_evidence(store, sid, workspace)
+    return launcher
+
+
+async def _turn(hook, sent, turn, reply, **kw):
+    decision = await hook(_report(turn, reply, **kw))
+    if decision.action in ("next", "rotate"):
+        sent.append(decision.prompt)
+    return decision
+
+
+def _working(attempt, turns, then):
+    """``turns`` turns that each write a file and give a progress note, then ``then``."""
+    async def play(hook, workspace, sent, store, sid):
+        for turn in range(1, turns + 1):
+            (workspace / f"a{attempt}-{turn}.txt").write_text("x\n")
+            await _turn(hook, sent, turn, _block(
+                "progress", f"attempt {attempt} turn {turn}: wrote a{attempt}-{turn}.txt"))
+        return await then(hook, workspace, sent, store, sid, turns)
+    return play
+
+
+async def _limited(hook, workspace, sent, store, sid, turns):
+    # A usage limit never reaches the turn hook (#842): its error is the session's.
+    store.update_meta(sid, {"error_code": "AcpUsageLimitError",
+                            "error_detail": "harness.limit_reached: usage limit reached",
+                            "error_limit": {"resets_at": RESETS_AT,
+                                            "rate_limit_type": "five_hour"}})
+    return StepResult(sid, False, "", error="harness.limit_reached: usage limit reached",
+                      turns=hook.record(), closure={"status": "closed"})
+
+
+async def _failed(hook, workspace, sent, store, sid, turns):
+    return StepResult(sid, False, "", error="boom", turns=hook.record())
+
+
+async def _rotates_then_finishes(hook, workspace, sent, store, sid, turns):
+    rotation = await _turn(hook, sent, turns + 1, "", stop="cancelled",
+                           error=AcpCancelledError("closed"))
+    assert rotation.action == "rotate"
+    done = await _turn(hook, sent, turns + 2, _block("summary"), sessions=2, session_turn=1)
+    assert done.action == "finish"
+    return StepResult(sid, True, hook.output, turns=hook.record(), closure={"status": "closed"})
+
+
+def _long_config(harness):
+    return {"version": 1, "roles": {"coder": {"harness": harness}},
+            "flows": {"one": {"steps": [{"id": "build", "role": "coder", "outputs": ["summary"],
+                                         "long_run": {}}]}}}
+
+
+def _long_runner(repo, harness, launcher, **kw):
+    resolved = gy.resolve(gy.parse(_long_config(harness)), None)
+    flow = json.loads(json.dumps(resolved.config["flows"]["one"]))
+    return FlowRunner(SessionStore(), repo, "one", flow, resolved, task="build it",
+                      launcher=launcher, **kw)
+
+
+def _unfenced(text):
+    """``text`` with its random fence marker fixed, to compare briefs."""
+    return re.sub(r'fence="[0-9a-f]{16}"', 'fence="M"', text)
+
+
+def _assert_one_brief(prompt):
+    """A fresh-session prompt: the first-turn line once and exactly one brief, last."""
+    assert prompt.count(long_step.FIRST_TURN_LINE) == 1
+    assert prompt.count(HEADER) == 1
+    assert prompt.index(long_step.FIRST_TURN_LINE) < prompt.index(HEADER)
+    brief = prompt[prompt.index(HEADER):]
+    assert len(brief) <= memory.BUDGET
+    return brief
+
+
+async def test_after_an_interruption_only_the_first_prompt_has_the_interrupted_brief(
+        repo, tmp_path, monkeypatch):
+    _install(tmp_path, monkeypatch, "multi-turn")
+    prompts = {}
+    launcher = _scripted({1: _working(1, 2, _failed),
+                          2: _working(2, 1, _rotates_then_finishes)}, prompts)
+    first = await asyncio.wait_for(_long_runner(repo, "fakeacp", launcher).run(), 90)
+    assert first.stopped.code == "flow.step_failed"
+    # Settle attempt 1 as a crash continuation does (#859): stopped, flow.interrupted.
+    path = engine.flow_dir(SessionStore(), first.flow_session) / "receipts" / "build-1.json"
+    receipt = json.loads(path.read_text())
+    receipt["stop"] = {"code": "flow.interrupted", "message": "interrupted"}
+    path.unlink()  # receipts are written once, read-only
+    path.write_text(json.dumps(receipt))
+    result = await asyncio.wait_for(_long_runner(
+        repo, "fakeacp", launcher, flow_session=first.flow_session).run(resume=True), 90)
+    assert result.completed, result.stopped
+
+    opening, _continued, rotation = prompts[2]
+    brief = _assert_one_brief(opening)
+    assert brief.startswith("[garuda] This is attempt 2 of step `build`, a new attempt in a "
+                            "fresh harness session: attempt 1 was interrupted (Garuda's process "
+                            "stopped before that attempt settled; flow.interrupted); the flow "
+                            "was resumed.")
+    assert "[garuda] Turns so far in attempt 1: 2 in 1 harness session(s)" in brief
+    assert '2 in total): "a1-1.txt", "a1-2.txt"' in brief
+    assert "| attempt 1 turn 2: wrote a1-2.txt" in brief
+    # The rotation has only its own brief, built fresh; the interruption is history, once.
+    fresh = _assert_one_brief(rotation)
+    assert fresh.startswith("[garuda] This is a fresh harness session continuing step `build` "
+                            "(attempt 2): the previous session ended because its last turn "
+                            "ended cancelled")
+    assert "was interrupted" not in rotation and "attempt 1 turn 2" not in rotation
+    assert rotation.count("attempt 1 stopped (flow.interrupted)") == 1
+    assert "[garuda] Turns so far in this attempt: 2 in 1 harness session(s)" in fresh
+    assert '3 in total): "a1-1.txt", "a1-2.txt", "a2-1.txt"' in fresh
+    # The rotation re-sends the task prompt, never the attempt's first-prompt brief.
+    assert rotation == opening[:opening.index(HEADER)] + fresh
+    _, rows = _progress(SessionStore(), result.flow_session, attempt=2)
+    assert rows[1]["decision"] == "rotate" and rows[1]["brief"] == fresh
+
+
+@pytest.mark.parametrize("harness, code", [
+    ("claude", "flow.quota_wait"),  # an unchecked Claude flow pauses (#850)
+    ("fakeacp", "flow.step_failed"),  # the checked (and Codex) contract: step_failed + cause
+])
+async def test_a_resume_after_a_usage_limit_starts_with_a_brief_of_the_progress(
+        repo, tmp_path, monkeypatch, harness, code):
+    _install(tmp_path, monkeypatch, "multi-turn")
+    prompts = {}
+    launcher = _scripted({1: _working(1, 2, _limited),
+                          2: _working(2, 1, _rotates_then_finishes)}, prompts)
+    first = await asyncio.wait_for(_long_runner(repo, harness, launcher).run(), 90)
+    assert first.stopped.code == code
+    receipt, = engine.receipts(SessionStore(), first.flow_session)
+    assert receipt["stop"]["cause"]["code"] == "AcpUsageLimitError"
+    assert receipt["stop"]["cause"]["limit"]["resets_at"] == RESETS_AT
+    result = await asyncio.wait_for(_long_runner(
+        repo, harness, launcher, flow_session=first.flow_session).run(resume=True), 90)
+    assert result.completed, result.stopped
+
+    opening, _continued, rotation = prompts[2]
+    brief = _assert_one_brief(opening)
+    stopped = memory._minute(receipt["finished_at"])
+    assert brief.startswith(
+        f"[garuda] This is attempt 2 of step `build`, a new attempt in a fresh harness session: "
+        f"attempt 1 stopped ({code}) because its harness reached its usage limit at {stopped}; "
+        "the limit resets at 2026-11-26 15:00 UTC; the flow was resumed.")
+    assert f"[garuda] Earlier attempts of this step: attempt 1 stopped ({code})." in brief
+    assert "[garuda] Turns so far in attempt 1: 2 in 1 harness session(s)" in brief
+    assert ('(as Garuda measured them after turn 2 of attempt 1, change hash ' in brief
+            and '2 in total): "a1-1.txt", "a1-2.txt"' in brief)
+    assert "[garuda] Outputs still missing: summary." in brief
+    assert "| attempt 1 turn 2: wrote a1-2.txt" in brief
+    # The same records give the same brief.
+    runner = _long_runner(repo, harness, launcher, flow_session=first.flow_session)
+    again = runner._attempt_brief({"id": "build", "outputs": ["summary"]}, 2, how="resume")
+    assert _unfenced(again) == _unfenced(brief)
+    _assert_one_brief(rotation)
+    assert "usage limit" not in rotation
+
+
+async def test_a_quota_recovery_continuation_starts_with_one_brief_and_no_second_note(
+        repo, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    import yaml
+
+    from garuda.flows.quota_recovery import CLAUDE_RESET_MARGIN_SEC, FlowRecovery, RecoveryStore
+    from garuda.flows.service import FlowExecutionService
+    from garuda.runtime import strict_store as ss
+
+    _install(tmp_path, monkeypatch, "multi-turn")
+    gy.user_path().parent.mkdir(parents=True, exist_ok=True)
+    gy.user_path().write_text(yaml.safe_dump(_long_config("claude")))
+    records = RecoveryStore()
+    ss.write_document(records.root / "settings.json", {"version": 1, "enabled": True})
+    clock = SimpleNamespace(now=RESETS_AT - 3600.0)
+    monkeypatch.setattr("garuda.flows.quota_recovery.time",
+                        SimpleNamespace(time=lambda: clock.now))
+
+    async def never_probe(_recovery):
+        raise AssertionError("a Claude limit is never probed")
+
+    monkeypatch.setattr(FlowRecovery, "probe", never_probe)
+    prompts = {}
+    monkeypatch.setattr("garuda.flows.launch.launch_step", _scripted(
+        {1: _working(1, 2, _limited), 2: _working(2, 1, _rotates_then_finishes)}, prompts))
+    first = await FlowExecutionService().run("one", "build it", str(repo))
+    sid = first.flow.flow_session
+    assert first.flow.stopped.code == "flow.quota_wait"
+    assert records.get(sid)["state"] == "waiting-for-quota"
+    clock.now = RESETS_AT + CLAUDE_RESET_MARGIN_SEC + 1
+    assert (await FlowRecovery().tick())["flows"][0]["state"] == "completed"
+
+    opening, _continued, rotation = prompts[2]
+    brief = _assert_one_brief(opening)
+    assert "attempt 1 stopped (flow.quota_wait) because its harness reached its usage limit" \
+        in brief
+    assert ("the limit resets at 2026-11-26 15:00 UTC; quota recovery continued the flow after "
+            "the pause, from the retained workflow and the current workspace (completed steps "
+            "are not replayed).") in brief
+    assert '2 in total): "a1-1.txt", "a1-2.txt"' in brief
+    assert "| attempt 1 turn 2: wrote a1-2.txt" in brief
+    # One note: the brief replaces the generic continuation note; a rotation has neither.
+    assert engine.QUOTA_NOTE not in opening and "after a quota pause" not in opening
+    assert engine.QUOTA_NOTE not in rotation and "quota recovery continued" not in rotation
+    _assert_one_brief(rotation)
+
+
+async def test_a_plain_step_keeps_its_one_line_notes_and_a_first_attempt_has_no_brief(
+        repo, tmp_path, monkeypatch):
+    """Decision (#866): only a long step gets a new attempt's brief; a plain step has no
+    turn records to brief from, so it keeps the one-line retry or quota note."""
+    seen = []
+
+    async def launcher(launch):
+        seen.append(launch.prompt)
+        return StepResult(str(uuid.uuid4()), len(seen) > 1,
+                          _block("summary") if len(seen) > 1 else "", error="boom")
+
+    resolved = gy.resolve(gy.parse({"version": 1, "roles": {"coder": {"harness": "fakeacp"}},
+                                    "flows": {"one": {"steps": [{
+                                        "id": "build", "role": "coder",
+                                        "outputs": ["summary"], "retries": 1}]}}}), None)
+    _install(tmp_path, monkeypatch, "multi-turn")
+    result = await FlowRunner(SessionStore(), repo, "one", resolved.config["flows"]["one"],
+                              resolved, task="t", launcher=launcher).run()
+    assert result.completed, result.stopped
+    assert HEADER not in seen[0] and HEADER not in seen[1]
+    assert seen[1].endswith(engine.RETRY_NOTE) and seen[1].count(engine.RETRY_NOTE) == 1
 
 
 # --- a checked (owned) step: same hook, closure still proved ---------------------------
