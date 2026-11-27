@@ -26,7 +26,7 @@ pytest -q
 ruff check garuda tests
 ```
 
-Run the narrowest relevant tests first. Browser-dashboard checks require a live Chrome installation and are documented in [docs/development/browser-checks.md](docs/development/browser-checks.md). Live Docker, tmux, Harbor, and OS-sandbox checks are optional environment integrations; state clearly when they were not run.
+Run the narrowest relevant tests first. Browser-dashboard checks run in Playwright's bundled Chromium (only the Linux owned-start checks need Google Chrome) and are documented in [docs/development/browser-checks.md](docs/development/browser-checks.md). Live Docker, tmux, Harbor, and OS-sandbox checks are optional environment integrations; state clearly when they were not run.
 
 ## Documentation contract
 

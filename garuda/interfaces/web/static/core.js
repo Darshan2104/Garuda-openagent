@@ -17,7 +17,7 @@ var TOKEN = sessionStorage.getItem("garuda_token") || "";
 if (location.hash.indexOf("#t=") === 0) {
   TOKEN = location.hash.slice(3);
   sessionStorage.setItem("garuda_token", TOKEN);
-  location.replace("#/runs");
+  location.replace("#/");
 }
 
 var STATE = {
@@ -135,39 +135,70 @@ function statusPill(status) {
 
 /* --- polling -------------------------------------------------------------
  * A setTimeout chain, never setInterval: a slow poll must not stack requests
- * behind itself. Pauses when the tab is hidden, which matters more later — a
- * background tab's poll is what keeps an approval parked in write mode. */
+ * behind itself. One call in flight at a time: `now()` (and a tab becoming
+ * visible) during a call does not start a second one — it runs the next call as
+ * soon as this one settles. Two calls in flight both read the same cursor, and
+ * each used to schedule its own successor, so one visibility change doubled the
+ * poll for the rest of the view's life.
+ *
+ * Pauses while the tab is hidden: nobody is looking, so ordinary views stop
+ * fetching. A poll that is also a heartbeat — the chat's, which keeps a parked
+ * approval alive — passes `keepAliveHidden`, a predicate; while it returns true
+ * the poll keeps running in a hidden tab at `hiddenInterval` (browsers throttle
+ * hidden-tab timers anyway, so asking for less than a few seconds buys nothing). */
 
-function Poller(fn, intervalMs) {
+function Poller(fn, intervalMs, options) {
+  options = options || {};
   this.fn = fn;
   this.base = intervalMs;
   this.interval = intervalMs;
+  this.hiddenInterval = options.hiddenInterval || intervalMs;
+  this.keepAliveHidden = options.keepAliveHidden || null;
   this.timer = null;
   this.stopped = false;
+  this.running = false;
+  this.again = false;
   var self = this;
   this._onVisible = function () {
-    if (document.hidden) {
+    if (!document.hidden) {
+      if (!self.stopped) self.tick();
+    } else if (self._paused()) {
       clearTimeout(self.timer);
-    } else if (!self.stopped) {
-      self.tick();
     }
   };
   document.addEventListener("visibilitychange", this._onVisible);
 }
 
+Poller.prototype._paused = function () {
+  return !!document.hidden && !(this.keepAliveHidden && this.keepAliveHidden());
+};
+
 Poller.prototype.tick = function () {
   var self = this;
   clearTimeout(this.timer);
-  if (this.stopped || document.hidden) return;
-  Promise.resolve(this.fn()).catch(function () { /* handled by the caller */ }).then(function () {
-    if (!self.stopped) self.timer = setTimeout(function () { self.tick(); }, self.interval);
+  this.timer = null;
+  if (this.stopped || this._paused()) return;
+  if (this.running) { this.again = true; return; }
+  this.running = true;
+  var result;
+  try { result = this.fn(); } catch (err) { result = null; }
+  Promise.resolve(result).catch(function () { /* handled by the caller */ }).then(function () {
+    self.running = false;
+    if (self.stopped) return;
+    if (self.again) { self.again = false; self.tick(); return; }
+    var delay = document.hidden ? Math.max(self.interval, self.hiddenInterval) : self.interval;
+    self.timer = setTimeout(function () { self.tick(); }, delay);
   });
 };
+
+/* Poll as soon as possible without overlapping the call in flight. */
+Poller.prototype.now = function () { this.tick(); return this; };
 
 Poller.prototype.start = function () { this.stopped = false; this.tick(); return this; };
 
 Poller.prototype.stop = function () {
   this.stopped = true;
+  this.again = false;
   clearTimeout(this.timer);
   document.removeEventListener("visibilitychange", this._onVisible);
 };
@@ -188,6 +219,22 @@ function toggleTheme() {
   var next = current === "dark" ? "light" : "dark";
   document.documentElement.setAttribute("data-theme", next);
   localStorage.setItem("garuda_theme", next);
+}
+
+/* --- sessions a list could not read -------------------------------------------------
+ * A list route skips a session whose record is damaged instead of failing (and says so
+ * in `unreadable_sessions`), so one bad directory cannot hide every other run. The page
+ * says how many were left out rather than silently showing fewer; the ids are in the
+ * tooltip and the server log has the reason. */
+
+function unreadableNote(payload) {
+  var info = payload && payload.unreadable_sessions;
+  var count = info && typeof info.count === "number" ? info.count : 0;
+  if (count < 1) return "";
+  var ids = Array.isArray(info.ids) ? info.ids.join(", ") : "";
+  return '<div class="notice unreadable-note" role="status" title="' + esc(ids) + '">' +
+    esc(count + (count === 1 ? " session" : " sessions") + " could not be read") +
+    '<span class="notice-body"> — left out of this list; the dashboard’s server log says why.</span></div>';
 }
 
 function tokenRequiredPanel() {

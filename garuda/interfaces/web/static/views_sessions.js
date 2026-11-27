@@ -99,7 +99,7 @@ function sessionsView() {
   return api("/api/sessions").then(function (payload) {
     var rows = payload.sessions;
     if (!rows.length) {
-      render('<div class="empty"><p><strong>No sessions yet.</strong></p>' +
+      render(unreadableNote(payload) + '<div class="empty"><p><strong>No sessions yet.</strong></p>' +
              "<p>Start one with <code>garuda run --bg -t &quot;your task&quot;</code>.</p></div>");
       return;
     }
@@ -110,6 +110,7 @@ function sessionsView() {
     render(
       '<div class="page-head"><h1>Sessions</h1><span class="meta" id="sessions-count">' + rows.length + "</span>" +
       '<button type="button" class="btn" id="sessions-refresh">Refresh</button></div>' +
+      unreadableNote(payload) +
       '<div class="filters"><input type="search" id="sessions-search" placeholder="Search name, id, model, workspace…  ( / )" value="' + esc(filter.q) + '">' +
       '<div class="state-chips" id="sessions-states">' +
       '<button type="button" class="state-chip" data-label="">all ' + rows.length + "</button>" +
@@ -365,6 +366,7 @@ function inboxView() {
     render(
       '<div class="page-head"><h1>Approvals</h1><span class="meta">' + items.length + " waiting</span>" +
       '<button type="button" class="btn" id="inbox-refresh">Refresh</button></div>' +
+      unreadableNote(payload) +
       (items.length ? '<ul class="approvals" id="inbox-list">' + items.map(approvalRowHtml).join("") + "</ul>"
                     : '<div class="empty" id="inbox-empty"><p>Nothing is waiting for you.</p></div>')
     );

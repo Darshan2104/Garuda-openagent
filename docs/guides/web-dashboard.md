@@ -31,7 +31,9 @@ native Garuda agent.
     the `--max-permission` posture or a stricter one.
 
 The command prints a URL with a one-time token (`http://127.0.0.1:8787/#t=…`);
-open that exact URL.
+open that exact URL. It opens on the **Overview**. Press Ctrl-C to stop it: the
+dashboard finishes the flow and chat operations it owns, prints
+`Garuda dashboard stopped.` and exits 0.
 
 | Flag | Default | Use |
 |---|---|---|
@@ -51,6 +53,7 @@ open that exact URL.
 
 | Page | Route | What it's for |
 |---|---|---|
+| Overview | `#/` (also `#/overview`) | The landing page: what needs you, what is running, what finished last, and the health of the harnesses your roles use |
 | Starters | `#/starters`, `#/starters/<id>` | Five packaged journeys, configured readiness, preview/copy, and owned Linux flow starts in write mode |
 | Runs | `#/runs` | Every run: turns, tool calls, diffs, metrics, models used, consults |
 | Sessions | `#/sessions` | Live and past sessions with their state, queue and flow; Stop |
@@ -69,7 +72,7 @@ parked approval is visible from every page. The count is a read-only poll of
 
 | Key | Does |
 |---|---|
-| `1`–`9` | Switch to the nth tab |
+| `1`–`9`, `0` | Switch to the nth tab (`0` is the tenth, Chat in write mode) |
 | `/` | Focus the page's search field |
 | `r` | Reload the current view, except Chat or a view with unsubmitted edits |
 | `t` | Toggle light and dark |
@@ -79,6 +82,37 @@ parked approval is visible from every page. The count is a read-only poll of
 Keys do nothing while you are typing in a field or holding Cmd, Ctrl or Alt.
 Reload stays disabled after an edited field loses focus, until its inputs are
 successfully submitted or you navigate away.
+
+## Overview
+
+`#/` answers "what is happening, and does anything need me?" in four sections:
+
+- **Needs attention** lists only what applies, each with its age and a link to
+  where you act: approvals waiting (with expired ones counted apart, since they
+  will be denied) → **Approvals**; sessions whose worker **crashed** and
+  sessions **waiting** on an approval → the session; flows **paused** on a
+  resumable stop (a quota wait recorded by quota recovery, or a step's own
+  deadline or silence limit) → the session; configuration errors →
+  **Setup**; a harness a role uses that is unavailable, logged out or not in
+  the runtime catalog → **Providers**. With nothing to show it says
+  **Nothing needs you right now**.
+- **Running now**: queued, working and waiting sessions with runtime, role,
+  model, state and elapsed time; a flow shows the step its journal says is in
+  flight (**step 1 of 2 · code**) and no step when none is.
+- **Recent**: the last eight finished sessions with outcome and verification
+  as separate chips (a review is never shown as verification).
+- **Harness health**: one row per harness your roles or their fallbacks use,
+  with availability and the last recorded login reading and its age (`login
+  not checked` until one exists).
+
+The session sections come from one fast read, `GET /api/overview`, which
+selects from every session rather than the newest page of the Sessions list, so an old crashed or
+waiting session is never missed. Configuration and harness rows come from
+the slower Setup and Providers reads, load separately with a placeholder, and
+show an inline error with **Retry** if they fail; the rest of the page stays
+usable. The page refreshes every 10 seconds (Setup and Providers every
+minute) while the tab is visible, updates rows in place, and has no control
+that changes anything.
 
 ## Starters
 
@@ -245,10 +279,43 @@ place when you open a session and come back. A session's page adds:
   stopped once its recorded process identity matches.
 
 `garuda sessions --json` prints the same rows: the CLI and the dashboard read
-one model. A queue that can't be read shows as `unknown`, not as empty. A
+one model. A session whose record is damaged (a `meta.json` that isn't a JSON
+object, a field of the wrong type, a file the dashboard can't read) is left out
+of the Runs, Sessions and Approvals lists, and each page says **N sessions could
+not be read** (the ids are in its tooltip, the reason in the server log); the
+session's own page answers `session_unreadable` instead of failing. A queue that can't be read shows as `unknown`, not as empty. A
 session row's own usage and cost still read `unknown`; the Usage page has the
 totals, and a session's detail adds `reported_usage`, what an external harness's
 adapter reported (see [Sessions](sessions-and-flows.md)).
+
+## Chat
+
+`#/chat` starts nothing on its own. It resumes the chat this tab was using (or
+the newest open one), and otherwise shows **New chat** with the workspace,
+agent, model and permission choices the server accepts. If the previous chat is
+no longer open on the server (ended, reclaimed after sitting unwatched, or the
+dashboard restarted), the page says so instead of opening a new one; its
+transcript stays in Runs.
+
+- A typed message is kept per chat while you visit other pages.
+- **End chat** asks first when a turn is running or an approval is waiting.
+- If the dashboard stops answering, the page says so, retries with backoff (up
+  to 30 seconds between tries) and recovers by itself.
+
+A tool call that needs approval shows a card in the chat. The chat's poll is
+also its heartbeat: while a turn runs or an approval waits, it keeps going when
+the tab is in the background or you are on another dashboard page (the Chat
+tab then shows a count). The same holds for every chat the tab has open:
+**New chat** inside a chat starts another without dropping the first, and while
+you work in one, the others that wait for an answer are listed above it with a
+link back (and marked in the New chat page's list of open chats). Once the tab is closed, the server denies the waiting
+approval after a 90-second grace window, so the run is not blocked for the full
+five-minute timeout. 90 seconds is longer than the slowest heartbeat a
+background tab can send (browsers may wake a long-hidden tab's timers only once
+a minute). The transcript says who decided each denial: **denied by you**,
+**the dashboard stopped watching**, **nobody answered** within the timeout, or
+**the chat was closed**. A second answer to the same approval gets a 409 that
+names the first outcome.
 
 ## Approvals
 
@@ -380,7 +447,37 @@ The HTTP transport checks Host, Origin and token before reading request bodies.
 duplicate lengths and any `Transfer-Encoding` receive HTTP 400; lengths
 above 12 MiB receive HTTP 413, without reading the body. Header refusals close
 the connection so an unread body cannot become another request. The dashboard
-allows up to 32 simultaneous connections, each with a 30-second read timeout.
+allows up to 32 simultaneous connections, each with a 30-second read timeout;
+one more is answered `503` with `Retry-After` and the message *too many open
+dashboard connections; close some tabs*.
+
+**Errors.** Every API error is JSON, `{"error": {"code", "message"}}`, with the
+same security headers as any response. `400 invalid_request` means the request
+itself was wrong (a malformed session id, query parameter or JSON body). A
+fault while serving a valid request is `500 internal_error`, logged with its
+traceback on the server; the response carries no internal detail. One damaged
+session is `409 session_unreadable` on its own routes; one still being written
+by a non-atomic writer is `503 session_being_written` with `Retry-After`. An
+agent loop that does not answer in time is `504 unavailable`.
+
+**List responses.** `/api/runs`, `/api/sessions`, `/api/inbox` and `/api/overview` carry
+`unreadable_sessions: {"count", "ids", "being_written"}` (at most 50 ids; the
+count is exact). The lists are served from an in-memory index of session
+records only: queue positions, approvals, leases and flow journals are read on
+every request. A record is re-read when its `meta.json`, its session directory
+or its publication policy record changes, and sessions created or deleted since
+the last request are noticed. Listing never waits on a writer: a record locked
+mid-publication shows its previous version, or with none is listed under
+`being_written` and read again on the next request. Records over 1 MiB are
+reported unreadable rather than read. `/api/runs/<id>/buffers` and
+`/api/memory/proposals` take `limit` (default 200, at most 1000) and report
+`total`; `/api/runs/<id>/raw` refuses a document over 16 MiB with `413 too_large`.
+
+**Runtime discovery.** `/api/runtimes`, `/api/runtimes/<id>` and
+`/api/providers` share one harness discovery for 30 seconds, so moving between
+those pages doesn't re-run every harness's version and status checks. A
+runtime's detail on its own checks only that runtime. **Refresh** on the
+Providers page discards it.
 
 | Route | Purpose |
 |---|---|
@@ -391,12 +488,13 @@ allows up to 32 simultaneous connections, each with a 30-second read timeout.
 | `GET /api/scenario-runs/<id>` | Shared selected-session evidence; `limit` 1–200 and non-negative `offset`, optional workspace index for names |
 | `GET /api/runs`, `GET /api/runs/<id>` | Runs and one run's trace |
 | `GET /api/runs/<id>/tail` | Poll a run for new events |
-| `GET /api/sessions` | `limit` an integer >= 1, capped at 200; every session's row: the four facts, the derived `crashed` label, queue position, worker, approvals waiting, agent digest, resume provenance |
+| `GET /api/sessions` | `limit` an integer >= 1, default 100, capped at 500; every session's row: the four facts, the derived `crashed` label, queue position, worker, approvals waiting, agent digest, resume provenance |
 | `GET /api/sessions/<id>` | One session, with pending approvals and, for a flow, its steps, attempts and review outcome |
 | `GET /api/sessions/<id>/stream` | Live events as server-sent events |
 | `GET /api/sessions/<id>/conversation` | The Models used, links and lanes data |
 | `POST /api/sessions/<id>/cancel` | Stop a background session (write) |
-| `GET /api/inbox` | Every pending approval, with the digest an answer must bind |
+| `GET /api/overview` | The Overview's session sections, selected from every session: crashed, waiting and paused sessions (each list `items`, at most 50, and `total`), running sessions with a flow's in-flight step, the last 8 finished, and approval counts |
+| `GET /api/inbox` | Every pending approval across every session, with the digest an answer must bind |
 | `POST /api/sessions/<id>/approvals/<approval>` | Answer one: `{"allow": true, "digest": "…"}` (write) |
 | `GET /api/usage?range=24h\|7d\|30d` | Usage statistics |
 | `GET /api/usage/export?range=…&format=csv\|json` | Usage export |
@@ -427,6 +525,9 @@ The tail counts these records in `malformed`; the stream reports a `skipped`
 event with a `malformed` count. Later events remain available,
 and the persisted log is unchanged. A torn final record keeps its cursor until
 its newline arrives, including when it is oversized.
+If reading the session fails mid-stream (its record is locked or damaged), the
+stream sends an `error` event, `{"error": {"code": "stream_failed", …}}`, whose
+`id` is the last delivered offset, and closes cleanly for the client to reconnect.
 The stream sends a heartbeat every 15 seconds,
 ends with an `end` event once the session is finished and a poll delivers no
 records and makes no cursor progress, including a torn final append, and closes

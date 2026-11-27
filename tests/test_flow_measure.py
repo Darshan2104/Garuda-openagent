@@ -205,3 +205,29 @@ def test_measure_keeps_the_stop_reason_approval_denial_and_liveness(tmp_path):
                              duration_ms=None,
                              outcomes=[StepResult(session_id, False, "", stop_reason="refusal")])
     assert record["stop_reason"] == "refusal" and record["liveness"] is None
+
+
+def test_prompt_part_sizes_add_up_for_every_shape():
+    from garuda.flows import artifacts as art
+    from garuda.flows import prompting
+
+    ref = art.ArtifactRef(type="patch", digest="d" * 64, producer_step="build",
+                          producer_session="s", attempt=1, size=13, workspace_version=None,
+                          path="artifacts/x")
+    step = {"id": "review", "outputs": ["review"]}
+    packet = {"digest": "sha256:x", "binding": {"enforced": True}, "candidate": "c"}
+    for read_only, run, extra in [(True, False, prompting.Packet(packet)),
+                                  (False, False, prompting.Findings("- [major] add a test")),
+                                  (False, False, "[garuda] a note"), (False, True, None),
+                                  (True, False, None)]:
+        sizes: list = []
+        text = prompting.assemble(task="do it\nwell", flow="f", step=step, role="r",
+                                  inputs=[(ref, "line 1\nline 2")], read_only=read_only,
+                                  run=run, extra=extra, sizes=sizes)
+        assert sum(part["chars"] for part in sizes) == len(text)
+        names = [part["part"] for part in sizes]
+        assert "task" in names
+        if isinstance(extra, prompting.Packet):
+            assert "packet" in names
+        if isinstance(extra, prompting.Findings):
+            assert "findings" in names

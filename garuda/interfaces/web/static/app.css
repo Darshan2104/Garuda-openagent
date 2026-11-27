@@ -591,6 +591,14 @@ input[type="text"], input[type="url"] {
 /* --- chat --- */
 
 .chat-log { max-height: 60vh; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; }
+/* Appended rows and the redrawn live preview are separate containers, laid out as one log. */
+.chat-rows { display: flex; flex-direction: column; gap: 8px; }
+.chat-rows:empty, #chat-empty[hidden] { display: none; }
+.chat-new-fields label { display: inline-flex; gap: 6px; align-items: center; max-width: 100%; min-width: 0; }
+.chat-new-fields select, .chat-new-fields input { min-width: 0; max-width: 100%; flex: 1 1 auto; }
+.approval-status:empty { display: none; }
+/* The state line carries the workspace path, which on a narrow screen is wider than the page. */
+#chat-state { min-width: 0; overflow-wrap: anywhere; }
 .chat-row { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 10px; }
 .chat-who {
   font: 10px/1.8 var(--mono); text-transform: uppercase; letter-spacing: 0.05em;
@@ -802,3 +810,23 @@ a { color: var(--accent); }
 /* Transient child text shares the subagent family colour of completed handoffs. */
 .chat-child-preview summary { grid-column: 1 / -1; cursor: pointer; color: var(--muted); }
 .chat-child-preview pre { grid-column: 1 / -1; max-height: none; }
+
+/* --- overview (landing page) --- */
+.home-list { list-style: none; margin: 0; padding: 0; }
+.home-row {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px;
+  padding: 8px 0; border-top: 1px solid var(--border); min-width: 0;
+}
+.home-row:first-child { border-top: 0; padding-top: 0; }
+.home-name { font-weight: 500; overflow-wrap: anywhere; min-width: 0; }
+.home-what { flex: 1 1 220px; min-width: 0; overflow-wrap: anywhere; }
+.home-row code { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
+.home-chips { display: inline-flex; gap: 5px; flex-wrap: wrap; }
+.home-chips .chip { margin: 0; }
+.home-step { color: var(--text); }
+.home-age { margin-left: auto; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.home-calm, .home-pending, .home-more { color: var(--muted); font-size: 13px; }
+.home-status > div + div { margin-top: 6px; }
+.home-list:not(:empty) + .home-status:not(:empty) { margin-top: 10px; }
+.home-error { font-size: 13px; overflow-wrap: anywhere; }
+.home-foot { margin: 10px 0 0; font-size: 13px; }

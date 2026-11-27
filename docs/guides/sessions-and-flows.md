@@ -266,7 +266,8 @@ measured rather than assumed.
 
 - `prompt`: the assembled prompt's `chars` and `est_tokens`, and its `parts` in
   order (`task`, `preamble` for Garuda's role and fence lines, each `input`
-  with its `type` and producer `from`, `output_instructions`, `findings`,
+  with its `type` and producer `from`, `output_instructions`, `findings` (or
+  the round `brief` that carries them),
   `packet` for a reviewer's review packet, `note`). The parts' `chars` add up
   to the prompt's. `est_tokens` is chars / 4, an estimate, not a tokenizer
   count.
@@ -593,6 +594,32 @@ again, labelled `preexisting_at_start`, and their excerpts include the earlier
 text. When that first baseline is missing, was not captured, belongs to another
 workspace or can no longer be attributed, the change list and diff are
 `unknown`, never a complete list of one round's files.
+
+From the second round on, neither agent starts blind. Garuda gives each a
+**round brief** built from its own records (the reviewed step's receipts, the
+review history and the change list each round's packet recorded), never from
+an agent's memory:
+
+- The reviewed step is told which round this is, that the changes of its
+  earlier attempts are already in the workspace and must be inspected, not
+  redone, how its attempts so far settled, the files it changed since its
+  first attempt, its own previous `patch` (fenced, as notes to check against
+  the workspace, not as facts) and the findings to address.
+- The reviewer's packet gains `earlier_reviews`: its own verdict and findings
+  of each earlier round, each labelled with the candidate attempt and packet
+  digest it reviewed, and its prompt asks it to check whether each was
+  addressed before raising new ones. The field is part of the packet, so
+  `packet_digest` covers it. A round-1 packet has no such field and is
+  unchanged, as are round-1 prompts.
+
+A brief is at most 8,000 characters. When the records need more, Garuda
+shortens and then drops the previous `patch` first, then summarises and then
+drops older rounds, then keeps only the first of the latest findings, and
+shortens the file list last; every cut is stated in the brief. Everything in
+it is redacted again. The same records give the same brief, so after
+`garuda flow resume` or a quota continuation it is repeated exactly; an
+attempt that stopped after the reviewed candidate (a quota pause) is left to
+the continuation note.
 
 By default the reviewer must be **independent**: it may not run as the same
 harness and model as the role it reviews, as one of that role's fallbacks, or

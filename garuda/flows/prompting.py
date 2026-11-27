@@ -47,9 +47,15 @@ INPUT_WORDING = {
 
 @dataclass(frozen=True)
 class Findings:
-    """A reviewer's findings (already redacted) for the reviewed step's next round."""
+    """A reviewer's findings (already redacted) for the reviewed step's next round.
+
+    ``brief`` is the round brief (:class:`garuda.flows.memory.CoderBrief`,
+    #816) that renders the findings with what Garuda recorded of the earlier
+    rounds; it is rebuilt from the records each time, never saved.
+    """
 
     text: str
+    brief: object | None = None
 
 
 @dataclass(frozen=True)
@@ -106,7 +112,14 @@ def render_packet(packet: dict | None, marker: str | None = None) -> str:
         binding = ("recorded when your review started. Its workspace version is unknown, so "
                    "this binding is not enforced: a change to the workspace cannot be "
                    "detected.")
-    return (f"[garuda] Review packet: the candidate you are reviewing, {binding} "
+    earlier = packet.get("earlier_reviews")
+    # Round 2+ only (#816): the round-1 prompt is unchanged.
+    recall = (f"[garuda] This is review round {earlier['round']} of step "
+              f"`{packet['criteria']['reviewed_step']}`. The packet's `earlier_reviews` is "
+              "your own earlier review of an earlier candidate: check whether each of those "
+              "findings was addressed in this candidate before raising new ones.\n"
+              if isinstance(earlier, dict) else "")
+    return (recall + f"[garuda] Review packet: the candidate you are reviewing, {binding} "
             f"{FENCE_RULE}\n"
             + fence("review-packet", {"digest": packet["digest"]}, body, marker))
 
@@ -123,6 +136,8 @@ def _bodies(inputs, extra) -> list[str]:
     bodies = [content for _, content in inputs]
     if isinstance(extra, Findings):
         bodies.append(extra.text)
+        if extra.brief is not None:
+            bodies += extra.brief.bodies()
     elif isinstance(extra, Packet):
         bodies.append(packet_body(extra.packet))
     return bodies
@@ -140,7 +155,8 @@ def assemble(*, task: str, flow: str, step: dict, role: str, inputs, read_only: 
     A ``sizes`` list receives the prompt's parts in order (#832), each
     ``{"part", "chars"}`` (an input also its ``type`` and ``from``): ``task``,
     ``preamble`` (Garuda's role and fence lines), ``input``,
-    ``output_instructions``, ``findings``, ``packet`` or ``note``. Their
+    ``output_instructions``, ``findings`` (or the ``brief`` that carries them),
+    ``packet`` or ``note``. Their
     ``chars`` add up to the prompt's length; a joining newline counts with the
     part after it.
     """
@@ -189,7 +205,10 @@ def assemble(*, task: str, flow: str, step: dict, role: str, inputs, read_only: 
             add(("output_instructions",), "", rules)
     if isinstance(extra, Findings):
         add(preamble, "", *explain())
-        add(("findings",), render_findings(extra.text, marker))
+        # A reviewed step's rerun gets the findings, or the flow brief carrying them.
+        add(("brief",) if extra.brief is not None else ("findings",),
+            extra.brief.render(marker) if extra.brief is not None
+            else render_findings(extra.text, marker))
     elif isinstance(extra, Packet):
         add(preamble, "", *explain())
         add(("packet",), render_packet(extra.packet, marker))

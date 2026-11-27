@@ -11,6 +11,7 @@
 "use strict";
 
 var ROUTES = [
+  [/^#\/(?:overview)?$/, function () { return overviewView(); }],
   [/^#\/starters(?:\/([^/?]+))?(?:\?(.*))?$/, function (m) { return startersView(m[1] ? decodeURIComponent(m[1]) : null, m[2]); }],
   [/^#\/runs\/([^/]+)$/, function (m) { return runDetailView(decodeURIComponent(m[1])); }],
   [/^#\/runs$/, function () { return runsView(); }],
@@ -27,24 +28,25 @@ var ROUTES = [
 function navigate() {
   // stopLive() clears STATE.live as well as the poller: an in-flight poll checks that
   // reference to decide whether its response is still wanted, so leaving it set lets a late
-  // response render into the view that replaced it. stopChat() is the same idea for the chat
-  // poller — and leaving that one running would keep refreshing the heartbeat for a chat
-  // nobody is looking at, which is precisely what the reaper is for.
+  // response render into the view that replaced it. leaveChat() unmounts the chat but keeps
+  // its heartbeat while a turn runs or an approval waits: the chat lives on the server either
+  // way, and stopping here denied the user's own approval. Closing the tab still stops it.
   stopLive();
-  stopChat();
+  leaveChat();
   if (typeof stopSessionStream === "function") stopSessionStream();
   stopStarterViews();
-  var hash = location.hash || "#/runs";
+  stopHomeView();
+  var hash = location.hash || "#/";
   setActiveNav(hash);
   for (var i = 0; i < ROUTES.length; i++) {
     var match = hash.match(ROUTES[i][0]);
     if (match) { ROUTES[i][1](match); return; }
   }
-  render('<div class="empty"><p>No such view.</p><p><a href="#/runs">Back to runs</a></p></div>');
+  render('<div class="empty"><p>No such view.</p><p><a href="#/">Back to the overview</a></p></div>');
 }
 
 function setActiveNav(hash) {
-  var section = hash.slice(2).split("?")[0].split("/")[0] || "runs";
+  var section = hash.slice(2).split("?")[0].split("/")[0] || "overview";
   var links = document.querySelectorAll(".nav-link");
   for (var i = 0; i < links.length; i++) {
     links[i].classList.toggle("active", links[i].getAttribute("data-nav") === section);
@@ -169,8 +171,9 @@ function onShortcut(event) {
     return;
   }
   if (event.key === "t") { toggleTheme(); return; }
-  if (/^[1-9]$/.test(event.key)) {
-    var link = visibleNavLinks()[Number(event.key) - 1];
+  // 1-9 are the first nine tabs and 0 the tenth, as on a keyboard's number row.
+  if (/^[0-9]$/.test(event.key)) {
+    var link = visibleNavLinks()[event.key === "0" ? 9 : Number(event.key) - 1];
     if (link) location.hash = link.getAttribute("href");
   }
 }
