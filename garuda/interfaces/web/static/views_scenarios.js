@@ -304,7 +304,7 @@ function pollStarterOperation(state) {
     api("/api/approvals?owner=" + encodeURIComponent(operation.id)).catch(function () { return { approvals: [] }; })
   ]).then(function (both) {
     if (STATE.starterView !== state || state.operation !== operation) return;
-    renderStarterOperation(state, both[0], both[1].approvals || []);
+    renderStarterOperation(state, both[0], both[1].approvals || [], both[1].settled || []);
     if (OPERATION_SETTLED.indexOf(both[0].status) === -1) {
       scheduleStarterOperation(state, 900);
     }
@@ -321,13 +321,13 @@ function pollStarterOperation(state) {
 /* The operation phases after which nothing more happens. */
 var OPERATION_SETTLED = ["terminal", "uncertain", "quarantined", "refused", "abandoned"];
 
-function renderStarterOperation(state, row, approvals) {
+function renderStarterOperation(state, row, approvals, settled) {
   var host = el("starter-operation");
   if (!host) return;
   if (OPERATION_SETTLED.indexOf(row.status) !== -1) {
     state.operation.done = true;
   }
-  host.innerHTML = starterOperationHtml(row, approvals, "starter");
+  host.innerHTML = starterOperationHtml(row, approvals, "starter", null, null, settled);
   wireOperationApprovals(host, function () { pollStarterOperation(state); });
 }
 
@@ -335,7 +335,21 @@ function renderStarterOperation(state, row, approvals) {
  * start waiting for admission ("flow") and the session page's operation panel ("session").
  * `grace` and `timeout` are the broker's heartbeat grace and answer timeout in seconds, when
  * known (/api/approvals publishes both); the defaults are the broker's own (#871). */
-function starterOperationHtml(row, approvals, where, grace, timeout) {
+/* The asks of this operation already settled, and who settled each, from the broker's own
+ * record (GET /api/approvals `settled`): "denied by you", "the dashboard stopped watching",
+ * "nobody answered". The step's session records only allow or deny, so this is the one place
+ * a person's decision is told apart from a timeout's or the reaper's. The dashboard keeps
+ * these in memory, so a restart forgets them; it says so. */
+function operationSettledHtml(settled) {
+  if (!settled || !settled.length) return "";
+  return '<div class="operation-settled" id="operation-settled"><h4>Answered</h4><ul>' + settled.map(function (s) {
+    return '<li data-decided-by="' + esc(s.decided_by || "unknown") + '"><code>' + esc(fmt.truncate(s.action || "", 160)) +
+      "</code> — " + esc(s.summary || "settled; who decided was not recorded") +
+      (s.settled_at ? ' <span class="stat-sub">' + esc(fmt.when(s.settled_at)) + "</span>" : "") + "</li>";
+  }).join("") + '</ul><p class="stat-sub">As this dashboard recorded it; it forgets these when it restarts.</p></div>';
+}
+
+function starterOperationHtml(row, approvals, where, grace, timeout, settled) {
   var session = row.session_id && where !== "session" ?
     '<a class="btn" href="#/sessions/' + encodeURIComponent(row.session_id) + '">Open session details</a>' : '';
   var keep = '. Answer its approvals here or on the <a href="#/inbox">Approvals</a> page, on any page of an open dashboard tab ' +
@@ -356,7 +370,8 @@ function starterOperationHtml(row, approvals, where, grace, timeout) {
         '" data-approved="true">Allow</button><button type="button" class="btn" data-flow-approval="' +
         esc(ask.ask_id) + '" data-owner="' + esc(ask.owner) + '" data-digest="' + esc(ask.digest) +
         '" data-approved="false">Deny</button></div>';
-    }).join("") : '<p class="stat-sub">No approval is waiting.</p>') + '</div></section>';
+    }).join("") : '<p class="stat-sub">No approval is waiting.</p>') + (row.background ? "" : operationSettledHtml(settled)) +
+    '</div></section>';
 }
 
 /* Answer an operation's approval, bound to the ask's owner and digest, then `after()`. */

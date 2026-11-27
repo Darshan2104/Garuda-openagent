@@ -116,14 +116,32 @@ class ChatSpec:
                 "GET /api/config lists them."
             ) from None
 
+        model = _optional_str(payload.get("model"), "model")
+        refusal = chat_model_refusal(model) if model else None
+        if refusal:
+            raise SpecError(refusal)
         return cls(
             agent=_optional_str(payload.get("agent"), "agent"),
-            model=_optional_str(payload.get("model"), "model"),
+            model=model,
             mode=_optional_str(payload.get("mode"), "mode"),
             permission_mode=_optional_str(payload.get("permission_mode"), "permission_mode"),
             workspace=workspace_index,
             workspace_kind=_optional_str(payload.get("workspace_kind"), "workspace_kind"),
         )
+
+
+def chat_model_refusal(model: str) -> str | None:
+    """Why a dashboard chat cannot run ``model``, or ``None`` when it can.
+
+    A chat runs Garuda's own model loop. Session records also carry ``flow`` (a flow parent)
+    and ``acp:<harness>[/<model>]`` (an external coding agent), which that loop cannot call:
+    accepted, they failed only at the first turn with a provider error."""
+    if model == "flow":
+        return "`flow` is a flow session, not a model. Start a flow from the Flows page."
+    if model.startswith("acp:"):
+        return (f"`{model}` is an external coding agent, which a dashboard chat cannot run "
+                "(a chat uses Garuda's own model loop). Run it as a role from Starters or Flows.")
+    return None
 
 
 def _optional_str(value: Any, name: str) -> str | None:
