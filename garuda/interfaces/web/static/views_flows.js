@@ -515,6 +515,7 @@ function pollSessionOperation(page, panel) {
     if (STATE.sessionPage !== page || page.operation !== panel) return;
     var row = both[0];
     panel.approvals = both[1].approvals || [];
+    panel.settled = both[1].settled || [];
     panel.grace = both[1].grace_seconds || panel.grace;
     panel.timeout = both[1].timeout_seconds || panel.timeout;
     var host = el("session-operation-host");
@@ -531,7 +532,7 @@ function pollSessionOperation(page, panel) {
       panel.poller.stop();
       refreshSessionRow(page);
     }
-    host.innerHTML = '<div id="session-operation">' + starterOperationHtml(row, panel.approvals, "session", panel.grace, panel.timeout) + "</div>";
+    host.innerHTML = '<div id="session-operation">' + starterOperationHtml(row, panel.approvals, "session", panel.grace, panel.timeout, panel.settled) + "</div>";
     wireOperationApprovals(host, function () { if (panel.poller) panel.poller.now(); });
   }, function (err) {
     if (isSuperseded(err) || STATE.sessionPage !== page) return;

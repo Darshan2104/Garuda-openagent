@@ -145,6 +145,16 @@ def test_config_offers_models_this_machine_has_run(ctx, store):
     assert payload["recent_models"] == ["openrouter/x/y"]
 
 
+def test_config_does_not_offer_flow_or_harness_models_to_a_chat(ctx, store):
+    """A flow parent records model `flow` and an ACP session `acp:claude/haiku`; a dashboard
+    chat (Garuda's own loop) cannot call either, so neither is suggested for one."""
+    _finished_session(store, "s1")
+    _finished_session(store, "s2", model="flow")
+    _finished_session(store, "s3", model="acp:claude/haiku")
+    _finished_session(store, "s4", model="acp:claude")
+    assert body(call(ctx, "/api/config"))["recent_models"] == ["openrouter/x/y"]
+
+
 # --- runs --------------------------------------------------------------------
 
 

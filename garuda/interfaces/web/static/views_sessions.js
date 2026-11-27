@@ -646,15 +646,38 @@ function attemptHtml(attempt, flowPause, link, replacedBy) {
   );
 }
 
-function stepStatus(step, current, paused) {
+function stepStatus(step, current, paused, stopped) {
   var attempts = step.attempts || [];
   if (current && current.step === step.id) return { text: "running · attempt " + current.attempt, cls: "running", key: "current" };
   if (paused && paused.step === step.id) return { text: "paused", cls: "paused", key: "paused" };
+  if (stoppedAttemptOf(step, stopped)) return { text: "interrupted · attempt " + stopped.attempt, cls: "unknown", key: "interrupted" };
   if (!attempts.length) return { text: "not run yet", cls: "unknown", key: "pending" };
   var last = attempts[attempts.length - 1];
   if (last.status === "done") return { text: "done", cls: "success", key: "done" };
   if (last.pause) return { text: last.status, cls: "paused", key: "failed" };
   return { text: last.status || "unknown", cls: last.status ? "failed" : "unknown", key: "failed" };
+}
+
+/* The live view's open attempt whose process is gone (`running: false`, not paused) when
+ * `step` has no receipt for it: launched, then stopped (a Stop, a crash) before it recorded an
+ * outcome. The step did run, so it is never "not run yet". */
+function stoppedAttempt(flow) {
+  var live = flow && flow.in_flight;
+  return live && live.step && !live.paused && live.running === false ? live : null;
+}
+
+function stoppedAttemptOf(step, stopped) {
+  if (!stopped || stopped.step !== step.id) return false;
+  return !(step.attempts || []).some(function (a) { return a.attempt === stopped.attempt; });
+}
+
+function stoppedAttemptHtml(stopped) {
+  var sid = stopped.session_id;
+  return '<div class="stat-sub pipe-interrupted" data-state="interrupted">attempt ' + esc(stopped.attempt) +
+    (stopped.started_at ? " started " + esc(fmt.when(stopped.started_at)) : "") +
+    "; its process exited before it recorded an outcome" +
+    (sid ? ' · <a href="#/sessions/' + encodeURIComponent(sid) + '">step session</a> · <a href="#/runs/' +
+      encodeURIComponent(sid) + '">trace</a>' : "") + "</div>";
 }
 
 function edgeAttempt(attempt) {
@@ -683,7 +706,11 @@ function flowHtml(flow, progress, options) {
     '<ol class="pipeline steps">' + (flow.steps || []).map(function (step, index) {
       var live = flowInFlight(flow);
       var current = progress || (live ? { step: live.step, attempt: live.attempt } : null);
-      var status = stepStatus(step, current, flowPaused(flow));
+      var stopped = stoppedAttempt(flow);
+      // The journal's progress names the open attempt, but the live view says its process is
+      // gone: it is not in flight (there is no step block to point at).
+      if (stopped && current && current.step === stopped.step && String(current.attempt) === String(stopped.attempt)) current = null;
+      var status = stepStatus(step, current, flowPaused(flow), stopped);
       var attempts = step.attempts || [];
       var last = attempts[attempts.length - 1];
       var durations = attempts.map(function (a) { return a.duration_ms; });
@@ -717,6 +744,7 @@ function flowHtml(flow, progress, options) {
             ? '<div class="stat-sub pipe-live-note">' + (status.key === "current" ? "in flight" : "paused") +
               (live && live.step === step.id && typeof live.turns === "number" ? " · turn " + esc(live.turns) : "") +
               (status.key === "current" ? " · details in the step block above" : "") + "</div>"
+            : status.key === "interrupted" ? stoppedAttemptHtml(stopped)
             : (attempts.length ? "" : ' <span class="stat-sub">not run yet</span>'))) +
         (passes.length ? '<div class="pipe-pass stat-sub">passes on: ' + passes.map(function (e) {
           return esc(e.type) + " → " + esc(e.to_step);
@@ -844,10 +872,16 @@ function liveQuietFact(live) {
   var known = state ? QUIET_STATES[state] : null;
   if (!state) return "";  // the reader did not judge it: say nothing rather than guess
   var text = quietText(live);
+  var word = known ? known.word : "silence state not recognised";
+  // Without a silence limit (a step with no limits.silence_min) there is no limit to be
+  // within: say so rather than imply one.
+  if (!quietLimit(live) && (state === "ok" || state === "tool_running")) {
+    word = (state === "tool_running" ? "a tool call is running; " : "") + "no silence limit is set for this step";
+  }
   return liveFact("quiet", "Quiet",
     '<span class="pill ' + esc(known ? known.pill : "unknown") + '" data-state="' + esc(known ? known.state : "unknown") +
     '" data-silence="' + esc(state) + '">' + esc(state.replace(/_/g, " ")) + "</span> " +
-    (text ? esc(text) + " · " : "") + '<span class="stat-sub">' + esc(known ? known.word : "silence state not recognised") + "</span>");
+    (text ? esc(text) + " · " : "") + '<span class="stat-sub">' + esc(word) + "</span>");
 }
 
 /* One recent turn in plain words: why the turn ended, then what the loop decided. */
@@ -1863,8 +1897,11 @@ function refreshInbox(inbox) {
 function paintInbox(inbox) {
   var list = el("inbox-list"), expiredList = el("inbox-expired");
   if (!list || !expiredList) return;
-  var live = inbox.items.filter(function (a) { return !a.expired; });
-  var expired = inbox.items.filter(function (a) { return a.expired; });
+  // An answer this page sent is final here even before the next poll drops the request: a
+  // repaint (the answered card's own removal) must not bring it back as a fresh, live card.
+  var open = inbox.items.filter(function (a) { return !inbox.answered[approvalKey(a)]; });
+  var live = open.filter(function (a) { return !a.expired; });
+  var expired = open.filter(function (a) { return a.expired; });
   syncApprovalCards(list, live);
   syncApprovalCards(expiredList, expired);
   el("inbox-error").hidden = true;

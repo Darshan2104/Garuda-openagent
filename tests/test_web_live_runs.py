@@ -1283,3 +1283,11 @@ async def test_failed_initial_checkpoint_preserves_accepted_chat_state(tmp_path,
         assert "Rejected prompt" not in starts[0]["payload"]["task"]
     finally:
         await live.aclose()
+
+
+@pytest.mark.parametrize("model", ["acp:claude/haiku", "acp:claude", "flow"])
+def test_chat_spec_refuses_models_a_chat_cannot_run(model):
+    """Accepted, these failed only at the first turn (litellm: "LLM Provider NOT provided")."""
+    with pytest.raises(SpecError, match="Starters or Flows|Flows page"):
+        ChatSpec.parse({"model": model})
+    assert ChatSpec.parse({"model": "openrouter/x/y"}).model == "openrouter/x/y"
