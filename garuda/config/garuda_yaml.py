@@ -26,6 +26,9 @@ CLI request:
 - a named role or flow replaces the whole definition below it;
 - permission ceilings and consult limits intersect (the stricter wins);
 - checks accumulate, deduplicated on run text, cwd, environment and mode;
+- ``approvals.park_timeout_sec`` (how long a background step's parked approval
+  waits for an answer) only lowers: a project value at or above the user's
+  (or the 300 s default) is ignored;
 - ``harnesses``, ``sessions.keep_days``, ``fallback`` chains and ``consult``
   grants are **user-only**: a project may keep a subset or remove them, never
   add (``config.project_widening``);
@@ -67,6 +70,10 @@ STEP_LIMITS = {"deadline_min": (1, 7 * 24 * 60), "silence_min": (1, 24 * 60),
 LONG_RUN = {"max_hours": (1, 24), "session_turns": (1, 200), "session_hours": (1, 24),
             "max_turns": (1, 1000), "no_progress_turns": (1, 50)}
 ISOLATION = ("shared", "worktree", "auto")
+#: Bounds and default of `approvals.park_timeout_sec` (#834): 30 s to 24 h, 300 s.
+MIN_PARK_TIMEOUT_SEC = 30
+MAX_PARK_TIMEOUT_SEC = 24 * 3600
+DEFAULT_PARK_TIMEOUT_SEC = 300
 #: A configured flow runs in the user's checkout or in its own worktree (no ``auto``).
 FLOW_ISOLATION = ("shared", "worktree")
 ARTIFACTS = ("plan", "patch", "review", "findings", "notes", "summary")
@@ -548,7 +555,7 @@ def parse(data: Any, *, source: str = "") -> dict:
             _fail(key, "is a settings.yaml key; it does not belong in garuda.yaml "
                        "(see `garuda config migrate`)", code="config.conflict")
     _mapping(data, "", ("version", "defaults", "harnesses", "roles", "flows", "checks",
-                        "consults", "sessions"))
+                        "consults", "sessions", "approvals"))
     if data.get("version") != VERSION:
         _fail("version", f"must be {VERSION}", code="config.unsupported_version")
     out: dict[str, Any] = {"version": VERSION}
@@ -597,6 +604,13 @@ def parse(data: Any, *, source: str = "") -> dict:
         if "keep_days" in sessions:
             out["sessions"]["keep_days"] = _int(sessions["keep_days"], "sessions.keep_days",
                                                 1, 3650)
+    if "approvals" in data:
+        approvals = _mapping(data["approvals"], "approvals", ("park_timeout_sec",))
+        out["approvals"] = {}
+        if "park_timeout_sec" in approvals:
+            out["approvals"]["park_timeout_sec"] = _int(
+                approvals["park_timeout_sec"], "approvals.park_timeout_sec",
+                MIN_PARK_TIMEOUT_SEC, MAX_PARK_TIMEOUT_SEC)
     _check_references(out)
     return out
 
@@ -822,6 +836,17 @@ def resolve(
                 consults[key] = value
                 prov[f"consults.{key}"] = source
 
+    approvals: dict[str, int] = {}
+    for source, doc in layers:
+        value = doc.get("approvals", {}).get("park_timeout_sec")
+        if value is None:
+            continue
+        if source == PROJECT and value >= approvals.get("park_timeout_sec",
+                                                         DEFAULT_PARK_TIMEOUT_SEC):
+            continue  # a project may only lower the wait
+        approvals["park_timeout_sec"] = value
+        prov["approvals.park_timeout_sec"] = source
+
     checks: list[dict] = []
     seen: set = set()
     for source, doc in [*layers, (CLI, {"checks": [{"run": c} for c in cli_checks]})]:
@@ -842,6 +867,8 @@ def resolve(
         config["sessions"] = sessions
     if consults:
         config["consults"] = consults
+    if approvals:
+        config["approvals"] = approvals
     if checks:
         config["checks"] = checks
 
@@ -937,6 +964,25 @@ def load_effective(workspace, *, cli_role=None, cli_runtime=None, cli_model=None
             if "model_id" in role
         )
     return resolved
+
+
+def park_timeout_sec(workspace) -> int:
+    """How long a background step's parked approval waits before it is denied (#834).
+
+    ``approvals.park_timeout_sec`` of the effective configuration for
+    ``workspace``, else the 300 s default. A configuration that cannot be read
+    here keeps the default: the run itself reports that configuration error.
+    """
+    import logging
+
+    try:
+        resolved = load_effective(workspace)
+    except (GarudaConfigError, ConfigError, OSError):
+        logging.getLogger(__name__).warning("approval park timeout not read; using the default",
+                                            exc_info=True)
+        return DEFAULT_PARK_TIMEOUT_SEC
+    value = ((resolved.config if resolved else {}).get("approvals") or {}).get("park_timeout_sec")
+    return value if isinstance(value, int) else DEFAULT_PARK_TIMEOUT_SEC
 
 
 # --- migration ---------------------------------------------------------------------

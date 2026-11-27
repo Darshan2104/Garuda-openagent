@@ -66,6 +66,13 @@ RETRY_NOTE = ("[garuda] An earlier attempt of this step failed. Its partial edit
 DEADLINE_STOP = "flow.step_deadline"
 SILENT_STOP = "flow.step_silent"
 LIVENESS_STOPS = {"deadline": DEADLINE_STOP, "silence": SILENT_STOP}
+#: A step session's error code for a harness usage limit (``AcpUsageLimitError``,
+#: recorded by type name; ``harness.limit_reached`` is its typed failure code).
+LIMIT_CAUSE_CODES = frozenset({"AcpUsageLimitError", "harness.limit_reached"})
+#: Harnesses whose limit stop pauses the flow with ``flow.quota_wait`` (#834):
+#: Claude reports when its limit resets. Codex keeps ``flow.step_failed`` and its
+#: proved account read.
+PAUSING_LIMIT_RUNTIMES = frozenset({"claude"})
 #: A long step's own pauses (``long_run``): no measured progress, its turn budget,
 #: or a refusal; ``max_hours`` reuses :data:`DEADLINE_STOP`. Never retried.
 NO_PROGRESS_STOP = "flow.step_no_progress"
@@ -554,7 +561,21 @@ class FlowRunner:
                  "detail": bounded(meta.get("error_detail") or outcome.error, 500)}
         if stop_reason := bounded(outcome.stop_reason, 64):
             cause["stop_reason"] = stop_reason  # how the harness ended its turn (#824)
+        from garuda.acp.protocol import rate_limit_fields
+
+        # A usage limit's validated reset and window, never text (#834).
+        if limit := rate_limit_fields(meta.get("error_limit"), validated=True):
+            cause["limit"] = limit
         return cause if any(cause.values()) else None
+
+    def _limit_pause(self, plan, cause: dict | None) -> bool:
+        """A Claude step stopped by its usage limit pauses the flow (#834).
+
+        Not in a checked flow: its resume contract settles ``flow.step_failed``.
+        """
+        return (plan is not None and plan.runtime_id in PAUSING_LIMIT_RUNTIMES
+                and self.verification_request is None
+                and (cause or {}).get("code") in LIMIT_CAUSE_CODES)
 
     async def _publish(self, session_id: str, updates: dict, *, terminal: bool = False):
         # Every publication is a state change, so it advances `updated_at` (#763);
@@ -2224,9 +2245,10 @@ class FlowRunner:
             # The step session's own cause is kept for checked (owned worker) and
             # unchecked launches alike; the stop code is unchanged (#749).
             cause = await _settled_sync(self._step_cause, outcome)
-            stop = (None if outcome.quota_wait
+            paused = outcome.quota_wait or self._limit_pause(plan, cause)
+            stop = (None if paused
                     else _liveness_stop(f"step {step['id']}", outcome, limits, step["id"], cause)) \
-                or FlowStopped("flow.quota_wait" if outcome.quota_wait else "flow.step_failed",
+                or FlowStopped("flow.quota_wait" if paused else "flow.step_failed",
                                _failed(f"step {step['id']}", outcome, cause,
                                        no_edits=self._read_only(step, role)),
                                step=step["id"], cause=cause)
