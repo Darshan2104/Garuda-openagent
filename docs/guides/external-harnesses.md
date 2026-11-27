@@ -396,16 +396,20 @@ enabled, the flow resumes after the reported reset. That reset time is the only
 Claude limit source Garuda uses: nothing is probed and no prompt is sent to
 check it.
 
-In a checked flow (`--check`) the step settles as `flow.step_failed` with cause
-`harness.limit_reached` instead, and nothing resumes it by itself. `garuda flow
-show`, `--json` and the dashboard still present it as a quota pause, not a
-failure: the read model's `pause` is `{"kind": "quota", "reset_at",
-"rate_limit_type", "resume": "manual", "action"}` (the reset and window only
-when the harness reported them), and `flow show` prints ``paused on a usage
-limit until <reset>; run `garuda flow resume FLOW_ID` after <reset>``. Every quota
-pause carries `resume` (`automatic` while quota recovery waits for the reset,
-whose `action` is `resumes after the reset`; `manual` otherwise) and `action`.
-The recorded stop code and outcome are unchanged.
+A checked flow (`--check`) stops with `flow.quota_wait` too, and its own
+`garuda flow run` process waits for the reported reset and continues the flow
+under its original checks
+([Usage limits in checked flows](sessions-and-flows.md#usage-limits-in-checked-flows)).
+`garuda flow show`, `--json` and the dashboard present a quota stop as a pause,
+not a failure: the read model's `pause` is `{"kind": "quota", "reset_at",
+"rate_limit_type", "resume", "action"}` (the reset and window only when the
+harness reported them). `resume` is `automatic` while quota recovery waits for
+the reset or while the checked flow's process waits for it (its
+`flow_quota_wait` record names a live process), with `action` `resumes after
+the reset`; otherwise it is `manual` and `flow show` prints ``paused on a usage
+limit until <reset>; run `garuda flow resume FLOW_ID` after <reset>``. A
+checked flow stopped by a limit before this release recorded `flow.step_failed`
+with cause `harness.limit_reached`; it is still shown as a manual quota pause.
 
 **Turn stop reason.** Each ACP turn records the harness's own `stopReason`
 (`end_turn`, `max_tokens`, `max_turn_requests`, `refusal`, `cancelled`) as

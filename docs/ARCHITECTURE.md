@@ -613,6 +613,11 @@ fastest way to learn the system.
    reviewer does not rerun its completed coder, and continuation supplies saved
    flow/workspace context rather than claiming restoration of hidden model state.
    A lost dispatch owner is `uncertain`, never replay authority.
+   Checked CLI flows are never enrolled. A checked Claude limit stop is the
+   resumable checked stop `flow.quota_wait`; `flows/checked_quota.py` lets the
+   `flow run --check` (or `flow resume`) process wait for the reported reset
+   and then continue through the same checked resume path, under the original
+   checks, without a second execution engine.
 
    Scheduler installation is established by reading back the exact managed
    cron entry for the selected private root and checking its owner-only regular

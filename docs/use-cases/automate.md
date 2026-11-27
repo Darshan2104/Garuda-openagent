@@ -433,9 +433,11 @@ executable on `PATH` unless your `~/.agent/garuda.yaml` defines roles and none
 of them (fallbacks included) uses Codex. A Codex flow enrolled without a
 recorded Codex executable is blocked, not resumed. The schedule keeps the
 `PATH` it was installed with, which is how the resumed step finds
-`claude-agent-acp`. A checked flow keeps
-`flow.step_failed` for a Claude limit, so its own resume contract applies. A
-step's `retries` never rerun a quota wait.
+`claude-agent-acp`. A checked flow (`--check`) is never enrolled; it waits
+out a Claude limit in its own `garuda flow run` process instead and then
+continues under its original checks (see
+[Usage limits in checked flows](../guides/sessions-and-flows.md#usage-limits-in-checked-flows)).
+A step's `retries` never rerun a quota wait.
 
 This release does not recover standalone `chat` or `run` sessions,
 check-protected or dashboard-owned flows, parallel groups, or flows with step

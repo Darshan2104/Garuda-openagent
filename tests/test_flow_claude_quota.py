@@ -198,12 +198,13 @@ async def test_without_recovery_a_claude_limit_still_pauses_and_flow_resume_reru
     assert h.script.sequence == [("plan", 1), ("build", 1), ("build", 2), ("review", 1)]
 
 
-def test_a_checked_flow_keeps_its_step_failed_contract():
+def test_a_claude_limit_pauses_checked_and_unchecked_flows_alike():
     plan = RolePlan("coder", "claude", "acp", permissions="auto")
     cause = {"code": "AcpUsageLimitError", "limit": {"resets_at": RESETS_AT}}
     unchecked = SimpleNamespace(verification_request=None)
     assert FlowRunner._limit_pause(unchecked, plan, cause) is True
-    assert FlowRunner._limit_pause(SimpleNamespace(verification_request=object()), plan, cause) is False
+    # A checked flow's limit stop is a resumable checked stop now (checked_quota).
+    assert FlowRunner._limit_pause(SimpleNamespace(verification_request=object()), plan, cause) is True
     codex = RolePlan("coder", "codex", "acp", permissions="auto")
     assert FlowRunner._limit_pause(unchecked, codex, cause) is False
     assert FlowRunner._limit_pause(unchecked, plan, {"code": "acp.remote.internal_error"}) is False
