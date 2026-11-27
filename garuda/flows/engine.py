@@ -40,7 +40,7 @@ from pathlib import Path
 from typing import Any
 
 from garuda.flows import artifacts as art
-from garuda.flows import prompting
+from garuda.flows import measure, prompting
 from garuda.workspace.confined_acp import Confinement, ConfinementRefused, require_image
 
 JOURNAL = "journal.jsonl"
@@ -949,14 +949,15 @@ class FlowRunner:
         return self._no_edits(step, role) or spec.get("permissions") == "readonly"
 
     def _prompt(self, step: dict, role: str, inputs, *, read_only: bool | None = None,
-                extra=None, attached=None) -> str:
-        """The step's prompt (:func:`garuda.flows.prompting.assemble`); ``extra`` ends it."""
+                extra=None, attached=None, sizes: list | None = None) -> str:
+        """The step's prompt (:func:`garuda.flows.prompting.assemble`); ``extra`` ends it.
+        ``sizes`` receives its parts' sizes (#832)."""
         if read_only is None and self.launch_kind != "run":
             read_only = self._read_only(step, role)
         return prompting.assemble(task=self.task, flow=self.name, step=step, role=role,
                                   inputs=inputs, read_only=bool(read_only),
                                   run=self.launch_kind == "run", extra=extra,
-                                  attached=attached)
+                                  attached=attached, sizes=sizes)
 
     # -- running -----------------------------------------------------------------------
 
@@ -1547,7 +1548,9 @@ class FlowRunner:
                                      "step": step["id"], "attempt": attempt, "at": _now()})
         started = (_stamp(), time.monotonic())
         source_guard, snapshot_guard = NoEditsGuard(self.workspace), NoEditsGuard(target)
-        prompt = self._prompt(step, "reviewer", inputs, read_only=True, attached=attached)
+        sizes: list[dict] = []
+        prompt = self._prompt(step, "reviewer", inputs, read_only=True, attached=attached,
+                              sizes=sizes)
 
         limits = step_limits(self.flow, step)
 
@@ -1622,6 +1625,11 @@ class FlowRunner:
         if stop is not None:
             receipt["stop"] = _stop_record(stop)
         receipt.update(_timing(started))
+        # One prompt, sent to every member; each member's session is measured (#832).
+        receipt["measure"] = measure.attempt(
+            self.store, prompt=prompt, parts=sizes,
+            session_ids=[outcome.session_id for _, outcome in outcomes],
+            duration_ms=receipt.get("duration_ms"), outcomes=[o for _, o in outcomes])
         _write_once(self.dir / "receipts" / _receipt_name(step["id"], attempt), receipt)
         _append(self.dir / JOURNAL, {"event": "receipt", "step": step["id"],
                                      "attempt": attempt, "at": _now()})
@@ -2105,14 +2113,19 @@ class FlowRunner:
             inputs, done,
             reviewed=prompt_extra.packet.get("candidate", {}).get("step") if reviewer else None)
         version_before = await self._version_for_flow()
-        prompt = self._prompt(step, role, inputs, extra=prompt_extra, attached=attached)
+        sizes: list[dict] = []
+        prompt = self._prompt(step, role, inputs, extra=prompt_extra, attached=attached,
+                              sizes=sizes)
         if self.quota_recovery is not None and self.quota_recovery.record is not None:
-            prompt += ("\n\n[garuda] Continue from the retained workflow and current workspace after "
-                       "a quota pause. Preserve partial edits and inspect existing work before "
-                       "acting; completed steps are not replayed. This is saved workflow context, "
-                       "not restoration of hidden model state.")
+            note = ("\n\n[garuda] Continue from the retained workflow and current workspace after "
+                    "a quota pause. Preserve partial edits and inspect existing work before "
+                    "acting; completed steps are not replayed. This is saved workflow context, "
+                    "not restoration of hidden model state.")
+            prompt += note
+            sizes.append({"part": "note", "chars": len(note)})
         if long is not None:
             prompt += "\n\n" + long_step.FIRST_TURN_LINE
+            sizes.append({"part": "note", "chars": len(long_step.FIRST_TURN_LINE) + 2})
         guard = await _settled_sync(NoEditsGuard, self.workspace) if no_edits else None
         capability = lease.delegate(f"{self.flow_session}:{step['id']}:{attempt}")
         started: tuple[str, float] | None = None
@@ -2176,6 +2189,8 @@ class FlowRunner:
                 "role_plan": plan.record() if plan is not None else None,
                 "stop": {"code": stop.code, "message": str(stop)},
                 **_timing(started),
+                "measure": measure.attempt(self.store, prompt=prompt, parts=sizes,
+                                           session_ids=[], duration_ms=None),
             })
             raise stop from exc
         except RoleRefused as exc:
@@ -2301,6 +2316,11 @@ class FlowRunner:
             receipt["outputs"] = [] if receipt.get("no_edits", {}).get("result") == "changed" \
                 else receipt["outputs"]
         receipt.update(_timing(started))
+        # What the attempt cost and how much context it used (#832); additive.
+        receipt["measure"] = await _settled_sync(
+            measure.attempt, self.store, prompt=prompt, parts=sizes,
+            session_ids=[outcome.session_id], duration_ms=receipt.get("duration_ms"),
+            outcomes=[outcome])
         await self._record_step_receipt(receipt)
         if stop is not None:
             raise stop

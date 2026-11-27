@@ -195,6 +195,7 @@ function Poller(fn, intervalMs, options) {
   this.stopped = false;
   this.running = false;
   this.again = false;
+  this.inflight = null;
   var self = this;
   this._onVisible = function () {
     if (!document.hidden) {
@@ -219,14 +220,19 @@ Poller.prototype.tick = function () {
   this.running = true;
   var result;
   try { result = this.fn(); } catch (err) { result = null; }
-  Promise.resolve(result).catch(function () { /* handled by the caller */ }).then(function () {
+  this.inflight = Promise.resolve(result).catch(function () { /* handled by the caller */ }).then(function () {
     self.running = false;
+    self.inflight = null;
     if (self.stopped) return;
     if (self.again) { self.again = false; self.tick(); return; }
     var delay = document.hidden ? Math.max(self.interval, self.hiddenInterval) : self.interval;
     self.timer = setTimeout(function () { self.tick(); }, delay);
   });
 };
+
+/* Resolves once no call is in flight. After `stop()`, that means nothing more will be sent:
+ * what a caller about to delete the thing being polled needs to wait for. */
+Poller.prototype.idle = function () { return this.inflight || Promise.resolve(); };
 
 /* Poll as soon as possible without overlapping the call in flight. */
 Poller.prototype.now = function () { this.tick(); return this; };
