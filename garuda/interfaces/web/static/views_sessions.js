@@ -194,7 +194,8 @@ function sessionRowHtml(row) {
     ' <a class="session-trace stat-sub" href="#/runs/' + encodeURIComponent(id) + '" title="Trace and metrics on Runs">trace</a>' +
     // Two runs of one task have the same name; the id and the task's first words tell them apart.
     '<div class="s-sub"><code>' + esc(id.slice(0, 8)) + "</code>" + (task ? " · " + esc(task) : "") + "</div></td>" +
-    '<td data-th="State"><span class="pill ' + (row.pause ? "paused" : (row.crashed ? "failed" : (state.work === "working" ? "running" : "unknown"))) + '">' +
+    '<td data-th="State"><span class="pill ' + (row.pause ? "paused" : (row.crashed ? "failed" : (state.work === "working" ? "running" : "unknown"))) +
+    '" data-state="' + esc(row.pause ? "paused" : row.label) + '">' +
     esc(row.pause ? "paused" : row.label) + "</span>" + (row.queue ? '<div class="s-sub">' + esc(queueText(row.queue)) + "</div>" : "") + "</td>" +
     '<td class="s-clip" data-th="Runtime · role · model" title="' + esc(identityText(row)) + '">' + esc(identityText(row)) + "</td>" +
     '<td class="s-facts" data-th="Outcome / verification">' + chip("outcome", state.outcome || "—", row.pause ? "chip-pause" : outcomeClass(state.outcome)) + " " +

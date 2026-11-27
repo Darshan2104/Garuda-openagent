@@ -15,7 +15,7 @@
  * Each state sets --c (text) and --c-dot (marker) plus the marker's shape (--dot-*); the tint
  * is color-mix(--c-dot, --tint, --surface), the same formula as the --st-*-bg tokens. */
 
-/* ===== tokens ============================================================================ */
+/* ===== tokens */
 
 :root {
   --bg: #f6f7f9; --surface: #ffffff; --surface-2: #f2f4f7; --surface-3: #e8ebf0;
@@ -91,7 +91,7 @@ html[data-theme="dark"] {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
 
-/* ===== base ============================================================================== */
+/* ===== base */
 
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
@@ -132,7 +132,7 @@ time { white-space: nowrap; }
 /* Keyboard focus is always visible, on everything focusable (fields add a halo below). */
 :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: var(--radius-sm); }
 
-/* ===== layout ============================================================================ */
+/* ===== layout */
 
 .topbar {
   position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: var(--s5);
@@ -197,8 +197,8 @@ time { white-space: nowrap; }
   background: var(--st-wait-bg); border-bottom-color: color-mix(in srgb, var(--st-wait-dot) 45%, transparent);
   --c-dot: var(--st-wait-dot);
 }
-.conn-banner::before {
-  content: ""; width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--c-dot);
+.conn-banner > :first-child::before {
+  content: ""; display: inline-block; width: 8px; height: 8px; margin-right: 10px; vertical-align: 1px; border-radius: 50%; background: var(--c-dot);
   box-shadow: 0 0 0 4px color-mix(in srgb, var(--c-dot) 25%, transparent); animation: pulse 1.6s var(--ease) infinite;
 }
 
@@ -229,7 +229,7 @@ time { white-space: nowrap; }
 .stack { display: grid; gap: var(--s1); margin-top: var(--s2); }
 .span-all { grid-column: 1 / -1; }
 
-/* ===== components ======================================================================== */
+/* ===== components */
 
 .card, .tile {
   background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg);
@@ -247,7 +247,7 @@ time { white-space: nowrap; }
 .stat-sub { color: var(--muted); font-size: 12.5px; margin-top: 2px; }
 [data-tile] { position: relative; }
 
-/* --- state: one marker per state, colour AND shape ---------------------------------------
+/* --- state: one marker per state, colour AND shape
  * Default and `unknown`: neutral, a hollow ring, so "unknown" never looks like success or like
  * zero. Then one rule per state; the selectors are the markup that means it. */
 .pill, .chip[data-chip] {
@@ -261,38 +261,34 @@ time { white-space: nowrap; }
 }
 /* waiting on you: solid, warm, with a halo */
 .home-row:is([data-kind="approvals"], [data-kind="waiting"]) > .pill, .pill[data-state="waiting"],
-tr.session-row[data-label="waiting"] td[data-th="State"] .pill, td[data-th="Approvals"] .pill,
-.diagnostics .pill.running {
+td[data-th="Approvals"] .pill, .diagnostics .pill.running {
   --c: var(--st-wait); --c-dot: var(--st-wait-dot);
   --dot-bg: var(--c-dot); --dot-ring: 0 0 0 3px color-mix(in srgb, var(--c-dot) 25%, transparent);
 }
 /* queued: a ring with a solid edge */
-.pill:is([data-state="queued"], [data-status="queued"]), tr.session-row[data-label="queued"] td[data-th="State"] .pill {
+.pill:is([data-state="queued"], [data-status="queued"]) {
   --c: var(--st-queue); --c-dot: var(--st-queue-dot); --dot-bg: transparent; --dot-ring: inset 0 0 0 2px var(--c-dot);
 }
 /* completed, passed: solid green */
-.pill.success, .chip[data-chip].chip-on, tr.session-row[data-label="completed"] td[data-th="State"] .pill {
+.pill.success, .pill[data-state="completed"], .chip[data-chip].chip-on {
   --c: var(--st-done); --c-dot: var(--st-done-dot); --dot-bg: var(--c-dot); --dot-ring: none;
 }
 /* failed, refused: solid red */
-.pill.failed, .chip[data-chip].chip-bad,
-tr.session-row:is([data-label="failed"], [data-label="refused"]) td[data-th="State"] .pill {
+.pill.failed, .pill:is([data-state="failed"], [data-state="refused"]), .chip[data-chip].chip-bad {
   --c: var(--st-fail); --c-dot: var(--st-fail-dot); --dot-bg: var(--c-dot); --dot-ring: none;
 }
 /* crashed: a diamond in its own crimson, so it is not read as an ordinary failure */
-.home-row[data-kind="crashed"] > .pill, tr.session-row[data-label="crashed"] td[data-th="State"] .pill,
-.pill[data-state="crashed"] {
+.home-row[data-kind="crashed"] > .pill, .pill[data-state="crashed"] {
   --c: var(--st-crash); --c-dot: var(--st-crash-dot); --dot-bg: var(--c-dot); --dot-ring: none;
   --dot-r: 1px; --dot-t: rotate(45deg) scale(0.85);
 }
 /* paused on a resumable stop: two bars */
-.pill.paused, .chip[data-chip].chip-pause, tr.session-row[data-pause] td[data-th="State"] .pill {
+.pill.paused, .pill[data-state="paused"], .chip[data-chip].chip-pause {
   --c: var(--st-pause); --c-dot: var(--st-pause-dot); --dot-ring: none; --dot-r: 1px;
   --dot-bg: linear-gradient(90deg, var(--c-dot) 0 36%, transparent 36% 64%, var(--c-dot) 64%);
 }
 /* stopped, cancelled: a known outcome that is neither: a solid grey dot */
-.pill:is([data-status="cancelled"], [data-state="cancelled"]),
-tr.session-row[data-label="cancelled"] td[data-th="State"] .pill { --dot-bg: var(--c-dot); --dot-ring: none; }
+.pill:is([data-status="cancelled"], [data-state="cancelled"]) { --dot-bg: var(--c-dot); --dot-ring: none; }
 
 .pill {
   display: inline-flex; align-items: center; gap: 6px; vertical-align: 1px; white-space: nowrap;
@@ -314,7 +310,7 @@ tr.session-row[data-label="cancelled"] td[data-th="State"] .pill { --dot-bg: var
 :is(.s-name .pill, .home-name + .pill.unknown:not([data-login]):not([data-state]), #session-label ~ .pill.unknown,
   .origin-pill, .flow-row-setup .pill.unknown, .agent-row .pill.unknown, .run-sub .pill)::before { display: none; }
 
-/* --- chips: "key: value" metadata; state chips carry the marker ---------------------------
+/* --- chips: "key: value" metadata; state chips carry the marker
  * Chips stay inline (never flex), so innerText keeps "verification: unavailable" on one line. */
 .chips { display: flex; gap: 6px var(--s4); flex-wrap: wrap; align-items: center; margin-top: var(--s2); }
 .chip {
@@ -322,8 +318,8 @@ tr.session-row[data-label="cancelled"] td[data-th="State"] .pill { --dot-bg: var
   font: 500 12px/18px var(--sans); color: var(--text);
 }
 .chip-k { color: var(--muted); font-weight: 400; }
-.chip + .chip { margin-left: 10px; }
-.chips > .chip + .chip { margin-left: 0; }
+.chip { margin-right: 10px; }
+.chips > .chip, .s-facts .chip, :is(.flow-callout, #flow-review, #flow-quota-recovery, .attempt-head) .chip { margin-right: 0; }
 .chip[data-chip]::before { display: none; margin-right: 6px; }
 .chip:is([data-chip="outcome"], [data-chip="verification"], [data-chip="self-check"], [data-chip="review"],
   [data-chip^="coverage"], [data-chip="status"], [data-chip="flow"], [data-chip="readiness"],
@@ -556,11 +552,12 @@ svg { display: block; width: 100%; height: auto; overflow: visible; }
 }
 .keys-help .card { min-width: min(360px, 100%); max-width: 520px; box-shadow: var(--shadow-2); }
 .keys-help td { white-space: normal; border-bottom: 0; padding: 6px 8px; vertical-align: top; }
+.keys-help td:first-child { white-space: nowrap; }
 .keys-help tbody tr:hover td { background: none; }
 .keys-tabs { list-style: none; margin: 6px 0 0; padding: 0; columns: 2; column-gap: 18px; }
 .keys-tabs li { padding: 2px 0; white-space: nowrap; }
 
-/* --- the flow pipeline: a vertical timeline (session page; any page with .pipeline) -------- */
+/* --- the flow pipeline: a vertical timeline (session page; any page with .pipeline) */
 .flow > h2 .chip { font-size: 12.5px; margin-left: var(--s2); }
 .flow-callout, #flow-review, #flow-quota-recovery {
   margin: 0 0 var(--s2); padding: 8px 12px; line-height: 1.8; border-radius: var(--radius); background: var(--surface-2); font-size: 13px;
@@ -690,13 +687,14 @@ a.attempt-trace { margin-left: 4px; }
   .table-stack tbody tr:hover td { background: none; }
 }
 
-/* ===== pages ============================================================================= */
+/* ===== pages */
 
 /* --- Overview --- */
 #home-root { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--s4); }
 #home-root > .page-head { margin-bottom: 0; }
 #home-root .card + .card { margin-top: 0; }
 #home-unreadable:empty { display: none; }
+.home-section h2 .meta:empty { display: none; }
 .home-section h2 .meta {
   font-weight: 600; font-size: 12px; background: var(--surface-2); border-radius: 999px; padding: 1px 8px; margin-left: 6px;
 }
@@ -862,7 +860,6 @@ tr.session-row[data-pause] { --row-c: var(--st-pause-dot); }
 .trace-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px var(--s4); margin: 0 0 var(--s3); font-size: 13px; }
 .trace-facts dt { color: var(--muted); }
 .trace-facts dd { margin: 0; overflow-wrap: anywhere; }
-.trace-facts dd > :is(.chip, .stat-sub) + :is(.chip, .stat-sub) { margin-left: var(--s2); }
 #external-summary h3 { margin: var(--s5) 0 var(--s2); }
 #external-summary .block pre { max-height: 320px; }
 #external-turns th.num { text-align: right; }
@@ -1033,7 +1030,7 @@ tr.session-row[data-pause] { --row-c: var(--st-pause-dot); }
 .starter-bindings :is(th, td) { padding: 7px 10px; overflow-wrap: anywhere; white-space: normal; }
 .starter-build-check { margin: var(--s5) 0; border-top: 1px solid var(--border); padding-top: var(--s2); }
 .starter-result .btn { margin: 4px 8px 4px 0; }
-.starter-status .chip + .chip { margin-left: var(--s3); }
+.starter-status .chip + .chip { margin-left: var(--s2); }
 .starter-diagnostics, .starter-remedies { font-size: 13px; }
 .starter-operation-approvals .notice .btn { margin: var(--s2) var(--s2) 0 0; }
 
@@ -1050,7 +1047,7 @@ tr.session-row[data-pause] { --row-c: var(--st-pause-dot); }
 #setup-logins { margin-top: var(--s4); line-height: 2.1; }
 #provenance-table td:first-child { font-family: var(--mono); font-size: 12px; }
 /* Setup's tables carry sentences (sizes, reasons, declared fields): they wrap. */
-#setup-root td { white-space: normal; overflow-wrap: anywhere; vertical-align: top; }
+#setup-root td { white-space: normal; overflow-wrap: break-word; vertical-align: top; }
 #setup-root td code { white-space: nowrap; }
 #setup-root td:first-child { white-space: nowrap; overflow-wrap: normal; }
 #agents-table :is(.agent-size, th.num) { text-align: left; min-width: 260px; }
@@ -1088,7 +1085,7 @@ tr.session-row[data-pause] { --row-c: var(--st-pause-dot); }
 @keyframes rise { from { opacity: 0; transform: translate(-50%, 8px); } }
 @keyframes fade { from { opacity: 0; } }
 
-/* ===== media queries ===================================================================== */
+/* ===== media queries */
 
 /* Wide windows: the two long lists keep their header in view while scrolling. */
 @media (min-width: 1280px) {
@@ -1191,9 +1188,9 @@ tr.session-row[data-pause] { --row-c: var(--st-pause-dot); }
   h1 { font-size: 20px; }
   input:is([type="search"], [type="text"], [type="url"]) { min-width: 0; width: 100%; }
   .filters > * { flex: 1 1 100%; }
-  #tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
-  #tiles .card { padding: 12px 14px; }
-  #tiles .stat-value { font-size: 21px; }
+  :is(#tiles, #trace-tiles, #usage-tiles) { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  :is(#tiles, #trace-tiles, #usage-tiles) > * { padding: 12px 14px; }
+  :is(#tiles, #trace-tiles, #usage-tiles) :is(.stat-value, .tile-value) { font-size: 21px; }
   .page-head > .btn:not([hidden]):not(.btn:not([hidden]) ~ .btn) { margin-left: 0; }
   .home-age { margin-left: 0; }
   .home-row > .pill:first-child { min-width: 0; }
