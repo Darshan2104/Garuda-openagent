@@ -631,11 +631,43 @@ decides:
 Staying in one session keeps the harness's context (and its provider's prompt
 cache); a fresh one costs a new context. A fresh session runs in the same
 Garuda step session — the same lease, evidence baseline and approvals — and
-its first prompt is the step prompt again plus a *brief*: Garuda's own records
-of the step so far (turns, files changed, outputs missing, denied actions and
-the last progress note, fenced as data, at most 6,000 characters). It is not
-restored model state. A usage limit (`harness.limit_reached`) is never retried
-here: the step stops as before.
+its first prompt is the step prompt again plus a *rotation brief* from flow
+memory, the same builder as a review's round brief (below). It is built only
+from Garuda's records: the attempt's progress file, the step's earlier
+receipts and the reason for the fresh session. It says:
+
+- why the previous session ended, and which attempt this is;
+- how the step's earlier attempts settled (status and stop code);
+- the turns and harness sessions so far, the hours used, and the turns after
+  which earlier fresh sessions began;
+- the files changed since the step's first attempt, each path JSON-quoted,
+  with the hash of that change;
+- the outputs still missing.
+
+The agent's own text is fenced as data in `flow-note` blocks, kept apart from
+those facts: the actions Garuda denied in the last turn (with "continue without
+them, or record that they need approval") and the last progress note (marked as
+the agent's own account, to check against the workspace). The brief never
+repeats the task, because the step prompt comes before it. It is not restored
+model state.
+
+The rotation brief follows the round brief's rules. It is at most 8,000
+characters, and everything in it is redacted again. When it is too long,
+Garuda trims in a fixed order: first the progress note and then the denied
+actions' descriptions are shortened or dropped, then the earlier attempts and
+sessions are summarised and then dropped, and the file list is shortened last.
+Every cut is stated in the brief. The same records always give the same brief.
+
+When the long step is a reviewed step in round 2 or later, the step prompt it
+re-sends already holds that round's brief: the findings, the earlier rounds,
+and the attempts and files up to the reviewed candidate. The rotation brief
+names the same round and says that brief still holds. It lists only the
+attempts after the reviewed candidate, and its file list is labelled with the
+turn it was measured after. Nothing is stated twice, so the two briefs cannot
+disagree.
+
+A usage limit (`harness.limit_reached`) is never retried here: the step stops
+as before.
 
 Every turn is a line in `progress/STEP-ATTEMPT.jsonl` beside the flow's
 receipts (owner-only, at most 2,000 lines, with the brief of each rotation).

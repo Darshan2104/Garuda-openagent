@@ -5551,3 +5551,48 @@ unknown and takes the latest attempt with outputs as notes.
 Reuse: `garuda/context/brief.py` is session-shaped and HTML-escapes; only its
 redaction helper (`_redacted`) is reused. Fencing and rendering are
 `prompting.fence`/`render_findings`, so the brief shares the prompt's marker.
+
+## 2026-11-27: A long step's rotation brief comes from flow memory
+
+The turn loop (#842) shipped a minimal `default_brief` in
+`garuda/flows/long_step.py` for a long step's fresh harness session and said
+flow memory should replace it. `garuda/flows/memory.py` now has
+`rotation_brief()`, and `long_step.memory_brief` (the default brief provider)
+renders it; `default_brief` and its own fencing, bounding and reason wording
+are gone. The provider interface (`brief(reason, progress) -> str`) stays, so
+tests and callers can inject one, and `progress` now also carries the records
+the default is built from.
+
+Inputs, all Garuda's records: the attempt's progress records
+(`progress/STEP-ATTEMPT.jsonl` as written so far, plus the turn that ended the
+session), the declared outputs still missing, the rotation reason and the
+turn spec's new `memory` field. That field holds the step's earlier attempts,
+taken from its receipts (`memory.earlier_attempts`, at most 32, receipt-shaped
+rows), and `review` (`memory.review_context`: round, `max_rounds`, reviewed
+candidate attempt) in a review round 2+. Both are computed by the engine
+before launch, so an owned worker, which only gets the spec, builds the same
+brief. `_valid_spec` checks them strictly.
+
+The rotation brief follows the round brief's rules. Its budget is `BUDGET`
+(8,000 characters; `long_step.MAX_BRIEF` is now that value, not 6,000), and it
+uses the same `_clean` redaction of every value. The change list is rendered
+by the same function, with JSON-quoted paths, so a path is no longer fenced as
+agent text. Agent text (the last turn's denied-action descriptions, the last
+progress note) goes in `flow-note` fences with their turn, introduced by
+`[garuda]` lines. Trimming uses the same `_trim_notes` and order: notes first
+(the progress note, then the denials), then the earlier attempts and sessions
+(summarised, then dropped; the analogue of older rounds, since a rotation brief
+has no findings of its own), then the file list. The marker is chosen by the
+caller from `bodies()`, as for `CoderBrief`, so the brief is deterministic for
+the same records. `facts()` and the new helpers share `_attempts`, and
+`_files_line` and the note rendering are shared with the round brief.
+
+Round consistency, decided: reference, do not repeat. A rotation re-sends the
+step prompt first (as #842 shipped), and in a review round 2+ that prompt
+already contains the round brief verbatim. The rotation brief names the same
+round and `max_rounds + 1` and the candidate attempt that round reviewed, and
+says the round brief still holds. It leaves the findings, earlier rounds and
+the attempts up to the candidate to the round brief, lists only the attempts
+after the candidate (for example a quota-paused one), and labels its file list
+"as Garuda measured them after turn N". Restating the round facts would spend
+budget twice and could drift when the two are trimmed differently.

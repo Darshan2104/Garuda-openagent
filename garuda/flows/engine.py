@@ -2004,21 +2004,41 @@ class FlowRunner:
             attempt += 1
             extra = RETRY_NOTE
 
-    async def _turn_spec(self, step: dict, plan, attempt: int, long, done: list[dict]) -> dict | None:
+    async def _turn_spec(self, step: dict, plan, attempt: int, long, done: list[dict],
+                         prompt_extra=None) -> dict | None:
         """An ACP flow step's turn spec: its one repair turn (#819) when it declares
-        outputs, and its turn loop with ``long_run``; None runs it as before."""
-        from garuda.flows import long_step
+        outputs, and its turn loop with ``long_run``; None runs it as before.
+
+        A turn loop's spec also carries what its rotation brief needs beyond the
+        attempt's progress file (:func:`garuda.flows.memory.rotation_brief`): the
+        step's earlier attempts from its receipts and, in a review round 2+, the
+        round the step prompt's round brief describes.
+        """
+        from garuda.flows import long_step, memory
 
         if (self.launch_kind != "flow" or plan is None or plan.kind != "acp"
                 or (long is None and not step.get("outputs"))):
             return None
-        base = None
+        base, earlier, review = None, [], None
         if long is not None and attempt > 1:
             base = self._first_session(await _settled_sync(self._first_attempt, step["id"], done))
+
+            def rows() -> list[dict]:
+                try:
+                    found = list(receipts(self.store, self.flow_session))
+                except (OSError, ValueError):
+                    found = []
+                return found + list(done)
+
+            earlier = memory.earlier_attempts(await _settled_sync(rows), step=step["id"],
+                                              before=attempt)
+        if long is not None and isinstance(prompt_extra, prompting.Findings) \
+                and isinstance(prompt_extra.brief, memory.CoderBrief):
+            review = memory.review_context(prompt_extra.brief.facts)
         return long_step.turn_spec(
             step=step["id"], attempt=attempt, outputs=list(step.get("outputs", [])), run=long,
             progress_path=str((self.dir / "progress" / f"{step['id']}-{attempt}.jsonl").resolve()),
-            baseline_session=base)
+            baseline_session=base, earlier=earlier, review=review)
 
     async def _record_step_receipt(self, receipt: dict) -> None:
         step, attempt = receipt["step"], receipt["attempt"]
@@ -2139,7 +2159,7 @@ class FlowRunner:
                              if self.quota_recovery and plan and plan.runtime_id == "codex"
                              else None),
                 limits=limits,
-                turns=await self._turn_spec(step, plan, attempt, long, done)))
+                turns=await self._turn_spec(step, plan, attempt, long, done, prompt_extra)))
         except ConfinementRefused as exc:
             stop = FlowStopped(exc.code, exc.message, step=step["id"])
             # This refusal precedes agent start. Settle the intent so recovery
