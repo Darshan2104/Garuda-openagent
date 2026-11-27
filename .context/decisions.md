@@ -5887,6 +5887,15 @@ bounds that case, with the supervisor's backstop behind it. A call whose reply
 was lost (a timeout, EOF or a partial line) marks the channel broken. Every
 later call then refuses with `LeaseError` instead of reading a stale reply.
 
+The lock held during an approval starves nothing. The worker never renews
+the workspace lease: the parent's `WorkspaceLeaseGuard` heartbeat renews it
+every TTL/3 on the parent's loop, and the parent awaits the approval without
+blocking that loop. The worker's other calls (`acquire`, the one-off `check`
+from `start_heartbeat` and before each `race`, `quarantine`, `release`,
+`result`) are made between turns, never while a prompt's approval is pending.
+A test answers after about 25 lease TTLs. It checks that the lease is never
+stale and that no other call reaches the parent during the wait.
+
 What stays the same: an answer after the broker's deadline is recorded as
 `via: timeout`. The parent's late reply is then read and discarded within the
 margin, so the worker can still report the step's result. Allow-list decisions
