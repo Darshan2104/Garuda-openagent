@@ -34,7 +34,8 @@ The command prints a URL with a one-time token (`http://127.0.0.1:8787/#t=…`);
 open that exact URL. It opens on the **Overview**. Right after it starts listening,
 the dashboard reads every session record and runs the harness discovery the
 Overview's own requests would run, in the background (it never delays startup,
-and stops on shutdown), so the first page is fast. Press Ctrl-C to stop it: the
+and stops on shutdown), so the first page is fast. Press Ctrl-C (or send it
+SIGTERM, as `kill` and service managers do) to stop it: the
 dashboard finishes the flow and chat operations it owns, prints
 `Garuda dashboard stopped.` and exits 0. Pasting the link into a tab that is
 already open works too: the dashboard takes the token, removes it from the
@@ -222,9 +223,11 @@ role run from **Starters** (**Run a task as a chosen role**) is named after its
 **Goal** the same way when **Session name** is left empty.
 
 **Start flow** appears only in write mode on Linux, for a flow the owned engine
-runs (no step retries, no `isolation` other than `shared`, no parallel group, no
-`long_run` on a non-ACP role), with every step within the ceiling and readiness
-without errors. It sends the `run-flow` starter's preview and authority digests
+runs (no step retries in a flow with checks, no `isolation` other than `shared`,
+no parallel group, no `long_run` on a non-ACP role), with every step within the
+ceiling and readiness without errors. Whether a flow can start is the server's
+answer (`start.supported` on **Flows**, the preview's authority); the page adds
+no rule of its own. It sends the `run-flow` starter's preview and authority digests
 with one operation id, reused on a retry, so a repeated click returns the same
 flow. Once admitted, the page opens the flow's session at
 `#/sessions/<id>?operation=<uuid>`, whose operation panel shows the operation and
@@ -330,9 +333,12 @@ Everything else is copy-only, with its reason: a read-only dashboard
 `flow.long_run_unsupported`, and `flow.retries_unsupported` for step retries in a
 checked flow), a step above the ceiling (`starter.permission_exceeds_ceiling`), a role the project
 file chose (`starter.project_role`), or another readiness error. Preview and Copy
-always work. A flow with parallel groups or step retries stays CLI-only for now:
-its reason says "Start this flow from the CLI for now" with the exact
-`garuda flow run` command (with your task once previewed).
+always work. A flow with parallel groups stays CLI-only: its reason says
+"Parallel groups run only from the CLI" with the exact `garuda flow run` command
+(with your task once previewed). A flow whose steps set `retries` starts here
+unless checks would run; then its reason says "A flow with checks cannot retry
+steps — remove the checks, or start it from the CLI without checks", with that
+command without its `--check` arguments.
 
 Step `retries` start and resume from the dashboard like `garuda flow run` runs
 them: a plain step that stops with a retryable stop (`flow.step_failed`,
@@ -344,7 +350,14 @@ retried, and an attempt whose cleanup is unproved quarantines the flow instead.
 The `retries` values are part of the preview digest, so an edited value refuses a
 start (`starter.preview_changed`) or a resume (`flow.resume_definition_changed`).
 A checked flow (configured or explicit checks) still refuses retries
-(`flow.retries_unsupported`), as a terminal run with `--check` does.
+(`flow.retries_unsupported`), as a terminal run with `--check` does. The preview
+of a flow with retries lists, under **Before you start**, how many more times each
+such step may run. On the session page each attempt is listed: an attempt the
+engine ran again in the same run is marked **retry** (an attempt a resume ran is
+marked **resumed**), the step says how many retries it took, a running retry says
+so in **Step in flight**, and an earlier failed attempt reads as history,
+"failed · replaced by attempt 2", once a later attempt succeeds. Approvals belong
+to the flow's operation, so every attempt's asks show in the same operation panel.
 
 Parallel groups stay copy-only: their members run concurrently in-process on a
 snapshot, outside the owned worker supervision, closure proof and approval broker

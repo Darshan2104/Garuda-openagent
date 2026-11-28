@@ -147,10 +147,67 @@ def main() -> None:
         decided = approvals_for(context, operation)["settled"]
         assert [row["decided_by"] for row in decided] == ["stopped_watching"], decided
 
+        retry_leg(context)
         resume_leg(browser)
         browser.close()
     print("Owned flow Start, approval, duplicate, progress, stale preview, the Flows page, "
-          "the app-level approval heartbeat and an owned resume: passed in Chrome")
+          "the app-level approval heartbeat, an owned retry and an owned resume: passed in Chrome")
+
+
+def retry_leg(context) -> None:
+    """A flow whose step sets `retries: 1` (#894): Start is offered; its first attempt asks an
+    approval and leaves out its output (flow.output_missing), the engine retries it, the
+    retry asks its own approval and succeeds. Both approvals are answered in the same
+    operation panel; the session page shows attempt 2 as a retry and attempt 1 as history."""
+    errors = []
+    page = context.new_page()
+    page.on("console", lambda m: errors.append(m.text) if m.type in {"error", "warning"} else None)
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    page.goto(BASE + "#t=" + TOKEN)
+    page.goto(BASE + "#/flows/retry-me?workspace=0")
+    expect(page.locator("#flow-pipeline .pipe-step")).to_have_count(1, timeout=20_000)
+    page.locator('[data-field="goal"]').fill("Retry one step after a missing output")
+    page.locator("#flow-preview-button").click()
+    expect(page.locator("#flow-retries")).to_contain_text("runs up to 1 more time", timeout=20_000)
+    expect(page.locator("#flow-start")).to_be_visible(timeout=20_000)
+    page.locator("#flow-start").click()
+    page.wait_for_url(re.compile(r".*\?operation=[0-9a-f-]+$"), timeout=20_000)
+    operation = page.url.rsplit("operation=", 1)[1]
+    session = page.url.split("#/sessions/", 1)[1].split("?", 1)[0]
+    panel = page.locator("#session-operation-host")
+    answered = []
+    deadline = time.monotonic() + 120
+    row = {}
+    while time.monotonic() < deadline:
+        row = context.request.get(BASE + "api/scenario-operations/" + operation,
+                                  headers={"X-Garuda-Token": TOKEN}).json()
+        if row.get("status") in {"terminal", "quarantined", "refused", "uncertain", "abandoned"}:
+            break
+        allow = panel.locator('[data-flow-approval][data-approved="true"]')
+        if allow.count():
+            ask = allow.first.get_attribute("data-flow-approval")
+            if ask not in answered:
+                answered.append(ask)
+                allow.first.click()
+        time.sleep(0.3)
+    assert row.get("status") == "terminal" and row.get("outcome") == "completed", row
+    decided = approvals_for(context, operation)["settled"]
+    assert len(answered) == 2 and [d["ask_id"] for d in decided] == answered, (answered, decided)
+    assert [d["decided_by"] for d in decided] == ["you", "you"], decided
+    detail = context.request.get(BASE + f"api/sessions/{session}", headers={"X-Garuda-Token": TOKEN}).json()
+    attempts = detail["flow"]["steps"][0]["attempts"]
+    assert [(a["attempt"], a["status"], (a["stop"] or {}).get("code"), a["ran_as"]) for a in attempts] == [
+        (1, "stopped", "flow.output_missing", None), (2, "done", None, "retry")], attempts
+    page.goto(BASE + f"#/sessions/{session}?operation={operation}")
+    step = page.locator('#flow-detail [data-step="draft"]')
+    expect(step.locator('[data-attempt="2"][data-ran-as="retry"] .retry-attempt')).to_be_visible(timeout=20_000)
+    expect(step.locator('[data-attempt="1"][data-replaced="2"]')).to_contain_text(
+        "finished without its output · replaced by attempt 2")
+    expect(step.locator(".pipe-head")).to_contain_text("2 attempts (1 retry)")
+    expect(step.locator(".pill.success")).to_have_text("done")
+    page.screenshot(path=str(SHOTS / "owned-retry-session.png"), full_page=True)
+    assert not errors, errors
+    page.close()
 
 
 def start_from_flows(page, task: str) -> str:
@@ -305,6 +362,11 @@ def resume_leg(browser) -> None:
         page.goto(dashboard.base + f"#/sessions/{session}?operation={start_id}")
         expect(page.locator("#operation-resumed-by")).to_contain_text(resume_id, timeout=20_000)
         expect(page.locator('#flow-detail .resume-attempt').first).to_be_visible(timeout=20_000)
+        # The read model tells the resumed attempt from a retry by its run's lease epoch.
+        detail = context.request.get(dashboard.base + f"api/sessions/{session}",
+                                     headers={"X-Garuda-Token": TOKEN}).json()
+        look = [a["ran_as"] for a in detail["flow"]["steps"][0]["attempts"]]
+        assert look[1:] == ["resume"], detail["flow"]["steps"]
         page.screenshot(path=str(SHOTS / "owned-resume-start-resumed-by.png"), full_page=True)
         assert not errors, errors
         context.close()

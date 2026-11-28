@@ -79,8 +79,12 @@ function compactPipelineHtml(pipeline) {
 /* Reasons that belong to this dashboard rather than to a flow; the page says them once. */
 var FLOW_HOST_REASONS = ["dashboard.read_only", "starter.ownership_unavailable", "starter.approval_unavailable"];
 
-/* Flow shapes that stay CLI-only (a user decision): the reason says so with the command. */
-var FLOW_CLI_ONLY = ["starter.parallel_ownership_unavailable", "starter.retries_unsupported"];
+/* Flow shapes that stay CLI-only (a user decision): the reason says so with the command.
+ * Whether a flow starts here is the server's answer (`start.supported`, the preview's
+ * authority); this list only words the reason. Step `retries` start here; only a checked
+ * flow refuses them (FLOW_CHECKED_RETRIES). */
+var FLOW_CLI_ONLY = ["starter.parallel_ownership_unavailable"];
+var FLOW_CHECKED_RETRIES = "flow.retries_unsupported";
 
 function shellWord(text) {
   text = String(text);
@@ -94,7 +98,28 @@ function flowCliCommand(name, workspace, task) {
 }
 
 function flowCliOnlyHtml(command) {
-  return 'Start this flow from the CLI for now: <code class="flow-cli-command">' + esc(command) + "</code>";
+  return 'Parallel groups run only from the CLI: <code class="flow-cli-command">' + esc(command) + "</code>";
+}
+
+/* A checked flow's retries: the CLI with checks refuses them too, so say what works. */
+function flowCheckedRetriesHtml(command) {
+  return "A flow with checks cannot retry steps — remove the checks, or start it from the CLI without checks" +
+    (command ? ': <code class="flow-cli-command">' + esc(command) + "</code>" : ".");
+}
+
+/* The equivalent command for a checked flow's retries reason, without its `--check`
+ * arguments (shlex-quoted words): `garuda flow run` without checks runs the retries.
+ * Configured checks are not on the command line; the reason says to remove them. */
+function flowCommandWithoutChecks(command, code) {
+  if (code !== FLOW_CHECKED_RETRIES || !command) return command;
+  return String(command).replace(/\s--check\s+(?:'[^']*'(?:"'"'[^']*')*|\S+)/g, "");
+}
+
+/* The fix line under a reason: the CLI-only and checked-retries rules in their own words. */
+function flowReasonFixHtml(reason, command) {
+  if (reason.code === FLOW_CHECKED_RETRIES) return flowCheckedRetriesHtml(command);
+  if (FLOW_CLI_ONLY.indexOf(reason.code) !== -1 && command) return flowCliOnlyHtml(command);
+  return esc(reason.fix);
 }
 
 function flowStartLineHtml(start, host, command) {
@@ -108,7 +133,7 @@ function flowStartLineHtml(start, host, command) {
       (reasons.length ? ", and:" : ")") + "</span>" : "") + "</p>" +
     '<ul class="starter-diagnostics">' + reasons.map(function (r) {
       return '<li data-reason="' + esc(r.code) + '"><code>' + esc(r.code) + "</code> " + esc(r.message) +
-        '<br><span class="stat-sub">' + (FLOW_CLI_ONLY.indexOf(r.code) !== -1 && command ? flowCliOnlyHtml(command) : esc(r.fix)) +
+        '<br><span class="stat-sub">' + flowReasonFixHtml(r, command) +
         "</span></li>";
     }).join("") + "</ul></div>";
 }
@@ -410,6 +435,15 @@ function flowDisclosuresHtml(data) {
         esc(s.owned_backstop.timeout_min) + " min";
     }).join("; ") + "; a stopped step quarantines the flow. Set <code>limits.deadline_min</code> for a step that needs longer.</li>");
   }
+  var retrying = ((data.pipeline || {}).steps || []).filter(function (s) { return typeof s.retries === "number" && s.retries > 0; });
+  var refused = ((data.authority || {}).diagnostics || []).some(function (d) { return d.code === FLOW_CHECKED_RETRIES; });
+  if (retrying.length && !refused) {
+    notes.push('<li id="flow-retries">Step retries run here as in <code>garuda flow run</code>: ' + retrying.map(function (s) {
+      return "step <strong>" + esc(s.id) + "</strong> runs up to " + esc(s.retries) + " more time" + (s.retries === 1 ? "" : "s");
+    }).join("; ") + " after an attempt that fails or finishes without a usable output. Each attempt is its own owned worker " +
+      "with its own receipt, under the same approvals and permission ceiling, and the session page marks it as a retry. " +
+      "Refusals, interruptions, deadlines, silence and usage limits are never retried.</li>");
+  }
   notes.push('<li id="flow-resume">A flow started here that stops on a resumable stop (paused, interrupted, a usage limit ' +
     "after its reset) is resumed from its session page with <strong>Resume</strong>, by this dashboard in write mode, under " +
     "the plan and permissions its start admitted. <code>garuda flow resume</code> refuses it (<code>flow.operation_managed</code>). " +
@@ -435,7 +469,7 @@ function flowPreviewHtml(data, state) {
   return "<h3>Preview</h3>" + starterReadinessHtml(data.readiness) +
     (blockers.length ? '<ul class="starter-diagnostics" id="flow-authority">' + blockers.map(function (d) {
       return '<li data-diagnostic="' + esc(d.code) + '"><code>' + esc(d.code) + "</code> " + esc(d.message) +
-        '<br><span class="stat-sub">' + (FLOW_CLI_ONLY.indexOf(d.code) !== -1 ? flowCliOnlyHtml(plan.equivalent_command) : esc(d.fix)) +
+        '<br><span class="stat-sub">' + flowReasonFixHtml(d, flowCommandWithoutChecks(plan.equivalent_command, d.code)) +
         "</span></li>";
     }).join("") + "</ul>" : "") +
     '<p class="chips">' + chip("verification", plan.provenance.verification) + " " + chip("role invocations ≤", plan.limits.max_role_invocations) + " " +
@@ -455,7 +489,12 @@ function flowCopyOnlyReason(data) {
   }
   var first = ((data.authority || {}).diagnostics || [])[0] ||
     ((data.readiness || {}).diagnostics || []).filter(function (d) { return d.level === "error"; })[0];
-  if (first && FLOW_CLI_ONLY.indexOf(first.code) !== -1) return "start this flow from the CLI for now, with the command above.";
+  if (first && first.code === FLOW_CHECKED_RETRIES) {
+    return "a flow with checks cannot retry steps — remove the checks or start it from the CLI without checks.";
+  }
+  if (first && FLOW_CLI_ONLY.indexOf(first.code) !== -1) {
+    return "parallel groups run only from the CLI: " + data.plan.equivalent_command;
+  }
   return first ? first.code + ": " + first.fix : "this preview cannot start here.";
 }
 

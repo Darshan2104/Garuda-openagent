@@ -363,7 +363,13 @@ def flow(store, session_id: str, meta: dict | None = None, *, receipts: list[dic
     steps = []
     edges = []
     for step in declared:
-        attempts = [_attempt(r) for r in receipts if r.get("step") == step]
+        mine = [r for r in receipts if r.get("step") == step]
+        attempts = [_attempt(r) for r in mine]
+        epochs = {r.get("attempt"): _run_epoch(r) for r in mine}
+        for attempt in attempts:
+            number = attempt["attempt"]
+            previous = next((a for a in attempts if a["attempt"] == number - 1), None)
+            attempt["ran_as"] = _ran_as(previous, epochs.get(number - 1), epochs.get(number))
         for attempt in attempts:
             for ref in attempt["inputs"]:
                 # Which attempt consumed it, and of which producing attempt: two rounds pass
@@ -376,6 +382,9 @@ def flow(store, session_id: str, meta: dict | None = None, *, receipts: list[dic
                     edges.append(edge)
         steps.append({"id": step, "attempts": attempts})
     flow_meta = meta.get("flow")
+    in_flight = _in_flight_or_none(store, session_id, meta)
+    if in_flight is not None:
+        in_flight["ran_as"] = _in_flight_ran_as(store, session_id, in_flight, steps, receipts)
     return {"name": flow_meta.get("name") if isinstance(flow_meta, dict) else None,
             "state": meta.get("flow_state"),
             "steps": steps, "edges": edges,
@@ -392,7 +401,66 @@ def flow(store, session_id: str, meta: dict | None = None, *, receipts: list[dic
             # `flow show --json`'s summary.measure. Adapter-reported cost, never metered.
             "measure": _measure_total(steps),
             # What the running (or paused) step is doing now; additive.
-            "in_flight": _in_flight_or_none(store, session_id, meta)}
+            "in_flight": in_flight}
+
+
+def _owner_epoch(record) -> str | None:
+    owner = record.get("parent_owner") if isinstance(record, dict) else None
+    epoch = owner.get("epoch") if isinstance(owner, dict) else None
+    return epoch if isinstance(epoch, str) and epoch else None
+
+
+def _run_epoch(receipt: dict) -> str | None:
+    """The lease epoch an owned attempt ran under: its closure's ``parent_owner.epoch``.
+
+    The flow's workspace lease carries it, so the attempts of one run share it and a
+    resume, which takes the lease again, runs under a new one. ``None`` for an attempt
+    without owned closure evidence (a terminal run, an older receipt).
+    """
+    return _owner_epoch(receipt.get("closure"))
+
+
+def _ran_as(previous: dict | None, previous_epoch: str | None, epoch: str | None) -> str | None:
+    """Why an owned step attempt after the first ran, from the records alone.
+
+    ``"retry"``: the step's previous attempt ran under the same owner epoch (the same
+    run) and stopped with a stop the engine retries (``RETRYABLE_STOPS``, not a settled
+    refusal), so the engine ran this one for the step's ``retries``. ``"resume"``: the
+    previous attempt ran under another epoch, so a resume ran this one. ``None``: the first
+    attempt, or not known from the records (no owned closure on either attempt, or a same-run
+    attempt after a stop the engine never retries, such as a review round).
+    """
+    if previous is None or previous_epoch is None or epoch is None:
+        return None
+    if previous_epoch != epoch:
+        return "resume"
+    try:
+        from garuda.flows.engine import RETRYABLE_STOPS
+    except ImportError:  # pragma: no cover - the engine moved: unknown, never a guess
+        return None
+    stop = previous.get("stop") if isinstance(previous.get("stop"), dict) else {}
+    if previous.get("status") == "stopped" and stop.get("code") in RETRYABLE_STOPS and stop.get("refused") is not True:
+        return "retry"
+    return None
+
+
+def _in_flight_ran_as(store, session_id: str, live: dict, steps: list[dict],
+                      receipts: list[dict]) -> str | None:
+    """``_ran_as`` for the attempt in flight, whose epoch its owned launch record names."""
+    step, attempt = live.get("step"), live.get("attempt")
+    if not isinstance(step, str) or type(attempt) is not int or attempt < 2:
+        return None
+    previous = next((a for s in steps if s["id"] == step for a in s["attempts"]
+                     if a["attempt"] == attempt - 1), None)
+    receipt = next((r for r in receipts if r.get("step") == step
+                    and r.get("attempt") == attempt - 1), None)
+    try:
+        from garuda.flows import launches
+
+        record = launches.read(Path(store.session_dir(session_id)) / "flow", step, attempt)
+    except Exception:  # noqa: BLE001 - unknown, never a guess
+        return None
+    return _ran_as(previous, _run_epoch(receipt) if receipt else None, _owner_epoch(record))
 
 
 def _measure_total(steps: list[dict]) -> dict:

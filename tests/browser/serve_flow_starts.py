@@ -35,20 +35,31 @@ from garuda.interfaces.web.approvals import ApprovalBroker
 GRACE_SECONDS = 2.0
 
 
+#: The note a retried attempt's prompt carries (garuda.flows.engine.RETRY_NOTE).
+RETRIED = "[garuda] An earlier attempt of this step failed."
+#: The output the retry flow asks for: its first attempt leaves it out (flow.output_missing,
+#: a stop the engine retries), its retry returns it.
+RETRY_OUTPUT = "summary"  # an output type no other fixture flow declares
+
 #: The output instructions a flow step's prompt carries, one per artifact type it declares.
 ASKED = re.compile(r'<garuda-artifact type="([a-z][a-z0-9_-]*)">\n\.\.\.your')
 
 
-def asked_types(body) -> list[str]:
-    found = []
+def texts(body) -> list[str]:
+    out = []
     for message in body.get("messages", []):
         content = message.get("content")
-        texts = [content] if isinstance(content, str) else [
+        out += [content] if isinstance(content, str) else [
             part.get("text", "") for part in content or [] if isinstance(part, dict)]
-        for text in texts:
-            for kind in ASKED.findall(text or ""):
-                if kind not in found:
-                    found.append(kind)
+    return [text or "" for text in out]
+
+
+def asked_types(body) -> list[str]:
+    found = []
+    for text in texts(body):
+        for kind in ASKED.findall(text):
+            if kind not in found:
+                found.append(kind)
     return found or ["plan"]
 
 
@@ -59,11 +70,16 @@ class ModelEndpoint(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         answered = any(message.get("role") == "tool"
                        for message in body.get("messages", []))
-        if answered:
+        kinds = asked_types(body)
+        if answered and RETRY_OUTPUT in kinds and not any(RETRIED in text for text in texts(body)):
+            # The retry flow's first attempt: done, without the output it declares.
+            message = {"role": "assistant", "content": "No summary this time."}
+            finish = "stop"
+        elif answered:
             message = {
                 "role": "assistant",
                 "content": "\n".join(f'<garuda-artifact type="{kind}">\nbrowser-owned {kind}\n'
-                                      "</garuda-artifact>" for kind in asked_types(body)),
+                                      "</garuda-artifact>" for kind in kinds),
             }
             finish = "stop"
         else:
@@ -124,6 +140,8 @@ def prepare(workspace: Path, settings: Path, model_port: int) -> None:
                   "operator": {"harness": "browser-acp"}},
         "flows": {"plan-only": {"steps": [
             {"id": "plan", "role": "coder", "outputs": ["plan"]},
+        ]}, "retry-me": {"description": "One step whose first attempt fails, then retries", "steps": [
+            {"id": "draft", "role": "coder", "outputs": ["summary"], "retries": 1},
         ]}, "resume-me": {"description": "Two steps, for the owned resume", "steps": [
             {"id": "look", "role": "coder", "outputs": ["notes"]},
             {"id": "make", "role": "coder", "inputs": ["notes"], "outputs": ["plan"]},

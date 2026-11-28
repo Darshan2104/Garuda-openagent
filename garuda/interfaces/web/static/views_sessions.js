@@ -616,24 +616,42 @@ function attemptStopHtml(attempt, pauseKind, link, replacedBy) {
 /* What a replaced attempt's stop was, in a word (the full sentence follows). */
 var REPLACED_STOPS = {
   "flow.interrupted": "interrupted", "flow.step_deadline": "ran past its deadline",
-  "flow.step_silent": "went silent"
+  "flow.step_silent": "went silent", "flow.step_failed": "failed",
+  "flow.output_missing": "finished without its output", "flow.artifact_malformed": "returned a malformed artifact",
+  "flow.artifact_too_large": "returned an artifact over the size limit"
 };
 
+/* Why an attempt after the first ran, as the read model derived it from the records
+ * (`ran_as`): "retry", the engine ran it again for the step's `retries` after the previous
+ * attempt of the same run stopped; "resume", a resume ran it. Nothing when not known. */
+function ranAsHtml(ranAs, attempt) {
+  if (ranAs === "retry") {
+    return ' <span class="pill unknown retry-attempt" data-ran-as="retry" title="' +
+      esc("The flow ran this step again after attempt " + (attempt - 1) + " stopped, as the step's retries allow") + '">retry</span>';
+  }
+  if (ranAs === "resume") {
+    return ' <span class="pill unknown resume-attempt" data-ran-as="resume" title="This attempt ran after the flow was resumed">resumed</span>';
+  }
+  return "";
+}
+
 /* `replacedBy`: the number of a later attempt of the same step that succeeded, when there is
- * one. Its stop is then history, drawn neutral; red is for a failure that stands. */
-function attemptHtml(attempt, flowPause, link, replacedBy, resumed) {
+ * one. Its stop is then history, drawn neutral; red is for a failure that stands. `ranAs`:
+ * "retry" or "resume" (ranAsHtml), else nothing. */
+function attemptHtml(attempt, flowPause, link, replacedBy, ranAs) {
   var delta = attempt.delta === null ? "unknown" : (attempt.delta ? "changed" : "unchanged");
   var replaced = attempt.status !== "done" && replacedBy !== null && replacedBy !== undefined;
   var pauseKind = replaced ? null : (attempt.pause || (flowPause && flowPause.kind) || null);
   return (
     '<li class="attempt" data-attempt="' + esc(attempt.attempt) + '" data-status="' + esc(attempt.status) + '"' +
     (pauseKind ? ' data-pause="' + esc(pauseKind) + '"' : "") +
-    (replaced ? ' data-replaced="' + esc(replacedBy) + '"' : "") + ">" +
+    (replaced ? ' data-replaced="' + esc(replacedBy) + '"' : "") +
+    (ranAs ? ' data-ran-as="' + esc(ranAs) + '"' : "") + ">" +
     '<div class="attempt-head">attempt ' + esc(attempt.attempt) + " · " + esc(ranText(attempt)) +
     " " + chip("status", attempt.status, attempt.status === "done" ? "chip-on"
       : (replaced ? "chip-off" : (pauseKind ? "chip-pause" : "chip-bad"))) +
     " " + chip("workspace", delta, "chip-off") +
-    (resumed ? ' <span class="pill unknown resume-attempt" title="This attempt ran after the dashboard resumed the flow">resumed</span>' : "") +
+    ranAsHtml(ranAs, attempt.attempt) +
     (attempt.no_edits ? " " + chip("no-edits", attempt.no_edits, attempt.no_edits === "unchanged" ? "chip-on" : "chip-bad") : "") +
     ' <span class="stat-sub">' + esc(attempt.duration_ms === null || attempt.duration_ms === undefined ? "duration unknown" : fmt.duration(attempt.duration_ms)) + "</span>" +
     (attempt.session_id ? ' <a class="btn btn-small attempt-trace" href="#/runs/' + encodeURIComponent(attempt.session_id) + '">Open trace</a>' +
@@ -649,7 +667,9 @@ function attemptHtml(attempt, flowPause, link, replacedBy, resumed) {
 
 function stepStatus(step, current, paused, stopped) {
   var attempts = step.attempts || [];
-  if (current && current.step === step.id) return { text: "running · attempt " + current.attempt, cls: "running", key: "current" };
+  if (current && current.step === step.id) {
+    return { text: "running · " + (current.ranAs === "retry" ? "retry, " : "") + "attempt " + current.attempt, cls: "running", key: "current" };
+  }
   if (paused && paused.step === step.id) return { text: "paused", cls: "paused", key: "paused" };
   if (stoppedAttemptOf(step, stopped)) return { text: "interrupted · attempt " + stopped.attempt, cls: "unknown", key: "interrupted" };
   if (!attempts.length) return { text: "not run yet", cls: "unknown", key: "pending" };
@@ -707,6 +727,10 @@ function flowHtml(flow, progress, options) {
     '<ol class="pipeline steps">' + (flow.steps || []).map(function (step, index) {
       var live = flowInFlight(flow);
       var current = progress || (live ? { step: live.step, attempt: live.attempt } : null);
+      // Whether the attempt in flight is a retry, when the live view says so for it.
+      if (current && live && current.step === live.step && String(current.attempt) === String(live.attempt)) {
+        current = { step: current.step, attempt: current.attempt, ranAs: live.ran_as };
+      }
       var stopped = stoppedAttempt(flow);
       // The journal's progress names the open attempt, but the live view says its process is
       // gone: it is not in flight (there is no step block to point at).
@@ -715,9 +739,18 @@ function flowHtml(flow, progress, options) {
       var attempts = step.attempts || [];
       var last = attempts[attempts.length - 1];
       var durations = attempts.map(function (a) { return a.duration_ms; });
+      var retried = attempts.filter(function (a) { return a.ran_as === "retry"; }).length;
       var total = durations.length && durations.every(function (d) { return typeof d === "number"; })
         ? durations.reduce(function (s, d) { return s + d; }, 0) : null;
-      var passes = edges.filter(function (e) { return e.from_step === step.id; });
+      // One line per type and receiver: each attempt records its own edge (the Artifact edges
+      // list below tells them apart), so a resumed or reviewed step listed "plan → build" twice.
+      var seenPass = {};
+      var passes = edges.filter(function (e) {
+        var key = e.type + "\u0000" + e.to_step;
+        if (e.from_step !== step.id || seenPass[key]) return false;
+        seenPass[key] = true;
+        return true;
+      });
       return '<li class="pipe-step pipe-' + status.key + '" data-step="' + esc(step.id) + '"' +
         (last && status.key !== "current" ? ' data-status="' + esc(last.status) + '"' : "") +
         (last && last.pause && status.key !== "current" ? ' data-pause="' + esc(last.pause) + '"' : "") +
@@ -728,14 +761,16 @@ function flowHtml(flow, progress, options) {
         '<div class="pipe-head"><span class="pipe-no">' + (index + 1) + "</span><strong>" + esc(step.id) + "</strong> " +
         '<span class="pill ' + status.cls + '">' + esc(status.text) + "</span>" +
         (last ? ' <span class="stat-sub">' + esc(ranText(last)) + " · " + attempts.length + " attempt" + (attempts.length === 1 ? "" : "s") +
+          (retried ? " (" + retried + " retr" + (retried === 1 ? "y" : "ies") + ")" : "") +
           " · " + esc(total === null ? "duration unknown" : fmt.duration(total)) + "</span>" : "") + "</div>" +
         (attempts.length ? '<ul class="attempts">' + attempts.map(function (a, i) {
           // The flow's pause names its stopped step: its last attempt is the paused one.
           var paused = options.pause && flow.stop && flow.stop.step === step.id && i === attempts.length - 1;
           var later = attempts.slice(i + 1).filter(function (b) { return b.status === "done"; })[0];
-          // On a flow a dashboard resumed: the attempt that ran again after a stopped one.
-          var resumed = !!options.resumed && i > 0 && attempts[i - 1].status !== "done";
-          return attemptHtml(a, paused ? options.pause : null, link, later ? later.attempt : null, resumed);
+          // The read model's `ran_as` when known; else, on a flow a dashboard resumed, the
+          // attempt that ran again after a stopped one (records without owned closures).
+          var ranAs = a.ran_as || (options.resumed && i > 0 && attempts[i - 1].status !== "done" ? "resume" : null);
+          return attemptHtml(a, paused ? options.pause : null, link, later ? later.attempt : null, ranAs);
         }).join("") + "</ul>" : "") +
         // The step in flight is described in its own block, a paused one in the Result (said
         // once, with its command); never "not run yet".
@@ -784,7 +819,8 @@ function flowPaused(flow) {
 
 var LIVE_DECISIONS = {
   next: "continued with another turn", rotate: "rotated to a fresh harness session",
-  done: "reported the step done", stop: "stopped the loop", repair: "ran a repair turn"
+  // `finish` is what the long-step loop records when the step ends (garuda.runtime.turn_hook).
+  finish: "finished", done: "reported the step done", stop: "stopped the loop", repair: "ran a repair turn"
 };
 var LIVE_STOP_REASONS = {
   end_turn: "the model ended its turn", max_tokens: "the turn hit its output-token limit",
@@ -996,6 +1032,8 @@ function flowLiveHtml(row) {
   return '<div class="live-step" id="flow-live" data-state="running" data-step="' + esc(live.step) + '">' +
     '<p class="live-step-head"><span class="pill running" data-state="running">running</span> <strong>' +
     esc(live.step) + "</strong> · attempt " + esc(knownText(live.attempt)) +
+    (live.ran_as === "retry" ? ' <span class="pill unknown retry-attempt" data-ran-as="retry">retry</span> <span class="stat-sub">attempt ' +
+      esc(live.attempt - 1) + " stopped, and the step's retries run it again</span>" : "") +
     " · " + (elapsed ? "running for " + esc(elapsed) : "start not recorded") +
     (sid ? ' · <a href="#/sessions/' + encodeURIComponent(sid) + '">step session</a> · <a href="#/runs/' +
       encodeURIComponent(sid) + '">trace</a>' : ' · <span class="stat-sub">step session not created yet</span>') + "</p>" +
