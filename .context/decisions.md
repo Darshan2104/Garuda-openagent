@@ -6034,3 +6034,43 @@ after it. Dashboard-started checked flows record `flow.quota_wait` (no checkpoin
 since they have no CLI checks) and keep the `flow.operation_managed` resume refusal;
 nothing waits for them. Codex limits keep `flow.step_failed`. `_limit_failure` stays
 for checked limit stops recorded as `flow.step_failed` before this change.
+
+## 2026-11-28: A dashboard-started flow resumes through its owned gateway
+
+A flow the dashboard started resumes only as a version-3 operation of the owned
+flow gateway (`POST /api/scenarios/resume`), never through `garuda flow resume`,
+which keeps refusing every operation-managed flow (`flow.operation_managed`, now
+naming the owned resume; this also covers checked owned flows). The CLI cannot
+reach the loop-owned gateway, its approval broker or its ceiling, and calling the
+dashboard over HTTP would make the CLI hold its token.
+
+Admission recompiles the start's record (`compile.recompile_recorded`: the
+recorded compiled task, sources and inputs; everything that grants authority
+resolved again) to the start's exact plan digest, and recomputes the authority
+digest under the start's server epoch with the current ceiling; either mismatch
+refuses (`flow.resume_definition_changed`, `flow.resume_authority_changed`).
+`engine.owned_resume_check`, repeated by the engine under the lease, admits only
+a checked flow's resume checkpoint or, without checks, a stop in
+`RESUMABLE_CHECKED_STOPS` or an interruption between steps; `flow.quota_wait` only
+after its reset plus margin. A per-flow claim (`resume-<session>.json`) admits at
+most one unfinished resume while its owner may be alive. The engine publishes
+`flow_resume_operation` with the running state after every check and before any
+step; the start's `flow_operation` never changes. A failure before that binding
+is a proved refusal only when it proves nothing launched: a pre-binding stop
+whose cleanup or evidence is unproved (`engine.QUARANTINE_STOPS`, or a raw
+`CleanupUncertain`) quarantines the flow and settles the operation quarantined.
+After the binding the start's terminal/quarantine/uncertain rules apply and
+nothing is replayed. An operation this process ended but could not record is
+kept in the gateway's memory and settled by its next request (503 while the store
+stays unwritable); another process's unfinished resume whose owner is neither
+proved alive nor dead refuses with `flow.resume_owner_unknown`. A retry with the
+same operation ID returns the recorded operation before any scope revalidation,
+and a start or resume a later resume continued projects its own record only.
+
+To make owned flows resumable at all, owned flow starts now settle a proved-closed
+interrupted attempt as `flow.interrupted` (`StepInterrupted`, as checked CLI flows
+since #760), record review continuations, and a checked owned start saves its
+check selection and stop checkpoint (`verification_cli_checks` is allowed with an
+owned flow-kind binding). A parent killed hard mid-step still leaves an unsettled
+attempt that refuses: crash continuation proves only CLI checked flows.
+

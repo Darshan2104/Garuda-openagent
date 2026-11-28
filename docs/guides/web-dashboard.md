@@ -208,9 +208,10 @@ warning and its fix, who runs each step with configured and effective permission
 against the dashboard ceiling, the checks and their authority, limits, the
 equivalent `garuda flow run` command with **Copy**, and what to know before
 starting: a step without `deadline_min` is stopped at the backstop (the actual
-minutes), a flow started here is never resumed (`garuda flow resume` refuses
-it), and stopping the dashboard interrupts it. Editing any field discards the
-preview. The task the flow receives starts with a title made of the first words
+minutes), a flow started here resumes only through a write-mode dashboard's
+owned resume ([Resume a dashboard flow](#resume-a-dashboard-flow); `garuda flow
+resume` refuses it with `flow.operation_managed`), and stopping the dashboard
+interrupts it. Editing any field discards the preview. The task the flow receives starts with a title made of the first words
 of your **Task** (lowercase letters and digits only), so its session is named
 after your task, as the equivalent `garuda flow run` command names it (`implement-the-textkit-package-so`,
 then `-2` for the next one), rather than after the starter's instructions. A
@@ -243,6 +244,38 @@ or disconnected). An answered card on **Approvals** leaves at once and does not
 come back while the server still lists the request. A finished run's starter card
 offers **Run again**, back to the flow with the workspace selected and the
 recorded task filled in to edit.
+
+### Resume a dashboard flow
+
+A flow a dashboard started is resumed only by a write-mode dashboard's owned
+flow gateway, as one durable operation under the same guarantees as its start.
+`POST /api/scenarios/resume` (see [HTTP API](#http-api)) admits it only when:
+
+- the flow is bound to a settled start operation this session store recorded
+  (or one whose dashboard is proved gone), in an allowlisted workspace with the
+  same identity;
+- the start recompiles from its record to the **same plan digest** (the starter,
+  effective configuration, flow definition, role bindings and fallbacks, and
+  checks; the compiled task and sources are taken from the record, not read
+  again) and the **same authority digest** (the dashboard ceiling and every
+  role's effective permission, under the start's server epoch);
+- the flow is on a stop its kind resumes: a checked flow from its resume
+  checkpoint (a resumable checked stop before its checks began) under its
+  original checks; a flow without checks from a settled resumable stop
+  (`flow.interrupted`, `flow.step_failed`, the step limits and long-step pauses,
+  or `flow.quota_wait` once the reported reset has passed) or an interruption
+  between steps. Running, completed, quarantined and unsettled flows refuse;
+- no other resume of the flow is unfinished.
+
+Stopping the dashboard while a step runs settles that attempt as a resumable
+`flow.interrupted` stop once the supervisor proved its tree closed, so a
+dashboard restart is followed by a resume, never a replay. The workspace lease,
+review independence, approvals and evidence work as in the start; the engine
+proves the stop again under the lease before any step runs. A resume that
+cannot prove its owned workers closed before that point quarantines the flow
+rather than refusing. A retry with the same `operation_id` returns the recorded
+operation. A refusal names its code (below); nothing is written to make a flow
+resumable.
 
 Everything else is copy-only, with its reason: a read-only dashboard
 (`dashboard.read_only`), a host without the Linux supervisor
@@ -863,7 +896,8 @@ Providers page discards it.
 | `GET /api/scenarios`, `GET /api/scenarios/<id>` | Installed starter library/detail and configured readiness; optional allowlisted `workspace` index |
 | `POST /api/scenarios/preview` | Pure compilation: `starter_id`, bounded `inputs`, optional integer `workspace`; also available read-only |
 | `POST /api/scenarios/start` | Write-mode Linux flow admission: exact `operation_id`, `starter_id`, `inputs`, `workspace`, `preview_digest`, and `authority_digest` |
-| `GET /api/scenario-operations/<operation_id>` | Durable admission/flow projection for polling and approval-heartbeat refresh |
+| `POST /api/scenarios/resume` | Write-mode owned resume of a dashboard-started flow: exactly `operation_id` (a new UUIDv4, reused on a retry) and `session_id` (the flow session); answers like start (`201` new, `202` admission pending, `200` an existing operation) with the operation projection plus `kind: "resume"`, `session_id` and `resumes` (the start operation ID) |
+| `GET /api/scenario-operations/<operation_id>` | Durable admission/flow projection for polling and approval-heartbeat refresh; a start a resume continued projects its own outcome with `resumed_by` |
 | `GET /api/scenario-runs/<id>` | Shared selected-session evidence; `limit` 1–200 and non-negative `offset`, optional workspace index for names |
 | `GET /api/runs`, `GET /api/runs/<id>` | Runs (`q`, `status`, `agent`, `model`; `limit` up to 500 and `offset` page the whole store; the reply carries the true `total` and every `agents` name) and one run's trace |
 | `GET /api/runs/<id>/tail` | Poll a run for new events |
@@ -912,6 +946,28 @@ ends with an `end` event once the session is finished and a poll delivers no
 records and makes no cursor progress, including a torn final append, and closes
 after a minute for the client to reconnect. A browser `EventSource` can't send
 the token header, so read it with `fetch`.
+
+Resume refusals (`error.code`, HTTP status): `flow.resume_invalid` or
+`starter.operation_invalid` (400, a malformed body); `flow.resume_unknown` (404);
+`flow.resume_not_owned` (409, a flow not started by a dashboard: use
+`garuda flow resume`); `flow.resume_record_mismatch` and
+`flow.resume_start_unsettled` (409, the start's record is missing, disagrees or
+is not settled); `starter.operation_scope_changed` (403, the workspace left the
+allowlist or changed identity); `flow.resume_definition_changed` (409, the plan
+digest differs: definition, roles, checks or configuration changed);
+`flow.resume_authority_changed` (409, the ceiling or role authority changed);
+`flow.resume_completed`, `flow.recovery_required` (still recorded running: run
+`garuda runtime recover --session ID` if its dashboard died),
+`flow.resume_in_progress` (this dashboard still runs it, or another resume is
+unfinished), `flow.resume_owner_unknown` (another resume or the start is unfinished
+and its dashboard process can be proved neither alive nor dead: make sure it has
+exited, then resume again), `flow.quarantined`, `flow.interrupted_unsettled`,
+`flow.stop_not_resumable`, `flow.resume_quota_wait` (before the usage limit's
+reset) and `flow.verification_reconciliation_required` (409);
+`starter.operation_conflict` (409, the operation ID names another request);
+`starter.ownership_unavailable`, `starter.gateway_closing`,
+`starter.operation_unavailable` (503); and the start's transport and readiness
+refusals (`unauthorized`, `forbidden_origin`, `forbidden_host`, `read_only`).
 
 ## Safety model
 

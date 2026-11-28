@@ -303,17 +303,67 @@ def compile_with_context(entry_id: str, inputs: dict, workspace: str | Path, *,
         sources, session_text = resolve_sources(
             inputs.get("sources", []), root, store=store,
             allow_cross_project_context=allow_cross_project_context)
-    resolved, catalog = context.resolved, context.catalog
-    kind, target, flow, source = context.kind, context.target, context.flow, context.source
-    options = context.options
-    bindings = {name: plan.record() for name, plan in context.role_plans.items()}
-    context = replace(context, source_facts=capture.facts(),
-                      configuration_sources=configuration_sources)
     handoff_text = render_plan(handoff) if handoff else ""
     scope = handoff.manifest["approved_scope"] if handoff else []
     if handoff:
         sources.append({**handoff.manifest, "delivered_input_sha256": hashlib.sha256(handoff_text.encode("utf-8")).hexdigest()})
     task = _task(entry, inputs, sources, session_text, handoff_text)
+    return _assemble(entry, inputs, root, context, source_facts=capture.facts(),
+                     configuration_sources=configuration_sources, sources=sources, task=task,
+                     scope=scope, before=before,
+                     allow_cross_project_context=allow_cross_project_context)
+
+
+def recompile_recorded(record: dict, task: str, workspace: str | Path, *,
+                       store: SessionStore | None = None) -> tuple[LaunchPlan, LaunchContext]:
+    """Rebuild the plan a dashboard start admitted, for its owned resume.
+
+    The task data the start froze (its compiled task, sources, approved scope and
+    inputs) comes from the flow's record and is not read again: the flow may
+    have edited its sources since. Everything that grants authority (the
+    installed starter, the effective configuration and its sources, the flow
+    definition, role bindings and fallbacks, and the checks) is resolved again,
+    so the plan digest equals the recorded one only when none of it changed.
+    Read only, like compilation; ``store`` is unused and kept for symmetry.
+    """
+    del store
+    if (not isinstance(record, dict) or not isinstance(task, str)
+            or record.get("version") != COMPILER_VERSION
+            or not isinstance(record.get("starter_id"), str)
+            or not isinstance(record.get("inputs"), dict)
+            or not isinstance(record.get("sources"), list)
+            or any(type(source) is not dict or any(type(key) is not str for key in source)
+                   for source in record["sources"])
+            or not isinstance(record.get("approved_scope"), list)
+            or record.get("context_grant") not in {None, "user-request"}):
+        raise StarterError("starter.record_invalid", "the flow's recorded start is incomplete")
+    entry = load_catalog().get(record["starter_id"])
+    if entry is None or entry.version != record.get("starter_version"):
+        raise StarterError("starter.definition_changed",
+                           "the flow's starter is no longer installed in the version it started with")
+    inputs = validate_inputs(entry, record["inputs"])
+    root = workspace_path(workspace)
+    before = _config_sources(root)
+    with SourceCapture() as capture:
+        context = resolve_launch(entry, inputs, root, has_plan="plan_artifact" in inputs)
+        configuration_sources = capture.facts()
+    return _assemble(entry, inputs, root, context, source_facts=configuration_sources,
+                     configuration_sources=configuration_sources,
+                     sources=[dict(source) for source in record["sources"]], task=task,
+                     scope=record["approved_scope"], before=before,
+                     allow_cross_project_context=record["context_grant"] == "user-request")
+
+
+def _assemble(entry: Starter, inputs: dict, root: Path, context: LaunchContext, *,
+              source_facts, configuration_sources, sources: list, task: str, scope: list,
+              before: dict, allow_cross_project_context: bool) -> tuple[LaunchPlan, LaunchContext]:
+    """The digested plan from resolved settings and the compiled task data."""
+    resolved, catalog = context.resolved, context.catalog
+    kind, target, flow, source = context.kind, context.target, context.flow, context.source
+    options = context.options
+    bindings = {name: plan.record() for name, plan in context.role_plans.items()}
+    context = replace(context, source_facts=source_facts,
+                      configuration_sources=configuration_sources)
     if _config_sources(root) != before:
         raise StarterError("starter.config_changed", "configuration changed during preview; preview again")
     flow_check_support = kind == "flow" and entry.id in CHECKED_FLOW_STARTERS

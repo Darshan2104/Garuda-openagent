@@ -214,6 +214,16 @@ def _starter_start(request: Request, ctx: DashboardContext, _match) -> Response:
     return scenarios.start(request, ctx)
 
 
+@route("POST", r"/api/scenarios/resume")
+def _starter_resume(request: Request, ctx: DashboardContext, _match) -> Response:
+    from garuda.interfaces.web import scenarios
+
+    refusal = _live(ctx)
+    if refusal is not None:
+        return refusal
+    return scenarios.resume(request, ctx)
+
+
 @route("GET", r"/api/scenario-operations/(?P<operation>[0-9a-f-]+)")
 def _starter_operation(request: Request, ctx: DashboardContext, match) -> Response:
     from garuda.interfaces.web import scenarios

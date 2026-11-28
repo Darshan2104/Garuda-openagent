@@ -144,14 +144,20 @@ class FlowVerificationRecords:
             os.close(directory)
         return phase is not None and digest(phase) == reference["digest"]
 
-    def resume_request(self, meta):
-        """Read the original request only for a settled, pre-check CLI stop."""
+    def resume_request(self, meta, *, owned: bool = False):
+        """Read the original request only for a settled, pre-check stop.
+
+        A CLI checked flow qualifies; ``owned`` admits a dashboard-owned flow,
+        which only its owned gateway resumes (never ``garuda flow resume``).
+        """
         policy = meta.get("publication_policy")
+        protected = ("background_operation", "flow_verification_phase", "flow_verification_commit",
+                     "acceptance_receipts", "flow_evidence_manifest")
         if (meta.get("flow_state") != "stopped" or meta.get("status") != "failed"
                 or not isinstance(policy, dict) or policy.get("kind") != "flow-verification"
-                or any(key in meta for key in ("flow_operation", "background_operation",
-                                               "flow_verification_phase", "flow_verification_commit",
-                                               "acceptance_receipts", "flow_evidence_manifest"))
+                or any(key in meta for key in protected)
+                or (owned is not isinstance(meta.get("flow_operation"), dict))
+                or (not owned and "flow_operation" in meta)
                 or not isinstance(meta.get("flow_resume_checkpoint"), dict)
                 or not _hex(meta.get("flow_resume_request"), 64)):
             return None
