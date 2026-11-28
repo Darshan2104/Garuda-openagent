@@ -285,11 +285,14 @@ compiled task.
 
 A dashboard start (the same HTTP preview and start as the other starters, with
 `starter_id: run-flow`) refuses, at preview, flows the owned engine cannot run:
-step retries (`starter.retries_unsupported`), a flow `isolation` other than
-`shared` (`starter.isolation_unsupported`), parallel groups
-(`starter.parallel_ownership_unavailable`) and a `long_run` step on a non-ACP role
-(`flow.long_run_unsupported`). Run those with the equivalent command in a
-terminal. A dashboard-started flow is never resumed automatically; it resumes
+a flow `isolation` other than `shared` (`starter.isolation_unsupported`),
+parallel groups (`starter.parallel_ownership_unavailable`: their members run
+in-process outside the owned worker supervision and approval broker), a
+`long_run` step on a non-ACP role (`flow.long_run_unsupported`) and step retries
+in a checked flow (`flow.retries_unsupported`, as with `--check`). Run those
+with the equivalent command in a terminal. Step retries without checks run from
+the dashboard exactly as `garuda flow run` runs them, each attempt its own owned
+worker. A dashboard-started flow is never resumed automatically; it resumes
 explicitly through the dashboard's owned resume, under the plan and authority its
 start admitted ([Resume a dashboard flow](../guides/web-dashboard.md#resume-a-dashboard-flow)),
 and `garuda flow resume` refuses it with `flow.operation_managed`. A flow

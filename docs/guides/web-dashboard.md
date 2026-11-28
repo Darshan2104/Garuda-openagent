@@ -326,13 +326,30 @@ The start's transport and mode refusals apply too (`unauthorized`,
 Everything else is copy-only, with its reason: a read-only dashboard
 (`dashboard.read_only`), a host without the Linux supervisor
 (`starter.ownership_unavailable`), an unsupported flow shape
-(`starter.retries_unsupported`, `starter.isolation_unsupported`,
-`starter.parallel_ownership_unavailable`, `flow.long_run_unsupported`), a step
-above the ceiling (`starter.permission_exceeds_ceiling`), a role the project
+(`starter.isolation_unsupported`, `starter.parallel_ownership_unavailable`,
+`flow.long_run_unsupported`, and `flow.retries_unsupported` for step retries in a
+checked flow), a step above the ceiling (`starter.permission_exceeds_ceiling`), a role the project
 file chose (`starter.project_role`), or another readiness error. Preview and Copy
 always work. A flow with parallel groups or step retries stays CLI-only for now:
 its reason says "Start this flow from the CLI for now" with the exact
 `garuda flow run` command (with your task once previewed).
+
+Step `retries` start and resume from the dashboard like `garuda flow run` runs
+them: a plain step that stops with a retryable stop (`flow.step_failed`,
+`flow.output_missing`, `flow.artifact_malformed`, `flow.artifact_too_large`)
+after it launched runs again, each attempt its own owned worker with its own
+closure proof, intent and receipt, under the same approval broker, lease and
+permission ceiling. Refusals, interruptions, liveness and quota stops are never
+retried, and an attempt whose cleanup is unproved quarantines the flow instead.
+The `retries` values are part of the preview digest, so an edited value refuses a
+start (`starter.preview_changed`) or a resume (`flow.resume_definition_changed`).
+A checked flow (configured or explicit checks) still refuses retries
+(`flow.retries_unsupported`), as a terminal run with `--check` does.
+
+Parallel groups stay copy-only: their members run concurrently in-process on a
+snapshot, outside the owned worker supervision, closure proof and approval broker
+every owned attempt needs. The equivalent `garuda flow run NAME` command runs
+them.
 
 ## Starters
 

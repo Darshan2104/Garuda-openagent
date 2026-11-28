@@ -338,8 +338,6 @@ def test_cli_starts_hand_the_flow_service_the_equivalent_request(ws, monkeypatch
 
 
 @pytest.mark.parametrize("shape,code", [
-    ({"steps": [{"id": "a", "role": "coder", "outputs": ["plan"], "retries": 2}]},
-     "starter.retries_unsupported"),
     ({"isolation": "worktree", "steps": [{"id": "a", "role": "coder", "outputs": ["plan"]}]},
      "starter.isolation_unsupported"),
     ({"steps": [{"id": "g", "parallel": ["scout", "reviewer"], "outputs": ["notes"]},
@@ -357,11 +355,24 @@ def test_owned_flow_shapes_refuse_in_the_preview_authority(ws, shape, code):
     assert "diagnostics" not in authority["envelope"]
 
 
-def test_retries_zero_is_not_refused(ws):
+@pytest.mark.parametrize("retries", [0, 2])
+def test_retries_start_owned_without_checks(ws, retries):
+    """An owned flow without checks runs step retries as `garuda flow run` does."""
     _write_config(flows={"shaped": {"steps": [
-        {"id": "a", "role": "coder", "outputs": ["plan"], "retries": 0}]}})
+        {"id": "a", "role": "coder", "outputs": ["plan"], "retries": retries}]}})
     preview = _gateway(ws).preview("run-flow", {"flow": "shaped", "goal": "go"}, ws)
     assert preview["authority"]["can_start"], preview["authority"]["diagnostics"]
+
+
+def test_retries_in_a_checked_flow_refuse_in_the_preview_authority(ws):
+    _write_config(flows={"shaped": {"steps": [
+        {"id": "a", "role": "coder", "outputs": ["plan"], "retries": 2}]}},
+        checks=[{"run": "true"}])
+    preview = _gateway(ws).preview("run-flow", {"flow": "shaped", "goal": "go"}, ws)
+    authority = preview["authority"]
+    assert authority["can_start"] is False
+    found = [row for row in authority["diagnostics"] if row["code"] == "flow.retries_unsupported"]
+    assert found and "without --check" in found[0]["fix"]
 
 
 def test_long_run_on_a_non_acp_role_needs_setup_before_any_start(ws):
@@ -632,7 +643,8 @@ async def test_owned_start_is_exactly_once_and_passes_the_explicit_checks(
 @pytest.mark.parametrize("change,code", [
     ("definition", "starter.preview_changed"),
     ("escalation", "starter.permission_exceeds_ceiling"),
-    ("retries", "starter.retries_unsupported"),
+    ("retries", "starter.preview_changed"),
+    ("checked-retries", "flow.retries_unsupported"),
     ("long-run", "starter.not_ready"),
     ("unknown", "flow.unknown"),
 ])
@@ -645,14 +657,15 @@ async def test_start_revalidates_and_refuses_before_any_intent(write_context, ch
         flows["mine"]["steps"][1]["write_policy"] = "no-edits"
     elif change == "escalation":
         roles["coder"]["permissions"] = "yolo"
-    elif change == "retries":
+    elif change in {"retries", "checked-retries"}:
         flows["mine"]["steps"][1]["retries"] = 1
     elif change == "long-run":
         flows["mine"]["steps"][1]["long_run"] = {}
     else:
         flows = {"other": TWO_STEP}
-    _write_config(flows=flows, roles=roles)
-    if change in {"escalation", "retries", "long-run"}:
+    _write_config(flows=flows, roles=roles,
+                  checks=[{"run": "true"}] if change == "checked-retries" else None)
+    if change in {"escalation", "checked-retries", "long-run"}:
         # A fresh preview shows the typed refusal before Start is possible.
         fresh = await _preview(ctx, {"flow": "mine", "goal": "go"})
         assert not (fresh["authority"]["can_start"] and fresh["readiness"]["can_run"])
@@ -694,14 +707,16 @@ async def test_an_edited_project_flow_is_refused_at_start_before_any_intent(
 
 @pytest.mark.parametrize("shape,code,where", [
     ({"steps": [{"id": "build", "role": "coder", "outputs": ["patch"], "retries": 1}]},
-     "starter.retries_unsupported", "authority"),
+     "flow.retries_unsupported", "authority"),
     ({"isolation": "worktree", "steps": [{"id": "build", "role": "coder", "outputs": ["patch"]}]},
      "starter.isolation_unsupported", "authority"),
     ({"steps": [{"id": "build", "role": "coder", "outputs": ["patch"], "long_run": {}}]},
      "flow.long_run_unsupported", "readiness"),
 ])
 def test_packaged_starters_refuse_the_same_shapes_in_an_override(ws, shape, code, where):
-    _write_config(flows={"plan-build-review": shape})
+    # build-review is a checked starter: with checks configured it refuses retries.
+    _write_config(flows={"plan-build-review": shape},
+                  checks=[{"run": "true"}] if code == "flow.retries_unsupported" else None)
     preview = _gateway(ws).preview("build-review", {"goal": "go"}, ws)
     rows = preview[where]["diagnostics"]
     assert code in {row["code"] for row in rows}

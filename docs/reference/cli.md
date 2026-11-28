@@ -374,9 +374,11 @@ retries, limits, `long_run` and the owned one-hour backstop for a step without a
 deadline. The equivalent command is `garuda flow run NAME --task TASK --check …`
 with the same compiled task (the starter brief and the framed task field), so
 every step receives the same prompt. A dashboard start of any flow starter also
-refuses step retries (`starter.retries_unsupported`), a non-shared `isolation`
-(`starter.isolation_unsupported`) and parallel groups; a `long_run` step on a
-non-ACP role refuses everywhere (`flow.long_run_unsupported`).
+refuses a non-shared `isolation` (`starter.isolation_unsupported`), parallel
+groups (`starter.parallel_ownership_unavailable`) and step retries in a checked
+flow (`flow.retries_unsupported`); step retries without checks run as
+`garuda flow run` runs them. A `long_run` step on a non-ACP role refuses
+everywhere (`flow.long_run_unsupported`).
 
 ```bash
 garuda starter run run-flow --flow plan-only --goal "Explain reconnect status" --workspace . --preview
