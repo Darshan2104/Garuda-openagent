@@ -15,6 +15,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import signal
+import sys
+import threading
 import webbrowser
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -164,6 +167,23 @@ async def serve_dashboard(config: DashboardConfig) -> None:
 
     warmer = Warmer(ctx)
     warmer.start()
+    # SIGTERM (`kill`, `systemctl stop`, a supervisor) stops the dashboard the way Ctrl-C does:
+    # the server stops and the `finally` below settles the flows and chats it owns. Without
+    # this, SIGTERM killed the process at once; a flow step it owned never settled, so the
+    # flow could not be resumed (flow.interrupted_unsettled), as after a SIGKILL.
+    loop = asyncio.get_running_loop()
+    terminated: list[bool] = []
+
+    def _terminate() -> None:
+        if not terminated:
+            terminated.append(True)
+            threading.Thread(target=server.shutdown, name="garuda-web-sigterm", daemon=True).start()
+
+    try:
+        loop.add_signal_handler(signal.SIGTERM, _terminate)
+        handles_sigterm = True
+    except (NotImplementedError, RuntimeError, ValueError):  # not the main thread, or Windows
+        handles_sigterm = False
     try:
         await asyncio.to_thread(server.serve_forever)
     finally:
@@ -178,3 +198,7 @@ async def serve_dashboard(config: DashboardConfig) -> None:
             # Cancel anything still running so `run_agent_task`'s own teardown fires: a
             # Ctrl-C must not leave a container or an MCP subprocess behind.
             await ctx.live.aclose()
+        if handles_sigterm:
+            loop.remove_signal_handler(signal.SIGTERM)
+        if terminated:
+            print("\nGaruda dashboard stopped.", file=sys.stderr, flush=True)
