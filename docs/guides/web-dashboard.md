@@ -148,7 +148,11 @@ raw payloads may).
 - **Needs attention** lists only what applies, each with its age and a link to
   where you act: approvals waiting (with expired ones counted apart, since they
   will be denied) → **Approvals**; sessions whose worker **crashed** and
-  sessions **waiting** on an approval → the session; flows **paused** on a
+  sessions **waiting** on an approval → the session; a dashboard-started flow
+  whose dashboard was killed mid-step, as **stopped (dashboard died)** with the
+  step that never settled and what the crash proof found (**its processes were
+  proved gone · Resume**, or the refusal's code linking to what to do) → the
+  session's Resume block; flows **paused** on a
   resumable stop (a usage-limit pause, shown as **paused: usage limit, resets
   13:24 (in 12 min)** when the harness reported its reset, then how it ends:
   **resumes automatically after the reset**, or the `garuda flow resume <id>`
@@ -325,7 +329,17 @@ list link to that block (**Resume**). A flow run from the CLI keeps its
 `garuda flow resume` command. If the dashboard's server was killed (SIGKILL, OOM)
 or the machine rebooted while a step ran, the restarted dashboard offers
 **Resume** once the crash proof's process facts hold (see **After a hard kill**
-below); otherwise the block shows the refusal and what is uncertain.
+above); otherwise the block shows the refusal and what is uncertain. Such a flow
+is still recorded running, so the read model says so in its own fact
+(`dashboard_operation.dashboard_died`, with `crash`: the step and attempt that
+never settled and the read-only proof's answer): the page, the Sessions list and
+the Overview call it **stopped (dashboard died)**, never running or crashed. Its
+Result says "The dashboard stopped without settling step `<id>` (attempt N); its
+processes were proved gone, so Resume runs it again." and offers **Resume**; when
+the proof fails it shows the refusal's own message in full, which names what is
+uncertain (a surviving process, a lease still held) and the next step (stop that
+process, or `garuda runtime recover --session FLOW_ID`), then **Resume** again.
+While the dashboard that ran it may still be alive nothing is offered.
 
 Each refusal, as the page words it:
 

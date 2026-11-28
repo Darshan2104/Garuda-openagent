@@ -102,6 +102,102 @@ def shots(page, name):
     page.set_viewport_size({"width": 1440, "height": 1000})
 
 
+HELD = "de4dde4d-1f2a-4b6c-8d7e-9f0a1b2c3d4e"
+FAILS = "de4dde4d-2f2a-4b6c-8d7e-9f0a1b2c3d4e"
+UNSETTLED_MESSAGE = (
+    f"dashboard flow {FAILS} lost its process while step look (attempt 1) was running, and Garuda "
+    "cannot prove that attempt's whole process tree is gone: process(es) 4242 still carry its "
+    "lineage. The attempt stays quarantined and is never replayed. Next: stop them, then the "
+    "dashboard's owned resume again")
+
+
+def crashed_row(sid, check_state):
+    """A flow whose dashboard was SIGKILLed mid-step: recorded running, its owner dead, and
+    the read model's crash facts (dashboard_operation.dashboard_died, .crash)."""
+    data = row(sid=sid, flow_state="running", check_state=check_state)
+    data.update(label="crashed", crashed=True, state={"process": "missing", "work": "working", "outcome": None})
+    data["dashboard_operation"].update(stop=None, resumable_stop=False, dashboard_died=True,
+                                       crash={"step": "look", "attempt": 1, "resume": check_state})
+    # The live view as the read model returns it: the open attempt, its process gone.
+    data["flow"].update(stop=None, steps=[{"id": "look", "attempts": []}, {"id": "make", "attempts": []}],
+                        in_flight={"state": "running", "process": "missing", "running": False, "step": "look",
+                                   "attempt": 1, "paused": None, "session_id": None, "started_at": None})
+    return data
+
+
+def crash_leg(page) -> None:
+    """A dashboard killed hard mid-step (#892): the crash proof holds (Resume) or fails (its own
+    reason and next step), on the session page, the Overview and the Sessions list."""
+    held = crashed_row(HELD, {"available": True, "code": None, "message": None})
+    fails = crashed_row(FAILS, {"available": False, "code": "flow.interrupted_unsettled",
+                                "message": UNSETTLED_MESSAGE})
+    open_session(page, held)
+    block = page.locator("#session-resume")
+    check("a dead dashboard's flow reads 'stopped (dashboard died)', not running or crashed",
+          page.locator("#session-label").inner_text() == "stopped (dashboard died)")
+    check("the proof holds: the block says the step's processes were proved gone, with Resume",
+          block.locator('#resume-crash[data-proof="holds"]').count() == 1
+          and "The dashboard stopped without settling step look (attempt 1); its processes were proved gone"
+          in block.inner_text()
+          and block.locator("button[data-resume-flow]:not([disabled])").count() == 1, block.inner_text())
+    check("its Result does not say it is still running",
+          "Still running" not in page.locator("#session-result").inner_text()
+          and "running for" not in page.locator("#session-overview").inner_text())
+    check("no Step in flight card, and the pipeline shows the attempt whose process is gone",
+          page.locator("#session-live-step").count() == 0
+          and "interrupted · attempt 1" in page.locator('#flow-detail [data-step="look"]').inner_text())
+    shots(page, "crash-holds")
+
+    open_session(page, fails)
+    block = page.locator("#session-resume")
+    refusal = block.locator('.resume-refusal[data-code="flow.interrupted_unsettled"]')
+    check("the proof fails: the refusal's own reason and next step, in full, and no Resume",
+          refusal.count() == 1 and "process(es) 4242 still carry its lineage" in refusal.locator(".resume-reason").inner_text()
+          and "Next: stop them" in refusal.inner_text()
+          and block.locator("button[data-resume-flow]").count() == 0, block.inner_text())
+    check("nothing says the flow cannot be resumed or to start a new run",
+          "cannot be resumed" not in block.inner_text() and "start a new run" not in block.inner_text())
+    shots(page, "crash-fails")
+
+    def overview(route):
+        response = route.fetch()
+        body = response.json()
+        body["attention"]["crashed"]["items"][:0] = [held, fails]
+        body["attention"]["crashed"]["total"] += 2
+        route.fulfill(response=response, body=json.dumps(body))
+
+    def sessions(route):
+        response = route.fetch()
+        body = response.json()
+        body["sessions"][:0] = [{**held, "approvals_pending": 0, "approvals_live": 0},
+                                {**fails, "approvals_pending": 0, "approvals_live": 0}]
+        route.fulfill(response=response, body=json.dumps(body))
+
+    page.unroute("**/api/overview")
+    page.route("**/api/overview", overview)
+    page.route(re.compile(r".*/api/sessions(\?.*)?$"), sessions)
+    page.goto(BASE + "#/")
+    held_row = page.locator(f'.home-row[data-key="crashed:{HELD}"]')
+    expect(held_row).to_be_visible(timeout=20_000)
+    check("Overview: under Needs attention as 'stopped (dashboard died) · Resume'",
+          "stopped (dashboard died)" in held_row.inner_text() and "its processes were proved gone" in held_row.inner_text()
+          and held_row.locator(f'a.resume-link[href="#/sessions/{HELD}?focus=resume"]').count() == 1, held_row.inner_text())
+    fails_row = page.locator(f'.home-row[data-key="crashed:{FAILS}"]')
+    check("Overview: a failed proof shows its code and links to what to do, no Resume",
+          "flow.interrupted_unsettled" in fails_row.inner_text() and fails_row.locator("a.resume-link").count() == 0
+          and fails_row.locator(f'a[href="#/sessions/{FAILS}?focus=resume"]').count() == 1, fails_row.inner_text())
+    shots(page, "crash-overview")
+    page.goto(BASE + "#/sessions")
+    listed = page.locator(f'tr[data-session="{HELD}"]')
+    expect(listed).to_be_visible(timeout=20_000)
+    check("Sessions: the state says 'stopped (dashboard died)' and links to Resume when the proof holds",
+          listed.locator('[data-state="stopped (dashboard died)"]').count() == 1
+          and listed.locator("a.resume-link").count() == 1
+          and page.locator(f'tr[data-session="{FAILS}"] a.resume-link').count() == 0)
+    page.unroute(re.compile(r".*/api/sessions(\?.*)?$"))
+    page.unroute("**/api/overview")
+
+
 def main() -> None:
     errors: list[str] = []
     sent: list[dict] = []
@@ -290,6 +386,8 @@ def main() -> None:
         check("following it lands on the block", settle(page, """() => {
             const b = document.getElementById('session-resume'); if (!b) return false;
             const r = b.getBoundingClientRect(); return r.top < window.innerHeight && r.bottom > 0; }"""))
+        page.unroute(f"**/api/sessions/{SID}")
+        crash_leg(page)
         browser.close()
     check("no console errors", not [e for e in errors if "status of" not in e], "; ".join(errors[:5]))
     if failures:

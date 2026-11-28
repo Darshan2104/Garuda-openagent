@@ -312,6 +312,22 @@ function homeSessionAttention(o) {
   }
   var crashedRows = [], waitingRows2 = [], pausedRows = [];
   o.attention.crashed.items.forEach(function (r) {
+    // A dashboard flow whose dashboard died mid-step: what the crash proof found, and Resume
+    // when it holds (the read model's facts; nothing judged here).
+    var died = dashboardCrashPill(r);
+    if (died) {
+      var crash = dashboardCrash(r);
+      var check = crash.resume || {};
+      crashedRows.push({ row: r, item: homeRow("crashed:" + r.session_id, "crashed",
+        '<span class="pill ' + died.cls + '" data-state="dashboard-died">' + esc(died.label) + "</span> " + homeSessionLink(r) +
+        '<span class="home-what">' + (crash.step ? "step " + esc(crash.step) + " never settled · " : "") +
+        (check.available === true ? "its processes were proved gone ·" + resumeLinkHtml(r)
+          : check.available === false ? "cannot resume yet: <code>" + esc(check.code) + '</code> · <a href="#/sessions/' +
+            encodeURIComponent(r.session_id) + '?focus=resume">what to do</a>'
+          : "the dashboard that ran it is not proved gone") + "</span>" +
+        '<span class="home-age">updated ' + esc(fmt.when(r.updated_at)) + "</span>") });
+      return;
+    }
     crashedRows.push({ row: r, item: homeRow("crashed:" + r.session_id, "crashed",
       '<span class="pill failed">crashed</span> ' + homeSessionLink(r) +
       '<span class="home-what">its worker is gone and the work never finished · ' + esc(identityText(r)) + "</span>" +

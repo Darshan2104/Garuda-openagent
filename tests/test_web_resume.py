@@ -61,7 +61,8 @@ def test_ownership_is_a_read_model_fact_for_rows_and_details(store, ctx):
     fact = read_model.dashboard_operation(meta)
     assert fact == {"start_operation_id": meta["flow_operation"]["operation_id"],
                     "resume_operation_id": None, "checks": False,
-                    "stop": "flow.interrupted", "resumable_stop": True}
+                    "stop": "flow.interrupted", "resumable_stop": True,
+                    "dashboard_died": False, "crash": None}
     assert read_model.dashboard_operation(store.load_meta(cli)) is None
     detail = json.loads(_get(ctx, f"/api/sessions/{owned}").body)
     assert detail["dashboard_operation"] == fact
