@@ -341,8 +341,10 @@ function homeSessionAttention(o) {
         (stop.code ? " (<code>" + esc(stop.code) + "</code>)" : "");
     // How it ends: automatically (quota recovery) or by the command, after the reset.
     var how = pauseResume(r.pause, r.session_id);
-    what += ' · <span class="home-resume" data-resume="' + esc(how.resume) + '">' + esc(how.text) +
-      (how.command ? ': <code>' + esc(how.command) + "</code>" : "") + "</span>";
+    // A dashboard-started flow resumes from its session page, never by the CLI command.
+    what += r.dashboard_operation ? " ·" + resumeLinkHtml(r)
+      : ' · <span class="home-resume" data-resume="' + esc(how.resume) + '">' + esc(how.text) +
+        (how.command ? ': <code>' + esc(how.command) + "</code>" : "") + "</span>";
     pausedRows.push({ row: r, item: homeRow("paused:" + r.session_id, "paused",
       '<span class="pill paused">paused</span> ' + homeSessionLink(r) +
       '<span class="home-what">' + what + "</span>" +
@@ -465,7 +467,7 @@ function homeRenderAll(state) {
     return homeRow("recent:" + r.session_id, "recent",
       homeSessionLink(r) + (r.kind === "flow" ? ' <span class="pill unknown">flow</span>' : "") +
       '<span class="home-chips">' + chip("outcome", outcome, r.pause ? "chip-pause" : outcomeClass(outcome)) + " " + verificationChip(r.verification) + "</span>" +
-      '<span class="home-what stat-sub">' + esc(identityText(r)) + "</span>" +
+      '<span class="home-what stat-sub">' + esc(identityText(r)) + (r.pause ? "" : resumeLinkHtml(r)) + "</span>" +
       '<span class="home-age">' + esc(fmt.when(r.updated_at)) + "</span>");
   }) : [];
   homePatchList(el("home-recent-list"), recent);

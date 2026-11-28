@@ -26,12 +26,12 @@ from pathlib import Path
 import pytest
 
 from garuda.config import garuda_yaml as gy
+from garuda.core import read_model
 from garuda.flows import engine, launches
 from garuda.interfaces.web import DashboardConfig, build_context
 from tests.test_flow_sigterm_recover import REPO, _holdings_free, _wait_gone
 from tests.test_web_flow_resume import (
     RESUME,
-    _model,
     _resume_body,
     _two_entries_per_attempt,
 )
@@ -57,6 +57,64 @@ DASHBOARD = (
     "    open_browser=False)))\n")
 
 
+def _gated_model(blocked):
+    """An OpenAI-compatible endpoint answering each step's artifact; the requests whose
+    1-based numbers are in ``blocked`` wait until :func:`release` lets them go."""
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    requests = []
+    seen = threading.Condition()
+    gates = {number: threading.Event() for number in blocked}
+
+    class Endpoint(BaseHTTPRequestHandler):
+        def do_POST(self):
+            body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            with seen:
+                requests.append(body)
+                number = len(requests)
+                seen.notify_all()
+            if number in gates:
+                gates[number].wait(120)
+            kind = "plan" if "step `plan`" in json.dumps(body) else "notes"
+            content = (f'<garuda-artifact type="{kind}">\n'
+                       f"owned {kind} output\n</garuda-artifact>")
+            raw = json.dumps({
+                "id": "owned-crash-fixture", "object": "chat.completion", "created": 1,
+                "model": "owned-resume", "choices": [{"index": 0,
+                    "message": {"role": "assistant", "content": content},
+                    "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            }).encode()
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+        def log_message(self, *_args):
+            pass
+
+    def wait_for(count, timeout=60):
+        with seen:
+            assert seen.wait_for(lambda: len(requests) >= count, timeout), (
+                f"model request {count} never arrived")
+
+    def release(number=None):
+        for key, gate in gates.items():
+            if number is None or key == number:
+                gate.set()
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Endpoint)
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, requests, wait_for, release
+
+
 @pytest.fixture
 def crashed_dashboard(tmp_path, monkeypatch):
     """A dashboard subprocess whose flow start is SIGKILLed while its first step runs."""
@@ -70,7 +128,8 @@ def crashed_dashboard(tmp_path, monkeypatch):
                     "-c", "user.email=test@example.invalid", "commit", "--allow-empty",
                     "-qm", "base"], check=True)
     _configure_native_flow(workspace)
-    server, requests, started, release = _model(block=True)
+    # Request 1 (the start's first step) and 2 (a dashboard resume's) hold until released.
+    server, requests, wait_for, release = _gated_model({1, 2})
     Path(os.environ["GARUDA_GLOBAL_SETTINGS"]).write_text(yaml.safe_dump({
         "models": {"owned": {"model": "openai/owned-resume",
                               "api_base": f"http://127.0.0.1:{server.server_port}/v1"}},
@@ -79,46 +138,34 @@ def crashed_dashboard(tmp_path, monkeypatch):
     }))
     sessions = tmp_path / "sessions"
     procs = []
+    from garuda.core.sessions import SessionStore
 
-    def start(*, checks: bool, starter: str, inputs: dict, before_kill=None):
-        if checks:
-            config = gy.load_file(gy.user_path())
-            config["flows"] = {"plan-build-review": {"steps": [{"id": "build", "role": "coder"}]}}
-            config["checks"] = [{"run": "true"}]
-            gy.user_path().write_text(gy.dump(config))
+    store = SessionStore(root=sessions)
+
+    def dashboard():
+        """A write-mode dashboard subprocess, once it serves."""
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", 0))
             port = probe.getsockname()[1]
+        log = open(tmp_path / f"dashboard-{len(procs)}.log", "w")  # noqa: SIM115
         proc = subprocess.Popen(
             [sys.executable, "-c", DASHBOARD, str(port), TOKEN, str(sessions), str(workspace)],
             cwd=str(workspace), env=dict(os.environ, PYTHONPATH=str(REPO)),
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-            start_new_session=True)
-        procs.append(proc)
+            stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+        procs.append((proc, log))
         base = f"http://127.0.0.1:{port}/"
         deadline = time.monotonic() + 60
         while True:
-            assert proc.poll() is None, proc.stdout.read()
+            assert proc.poll() is None, (tmp_path / f"dashboard-{len(procs) - 1}.log").read_text()
             try:
-                status, preview = _http_json(base, "/api/scenarios/preview", method="POST", body={
-                    "starter_id": starter, "workspace": 0, "inputs": inputs})
-                break
+                _http_json(base, "/api/health")
+                return proc, base
             except OSError:
                 assert time.monotonic() < deadline, "the dashboard never served"
                 time.sleep(.2)
-        assert status == 200 and preview["authority"]["can_start"], preview
-        start_id = str(uuid.uuid4())
-        status, admitted = _http_json(base, "/api/scenarios/start", method="POST", body={
-            "operation_id": start_id, "starter_id": starter, "inputs": inputs, "workspace": 0,
-            "preview_digest": preview["plan"]["digest"],
-            "authority_digest": preview["authority"]["digest"]})
-        assert status in {201, 202}, admitted
-        assert started.wait(60), "owned model child did not start"
-        from garuda.core.sessions import SessionStore
 
-        store = SessionStore(root=sessions)
-        flow_id = next(m["session_id"] for m in store.list_sessions(limit=None)
-                       if m.get("kind") == "flow")
+    def kill_mid_step(proc, flow_id, before_kill=None):
+        """SIGKILL ``proc`` while the flow's open attempt runs; wait until its tree closed."""
         intent = [e for e in engine.journal(store, flow_id) if e.get("event") == "intent"][-1]
         step, attempt = intent["step"], intent["attempt"]
         record = launches.read(engine.flow_dir(store, flow_id), step, attempt)
@@ -133,22 +180,56 @@ def crashed_dashboard(tmp_path, monkeypatch):
         proc.wait(timeout=30)
         _wait_gone(record["command"]["pid"])  # the supervisor closes its tree when its parent dies
         _wait_gone(record["supervisor"]["pid"])
-        meta = store.load_meta(flow_id)
-        assert meta["flow_state"] == "running"
+        assert store.load_meta(flow_id)["flow_state"] == "running"
         assert engine.unsettled_attempts(store, flow_id) == [(step, attempt)]
-        release.set()
+        return record, extra
+
+    def start(*, checks: bool, starter: str, inputs: dict, before_kill=None):
+        if checks:
+            config = gy.load_file(gy.user_path())
+            config["flows"] = {"plan-build-review": {"steps": [{"id": "build", "role": "coder"}]}}
+            config["checks"] = [{"run": "true"}]
+            gy.user_path().write_text(gy.dump(config))
+        proc, base = dashboard()
+        status, preview = _http_json(base, "/api/scenarios/preview", method="POST", body={
+            "starter_id": starter, "workspace": 0, "inputs": inputs})
+        assert status == 200 and preview["authority"]["can_start"], preview
+        start_id = str(uuid.uuid4())
+        status, admitted = _http_json(base, "/api/scenarios/start", method="POST", body={
+            "operation_id": start_id, "starter_id": starter, "inputs": inputs, "workspace": 0,
+            "preview_digest": preview["plan"]["digest"],
+            "authority_digest": preview["authority"]["digest"]})
+        assert status in {201, 202}, admitted
+        wait_for(1)
+        flow_id = next(m["session_id"] for m in store.list_sessions(limit=None)
+                       if m.get("kind") == "flow")
+        record, extra = kill_mid_step(proc, flow_id, before_kill)
+        release(1)
         return start_id, flow_id, record, extra
 
+    def resume_and_kill(flow_id):
+        """A second dashboard resumes the crashed flow and is SIGKILLed mid-step too."""
+        proc, base = dashboard()
+        operation_id = str(uuid.uuid4())
+        status, admitted = _http_json(base, "/api/scenarios/resume", method="POST", body={
+            "operation_id": operation_id, "session_id": flow_id})
+        assert status in {201, 202}, admitted
+        wait_for(2)
+        record, _ = kill_mid_step(proc, flow_id)
+        release(2)
+        return operation_id, record
+
     try:
-        yield start, workspace, sessions, requests
+        yield start, workspace, sessions, requests, resume_and_kill
     finally:
-        release.set()
-        for proc in procs:
+        release()
+        for proc, log in procs:
             try:
                 os.killpg(proc.pid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError):
                 pass
             proc.wait(timeout=30)
+            log.close()
         server.shutdown()
         server.server_close()
 
@@ -167,7 +248,7 @@ async def _close(ctx):
 
 async def test_a_hard_killed_dashboard_flow_resumes_once_its_step_tree_is_proved_gone(
         crashed_dashboard):
-    start, workspace, sessions, requests = crashed_dashboard
+    start, workspace, sessions, requests, _resume_and_kill = crashed_dashboard
     start_id, flow_id, record, _ = start(
         checks=False, starter="plan-change", inputs={"goal": "produce one bounded plan"})
     ctx = _restarted(sessions, workspace)
@@ -175,6 +256,9 @@ async def test_a_hard_killed_dashboard_flow_resumes_once_its_step_tree_is_proved
         # The dead dashboard's start is still admitted: its owner is gone, nothing settled it.
         assert ctx.flow_starts.intents.read(start_id)["phase"] == "admitted"
         assert ctx.store.load_meta(flow_id)["publication_policy"]["kind"] == "owned-flow"
+        # The session page offers Resume: the read-only crash proof holds.
+        assert read_model.resume_check(ctx.store, flow_id, ctx.store.load_meta(flow_id)) == {
+            "available": True, "code": None, "message": None}
         body = _resume_body(flow_id)
         other = _resume_body(flow_id)
         # Duplicate concurrent resumes after the crash (the same operation twice and
@@ -236,7 +320,7 @@ async def test_a_hard_killed_dashboard_flow_resumes_once_its_step_tree_is_proved
 
 async def test_a_hard_killed_checked_dashboard_flow_resumes_under_its_original_checks(
         crashed_dashboard):
-    start, workspace, sessions, requests = crashed_dashboard
+    start, workspace, sessions, requests, _resume_and_kill = crashed_dashboard
     _start_id, flow_id, record, _ = start(
         checks=True, starter="build-review", inputs={"goal": "build one checked change"})
     ctx = _restarted(sessions, workspace)
@@ -273,7 +357,7 @@ async def test_a_dashboard_crash_whose_tree_cannot_be_proved_gone_stays_quaranti
     from garuda.runtime.ownership import LINEAGE_ENV, lineage_token
     from garuda.workspace.lease import LeaseStore
 
-    start, workspace, sessions, requests = crashed_dashboard
+    start, workspace, sessions, requests, _resume_and_kill = crashed_dashboard
 
     def holder(flow_id):
         (lease,) = LeaseStore().live_holders_for_session(flow_id)
@@ -294,6 +378,8 @@ async def test_a_dashboard_crash_whose_tree_cannot_be_proved_gone_stays_quaranti
         error = _body(refused)["error"]
         assert error["code"] == "flow.interrupted_unsettled", error
         assert "cannot prove that attempt's whole process tree is gone" in error["message"]
+        check = read_model.resume_check(ctx.store, flow_id, ctx.store.load_meta(flow_id))
+        assert check["available"] is False and check["code"] == "flow.interrupted_unsettled"
         assert str(survivor.pid) in error["message"] and "stays quarantined" in error["message"]
         # Nothing was recorded or settled: no operation, no receipt, the start still admitted.
         assert ctx.flow_starts.intents.read(body["operation_id"]) is None
@@ -319,7 +405,7 @@ async def test_a_dashboard_crash_whose_tree_cannot_be_proved_gone_stays_quaranti
 
 
 async def test_a_crash_without_a_launch_record_is_never_continued(crashed_dashboard):
-    start, workspace, sessions, requests = crashed_dashboard
+    start, workspace, sessions, requests, _resume_and_kill = crashed_dashboard
     start_id, flow_id, record, _ = start(
         checks=False, starter="plan-change", inputs={"goal": "produce one bounded plan"})
     ctx = _restarted(sessions, workspace)
@@ -333,5 +419,55 @@ async def test_a_crash_without_a_launch_record_is_never_continued(crashed_dashbo
         assert "start a new flow from the dashboard" in error["message"]
         assert engine.receipts(ctx.store, flow_id) == []
         assert len(requests) == 1
+    finally:
+        await _close(ctx)
+
+
+async def test_a_dashboard_killed_during_a_resume_is_resumed_again_once(crashed_dashboard):
+    """A resume (version-3) operation whose dashboard is SIGKILLed mid-step is superseded."""
+    start, workspace, sessions, requests, resume_and_kill = crashed_dashboard
+    start_id, flow_id, first, _ = start(
+        checks=False, starter="plan-change", inputs={"goal": "produce one bounded plan"})
+    dead_resume, second = resume_and_kill(flow_id)
+    ctx = _restarted(sessions, workspace)
+    try:
+        intents = ctx.flow_starts.intents
+        # The second dashboard proved the first crash and settled the start; its own
+        # resume is admitted under a dead owner, bound to the flow, with attempt 2 open.
+        assert (intents.read(start_id)["phase"], intents.read(start_id)["outcome"]) == (
+            "terminal", "interrupted")
+        assert intents.read(dead_resume)["phase"] == "admitted"
+        meta = ctx.store.load_meta(flow_id)
+        assert meta["flow_resume_operation"]["operation_id"] == dead_resume
+        assert engine.unsettled_attempts(ctx.store, flow_id) == [("scout", 2)]
+
+        body = _resume_body(flow_id)
+        duplicates = await asyncio.gather(*[_call(ctx, RESUME, method="POST", body=body)
+                                            for _ in range(2)])
+        assert {r.status for r in duplicates} <= {200, 201, 202}, [_body(r) for r in duplicates]
+        terminal = await _status(ctx, body["operation_id"],
+                                 {"terminal", "uncertain", "quarantined", "refused"}, timeout=120)
+        assert terminal["status"] == "terminal" and terminal["outcome"] == "completed", terminal
+
+        # The dead resume's claim was superseded and its record settled by settle_lost.
+        settled = intents.read(dead_resume)
+        assert (settled["phase"], settled["outcome"]) == ("terminal", "interrupted")
+        assert settled["owner"]["pid"] != os.getpid()  # it keeps its dead dashboard as owner
+        projected = _body(await _call(ctx, f"/api/scenario-operations/{dead_resume}"))
+        assert projected["status"] == "terminal" and projected["resumed_by"] == body["operation_id"]
+
+        meta = ctx.store.load_meta(flow_id)
+        assert meta["flow_state"] == "completed"
+        assert meta["flow_operation"]["operation_id"] == start_id
+        assert meta["flow_resume_operation"]["operation_id"] == body["operation_id"]
+        rows = _two_entries_per_attempt(ctx.store, flow_id)
+        assert [(r["step"], r["attempt"], r["status"]) for r in rows] == [
+            ("scout", 1, "stopped"), ("scout", 2, "stopped"), ("scout", 3, "done"),
+            ("plan", 1, "done")]
+        assert rows[0]["crash"]["supervisor"] == first["supervisor"]
+        assert rows[1]["crash"]["supervisor"] == second["supervisor"]
+        assert rows[1]["crash"]["owned"] is True
+        assert len(requests) == 4  # two crashed attempts, the retry, the next step: once each
+        await asyncio.to_thread(_holdings_free, workspace, "native")
     finally:
         await _close(ctx)

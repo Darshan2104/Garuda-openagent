@@ -357,7 +357,13 @@ function starterOperationHtml(row, approvals, where, grace, timeout, settled) {
     'about ' + esc(grace || 90) + ' seconds after no dashboard tab is watching this run (its tabs were closed), a waiting approval ' +
     'is denied as "stopped watching" and the step sees the denial, while the run keeps going on the server. If the dashboard ' +
     'stops, a waiting approval is denied at once.</p>';
-  return '<section class="card starter-operation-card"><h3>' + (where === "session" ? "Dashboard operation" : "Starter operation") + '</h3><p>' +
+  var resume = row.kind === "resume";
+  var follow = (resume ? '<p class="stat-sub" data-resumes="' + esc(row.resumes) + '">Resumes start operation <code>' + esc(row.resumes) + "</code>.</p>" : "") +
+    (row.resumed_by ? '<p class="stat-sub" id="operation-resumed-by" data-resumed-by="' + esc(row.resumed_by) + '">Resumed by operation ' +
+      (row.session_id ? '<a href="#/sessions/' + encodeURIComponent(row.session_id) + "?operation=" + encodeURIComponent(row.resumed_by) + '">' : "") +
+      "<code>" + esc(row.resumed_by) + "</code>" + (row.session_id ? "</a>" : "") + "; this start's own outcome is shown here.</p>" : "");
+  return '<section class="card starter-operation-card"' + (resume ? ' data-kind="resume"' : "") + '><h3>' +
+    (resume ? "Dashboard resume" : where === "session" ? "Dashboard operation" : "Starter operation") + '</h3>' + follow + '<p>' +
     chip("operation", row.status || row.phase) + ' ' + chip("flow", row.flow_state || "not admitted") +
     '</p><p class="stat-sub">Operation <code>' + esc(row.operation_id) + '</code>' +
     (row.session_id ? ' · session <code>' + esc(row.session_id) + '</code>' : '') +

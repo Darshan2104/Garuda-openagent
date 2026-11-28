@@ -835,6 +835,9 @@ def session_row(store, meta: dict, *, queue_index: dict | None = None, liveness=
         "queue": queue,
         "worker": {"pid": worker.get("pid")} if worker else None,
         "resumed_from": meta.get("resumed_from"),
+        # A flow a dashboard's owned gateway started (and, when one ran, resumed); ``None``
+        # for every other session. Only that gateway resumes such a flow.
+        "dashboard_operation": dashboard_operation(meta),
         # A flow step's own session names its flow, step and attempt (recorded at creation,
         # #859): the one link from a step session back to its flow.
         "flow_step": _flow_step(meta.get("flow_step")),
@@ -1019,6 +1022,93 @@ def flow_progress(store, meta: dict) -> dict | None:
             "total": len(declared)}
 
 
+def dashboard_operation(meta: dict) -> dict | None:
+    """The owned start (and latest resume) operation of a dashboard-started flow, or ``None``.
+
+    Read from the flow's own records: its ``flow_operation`` binding under an owned
+    publication policy (``owned-flow`` or ``flow-verification``), not a background or role
+    run. ``resumable_stop`` says whether its recorded stop is one a resume continues
+    (a settled stop in the engine's resumable set, or a usage-limit wait); the owned
+    resume itself checks again, and :func:`session_result`'s ``resume_check`` says what
+    it would answer now.
+    """
+    binding = meta.get("flow_operation")
+    policy = meta.get("publication_policy")
+    kind = policy.get("kind") if isinstance(policy, dict) else None
+    if (meta.get("kind") != "flow" or not isinstance(binding, dict)
+            or kind not in {"owned-flow", "flow-verification"}
+            or "background_operation" in meta or meta.get("launch_kind") == "run"):
+        return None
+    resumed = meta.get("flow_resume_operation")
+    stop = meta.get("flow_stop") if isinstance(meta.get("flow_stop"), dict) else {}
+    code = stop.get("code") if isinstance(stop.get("code"), str) else None
+    try:
+        from garuda.flows.engine import QUOTA_WAIT_STOP, RESUMABLE_CHECKED_STOPS
+
+        resumable = (meta.get("flow_state") in {"stopped", "interrupted"} and meta.get("status") == "failed"
+                     and (code is None or code in RESUMABLE_CHECKED_STOPS or code == QUOTA_WAIT_STOP))
+    except ImportError:  # pragma: no cover - the engine moved: unknown, never a guess
+        resumable = None
+    return {"start_operation_id": binding.get("operation_id"),
+            "resume_operation_id": resumed.get("operation_id") if isinstance(resumed, dict) else None,
+            "checks": kind == "flow-verification", "stop": code, "resumable_stop": resumable}
+
+
+def resume_check(store, session_id: str, meta: dict) -> dict | None:
+    """What the dashboard's owned resume would say about this flow's state now, read only.
+
+    ``None`` for a flow no dashboard started or one still running (a flow whose
+    dashboard was killed hard mid-step is answered by the read-only crash proof,
+    ``crash.prove(owned=True, dry=True)``). Otherwise
+    ``{"available": true}`` or ``{"available": false, "code", "message"}`` from the engine's
+    own state check (``flows.engine.owned_resume_check``); a usage-limit wait adds its
+    ``reset_at``. The gateway's admission checks (the start's record, plan and authority)
+    run only when a resume is requested.
+    """
+    if dashboard_operation(meta) is None:
+        return None
+    try:
+        from garuda.flows import crash
+        from garuda.flows.engine import FlowStopped, owned_resume_check
+    except ImportError:  # pragma: no cover
+        return {"available": None, "code": None, "message": "the owned resume check is unavailable"}
+    if meta.get("flow_state") == "running":
+        # Running, unless its dashboard was killed hard mid-step: then the crash
+        # proof's process facts (read only, ``dry``) say whether a resume continues it.
+        try:
+            proof = crash.prove(store, session_id, meta, owned=True, dry=True)
+        except FlowStopped as exc:
+            if exc.code == "flow.recovery_required":
+                return None  # its dashboard may still run it
+            return {"available": False, "code": exc.code, "message": str(exc)}
+        except Exception:  # noqa: BLE001 - unknown, never a guess
+            return None
+        return {"available": True, "code": None, "message": None} if proof else None
+    try:
+        try:
+            owned_resume_check(store, session_id, meta)
+        except FlowStopped as exc:
+            if exc.code != "flow.interrupted_unsettled":
+                raise
+            # Recorded interrupted by `runtime recover` after a hard kill: the same dry proof.
+            if not crash.prove(store, session_id, meta, owned=True, dry=True):
+                raise
+    except FlowStopped as exc:
+        out = {"available": False, "code": exc.code, "message": str(exc)}
+        if exc.code == "flow.resume_quota_wait":
+            # When the engine lets it resume: the reported reset plus its margin.
+            try:
+                from garuda.flows.engine import _quota_reset
+
+                out["reset_at"] = _quota_reset(store, session_id, meta.get("flow_stop") or {})
+            except Exception:  # noqa: BLE001 - the recorded reset, without the margin
+                out["reset_at"] = quota_limit(meta).get("reset_at")
+        return out
+    except Exception as exc:  # noqa: BLE001 - unknown, never a guess
+        return {"available": None, "code": None, "message": f"the resume check could not run: {exc}"}
+    return {"available": True, "code": None, "message": None}
+
+
 def session_result(store, session_id: str, meta: dict, row: dict) -> dict[str, Any]:
     """What a session's detail leads with beside its state: the task's result and timing.
 
@@ -1062,6 +1152,8 @@ def session_result(store, session_id: str, meta: dict, row: dict) -> dict[str, A
             ended_at, duration = end_text, int((end - start).total_seconds() * 1000)
     return {
         "starter_origin": meta.get("starter") is not None,
+        # A dashboard-started flow's owned resume, checked read only (``resume_check``).
+        "resume_check": resume_check(store, session_id, meta) if not active else None,
         "final_message": final,
         "output_withheld": withheld,
         "files_changed": files_changed,

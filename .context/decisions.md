@@ -6120,3 +6120,12 @@ proof refusal after the claim settles the resume operation `refused` (nothing
 launched); a dry proof is never accepted by the engine. One writer: the receipt
 is written only under the resume claim and the workspace lease, and
 `_write_once` makes a second settle impossible.
+
+The session page (#890) offers Resume from `read_model.resume_check`, which now
+answers a dashboard flow still recorded `running` (or `interrupted` with the
+crashed attempt unsettled) with the same read-only dry proof: available when it
+holds, its typed refusal when a fact is unproved, `None` while the dashboard
+may still run it. The page JS is unchanged. A dashboard killed during a resume
+(version 3) is handled the same way: the next resume supersedes the dead
+resume's claim, proves its crashed attempt, and `settle_lost` settles that
+resume's record.
