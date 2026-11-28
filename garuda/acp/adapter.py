@@ -229,13 +229,21 @@ class AcpRuntime:
             return
         state = (False, False) if ended else (bool(self._calls_in_flight),
                                               bool(self._pending_approvals))
-        if state == self._status_reported:
-            return
-        self._status_reported = state
-        try:
-            self._status_report(*state)
-        except Exception:  # noqa: BLE001 - observability never fails a turn
-            pass
+        if state != self._status_reported:
+            self._status_reported = state
+            try:
+                self._status_report(*state)
+            except Exception:  # noqa: BLE001 - observability never fails a turn
+                pass
+        if ended:
+            # The turn's last state must be written now, not after a rate-limit
+            # timer the step may never wait for (a callback that holds changes).
+            flush = getattr(self._status_report, "flush", None)
+            if callable(flush):
+                try:
+                    flush()
+                except Exception:  # noqa: BLE001
+                    pass
 
     def _silence_limit(self) -> float | None:
         assert self._silence is not None

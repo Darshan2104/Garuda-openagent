@@ -1013,9 +1013,12 @@ uncertain and which command comes next. For example, a survivor that still
 carries the flow's lineage is named by pid; stop it and resume again. An
 attempt with no launch record (a flow started before this release, or a crash
 while the worker was being activated) can never be continued: inspect the
-workspace and start a new flow. Flows without `--check`, dashboard-owned and
-queued flows are unchanged. Quota recovery does not apply: it never runs
-checked flows.
+workspace and start a new flow. Flows without `--check` and queued flows are
+unchanged. A dashboard-started flow (checked or not) gets the same continuation
+under the same proof, but only through the dashboard's owned resume
+([After a hard kill](web-dashboard.md#resume-a-dashboard-flow)); `garuda flow
+resume` keeps refusing it with `flow.operation_managed`. Quota recovery does not
+apply: it never runs checked flows.
 
 #### Usage limits in checked flows
 

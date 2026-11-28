@@ -436,6 +436,7 @@ class LaunchIntentStore:
                 or owner.pid != os.getpid() or owner_liveness(owner.to_dict()) is not True):
             raise IntentStateError("launch intent owner identity is not live and proven")
         with self._locked(create=True) as (directory_fd, store_identity):
+            self._record_host(directory_fd, owner)
             assert directory_fd is not None
             candidate = {
                 "version": 2 if background else 1, "operation_id": operation_id,
@@ -476,6 +477,7 @@ class LaunchIntentStore:
             raise IntentStateError("launch intent owner identity is not live and proven")
         with self._locked(create=True) as (directory_fd, store_identity):
             assert directory_fd is not None
+            self._record_host(directory_fd, owner)
             candidate = {
                 "version": 3, "operation_id": operation_id,
                 "request_digest": request_digest, "plan_digest": plan_digest,
@@ -524,6 +526,121 @@ class LaunchIntentStore:
                     raise IntentConflict("background queue binding already names another admission")
                 return record
             updated = {**record, "queue_admission": admission, "sequence": record["sequence"] + 1}
+            try:
+                _validate(updated)
+            except CorruptRecord as exc:
+                raise IntentStateError(str(exc)) from exc
+            self._write(directory_fd, operation_id, updated)
+            return updated
+
+    @staticmethod
+    def _record_host(directory_fd: int, owner: Owner) -> None:
+        """Record which host and pid namespace ``owner`` (this process) runs in, once.
+
+        ``host-<epoch>.json``: a later process may settle this owner's lost
+        operations only when it runs on the same host and pid namespace, where
+        the owner's absence and an empty lineage scan prove it gone.
+        """
+        from garuda.runtime.ownership import host_identity
+
+        name = f"host-{owner.epoch}"
+        try:
+            os.stat(f"{name}.json", dir_fd=directory_fd, follow_symlinks=False)
+            return
+        except FileNotFoundError:
+            pass
+        host = host_identity()
+        if host is None:
+            return  # nothing can be proved about it later
+        LaunchIntentStore._publish(directory_fd, name, json.dumps(
+            {"version": 1, "owner": owner.to_dict(), "host": host},
+            sort_keys=True, separators=(",", ":")).encode())
+
+    @staticmethod
+    def _read_host(directory_fd: int, owner: dict) -> dict | None:
+        """The host record of ``owner``, or None when it is missing or does not match."""
+        epoch = owner.get("epoch") if isinstance(owner, dict) else None
+        if not isinstance(epoch, str) or _EPOCH.fullmatch(epoch) is None:
+            return None
+        try:
+            fd = os.open(f"host-{epoch}.json", os.O_RDONLY | os.O_NONBLOCK | _NOFOLLOW,
+                         dir_fd=directory_fd)
+        except OSError:
+            return None
+        try:
+            info = os.fstat(fd)
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                    or stat.S_IMODE(info.st_mode) != 0o600 or info.st_size > 4096):
+                return None
+            raw = os.read(fd, 4097)
+        finally:
+            os.close(fd)
+        try:
+            record = json.loads(raw.decode("utf-8"))
+        except (UnicodeError, ValueError):
+            return None
+        if (type(record) is not dict or record.get("version") != 1
+                or record.get("owner") != owner or not isinstance(record.get("host"), dict)):
+            return None
+        return record["host"]
+
+    def claimed(self, session_id: str) -> str | None:
+        """The operation ID the flow's resume claim names now, or None. Read only."""
+        if not _uuid4(session_id):
+            raise ValueError("session_id must be a canonical UUIDv4")
+        with self._locked() as (directory_fd, _store_identity):
+            if directory_fd is None:
+                return None
+            return self._read_claim(directory_fd, session_id)
+
+    def settle_lost(self, operation_id: str, *, owner: Owner, session_id: str,
+                    outcome: str = "interrupted", bound: bool) -> dict | None:
+        """Settle an operation of ``session_id`` whose dashboard is proved gone.
+
+        For the owned gateway's resume, once it holds the flow's resume claim.
+        The operation's recorded owner must be proved, here, to have run on this
+        host and pid namespace (its host record), to be dead, and to have no
+        live process carrying its lineage; then:
+
+        - ``admitted`` and ``bound`` (the flow's metadata names it): ``terminal``
+          with ``outcome`` (the flow's recorded state, which its proof settled);
+        - ``launch-authorized`` and not ``bound``: ``refused``/``owner.lost``. Its
+          dashboard died before the resume binding, so no step ran under it.
+
+        The record keeps its owner. Returns the settled record, or None when
+        nothing qualifies (any other phase, another flow, an unproved owner).
+        """
+        from garuda.runtime.ownership import descendant_scan, same_host_refusal
+
+        if not _uuid4(operation_id):
+            raise ValueError("operation_id must be a canonical UUIDv4")
+        if outcome not in {"completed", "stopped", "interrupted"}:
+            raise ValueError("outcome must be a terminal flow outcome")
+        if (not isinstance(owner, Owner) or not _owner(owner.to_dict())
+                or owner.pid != os.getpid() or owner_liveness(owner.to_dict()) is not True):
+            raise IntentStateError("launch intent owner identity is not live and proven")
+        with self._locked() as (directory_fd, store_identity):
+            if directory_fd is None:
+                return None
+            record = self._read(directory_fd, operation_id)
+            if (record is None or record["version"] not in {1, 3}
+                    or record["reserved_session"] != session_id
+                    or record["owner"] == owner.to_dict()):
+                return None
+            if record["store_identity"] != store_identity:
+                raise CorruptRecord("launch intent belongs to another session store")
+            if record["phase"] == "admitted" and bound:
+                updated = {**record, "phase": "terminal", "outcome": outcome, "reason": None}
+            elif record["phase"] == "launch-authorized" and not bound:
+                updated = {**record, "phase": "refused", "reason": "owner.lost"}
+            else:
+                return None
+            if (same_host_refusal(self._read_host(directory_fd, record["owner"]),
+                                  [record["owner"]]) is not None
+                    or owner_liveness(record["owner"]) is not False
+                    or descendant_scan(record["owner"])[0] != []):
+                return None
+            updated["sequence"] = record["sequence"] + 1
             try:
                 _validate(updated)
             except CorruptRecord as exc:

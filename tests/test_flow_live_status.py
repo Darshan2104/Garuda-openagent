@@ -388,6 +388,28 @@ def test_the_status_writer_is_atomic_owner_only_and_rate_limited(tmp_path):
     assert [p.name for p in target.parent.iterdir()] == [target.name]  # no temporary left
 
 
+def test_a_turns_end_writes_its_held_state_at_once(tmp_path):
+    """The last state of a turn lands even inside the rate limit (no timer needed)."""
+    from garuda.acp.adapter import AcpRuntime
+    from garuda.flows import live_status
+
+    now = [100.0]
+    target = live_status.path(tmp_path, "build", 1)
+    writer = live_status.StatusWriter(target, clock=lambda: now[0])
+    writer(True, False)
+    now[0] = 100.3
+    writer(False, False)  # held by the rate limit, no event loop to flush it later
+    assert live_status.read(target)["tool_in_flight"] is True
+    # The adapter reports the turn's end (already reported idle) and flushes the writer.
+    runtime = AcpRuntime.__new__(AcpRuntime)
+    runtime._status_report, runtime._status_reported = writer, (False, False)
+    runtime._calls_in_flight, runtime._pending_approvals = set(), {}
+    runtime._report_status(ended=True)
+    assert live_status.read(target)["tool_in_flight"] is False and writer.writes == 2
+    runtime._report_status(ended=True)  # nothing held: nothing rewritten
+    assert writer.writes == 2
+
+
 async def test_a_held_change_is_written_when_its_second_is_up(tmp_path):
     import asyncio
 

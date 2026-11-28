@@ -144,7 +144,8 @@ class FlowExecutionService:
     async def resume_prepared(self, plan, context, *, flow_session: str, start_binding: dict,
                               operation_binding: dict, on_admitted, approval_handler,
                               permission_mode: str,
-                              checks: tuple[str, ...] | None = None) -> FlowExecutionResult:
+                              checks: tuple[str, ...] | None = None,
+                              crash: dict | None = None) -> FlowExecutionResult:
         """Resume a dashboard-owned flow under the authority its start admitted.
 
         The owned gateway recompiled ``plan`` from the start's record and proved its
@@ -153,6 +154,12 @@ class FlowExecutionService:
         a checked flow from its resume checkpoint under its original checks, a flow
         without checks from its settled stop. The engine owns the lease and proves
         the stop resumable again under it. Never a new parent, never a replay.
+
+        ``crash`` is the gateway's full proof (:func:`garuda.flows.crash.prove`,
+        ``owned=True``) that a hard-killed dashboard's crashed attempt left no
+        process behind: the engine settles that attempt as a stopped
+        ``flow.interrupted`` attempt under the lease, then continues as for a
+        crashed checked CLI flow (checked) or a settled stop (without checks).
         """
         from garuda.runtime.strict_store import StorageError
         from garuda.scenarios.compile import LaunchContext
@@ -184,7 +191,8 @@ class FlowExecutionService:
         if meta.get("flow_operation") != start_binding:
             raise engine.FlowStopped("flow.resume_record_mismatch",
                                      "the flow's recorded start operation changed")
-        saved = await asyncio.to_thread(engine.owned_resume_check, self.store, flow_session, meta)
+        saved = await asyncio.to_thread(engine.owned_resume_check, self.store, flow_session, meta,
+                                        crash=crash)
         request = permissions = None
         if checks is not None:
             from garuda.core.permissions import PermissionEngine
@@ -220,8 +228,9 @@ class FlowExecutionService:
         # a checked CLI flow's continuation after its wait does.
         runner.quota_continued = (meta.get("flow_stop") or {}).get("code") == engine.QUOTA_WAIT_STOP
         result = await runner.run(
-            resume=True,
-            checked_checkpoint=meta["flow_resume_checkpoint"] if request is not None else None)
+            resume=True, crash=crash,
+            checked_checkpoint=(meta["flow_resume_checkpoint"]
+                                if request is not None and crash is None else None))
         meta = self.store.load_meta(result.flow_session)
         return FlowExecutionResult(result, meta.get("review"), meta.get("state"))
 

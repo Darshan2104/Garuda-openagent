@@ -92,6 +92,17 @@ class StatusWriter:
                 return  # no loop: the next call writes it
             self._timer = loop.call_later(self.min_interval - (now - self._last_write), self._flush)
 
+    def flush(self) -> None:
+        """Write a held change now: the turn ended, so its last state must land.
+
+        The adapter calls this when a turn ends; without it a change held for the
+        rate limit could be left unwritten if the step finished (or its event loop
+        stopped) before the timer fired, leaving a stale ``tool_in_flight``.
+        """
+        if self._timer is not None:
+            self._timer.cancel()
+        self._flush()
+
     def _flush(self) -> None:
         self._timer = None
         state, self._pending = self._pending, None
