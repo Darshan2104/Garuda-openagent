@@ -120,9 +120,23 @@ with sync_playwright() as p:
     # --- 2. the server goes away and comes back ------------------------------------------------
     requests = []
     page.on("request", lambda r: requests.append((time.monotonic(), r.url)))
+    # What the page itself fetched, and whether it believed the dashboard down at that moment:
+    # "sends nothing while down" means while the page knows, not from when this check pulled
+    # the plug (a poll may leave in between, before any failure has told the page).
+    page.evaluate("""() => {
+      window.__fetches = [];
+      const real = window.fetch;
+      window.fetch = function (input) {
+        window.__fetches.push({ url: String((input && input.url) || input), down: !!CONNECTION.down });
+        return real.apply(this, arguments);
+      };
+    }""")
     page.route("**/api/**", lambda route: route.abort("connectionrefused"))
     expected_failures["on"] = True
     down_at = time.monotonic()
+    # The badge's 20 s tick landing just after the server went away, before any failure told
+    # the page (the CI flake of run 46130596272): a legitimate request, not one sent while down.
+    page.evaluate("INBOX_BADGE.now()")
     page.click("#runs-refresh")
     check("the banner says the dashboard cannot be reached",
           text_contains(page, "#conn-banner", "is `garuda web` still running? Retrying"))
@@ -133,8 +147,21 @@ with sync_playwright() as p:
     gaps = [round(b - a, 2) for a, b in zip(probes, probes[1:], strict=False)]
     check("the probe backs off (few probes, growing gaps)",
           1 <= len(probes) <= 5 and all(b > a * 1.4 for a, b in zip(gaps, gaps[1:], strict=False)), f"{len(probes)} probes, gaps {gaps}")
-    check("the approvals badge sends nothing while down",
-          not [u for t, u in requests if t >= down_at and "/api/inbox" in u])
+    # While down, provoke the badge every way it can be woken: its own tick, a reconnect-style
+    # refresh, and the tab coming back (focus, visibility, online), which probe at once (#891).
+    page.evaluate("""() => {
+      INBOX_BADGE.now();
+      refreshInboxBadge();
+      window.dispatchEvent(new Event("focus"));
+      window.dispatchEvent(new Event("online"));
+      document.dispatchEvent(new Event("visibilitychange"));
+    }""")
+    settle(page, "() => !CONNECTION.probing")
+    fetched = page.evaluate("window.__fetches")
+    while_down = [f["url"] for f in fetched if f["down"]]
+    check("the approvals badge sends nothing while down (the probe is the one request)",
+          while_down and all(u.endswith("/api/health") for u in while_down)
+          and not [u for u in while_down if "/api/inbox" in u], str(while_down[:6]))
     page.screenshot(path=str(SHOTS / "shell-offline.png"))
     page.unroute("**/api/**")
     expected_failures["on"] = False
