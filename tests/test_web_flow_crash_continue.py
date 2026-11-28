@@ -184,7 +184,8 @@ def crashed_dashboard(tmp_path, monkeypatch):
         assert engine.unsettled_attempts(store, flow_id) == [(step, attempt)]
         return record, extra
 
-    def start(*, checks: bool, starter: str, inputs: dict, before_kill=None):
+    def start(*, checks: bool, starter: str, inputs: dict, before_kill=None,
+              hold_resume: bool = False):
         if checks:
             config = gy.load_file(gy.user_path())
             config["flows"] = {"plan-build-review": {"steps": [{"id": "build", "role": "coder"}]}}
@@ -205,6 +206,8 @@ def crashed_dashboard(tmp_path, monkeypatch):
                        if m.get("kind") == "flow")
         record, extra = kill_mid_step(proc, flow_id, before_kill)
         release(1)
+        if not hold_resume:
+            release(2)  # only resume_and_kill holds the second request
         return start_id, flow_id, record, extra
 
     def resume_and_kill(flow_id):
@@ -427,7 +430,8 @@ async def test_a_dashboard_killed_during_a_resume_is_resumed_again_once(crashed_
     """A resume (version-3) operation whose dashboard is SIGKILLed mid-step is superseded."""
     start, workspace, sessions, requests, resume_and_kill = crashed_dashboard
     start_id, flow_id, first, _ = start(
-        checks=False, starter="plan-change", inputs={"goal": "produce one bounded plan"})
+        checks=False, starter="plan-change", inputs={"goal": "produce one bounded plan"},
+        hold_resume=True)
     dead_resume, second = resume_and_kill(flow_id)
     ctx = _restarted(sessions, workspace)
     try:
