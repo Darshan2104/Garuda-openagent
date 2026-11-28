@@ -1122,6 +1122,17 @@ def dashboard_operation(meta: dict) -> dict | None:
             "checks": kind == "flow-verification", "stop": code, "resumable_stop": resumable}
 
 
+def owned_supervisor_available() -> bool:
+    """Whether this host has the Linux descendant supervisor owned flows need.
+
+    The owned gateway's own test (``FlowStartGateway.backend_available``); off
+    Linux it refuses every resume with ``starter.ownership_unavailable``.
+    """
+    import sys
+
+    return sys.platform == "linux"
+
+
 #: How long one flow's dry crash proof (a /proc scan, maybe a Docker query) is reused.
 DRY_PROOF_TTL_SEC = 5.0
 _DRY_PROOFS: dict = {}
@@ -1175,9 +1186,7 @@ def resume_check(store, session_id: str, meta: dict) -> dict | None:
     """
     if dashboard_operation(meta) is None:
         return None
-    import sys
-
-    if sys.platform != "linux":
+    if not owned_supervisor_available():
         # What the gateway answers first on such a host, whatever the flow's state.
         if meta.get("flow_state") == "running":
             return None

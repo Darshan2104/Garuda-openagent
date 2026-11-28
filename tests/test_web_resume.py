@@ -25,6 +25,13 @@ def _get(ctx, path, query=""):
         "host": f"127.0.0.1:{PORT}", TOKEN_HEADER: TOKEN}), ctx)
 
 
+@pytest.fixture(autouse=True)
+def linux_supervisor(monkeypatch):
+    """The engine's refusals are what these tests check, on any OS: the read model's
+    Linux-supervisor test is patched on (the off-Linux answer has its own test)."""
+    monkeypatch.setattr(read_model, "owned_supervisor_available", lambda: True)
+
+
 @pytest.fixture
 def store(tmp_path):
     return SessionStore(tmp_path / "sessions")
@@ -105,3 +112,11 @@ def test_background_and_role_runs_are_not_dashboard_flows(store):
     for extra in ({"background_operation": {}}, {"launch_kind": "run"}):
         sid = _flow(store, extra=extra)
         assert read_model.dashboard_operation(store.load_meta(sid)) is None
+
+
+def test_without_the_linux_supervisor_the_check_says_what_the_gateway_says(
+        store, ctx, monkeypatch):
+    monkeypatch.setattr(read_model, "owned_supervisor_available", lambda: False)
+    sid = _flow(store)
+    check = json.loads(_get(ctx, f"/api/sessions/{sid}").body)["resume_check"]
+    assert check["available"] is False and check["code"] == "starter.ownership_unavailable"

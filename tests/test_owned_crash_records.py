@@ -81,7 +81,7 @@ def test_off_linux_the_resume_check_says_what_the_gateway_says(tmp_path, monkeyp
     store = SessionStore(tmp_path / "sessions")
     stopped = _flow(store)
     running = _flow(store, state="running", stop=None)
-    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setattr(read_model, "owned_supervisor_available", lambda: False)
     check = read_model.resume_check(store, stopped, store.load_meta(stopped))
     assert check["available"] is False and check["code"] == "starter.ownership_unavailable"
     unsettled = _flow(store, state="interrupted", stop="flow.owner_lost")
@@ -101,7 +101,7 @@ def test_the_read_models_dry_proof_is_memoized_per_flow_state(tmp_path, monkeypa
         calls.append((session, kwargs))
         return {"dry": True, "step": "look", "attempt": 1}
 
-    monkeypatch.setattr("sys.platform", "linux")
+    monkeypatch.setattr(read_model, "owned_supervisor_available", lambda: True)
     monkeypatch.setattr(crash, "prove", proved)
     read_model._DRY_PROOFS.clear()
     meta = store.load_meta(running)
