@@ -1024,6 +1024,11 @@ tr.session-row[data-pause] { --row-c: var(--st-pause-dot); }
 .flow-unknown { margin-top: var(--s3); font-size: 13px; }
 .flow-disclosures li { margin: var(--s1) 0; }
 #session-operation-host .starter-operation-card { margin-bottom: var(--s4); }
+.resume-block { margin-top: var(--s3); padding-top: var(--s3); border-top: 1px solid var(--border); }
+.resume-block > h3 { margin: 0 0 var(--s2); font-size: 14px; }
+.resume-block .btn { margin-right: var(--s2); }
+.resume-note, .resume-link { font-size: 12.5px; }
+.resume-refusal code, .flow-cli-command { overflow-wrap: anywhere; }
 
 /* --- Setup, Providers, Runtimes, Usage --- */
 .diag-summary { display: flex; gap: 6px; flex-wrap: wrap; margin: 0 0 var(--s3); }
