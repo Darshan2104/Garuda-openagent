@@ -169,6 +169,54 @@ def watch_heartbeat(page) -> None:
     page.unroute("**/api/inbox")
 
 
+def retry_flow(page, linux: bool) -> None:
+    """A flow whose step sets `retries` (#894): Start follows the server's answer (on Linux
+    it is offered); the preview says how retries run; with checks it is copy-only with the
+    checked-flow reason and the command without its checks."""
+    page.goto(BASE + "#/flows")
+    card = page.locator('[data-flow="retry-step"]')
+    expect(card).to_be_visible(timeout=20_000)
+    check("a retry flow's card carries no retries refusal",
+          card.locator('[data-reason="flow.retries_unsupported"]').count() == 0, card.inner_text())
+    if linux:
+        check("on Linux a retry flow's card says Start from dashboard: yes",
+              card.locator('[data-start="yes"]').count() == 1, card.inner_text())
+    card.locator("h2 a").click()
+    expect(page.locator('#flow-pipeline [data-step="make"]')).to_be_visible(timeout=20_000)
+    check("the pipeline shows the step's retries",
+          "Retries\n2" in page.locator('#flow-pipeline [data-step="make"] .pipe-detail').inner_text(),
+          page.locator('#flow-pipeline [data-step="make"] .pipe-detail').inner_text())
+    page.locator('[data-field="goal"]').fill(TASK)
+    page.locator("#flow-preview-button").click()
+    expect(page.locator("#flow-command")).to_be_visible(timeout=20_000)
+    check("the preview has no retries blocker without checks",
+          page.locator('#flow-authority [data-diagnostic="flow.retries_unsupported"]').count() == 0)
+    check("the preview says how the step's retries run",
+          text_contains(page, "#flow-retries", "runs up to 2 more times"), page.locator("#view").inner_text()[:600])
+    if linux:
+        check("on Linux Start is offered for a retry flow", page.locator("#flow-start").count() == 1)
+    page.screenshot(path=str(SHOTS / "flows-retry-preview.png"), full_page=True)
+
+    page.locator('[data-option="checks"]').fill("true")
+    check("editing the checks invalidates the preview", page.locator("#flow-command").count() == 0)
+    page.locator("#flow-preview-button").click()
+    expect(page.locator("#flow-command")).to_be_visible(timeout=20_000)
+    reason = page.locator('#flow-authority [data-diagnostic="flow.retries_unsupported"]')
+    check("with checks, the preview refuses the retries with the checked-flow reason",
+          reason.count() == 1 and "A flow with checks cannot retry steps — remove the checks, or start it from the CLI "
+          "without checks" in reason.inner_text(), page.locator("#flow-authority").inner_text() if reason.count() else "")
+    check("its command is the one without checks",
+          reason.count() == 1 and "--check" not in reason.locator(".flow-cli-command").inner_text()
+          and "garuda flow run retry-step" in reason.locator(".flow-cli-command").inner_text())
+    check("with checks there is no Start and no retries disclosure",
+          page.locator("#flow-start").count() == 0 and page.locator("#flow-retries").count() == 0)
+    if linux:
+        check("on Linux the copy-only reason is the checked-flow one",
+              "a flow with checks cannot retry steps" in page.locator("#flow-copy-only").inner_text(),
+              page.locator("#flow-copy-only").inner_text())
+    page.screenshot(path=str(SHOTS / "flows-retry-checked.png"), full_page=True)
+
+
 def main() -> None:
     errors: list[str] = []
     with sync_playwright() as p:
@@ -249,6 +297,9 @@ def main() -> None:
         check("an unsupported shape is copy-only with its blocker",
               page.locator("#flow-start").count() == 0
               and page.locator('#flow-authority [data-diagnostic="starter.parallel_ownership_unavailable"]').count() == 1)
+
+        # --- step retries: Start as the server says; a checked flow says why not -----------
+        retry_flow(page, linux)
 
         # --- the app-level approval heartbeat, client side ----------------------------------
         # The real owned start runs only on Linux (check_flow_starts.py); here the server's
