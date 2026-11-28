@@ -1428,7 +1428,9 @@ function sessionResultHtml(row) {
       (files.total > files.files.length ? '<p class="stat-sub">and ' + esc(files.total - files.files.length) + " more</p>" : "") +
       '<p class="stat-sub">From its working state; the Trace page has the workspace diff.</p></div>';
   }
-  if (row.dashboard_operation && row.resume_check && row.kind === "flow" && row.resume_check.code !== "flow.resume_completed") {
+  var crashed = typeof dashboardCrash === "function" && dashboardCrash(row);
+  if (row.dashboard_operation && (row.resume_check || crashed) && row.kind === "flow" &&
+      !(row.resume_check && row.resume_check.code === "flow.resume_completed")) {
     var ownedStop = row.flow && row.flow.stop;
     // A flow whose dashboard died says so in its Resume block (dashboardCrashHtml), not as a crash.
     var ownedCause = row.pause ? "Paused: " + pauseText(row.pause, ownedStop) + "."

@@ -45,19 +45,35 @@ def _running(store, owner):
 
 @pytest.fixture
 def proof(monkeypatch):
-    """The dry crash proof's answer: ``holds`` or a refusal."""
-    state = {"holds": True}
+    """The dry crash proof's answer: ``holds``, a refusal, or ``alive`` (the dashboard that
+    ran it may still be running: ``flow.recovery_required``, which the read model answers
+    with nothing). The host is taken as Linux and the proof's 5 s cache is emptied per call."""
+    state = {"holds": True, "alive": False}
 
     def prove(store, session_id, meta, *, owned=False, dry=False, recover=None):
         assert owned and dry  # the read model only ever runs the read-only proof
         if not crash.applies(meta, owned=True):
             return None
+        if state["alive"]:
+            raise engine.FlowStopped("flow.recovery_required", "still running (pid 1)", step="look")
         if state["holds"]:
             return {"dry": True, "step": "look", "attempt": 1}
         raise engine.FlowStopped(crash.UNSETTLED, UNSETTLED, step="look")
 
     monkeypatch.setattr(crash, "prove", prove)
+    monkeypatch.setattr(read_model, "owned_supervisor_available", lambda: True)
+    monkeypatch.setattr(read_model, "_DRY_PROOFS", _Uncached())
     return state
+
+
+class _Uncached(dict):
+    """The dry proof's memo, never remembering: each read runs the stubbed proof."""
+
+    def __setitem__(self, key, value):
+        pass
+
+    def get(self, key, default=None):
+        return default
 
 
 def test_a_flow_whose_dashboard_died_is_said_so_with_what_the_proof_found(store, ctx, proof):
@@ -122,7 +138,7 @@ def _render(script):
     """The shipped renderers, with the Flows and Overview scripts beside the session page's."""
     return _node(r"""
 context.document = {addEventListener: () => {}};
-for (const name of ["views_flows.js", "views_home.js"]) {
+for (const name of ["views_scenarios.js", "views_flows.js", "views_home.js"]) {
   vm.runInContext(fs.readFileSync(process.argv[1] + "/" + name, "utf8"), context);
 }
 """ + script)
@@ -170,3 +186,51 @@ def test_no_shipped_text_says_a_hard_killed_flow_cannot_be_resumed():
         text = (root / doc).read_text()
         assert "flow cannot be resumed (`flow.interrupted_unsettled`)" not in text
         assert "rebooted cannot be resumed" not in text
+
+
+def test_while_the_old_dashboard_may_live_the_row_says_so_and_offers_nothing(store, ctx, proof):
+    """(1) resume_check returns nothing while the dashboard that ran it may still be alive."""
+    sid = _running(store, DEAD)
+    proof["alive"] = True
+    detail = json.loads(_get(ctx, f"/api/sessions/{sid}").body)
+    assert detail["dashboard_operation"]["dashboard_died"] is True
+    assert detail["dashboard_operation"]["crash"]["resume"] is None and detail["resume_check"] is None
+    out = _render(ROW + r"""
+const unknown = row(null);
+console.log(JSON.stringify({block: context.resumeBlockHtml(unknown), result: context.sessionResultHtml(unknown),
+  link: context.resumeLinkHtml(unknown), pill: context.dashboardCrashPill(unknown)}));
+""")
+    assert 'data-available="unknown"' in out["block"] and 'data-proof="unknown"' in out["block"]
+    assert "may still be running" in out["block"] and 'id="resume-checking"' in out["block"]
+    assert "data-resume-flow" not in out["block"] and out["link"] == ""
+    assert 'id="session-resume"' in out["result"]  # the Result carries it, not a blank
+    assert out["pill"] == {"label": "stopped (dashboard died)", "cls": "unknown"}
+
+
+def test_the_new_refusals_are_worded_plainly():
+    """(2) flow.owner_host_unproved and starter.ownership_unavailable (off Linux)."""
+    out = _render(r"""
+console.log(JSON.stringify({
+  host: context.resumeRefusalHtml("flow.owner_host_unproved", "ENGINE: ran on host b. Next: resume from that host", "F"),
+  linux: context.resumeRefusalHtml("starter.ownership_unavailable", "Owned flow resumes require the Linux descendant supervisor.", "F"),
+  unsettled: context.RESUME_REFUSALS["flow.interrupted_unsettled"]}));
+""")
+    assert "ran on another host or pid namespace" in out["host"]
+    assert '<p class="resume-reason">ENGINE: ran on host b. Next: resume from that host</p>' in out["host"]
+    assert "runs off Linux" in out["linux"] and "Linux dashboard over the same session store" in out["linux"]
+    # (5) the unsettled refusal says to wait for the crash proof, then Resume; never a new run.
+    assert "wait until the crash proof holds" in out["unsettled"]["next"] and "then Resume" in out["unsettled"]["next"]
+    assert "new run" not in out["unsettled"]["text"] + out["unsettled"]["next"]
+
+
+def test_a_superseded_resume_refused_owner_lost_reads_as_history():
+    """(3) a dead resume superseded in launch-authorized settles refused/owner.lost."""
+    out = _render(r"""
+const op = {operation_id: "o", kind: "resume", resumes: "s", status: "refused", phase: "refused",
+  reason: "owner.lost", session_id: "F", resumed_by: "r2"};
+console.log(JSON.stringify({html: context.starterOperationHtml(op, [], "session", 90, 300, [])}));
+""")
+    reason = out["html"].split('data-reason="owner.lost"')[1].split("</p>")[0]
+    assert "Its dashboard died before this resume ran any step, so it was refused; nothing ran under it" in reason
+    assert "<code>owner.lost</code>" in reason
+    assert 'class="notice operation-reason"' in out["html"]  # history, not an error

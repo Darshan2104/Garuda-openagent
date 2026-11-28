@@ -372,7 +372,13 @@ processes were proved gone, so Resume runs it again." and offers **Resume**; whe
 the proof fails it shows the refusal's own message in full, which names what is
 uncertain (a surviving process, a lease still held) and the next step (stop that
 process, or `garuda runtime recover --session FLOW_ID`), then **Resume** again.
-While the dashboard that ran it may still be alive nothing is offered.
+While the dashboard that ran it may still be alive (the proof has no answer yet; it
+is cached for a few seconds per flow state) the block says it is checking and that
+dashboard may still be running, offers nothing, and the page asks again; the
+Overview says **checking: the dashboard that ran it may still be running**. A
+resume whose own dashboard died before it ran any step is shown refused with
+`owner.lost` as history ("Its dashboard died before this resume ran any step");
+a later resume continues the flow.
 
 Each refusal, as the page words it:
 

@@ -159,6 +159,22 @@ def crash_leg(page) -> None:
           "cannot be resumed" not in block.inner_text() and "start a new run" not in block.inner_text())
     shots(page, "crash-fails")
 
+    # The old dashboard may still be alive: the read model answers nothing yet.
+    open_session(page, crashed_row(HELD, None) | {"resume_check": None})
+    block = page.locator('#session-resume[data-available="unknown"]')
+    check("while the old dashboard may live: a checking note, no Resume, no broken block",
+          block.count() == 1 and "may still be running" in block.inner_text()
+          and block.locator("#resume-checking").count() == 1
+          and block.locator("button[data-resume-flow]").count() == 0, page.locator("#session-result").inner_text())
+    shots(page, "crash-checking")
+    host = crashed_row(FAILS, {"available": False, "code": "flow.owner_host_unproved",
+                               "message": "flow.owner_host_unproved: ran on host b. Next: resume from that host"})
+    open_session(page, host)
+    refusal = page.locator('.resume-refusal[data-code="flow.owner_host_unproved"]')
+    check("flow.owner_host_unproved is worded plainly, with the engine's reason in full",
+          refusal.count() == 1 and "ran on another host or pid namespace" in refusal.inner_text()
+          and "resume from that host" in refusal.locator(".resume-reason").inner_text(), refusal.inner_text())
+
     def overview(route):
         response = route.fetch()
         body = response.json()

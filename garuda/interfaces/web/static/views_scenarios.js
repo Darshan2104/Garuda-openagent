@@ -357,6 +357,27 @@ function operationFlowState(row) {
   return row.resumed_by ? "continued by its resume" : "unknown";
 }
 
+/* An operation's recorded reason, in words; the code stays beside it. */
+var OPERATION_REASONS = {
+  "owner.lost": "Its dashboard died before this resume ran any step, so it was refused; nothing ran under it. A later resume continues the flow.",
+  "owner.uncertain": "The dashboard process that owns this operation is gone or cannot be proved alive, so its outcome is uncertain. Start the dashboard again; a resume of the flow settles it.",
+  "publication.uncertain": "Whether the flow's records were published is uncertain.",
+  "admission.pending": "It has not been admitted yet.",
+  "cleanup.pending": "Its cleanup has not finished yet.",
+  "worker.dead": "Its worker died.",
+  "server.shutdown": "The dashboard shut down while it ran.",
+  "flow.quarantined": "The flow is quarantined: a step's process tree or evidence was not proved closed.",
+  "background.quarantined": "The background run is quarantined."
+};
+
+function operationReasonHtml(row) {
+  if (!row.reason) return "";
+  var known = OPERATION_REASONS[row.reason];
+  var history = row.reason === "owner.lost";
+  return '<p class="notice' + (history ? "" : " err") + ' operation-reason" data-reason="' + esc(row.reason) + '">' +
+    (known ? esc(known) + " " : "") + "<code>" + esc(row.reason) + "</code></p>";
+}
+
 function starterOperationHtml(row, approvals, where, grace, timeout, settled) {
   var session = row.session_id && where !== "session" ?
     '<a class="btn" href="#/sessions/' + encodeURIComponent(row.session_id) + '">Open session details</a>' : '';
@@ -376,7 +397,7 @@ function starterOperationHtml(row, approvals, where, grace, timeout, settled) {
     '</p><p class="stat-sub">Operation <code>' + esc(row.operation_id) + '</code>' +
     (row.session_id ? ' · session <code>' + esc(row.session_id) + '</code>' : '') +
     (row.background ? '. This run continues after the dashboard closes. Answer its durable requests in <a href="#/inbox">Approval inbox</a>.</p>' : keep) +
-    (row.reason ? '<p class="notice err">' + esc(row.reason) + '</p>' : '') + session +
+    operationReasonHtml(row) + session +
     '<div class="starter-operation-approvals">' + (row.background ? '<p class="stat-sub">Background approvals use the session channel.</p>' : approvals.length ? approvals.map(function (ask) {
       return '<div class="notice warn"><div class="notice-title">Approval required</div><div class="notice-body"><code>' +
         esc(ask.action) + '</code></div><button type="button" class="btn btn-primary" data-flow-approval="' +

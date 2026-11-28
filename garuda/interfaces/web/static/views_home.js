@@ -324,7 +324,7 @@ function homeSessionAttention(o) {
         (check.available === true ? "its processes were proved gone ·" + resumeLinkHtml(r)
           : check.available === false ? "cannot resume yet: <code>" + esc(check.code) + '</code> · <a href="#/sessions/' +
             encodeURIComponent(r.session_id) + '?focus=resume">what to do</a>'
-          : "the dashboard that ran it is not proved gone") + "</span>" +
+          : "checking: the dashboard that ran it may still be running") + "</span>" +
         '<span class="home-age">updated ' + esc(fmt.when(r.updated_at)) + "</span>") });
       return;
     }
