@@ -375,6 +375,14 @@ def suite(workdir: Path, shots: Path, *, owned_starts: bool) -> list[str]:
                          {**env, "GARUDA_CHECK_FLOWS": str(root / "manifest.json"),
                           "GARUDA_CHECK_RO_BASE": f"http://127.0.0.1:{ro_port}/"})
 
+    # --- resuming a dashboard flow: stubbed server answers, every refusal -------
+    def resume():
+        root = workdir / "resume"
+        (root / "sessions").mkdir(parents=True)
+        env = {"GARUDA_GLOBAL_SETTINGS": str(root / "settings.yaml")}
+        port = dashboard(root / "sessions", "web-resume.log", read_only=False, extra_env=env)
+        return run_check("check_resume.py", port, shots, env)
+
     # --- chat, approvals and grounding, ScriptModel-backed --------------------
     def chat():
         sessions = workdir / "chat-sessions"
@@ -429,6 +437,9 @@ def suite(workdir: Path, shots: Path, *, owned_starts: bool) -> list[str]:
         ("check_runs_list.py + check_shell.py", shell),
         ("check_scenarios.py", starters),
         ("check_flows.py", flows),
+        ("check_resume.py", resume),
+        # a restarted dashboard: the check runs and restarts its own `garuda web`
+        ("check_reconnect.py", lambda: run_check("check_reconnect.py", 0, shots)),
         # Linux-owned flow and role starts in the real Chrome channel
         *([("owned starts", lambda: run_owned_starts(workdir, shots, ports.take()))]
           if owned_starts else []),

@@ -1,10 +1,20 @@
-"""Serve a Linux write-mode dashboard backed by a local protocol model."""
+"""Serve a Linux write-mode dashboard backed by a local protocol model.
+
+    serve_flow_starts.py PORT SESSIONS WORKSPACE SETTINGS TOKEN
+
+``GARUDA_CHECK_MODEL_PORT`` fixes the model endpoint's port (else any free one), so a
+dashboard stopped and started again over the same directories keeps the same effective
+configuration; an existing WORKSPACE is reused as it is. SIGTERM stops the dashboard the
+way `garuda web` stops: its gateway settles what it owns before the process exits.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import os
+import re
+import signal
 import subprocess
 import sys
 import threading
@@ -19,14 +29,31 @@ from garuda.interfaces.web import DashboardConfig, build_context
 from garuda.interfaces.web import http as http_module
 from garuda.interfaces.web.approvals import ApprovalBroker
 
-#: The approval heartbeat grace window, shortened for the browser checks. Kept short so a
-#: whole wait stays under the owned role worker's 10 s control-socket timeout
-#: (garuda/runtime/role_control.py): an approval answered later than that fails the step.
+#: The approval heartbeat grace window, shortened so the heartbeat checks run in seconds.
+#: An owned worker waits for an answer as long as the broker does (its timeout plus a
+#: margin, garuda/runtime/role_control.py), so a wait longer than this window is fine.
 GRACE_SECONDS = 2.0
 
 
+#: The output instructions a flow step's prompt carries, one per artifact type it declares.
+ASKED = re.compile(r'<garuda-artifact type="([a-z][a-z0-9_-]*)">\n\.\.\.your')
+
+
+def asked_types(body) -> list[str]:
+    found = []
+    for message in body.get("messages", []):
+        content = message.get("content")
+        texts = [content] if isinstance(content, str) else [
+            part.get("text", "") for part in content or [] if isinstance(part, dict)]
+        for text in texts:
+            for kind in ASKED.findall(text or ""):
+                if kind not in found:
+                    found.append(kind)
+    return found or ["plan"]
+
+
 class ModelEndpoint(BaseHTTPRequestHandler):
-    """Request one real approval, then return the flow's required plan artifact."""
+    """Request one real approval, then return the artifacts the step asked for."""
 
     def do_POST(self):  # noqa: N802
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
@@ -35,8 +62,8 @@ class ModelEndpoint(BaseHTTPRequestHandler):
         if answered:
             message = {
                 "role": "assistant",
-                "content": "<garuda-artifact type=\"plan\">\nbrowser-owned plan\n"
-                           "</garuda-artifact>",
+                "content": "\n".join(f'<garuda-artifact type="{kind}">\nbrowser-owned {kind}\n'
+                                      "</garuda-artifact>" for kind in asked_types(body)),
             }
             finish = "stop"
         else:
@@ -97,6 +124,9 @@ def prepare(workspace: Path, settings: Path, model_port: int) -> None:
                   "operator": {"harness": "browser-acp"}},
         "flows": {"plan-only": {"steps": [
             {"id": "plan", "role": "coder", "outputs": ["plan"]},
+        ]}, "resume-me": {"description": "Two steps, for the owned resume", "steps": [
+            {"id": "look", "role": "coder", "outputs": ["notes"]},
+            {"id": "make", "role": "coder", "inputs": ["notes"], "outputs": ["plan"]},
         ]}},
     }))
 
@@ -107,10 +137,12 @@ async def main() -> None:
     port = int(sys.argv[1])
     sessions, workspace, settings = map(Path, sys.argv[2:5])
     token = sys.argv[5]
-    model = ThreadingHTTPServer(("127.0.0.1", 0), ModelEndpoint)
+    model = ThreadingHTTPServer(("127.0.0.1", int(os.environ.get("GARUDA_CHECK_MODEL_PORT") or 0)),
+                                ModelEndpoint)
     model.daemon_threads = True
     threading.Thread(target=model.serve_forever, daemon=True).start()
-    prepare(workspace, settings, model.server_port)
+    if not workspace.exists():  # a restart over the same directories keeps them as they are
+        prepare(workspace, settings, model.server_port)
     os.environ["OPENAI_API_KEY"] = "local-browser-protocol-fixture"
     config = DashboardConfig(
         port=port, token=token, sessions_dir=sessions, allow_run=True,
@@ -124,8 +156,11 @@ async def main() -> None:
     ctx.live.reap_interval_seconds = 1.0
     server, bound = http_module.bind(ctx, port)
     print(json.dumps({"port": bound, "workspace": str(workspace)}), flush=True)
+    serving = asyncio.ensure_future(asyncio.to_thread(server.serve_forever))
+    asyncio.get_running_loop().add_signal_handler(
+        signal.SIGTERM, lambda: threading.Thread(target=server.shutdown, daemon=True).start())
     try:
-        await asyncio.to_thread(server.serve_forever)
+        await serving
     finally:
         server.shutdown()
         server.server_close()

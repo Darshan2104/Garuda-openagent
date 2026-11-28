@@ -89,7 +89,10 @@ button that names the current page and carries the same count; `Esc` closes it.
 If the dashboard stops answering, one banner says **Can't reach the
 dashboard — is `garuda web` still running? Retrying…** and retries with a
 growing gap (at most 30 seconds); when the dashboard answers, the banner goes
-away and the page reloads its data. With more than 32 connections open at once
+away and the page reloads its data. Coming back to the tab (focusing the window,
+showing the tab again, or the network coming back) and **Retry now** check at
+once instead of waiting out that gap, so a restarted dashboard is back as soon as
+you look; at most one such check runs per step of the gap. With more than 32 connections open at once
 (many tabs), it says **Too many open dashboard tabs** instead and waits as long
 as the dashboard asks. Buttons that change something (Recover, Prepare,
 Providers Refresh) show **working…** and ignore repeat clicks until the request
@@ -277,6 +280,49 @@ rather than refusing. A retry with the same `operation_id` returns the recorded
 operation. A refusal names its code (below); nothing is written to make a flow
 resumable.
 
+**On the session page.** A dashboard-started flow stopped on a resumable stop (a
+pause, an interruption, a usage limit after its reset) shows **Resume** in its
+Result. Its confirmation says which step runs again; the button sends one
+operation id, kept for the tab and reused on a retry, then the page shows the
+resume's operation panel (its approvals are keyed by the resume operation and
+follow you across pages like a start's) and the new attempt live, marked
+**resumed** in the pipeline. Before a usage limit's reset the button is disabled
+with the time it becomes available. The start's operation panel then says
+**Resumed by** the resume operation. A flow quarantined by a resume that could
+not prove its workers closed says so. The Overview's paused rows and the Sessions
+list link to that block (**Resume**). A flow run from the CLI keeps its
+`garuda flow resume` command. One exception: if the dashboard's server is killed
+(SIGKILL) or the machine reboots while a step runs, that step never settles and
+the flow refuses with `flow.interrupted_unsettled`; start a new run.
+
+Each refusal, as the page words it:
+
+| Code | HTTP | Meaning | Next step |
+|---|---|---|---|
+| `flow.resume_invalid`, `starter.operation_invalid` | 400 | The request was malformed. | Reload the page and try again. |
+| `flow.resume_unknown` | 404 | This dashboard's session store has no such flow. | Open it in the dashboard that started it. |
+| `starter.operation_scope_changed` | 403 | The workspace left the allowlist or changed identity. | Allow that workspace (`--allow-workspace`) and retry. |
+| `flow.resume_not_owned` | 409 | A dashboard did not start this flow. | `garuda flow resume FLOW_ID` |
+| `flow.resume_record_mismatch` | 409 | The start's record is missing or disagrees. | Start a new run. |
+| `flow.resume_start_unsettled` | 409 | The start operation has not settled. | Wait for it, then resume. |
+| `flow.resume_definition_changed` | 409 | The definition, roles, checks or configuration changed. | Start a new run (preview the current plan on Flows). |
+| `flow.resume_authority_changed` | 409 | The ceiling or a role's permissions changed. | Restore them, or start a new run. |
+| `flow.resume_completed` | 409 | The flow completed. | Nothing to resume. |
+| `flow.recovery_required` | 409 | Still recorded running. | `garuda runtime recover --session FLOW_ID`, then resume. |
+| `flow.resume_in_progress` | 409 | It runs here, or another resume is unfinished. | Follow that operation. |
+| `flow.resume_owner_unknown` | 409 | An unfinished operation's dashboard process (its pid is named) is neither proved alive nor gone. | Make sure that process exited, then resume. |
+| `flow.quarantined` | 409 | A step's process tree or evidence was not proved closed. | Inspect the workspace (`git status`); start a new run. |
+| `flow.interrupted_unsettled` | 409 | A launched step never settled (a killed server, a reboot). | Inspect the workspace; start a new run. |
+| `flow.stop_not_resumable` | 409 | The stop is not one a resume continues. | Start a new run. |
+| `flow.resume_quota_wait` | 409 | The usage limit has not reset yet. | Resume after the reset. |
+| `flow.verification_reconciliation_required` | 409 | Check or step records are unreadable or disagree. | Inspect the records; start a new run. |
+| `starter.operation_conflict` | 409 | The operation id names another request. | Reload and resume again. |
+| `starter.ownership_unavailable`, `starter.gateway_closing`, `starter.operation_unavailable` | 503 | Transient: no supervisor, shutting down, or the operation store is busy. | Retry; the same operation is reused. |
+| `starter.gateway_unavailable` | 503/504 | Transient: the gateway did not answer in time. | Retry; the same operation is reused. |
+
+The start's transport and mode refusals apply too (`unauthorized`,
+`forbidden_origin`, `forbidden_host`, `read_only`).
+
 Everything else is copy-only, with its reason: a read-only dashboard
 (`dashboard.read_only`), a host without the Linux supervisor
 (`starter.ownership_unavailable`), an unsupported flow shape
@@ -284,7 +330,9 @@ Everything else is copy-only, with its reason: a read-only dashboard
 `flow.long_run_unsupported`, and `flow.retries_unsupported` for step retries in a
 checked flow), a step above the ceiling (`starter.permission_exceeds_ceiling`), a role the project
 file chose (`starter.project_role`), or another readiness error. Preview and Copy
-always work.
+always work. A flow with parallel groups or step retries stays CLI-only for now:
+its reason says "Start this flow from the CLI for now" with the exact
+`garuda flow run` command (with your task once previewed).
 
 Step `retries` start and resume from the dashboard like `garuda flow run` runs
 them: a plain step that stops with a retryable stop (`flow.step_failed`,
@@ -964,27 +1012,7 @@ records and makes no cursor progress, including a torn final append, and closes
 after a minute for the client to reconnect. A browser `EventSource` can't send
 the token header, so read it with `fetch`.
 
-Resume refusals (`error.code`, HTTP status): `flow.resume_invalid` or
-`starter.operation_invalid` (400, a malformed body); `flow.resume_unknown` (404);
-`flow.resume_not_owned` (409, a flow not started by a dashboard: use
-`garuda flow resume`); `flow.resume_record_mismatch` and
-`flow.resume_start_unsettled` (409, the start's record is missing, disagrees or
-is not settled); `starter.operation_scope_changed` (403, the workspace left the
-allowlist or changed identity); `flow.resume_definition_changed` (409, the plan
-digest differs: definition, roles, checks or configuration changed);
-`flow.resume_authority_changed` (409, the ceiling or role authority changed);
-`flow.resume_completed`, `flow.recovery_required` (still recorded running: run
-`garuda runtime recover --session ID` if its dashboard died),
-`flow.resume_in_progress` (this dashboard still runs it, or another resume is
-unfinished), `flow.resume_owner_unknown` (another resume or the start is unfinished
-and its dashboard process can be proved neither alive nor dead: make sure it has
-exited, then resume again), `flow.quarantined`, `flow.interrupted_unsettled`,
-`flow.stop_not_resumable`, `flow.resume_quota_wait` (before the usage limit's
-reset) and `flow.verification_reconciliation_required` (409);
-`starter.operation_conflict` (409, the operation ID names another request);
-`starter.ownership_unavailable`, `starter.gateway_closing`,
-`starter.operation_unavailable` (503); and the start's transport and readiness
-refusals (`unauthorized`, `forbidden_origin`, `forbidden_host`, `read_only`).
+Resume refusals are listed in [Resume a dashboard flow](#resume-a-dashboard-flow).
 
 ## Safety model
 

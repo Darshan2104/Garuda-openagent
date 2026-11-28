@@ -223,7 +223,8 @@ def main() -> None:
         check("the copied command equals the CLI's", page.locator("#flow-command").input_value() == cli_command())
         check("the backstop disclosure names the actual number",
               text_contains(page, "#flow-backstop", "after 60 min"))
-        check("the resume disclosure is shown", page.locator("#flow-no-resume").count() == 1)
+        check("the resume disclosure states the rule and its exception", page.locator("#flow-resume").count() == 1
+              and "SIGKILL" in page.locator("#flow-resume").inner_text())
         check("identities name each step's role", page.locator('#flow-identities tr[data-step="look"]').count() == 1)
         page.screenshot(path=str(SHOTS / "flows-preview-write.png"), full_page=True)
         page.locator("#flow-copy").click()

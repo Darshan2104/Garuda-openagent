@@ -37,7 +37,7 @@ LIST_CAP = 50
 ROW_FIELDS = (
     "session_id", "name", "kind", "origin", "background", "runtime", "model", "label",
     "crashed", "pause", "state", "verification", "self_check", "queue", "quota_recovery",
-    "created_at", "updated_at", "flow_step",
+    "created_at", "updated_at", "flow_step", "dashboard_operation",
 )
 
 #: What a running flow's row carries from the shared live view (``read_model.flow_in_flight``).

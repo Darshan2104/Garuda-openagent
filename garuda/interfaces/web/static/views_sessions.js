@@ -308,7 +308,7 @@ function sessionRowHtml(row) {
     '<td data-th="State"><span class="pill ' + (row.pause ? "paused" : (row.crashed ? "failed" : (state.work === "working" ? "running" : "unknown"))) +
     '" data-state="' + esc(row.pause ? "paused" : row.label) + '">' +
     esc(row.pause ? "paused" : row.label) + "</span>" + (row.queue ? '<div class="s-sub">' + esc(queueText(row.queue)) + "</div>" : "") +
-    pauseLineHtml(row.pause, id) + "</td>" +
+    pauseLineHtml(row.pause, id) + (typeof resumeLinkHtml === "function" ? resumeLinkHtml(row) : "") + "</td>" +
     '<td class="s-clip" data-th="Runtime · role · model" title="' + esc(identityText(row)) + '">' + esc(identityText(row)) + "</td>" +
     '<td class="s-facts" data-th="Outcome / verification">' + chip("outcome", state.outcome || "—", row.pause ? "chip-pause" : outcomeClass(state.outcome)) + " " +
     verificationChip(row.verification) + selfCheckChip(row.self_check) + "</td>" +
@@ -621,7 +621,7 @@ var REPLACED_STOPS = {
 
 /* `replacedBy`: the number of a later attempt of the same step that succeeded, when there is
  * one. Its stop is then history, drawn neutral; red is for a failure that stands. */
-function attemptHtml(attempt, flowPause, link, replacedBy) {
+function attemptHtml(attempt, flowPause, link, replacedBy, resumed) {
   var delta = attempt.delta === null ? "unknown" : (attempt.delta ? "changed" : "unchanged");
   var replaced = attempt.status !== "done" && replacedBy !== null && replacedBy !== undefined;
   var pauseKind = replaced ? null : (attempt.pause || (flowPause && flowPause.kind) || null);
@@ -633,6 +633,7 @@ function attemptHtml(attempt, flowPause, link, replacedBy) {
     " " + chip("status", attempt.status, attempt.status === "done" ? "chip-on"
       : (replaced ? "chip-off" : (pauseKind ? "chip-pause" : "chip-bad"))) +
     " " + chip("workspace", delta, "chip-off") +
+    (resumed ? ' <span class="pill unknown resume-attempt" title="This attempt ran after the dashboard resumed the flow">resumed</span>' : "") +
     (attempt.no_edits ? " " + chip("no-edits", attempt.no_edits, attempt.no_edits === "unchanged" ? "chip-on" : "chip-bad") : "") +
     ' <span class="stat-sub">' + esc(attempt.duration_ms === null || attempt.duration_ms === undefined ? "duration unknown" : fmt.duration(attempt.duration_ms)) + "</span>" +
     (attempt.session_id ? ' <a class="btn btn-small attempt-trace" href="#/runs/' + encodeURIComponent(attempt.session_id) + '">Open trace</a>' +
@@ -732,7 +733,9 @@ function flowHtml(flow, progress, options) {
           // The flow's pause names its stopped step: its last attempt is the paused one.
           var paused = options.pause && flow.stop && flow.stop.step === step.id && i === attempts.length - 1;
           var later = attempts.slice(i + 1).filter(function (b) { return b.status === "done"; })[0];
-          return attemptHtml(a, paused ? options.pause : null, link, later ? later.attempt : null);
+          // On a flow a dashboard resumed: the attempt that ran again after a stopped one.
+          var resumed = !!options.resumed && i > 0 && attempts[i - 1].status !== "done";
+          return attemptHtml(a, paused ? options.pause : null, link, later ? later.attempt : null, resumed);
         }).join("") + "</ul>" : "") +
         // The step in flight is described in its own block, a paused one in the Result (said
         // once, with its command); never "not run yet".
@@ -1244,8 +1247,18 @@ function interruptedSentence(row) {
              : "Next: garuda flow resume " + row.session_id + " does not run this stop again; open the step's session below." };
 }
 
-/* Why it failed, in one plain sentence from what was recorded, and what to do next. */
+/* Why it failed, in one plain sentence from what was recorded, and what to do next. A flow
+ * a dashboard started resumes from its session page: `garuda flow resume` refuses it. */
 function failureSentence(row) {
+  var said = recordedFailureSentence(row);
+  if (row.dashboard_operation && said && /garuda flow resume/.test(said.next || "")) {
+    said = { cause: said.cause,
+             next: "Next: resume it with Resume on its session page (garuda flow resume refuses a flow a dashboard started)." };
+  }
+  return said;
+}
+
+function recordedFailureSentence(row) {
   var evidence = (row.failure_evidence || {}).original_cause || {};
   var value = evidence.status === "present" ? (evidence.value || {}) : {};
   var detail = value.detail && value.detail.value ? firstLine(value.detail.value) : "";
@@ -1370,7 +1383,19 @@ function sessionResultHtml(row) {
       (files.total > files.files.length ? '<p class="stat-sub">and ' + esc(files.total - files.files.length) + " more</p>" : "") +
       '<p class="stat-sub">From its working state; the Trace page has the workspace diff.</p></div>';
   }
-  if (row.pause) {
+  if (row.dashboard_operation && row.resume_check && row.kind === "flow" && row.resume_check.code !== "flow.resume_completed") {
+    var ownedStop = row.flow && row.flow.stop;
+    var ownedCause = row.pause ? "Paused: " + pauseText(row.pause, ownedStop) + "."
+      : (sessionFailed(row) ? failureSentence(row).cause : null);
+    var afterResume = (row.flow || {}).state === "quarantined" && row.dashboard_operation.resume_operation_id;
+    body += '<div class="session-cause" id="session-cause"' + (row.pause ? ' data-state="paused"' : "") + ">" +
+      (ownedCause ? '<p class="' + (row.pause ? "pause-text" : "err-text") + '">' + esc(ownedCause) + "</p>" : "") +
+      (afterResume ? '<p class="err-text" id="session-quarantine">A resume of this flow could not prove its owned workers ' +
+        "closed before its first step, so the flow is quarantined rather than refused: it is never resumed again. " +
+        "Inspect the workspace (git status) and start a new run.</p>" : "") +
+      (ownedStop && ownedStop.message ? '<p class="stat-sub">recorded stop: ' + esc(humanStamps(ownedStop.message)) + "</p>" : "") +
+      resumeBlockHtml(row) + "</div>";
+  } else if (row.pause) {
     var stopped = row.flow && row.flow.stop;
     body += '<div class="session-cause" id="session-cause" data-state="paused">' +
       pauseBlockHtml(row.pause, stopped, row.session_id, "session-pause-block") +
@@ -1440,7 +1465,8 @@ function paintSessionPage(page) {
   paintHost("session-failure-host", sessionFailed(row) && !row.pause && row.failure_evidence
     ? '<div class="card">' + failureEvidenceHtml(row.failure_evidence) + "</div>" : "");
   paintHost("session-live-step-host", sessionLiveStepHtml(row), { keepSelection: true });
-  paintHost("session-flow-host", flowHtml(row.flow, row.flow_progress, { pause: row.pause, id: row.session_id, result: "session-cause" }));
+  paintHost("session-flow-host", flowHtml(row.flow, row.flow_progress, { pause: row.pause, id: row.session_id, result: "session-cause",
+    resumed: !!(row.dashboard_operation && row.dashboard_operation.resume_operation_id) }));
   // What each attempt's receipt measured, and the flow total: the trace page's own table.
   paintHost("session-measure-host", row.flow && typeof flowMeasuredHtml === "function"
     ? flowMeasuredHtml(row.flow) : "");
@@ -1489,6 +1515,7 @@ function sessionDetailView(id) {
     }
     if (isActive(row.state)) startSessionRowPoller(page);
     if (row.starter_origin) loadStarterResult(row.session_id);
+    if (routeParams().focus === "resume" && el("session-resume")) el("session-resume").scrollIntoView({ block: "center" });
     // Landed here from a dashboard start (Flows): the operation and its approvals.
     if (routeParams().operation) startSessionOperation(page, routeParams().operation);
   }).catch(function (err) {
