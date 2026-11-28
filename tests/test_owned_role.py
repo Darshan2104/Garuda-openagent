@@ -31,6 +31,8 @@ from garuda.workspace.lease import LeaseConflictError, LeaseError, LeaseStore
 
 linux = pytest.mark.skipif(sys.platform != "linux", reason="actual Linux role ownership")
 
+# The helper publishes its pid with an atomic rename, so a reader that has seen
+# ``helper`` exist never reads it empty or half-written (a flake on CI).
 DETACHED = '''
 import os,pathlib,signal,time
 if os.fork() == 0:
@@ -39,7 +41,8 @@ if os.fork() == 0:
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
     fd=os.open('/dev/null',os.O_RDWR)
     for stream in (0,1,2): os.dup2(fd,stream)
-    pathlib.Path('helper').write_text(str(os.getpid()))
+    pathlib.Path('helper.tmp').write_text(str(os.getpid()))
+    os.replace('helper.tmp', 'helper')
     while True:
         with open('writes','a') as handle: handle.write('x')
         time.sleep(.005)

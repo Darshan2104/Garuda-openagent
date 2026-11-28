@@ -347,12 +347,14 @@ async def test_actual_runner_settles_detached_writer_or_retains_quarantine(case,
     script = f"""
 import os,pathlib,signal,time
 deadline = time.monotonic() + 60
-pathlib.Path({str(check)!r}).write_text(str(os.getpid()))
+pathlib.Path({str(check)!r} + '.tmp').write_text(str(os.getpid()))
+os.replace({str(check)!r} + '.tmp', {str(check)!r})
 if os.fork() == 0:
     os.setsid()
     if os.fork() != 0: os._exit(0)
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
-    pathlib.Path({str(marker)!r}).write_text(str(os.getpid()))
+    pathlib.Path({str(marker)!r} + '.tmp').write_text(str(os.getpid()))
+    os.replace({str(marker)!r} + '.tmp', {str(marker)!r})
     while time.monotonic() < deadline and os.path.isdir({str(root)!r}):
         with open({str(writes)!r}, 'a') as f: f.write('x')
         time.sleep(.005)
