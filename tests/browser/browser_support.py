@@ -26,7 +26,12 @@ NAV_TIMEOUT_MS = float(os.environ.get("GARUDA_CHECK_START_TIMEOUT", "120")) * 10
 
 def launch(playwright, **kwargs):
     channel = os.environ.get("GARUDA_CHECK_CHANNEL") or None
-    return playwright.chromium.launch(channel=channel, **kwargs)
+    browser = playwright.chromium.launch(channel=channel, **kwargs)
+    if os.environ.get("GARUDA_CHECK_CSS_AUDIT"):  # stylesheet coverage and pixel comparison
+        import css_audit
+
+        css_audit.instrument(browser)
+    return browser
 
 
 def throttle(page):

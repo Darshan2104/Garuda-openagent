@@ -291,6 +291,7 @@ def suite(workdir: Path, shots: Path, *, owned_starts: bool) -> list[str]:
         empty_port = dashboard(
             empty_sessions, "web-empty.log", read_only=False,
             extra_env={"GARUDA_GLOBAL_SETTINGS": str(workdir / "empty" / "settings.yaml")})
+        bases["empty"] = f"http://127.0.0.1:{empty_port}/"
         return run_check("check_overview.py", port, shots,
                          {**env, "GARUDA_CHECK_EMPTY_BASE": f"http://127.0.0.1:{empty_port}/"})
 
@@ -306,6 +307,9 @@ def suite(workdir: Path, shots: Path, *, owned_starts: bool) -> list[str]:
             env["GARUDA_CHECK_RO_BASE"] = bases["read-only"]
         if "live-step" in bases:  # a step in flight, paused and measured flows, folded rows
             env["GARUDA_CHECK_LIVE_BASE"] = bases["live-step"]
+        for key, var in (("flows", "FLOWS"), ("empty", "EMPTY"), ("chat", "CHAT")):
+            if key in bases:  # more dashboards for the GARUDA_CHECK_SNAPSHOTS walk
+                env[f"GARUDA_CHECK_{var}_BASE"] = bases[key]
         return run_check("check_design.py", port, shots, env)
 
     # --- data correctness: unknowns, outcomes and one login story across pages --
@@ -366,6 +370,7 @@ def suite(workdir: Path, shots: Path, *, owned_starts: bool) -> list[str]:
         write_port = dashboard(root / "sessions", "web-flows.log", read_only=False,
                                extra_env=env, extra_args=args)
         ro_port = dashboard(root / "ro-sessions", "web-flows-ro.log", extra_env=env, extra_args=args)
+        bases["flows"] = f"http://127.0.0.1:{write_port}/"
         return run_check("check_flows.py", write_port, shots,
                          {**env, "GARUDA_CHECK_FLOWS": str(root / "manifest.json"),
                           "GARUDA_CHECK_RO_BASE": f"http://127.0.0.1:{ro_port}/"})
@@ -381,6 +386,7 @@ def suite(workdir: Path, shots: Path, *, owned_starts: bool) -> list[str]:
         processes.append(start_server(
             [sys.executable, str(HERE / "serve_chat.py"), str(port), str(sessions),
              str(workspace), TOKEN], port, workdir / "web-chat.log", what="chat dashboard"))
+        bases["chat"] = f"http://127.0.0.1:{port}/"
         return run_check("check_chat.py", port, shots)
 
     # --- one damaged session: every list still renders and says so ------------
@@ -419,7 +425,6 @@ def suite(workdir: Path, shots: Path, *, owned_starts: bool) -> list[str]:
         # consults: nested lanes, rollups, setup and usage by origin
         ("check_consults.py", lambda: seeded("con", "check_consults.py", "--consults")),
         ("check_overview.py", overview),
-        ("check_design.py", design),
         ("check_data_correctness.py", data_correctness),
         ("check_runs_list.py + check_shell.py", shell),
         ("check_scenarios.py", starters),
@@ -428,6 +433,8 @@ def suite(workdir: Path, shots: Path, *, owned_starts: bool) -> list[str]:
         *([("owned starts", lambda: run_owned_starts(workdir, shots, ports.take()))]
           if owned_starts else []),
         ("check_chat.py", chat),
+        # last: its snapshot walk also covers the Flows, empty-store and chat dashboards
+        ("check_design.py", design),
     ]
     try:
         for name, section in sections:
