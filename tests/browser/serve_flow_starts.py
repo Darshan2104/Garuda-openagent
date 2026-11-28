@@ -39,7 +39,7 @@ GRACE_SECONDS = 2.0
 RETRIED = "[garuda] An earlier attempt of this step failed."
 #: The output the retry flow asks for: its first attempt leaves it out (flow.output_missing,
 #: a stop the engine retries), its retry returns it.
-RETRY_OUTPUT = "draft"
+RETRY_OUTPUT = "summary"  # an output type no other fixture flow declares
 
 #: The output instructions a flow step's prompt carries, one per artifact type it declares.
 ASKED = re.compile(r'<garuda-artifact type="([a-z][a-z0-9_-]*)">\n\.\.\.your')
@@ -73,7 +73,7 @@ class ModelEndpoint(BaseHTTPRequestHandler):
         kinds = asked_types(body)
         if answered and RETRY_OUTPUT in kinds and not any(RETRIED in text for text in texts(body)):
             # The retry flow's first attempt: done, without the output it declares.
-            message = {"role": "assistant", "content": "No draft this time."}
+            message = {"role": "assistant", "content": "No summary this time."}
             finish = "stop"
         elif answered:
             message = {
@@ -141,7 +141,7 @@ def prepare(workspace: Path, settings: Path, model_port: int) -> None:
         "flows": {"plan-only": {"steps": [
             {"id": "plan", "role": "coder", "outputs": ["plan"]},
         ]}, "retry-me": {"description": "One step whose first attempt fails, then retries", "steps": [
-            {"id": "draft", "role": "coder", "outputs": ["draft"], "retries": 1},
+            {"id": "draft", "role": "coder", "outputs": ["summary"], "retries": 1},
         ]}, "resume-me": {"description": "Two steps, for the owned resume", "steps": [
             {"id": "look", "role": "coder", "outputs": ["notes"]},
             {"id": "make", "role": "coder", "inputs": ["notes"], "outputs": ["plan"]},
