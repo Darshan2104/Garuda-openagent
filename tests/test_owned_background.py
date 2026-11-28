@@ -107,6 +107,18 @@ async def test_detached_start_survives_server_close_and_duplicate_without_second
         assert result["status"] == "terminal", result
         assert result["outcome"] == ("interrupted" if action == "cancel" else "completed"), result
         assert counter.read_text().splitlines() == ["prompt"]
+        if action == "cancel":
+            # #898: once its worker tree is proved closed, the stopped run's step
+            # session settles cancelled with its parent; it never reads as crashed.
+            from garuda.runtime import session_state
+
+            steps = [m for m in ctx.store.list_sessions(limit=None)
+                     if (m.get("flow_step") or {}).get("flow_session") == session]
+            assert len(steps) == 1
+            state = session_state.effective_state(steps[0])
+            assert (state["process"], state["work"], state["outcome"]) == (
+                "exited", "stopped", "cancelled"), steps[0]
+            assert steps[0]["status"] == "cancelled" and not session_state.is_crashed(state)
         assert QueueStore().entries() == []
         assert CapacityStore().holders("background-fixture") == []
         meta = ctx.store.load_meta(session)
