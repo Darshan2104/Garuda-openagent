@@ -924,6 +924,80 @@ def test_ctrl_c_stops_garuda_web_with_one_line_and_no_traceback(tmp_path):
     assert err.strip() == "Garuda dashboard stopped."
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="no SIGTERM handler on Windows")
+def test_sigterm_stops_garuda_web_like_ctrl_c(tmp_path):
+    """SIGTERM used to kill `garuda web` at once: no drain, so a flow step it owned never
+    settled and the flow could not be resumed (seen on dev1, 2026-11-28: flow f5031002 stayed
+    "running" with its process missing). It now stops the server and runs the same drain."""
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(sys.path)}
+    process = subprocess.Popen(
+        [sys.executable, "-m", "garuda.interfaces.main", "web", "--no-browser", "--port", "0",
+         "--sessions-dir", str(tmp_path / "sessions")],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+    try:
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            line = process.stdout.readline()
+            if "http://" in line or not line:
+                break
+        assert "http://" in line, process.stderr.read()
+        time.sleep(0.5)
+        process.send_signal(signal.SIGTERM)
+        _out, err = process.communicate(timeout=30)
+    finally:
+        if process.poll() is None:
+            process.kill()
+    assert process.returncode == 0, (process.returncode, err)
+    assert "Traceback" not in err
+    assert err.strip() == "Garuda dashboard stopped."
+
+
+def test_sigterm_runs_the_owned_operations_drain(tmp_path, monkeypatch):
+    """The drain itself: SIGTERM reaches the `finally` that closes the flow gateway and the
+    live runs, which is what settles an owned step as a resumable flow.interrupted."""
+    import asyncio as aio
+
+    from garuda.interfaces import web as web_module
+
+    closed = []
+
+    class Owner:
+        def __init__(self, name):
+            self.name = name
+
+        async def aclose(self):
+            closed.append(self.name)
+
+    real_build = web_module.build_context
+
+    def build(config, loop=None):
+        ctx = real_build(config, loop=loop)
+        ctx.flow_starts, ctx.live = Owner("flow_starts"), Owner("live")
+        return ctx
+
+    monkeypatch.setattr(web_module, "build_context", build)
+    monkeypatch.setattr(web_module, "launch_url", lambda ctx: "http://127.0.0.1/")
+
+    async def main():
+        task = aio.ensure_future(web_module.serve_dashboard(web_module.DashboardConfig(
+            port=0, sessions_dir=tmp_path / "s", open_browser=False)))
+        await aio.sleep(0.5)
+        os.kill(os.getpid(), signal.SIGTERM)
+        try:
+            await aio.wait_for(task, 10)
+        except TimeoutError:
+            return "still serving"
+        return "stopped"
+
+    # Without the dashboard's own handler a stray SIGTERM must not end the test run itself.
+    previous = signal.signal(signal.SIGTERM, lambda *_: None)
+    try:
+        assert aio.run(main()) == "stopped"
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+    assert closed == ["flow_starts", "live"]
+
+
 # --- 7. blocking work must not stall other requests ------------------------------------
 
 

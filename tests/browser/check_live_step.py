@@ -498,6 +498,30 @@ def main() -> int:
         check("the reader judges it ok and reports no silence limit",
               nolimit.get("silence_state") == "ok" and nolimit.get("silence_limit_sec") is None,
               str({k: nolimit.get(k) for k in ("silence_state", "silence_limit_sec")}))
+        # The loop records `finish` when a step ends (seen on dev1 as "the step finish").
+        finish = page.evaluate("""() => [turnWords({stop_reason: 'end_turn', decision: 'finish'}),
+                                         liveWords(LIVE_DECISIONS, 'finish')]""")
+        check("a finishing turn reads in words", finish == ["the model ended its turn; then finished", "finished"],
+              str(finish))
+        # Each attempt records its own edge; a resumed step listed "plan → build" twice.
+        passes = page.evaluate("""() => {
+          const holder = document.createElement('div');
+          holder.innerHTML = flowHtml({name: 'x', state: 'completed', steps: [{id: 'plan', attempts: []},
+              {id: 'build', attempts: []}],
+            edges: [{from_step: 'plan', from_attempt: 1, to_step: 'build', to_attempt: 1, type: 'plan'},
+                    {from_step: 'plan', from_attempt: 1, to_step: 'build', to_attempt: 2, type: 'plan'}]}, null, {});
+          return [holder.querySelector('[data-step="plan"] .pipe-pass').textContent,
+                  holder.querySelectorAll('#flow-edges li').length];
+        }""")
+        check("'passes on' names each type and receiver once; the edges list keeps both attempts",
+              passes == ["passes on: plan → build", 2], str(passes))
+        # A start that a resume continued reports no flow state of its own; it was admitted.
+        chips = page.evaluate("""() => [
+          starterOperationHtml({operation_id: 'o', status: 'terminal', session_id: 's', flow_state: null,
+                                resumed_by: 'r'}, [], 'session'),
+          starterOperationHtml({operation_id: 'o', status: 'refused', flow_state: null}, [], 'session')]""")
+        check("a resumed start is not called 'not admitted'",
+              "continued by its resume" in chips[0] and "not admitted" not in chips[0] and "not admitted" in chips[1])
         check("its quiet line says no silence limit is set, not 'within its limit'",
               "no silence limit is set" in quiet_text and "within its limit" not in quiet_text, quiet_text)
 

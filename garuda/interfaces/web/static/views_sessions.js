@@ -717,7 +717,15 @@ function flowHtml(flow, progress, options) {
       var durations = attempts.map(function (a) { return a.duration_ms; });
       var total = durations.length && durations.every(function (d) { return typeof d === "number"; })
         ? durations.reduce(function (s, d) { return s + d; }, 0) : null;
-      var passes = edges.filter(function (e) { return e.from_step === step.id; });
+      // One line per type and receiver: each attempt records its own edge (the Artifact edges
+      // list below tells them apart), so a resumed or reviewed step listed "plan → build" twice.
+      var seenPass = {};
+      var passes = edges.filter(function (e) {
+        var key = e.type + "\u0000" + e.to_step;
+        if (e.from_step !== step.id || seenPass[key]) return false;
+        seenPass[key] = true;
+        return true;
+      });
       return '<li class="pipe-step pipe-' + status.key + '" data-step="' + esc(step.id) + '"' +
         (last && status.key !== "current" ? ' data-status="' + esc(last.status) + '"' : "") +
         (last && last.pause && status.key !== "current" ? ' data-pause="' + esc(last.pause) + '"' : "") +
@@ -784,7 +792,8 @@ function flowPaused(flow) {
 
 var LIVE_DECISIONS = {
   next: "continued with another turn", rotate: "rotated to a fresh harness session",
-  done: "reported the step done", stop: "stopped the loop", repair: "ran a repair turn"
+  // `finish` is what the long-step loop records when the step ends (garuda.runtime.turn_hook).
+  finish: "finished", done: "reported the step done", stop: "stopped the loop", repair: "ran a repair turn"
 };
 var LIVE_STOP_REASONS = {
   end_turn: "the model ended its turn", max_tokens: "the turn hit its output-token limit",

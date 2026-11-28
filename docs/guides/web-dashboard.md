@@ -34,7 +34,8 @@ The command prints a URL with a one-time token (`http://127.0.0.1:8787/#t=…`);
 open that exact URL. It opens on the **Overview**. Right after it starts listening,
 the dashboard reads every session record and runs the harness discovery the
 Overview's own requests would run, in the background (it never delays startup,
-and stops on shutdown), so the first page is fast. Press Ctrl-C to stop it: the
+and stops on shutdown), so the first page is fast. Press Ctrl-C (or send it
+SIGTERM, as `kill` and service managers do) to stop it: the
 dashboard finishes the flow and chat operations it owns, prints
 `Garuda dashboard stopped.` and exits 0. Pasting the link into a tab that is
 already open works too: the dashboard takes the token, removes it from the
