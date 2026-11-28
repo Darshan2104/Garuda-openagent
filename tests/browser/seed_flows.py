@@ -39,6 +39,9 @@ def main(root: Path) -> None:
             "fan-out": {"description": "Two scouts at once", "steps": [
                 {"id": "look", "parallel": ["scout", "reviewer"], "outputs": ["notes"]},
                 {"id": "make", "role": "coder", "inputs": ["notes"], "outputs": ["plan"]}]},
+            # Step retries start from the dashboard (#894) unless checks would run.
+            "retry-step": {"description": "Plan, again if it fails", "steps": [
+                {"id": "make", "role": "planner", "outputs": ["plan"], "retries": 2}]},
         },
     }))
     workspace = root / "workspace"
