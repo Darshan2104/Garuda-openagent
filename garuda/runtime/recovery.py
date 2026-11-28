@@ -31,7 +31,7 @@ import signal
 import subprocess
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -1137,9 +1137,13 @@ def _settle_dead_flow(store, flow_session: str, meta: dict, leases, capacity,
                                   "message": "the flow's process stopped during its check phase; "
                                              "`garuda runtime recover` proved it and every check "
                                              "process gone and released its workspace; "
-                                             "`garuda flow resume` runs the checks again"}}
+                                             + ("its dashboard Resume" if _operation_managed(meta)
+                                                else "`garuda flow resume`")
+                                             + " runs the checks again"}}
 
         store.mutate_meta(flow_session, _release)
+        if _operation_managed(meta):
+            return [f"flow {flow_session} recorded interrupted in its check phase"]
         return [f"flow {flow_session} recorded interrupted in its check phase; "
                 f"`garuda flow resume {flow_session}` runs its checks again"]
     if meta.get("flow_state") != "running":
@@ -1328,9 +1332,9 @@ def recover(
             )
     flow_meta = _flow_parent_meta(source, session_id) if release_dead_owner else None
     if flow_meta is not None:
+        # Its continue note is written after it settles, from its settled state (#899).
         report = RecoveryReport(
-            session_id=session_id, state=RestartState.FLOW, resume_session_id=session_id,
-            notes=(f"a flow parent; continue it with `garuda flow resume {session_id}`",))
+            session_id=session_id, state=RestartState.FLOW, resume_session_id=session_id)
     else:
         if release_dead_owner:
             _refuse_flow_step(source, session_id)  # its flow holds the lease and slot
@@ -1369,6 +1373,8 @@ def recover(
                                        settled_owner)
         else:
             notes += _settle_dead_run(store, session_id, leases, capacity)
+    if flow_meta is not None:
+        report = replace(report, notes=(_flow_continue_note(store, session_id),))
     if report.state is RestartState.ROLLED_BACK:
         # Keep the target id so a prepared child left by a crash in a later
         # recovery attempt still binds to this handoff attempt.
@@ -1383,6 +1389,47 @@ def recover(
         reaped_pids=tuple(reaped),
         notes=(*report.notes, *notes, *(f"reaped child {pid}" for pid in reaped)),
     )
+
+
+def _operation_managed(meta) -> bool:
+    """A flow the dashboard started (#889): ``garuda flow resume`` refuses it."""
+    policy = meta.get("publication_policy") if isinstance(meta, dict) else None
+    return isinstance(meta, dict) and (
+        (isinstance(policy, dict) and policy.get("kind") == "owned-flow")
+        or isinstance(meta.get("flow_operation"), dict))
+
+
+def _flow_continue_note(store, session_id: str) -> str:
+    """How a recovered flow parent continues, from its settled record (#899).
+
+    A CLI-started flow continues with ``garuda flow resume``. A dashboard-owned
+    one is refused there (``flow.operation_managed``), so it is pointed to the
+    dashboard's Resume when the owned resume check accepts its state now, and
+    told why not (unsettled, quarantined, ...) when it does not.
+    """
+    try:
+        meta = store.load_meta(session_id)
+    except Exception:  # noqa: BLE001 - the recover itself already read it
+        meta = None
+    if not _operation_managed(meta):
+        return f"a flow parent; continue it with `garuda flow resume {session_id}`"
+    if "background_operation" in meta or meta.get("launch_kind") == "run":
+        return ("a role run started from the dashboard; neither `garuda flow resume` nor the "
+                "dashboard's Resume continues a role run, so start it again from the dashboard")
+    from garuda.flows.engine import FlowStopped, owned_resume_check
+
+    try:
+        owned_resume_check(store, session_id, meta)
+    except FlowStopped as exc:
+        return (f"a flow started from the dashboard; it cannot be resumed now ({exc.code}): "
+                f"{exc}")
+    except Exception as exc:  # noqa: BLE001 - unknown, never a guess
+        return (f"a flow started from the dashboard; whether it can be resumed could not be "
+                f"checked ({exc})")
+    return ("a flow started from the dashboard, so `garuda flow resume` refuses it: continue "
+            "it from the write-mode dashboard that serves its workspace with Resume on its "
+            "session page, or POST /api/scenarios/resume with "
+            f'{{"operation_id": "<new UUIDv4>", "session_id": "{session_id}"}}')
 
 
 def require_native_resumable(report: RecoveryReport) -> RecoveryReport:
