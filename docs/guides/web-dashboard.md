@@ -270,7 +270,8 @@ flow gateway, as one durable operation under the same guarantees as its start.
   original checks; a flow without checks from a settled resumable stop
   (`flow.interrupted`, `flow.step_failed`, the step limits and long-step pauses,
   or `flow.quota_wait` once the reported reset has passed) or an interruption
-  between steps. Running, completed, quarantined and unsettled flows refuse;
+  between steps; or a flow whose dashboard was killed hard mid-step, on proof
+  (below). Running, completed, quarantined and unsettled flows refuse;
 - no other resume of the flow is unfinished.
 
 Stopping the dashboard while a step runs settles that attempt as a resumable
@@ -283,6 +284,33 @@ rather than refusing. A retry with the same `operation_id` returns the recorded
 operation. A refusal names its code (below); nothing is written to make a flow
 resumable.
 
+**After a hard kill.** A dashboard killed by SIGKILL, the OOM killer or a reboot
+while a step runs leaves that attempt launched and never settled, the flow
+recorded running and its operation admitted under a dead owner (the operation
+page shows it `uncertain`, `owner.uncertain`). Start the dashboard again and
+resume the flow; no `garuda runtime recover` is needed first. The owned resume
+continues it under exactly the proof a checked `garuda flow resume` uses after a
+crash: the journal ends with that attempt's intent, the only unsettled one; the
+flow's owner (the dead dashboard) is dead; the attempt's launch record shows it
+ran in an owned worker under Garuda's Linux subreaper, and its supervisor, its
+worker and the lease owner are dead by pid and start identity; then what
+`garuda runtime recover` proves (every step worker gone, every recorded confined
+container absent, the dead dashboard's leases and slots reclaimed); then no live
+process carries the dead dashboard's lineage and no lease or slot names the flow.
+Admission checks the process facts read only; the full proof, which reclaims the
+holdings, runs only once the resume holds the flow's resume claim, and the engine
+then settles the attempt under the workspace lease as a stopped
+`flow.interrupted` attempt with its proof (`crash`, `owned: true`), so the journal
+keeps two entries per attempt, and runs the step again. A checked flow reopens
+its evidence from the on-disk history (the original check request unchanged,
+every settled attempt covered by its boundary, a boundary for the crashed attempt
+as it was left) and runs its original checks. The dead dashboard's admitted
+operations of the flow settle `terminal` with outcome `interrupted`, the start
+projecting `resumed_by`. Any fact that cannot be proved writes nothing: the
+resume refuses `flow.interrupted_unsettled` (or `flow.recovery_required` while
+the dashboard may still live), naming what is uncertain and what to do next,
+and the attempt is never replayed.
+
 **On the session page.** A dashboard-started flow stopped on a resumable stop (a
 pause, an interruption, a usage limit after its reset) shows **Resume** in its
 Result. Its confirmation says which step runs again; the button sends one
@@ -294,9 +322,10 @@ with the time it becomes available. The start's operation panel then says
 **Resumed by** the resume operation. A flow quarantined by a resume that could
 not prove its workers closed says so. The Overview's paused rows and the Sessions
 list link to that block (**Resume**). A flow run from the CLI keeps its
-`garuda flow resume` command. One exception: if the dashboard's server is killed
-(SIGKILL) or the machine reboots while a step runs, that step never settles and
-the flow refuses with `flow.interrupted_unsettled`; start a new run.
+`garuda flow resume` command. If the dashboard's server was killed (SIGKILL, OOM)
+or the machine rebooted while a step ran, the restarted dashboard offers
+**Resume** once the crash proof's process facts hold (see **After a hard kill**
+below); otherwise the block shows the refusal and what is uncertain.
 
 Each refusal, as the page words it:
 
@@ -311,11 +340,11 @@ Each refusal, as the page words it:
 | `flow.resume_definition_changed` | 409 | The definition, roles, checks or configuration changed. | Start a new run (preview the current plan on Flows). |
 | `flow.resume_authority_changed` | 409 | The ceiling or a role's permissions changed. | Restore them, or start a new run. |
 | `flow.resume_completed` | 409 | The flow completed. | Nothing to resume. |
-| `flow.recovery_required` | 409 | Still recorded running. | `garuda runtime recover --session FLOW_ID`, then resume. |
+| `flow.recovery_required` | 409 | Still recorded running and its dashboard is alive or cannot be proved gone. | Stop that dashboard, or `garuda runtime recover --session FLOW_ID`, then resume. |
 | `flow.resume_in_progress` | 409 | It runs here, or another resume is unfinished. | Follow that operation. |
 | `flow.resume_owner_unknown` | 409 | An unfinished operation's dashboard process (its pid is named) is neither proved alive nor gone. | Make sure that process exited, then resume. |
 | `flow.quarantined` | 409 | A step's process tree or evidence was not proved closed. | Inspect the workspace (`git status`); start a new run. |
-| `flow.interrupted_unsettled` | 409 | A launched step never settled (a killed server, a reboot). | Inspect the workspace; start a new run. |
+| `flow.interrupted_unsettled` | 409 | A launched step never settled and its process tree cannot be proved gone (the message names what is uncertain, such as a surviving pid). | Stop what it names and resume again; with no launch record, inspect the workspace and start a new run. |
 | `flow.stop_not_resumable` | 409 | The stop is not one a resume continues. | Start a new run. |
 | `flow.resume_quota_wait` | 409 | The usage limit has not reset yet. | Resume after the reset. |
 | `flow.verification_reconciliation_required` | 409 | Check or step records are unreadable or disagree. | Inspect the records; start a new run. |

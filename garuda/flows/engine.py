@@ -485,7 +485,8 @@ def _quota_reset(store, flow_session: str, stop: dict) -> float | None:
     return None if reset is None else float(reset + CLAUDE_RESET_MARGIN_SEC)
 
 
-def owned_resume_check(store, flow_session: str, meta: dict, *, now: float | None = None):
+def owned_resume_check(store, flow_session: str, meta: dict, *, now: float | None = None,
+                       crash: dict | None = None):
     """Refuse a dashboard-owned flow that cannot resume now; return its saved check request.
 
     Read only. The owned gateway runs it before admitting a resume operation and
@@ -497,6 +498,13 @@ def owned_resume_check(store, flow_session: str, meta: dict, *, now: float | Non
     completed, quarantined and unsettled (launched, never receipted) states
     refuse; nothing is written to make a state resumable. Returns the checked
     flow's original check request, or ``None`` for a flow without checks.
+
+    ``crash`` (:func:`garuda.flows.crash.prove` with ``owned=True``, run after the
+    dead dashboard's holdings were reclaimed) admits exactly one more state: the
+    flow recorded ``interrupted`` with ``flow.owner_lost`` whose only unsettled
+    attempt is the proved one. A checked flow then returns its original check
+    request (it has no resume checkpoint: crash continuation reopens its evidence
+    from the on-disk history, as for a checked CLI flow).
     """
     import time
 
@@ -534,6 +542,27 @@ def owned_resume_check(store, flow_session: str, meta: dict, *, now: float | Non
     except (OSError, ValueError) as exc:
         raise FlowStopped("flow.verification_reconciliation_required",
                           "the flow's step records are unreadable; it is never resumed") from exc
+    if crash is not None:
+        stop = meta.get("flow_stop") if isinstance(meta.get("flow_stop"), dict) else {}
+        if (crash.get("owned") is not True or crash.get("dry") or state != "interrupted"
+                or stop.get("code") != "flow.owner_lost" or held
+                or pending != [(crash.get("step"), crash.get("attempt"))]):
+            raise FlowStopped(
+                "flow.interrupted_unsettled",
+                f"flow {flow_session} changed after its crashed attempt was proved closed; "
+                "it is never replayed. Inspect the workspace (`git status`) and start a new flow")
+        if kind == "flow-verification":
+            from garuda.flows.verification_records import FlowVerificationRecords
+
+            try:
+                return FlowVerificationRecords(
+                    store.session_dir(flow_session), flow_session).saved_request(meta)
+            except (StorageError, OSError, ValueError) as exc:
+                raise FlowStopped(
+                    "flow.verification_reconciliation_required",
+                    "the crashed checked flow's original check request is missing or changed; "
+                    "checks are never replayed without it") from exc
+        return None
     if pending:
         step, attempt = pending[0]
         raise FlowStopped(
@@ -1228,8 +1257,12 @@ class FlowRunner:
                               "the resumed flow's start record, workspace or task disagrees "
                               "with this resume")
 
-    def _owned_resume_inputs(self) -> dict:
-        """The stopped owned flow (without checks) this resume continues, proved under its lease."""
+    def _owned_resume_inputs(self, crash: dict | None = None) -> tuple[dict, dict | None]:
+        """The stopped owned flow (without checks) this resume continues, proved under its lease.
+
+        With ``crash`` it is the proved crashed attempt's open intent too: the journal
+        must end with it (the flow's other attempts all settled).
+        """
         from garuda.runtime.strict_store import StorageError
 
         try:
@@ -1238,10 +1271,23 @@ class FlowRunner:
             raise FlowStopped("flow.verification_reconciliation_required",
                               "protected flow metadata is unavailable") from exc
         self._owned_start(prior)
-        if owned_resume_check(self.store, self.flow_session, prior) is not None:
+        if owned_resume_check(self.store, self.flow_session, prior, crash=crash) is not None:
             raise FlowStopped("flow.verification_reconciliation_required",
                               "a checked owned flow resumes only from its checkpoint")
-        return prior
+        if crash is None:
+            return prior, None
+        try:
+            entries = journal(self.store, self.flow_session)
+        except (OSError, ValueError) as exc:
+            raise FlowStopped("flow.verification_reconciliation_required",
+                              "the crashed flow's journal is unreadable") from exc
+        intent = entries[-1] if entries else {}
+        if (intent.get("event") != "intent"
+                or (intent.get("step"), intent.get("attempt")) != (crash["step"], crash["attempt"])):
+            raise FlowStopped("flow.interrupted_unsettled",
+                              "the crashed flow's journal no longer ends with the proved "
+                              "attempt's intent; it is never replayed", step=crash["step"])
+        return prior, intent
 
     def _crash_inputs(self, crash: dict):
         """The settled history of a checked flow whose parent died mid-step, read only.
@@ -1258,6 +1304,10 @@ class FlowRunner:
             prior = self.store.load_meta(self.flow_session)
             if self._verification_records().saved_request(prior) != self._resume_request():
                 raise CorruptRecord("the original check authority or flow definition changed")
+            if self.operation_binding is not None:
+                self._owned_start(prior)
+                if owned_resume_check(self.store, self.flow_session, prior, crash=crash) is None:
+                    raise CorruptRecord("the crashed owned flow has no checks")
             baseline = prior["flow_evidence_baseline"]["baseline_digest"]
             entries, attempts = self._checked_history()
             intent = entries[-1] if entries else {}
@@ -1295,20 +1345,24 @@ class FlowRunner:
             raise FlowStopped("flow.verification_reconciliation_required",
                               f"the crashed attempt's step {step_id} is not a plain step of this flow",
                               step=step_id)
-        try:
-            boundary = await self._evidence.boundary(self._evidence_count, step_id, attempt)
-        except CleanupUncertain:
-            await lease.stop_heartbeat()
-            raise
-        except Exception as exc:
-            raise FlowStopped("flow.evidence_unavailable",
-                              "the crashed attempt's evidence could not be published",
-                              step=step_id) from exc
-        self._evidence_count += 1
+        boundary = None
+        if self._evidence is not None:
+            try:
+                boundary = await self._evidence.boundary(self._evidence_count, step_id, attempt)
+            except CleanupUncertain:
+                await lease.stop_heartbeat()
+                raise
+            except Exception as exc:
+                raise FlowStopped("flow.evidence_unavailable",
+                                  "the crashed attempt's evidence could not be published",
+                                  step=step_id) from exc
+            self._evidence_count += 1
+        how = ("the dashboard's owned resume" if self.operation_binding is not None
+               else "`garuda flow resume`")
         stop = FlowStopped(
             INTERRUPTED_STOP,
             f"step {step_id} (attempt {attempt}) was interrupted: the flow's process died while it "
-            "ran, and `garuda flow resume` proved its owned worker, its subreaper supervisor and "
+            f"ran, and {how} proved its owned worker, its subreaper supervisor and "
             "every descendant gone before running the step again as a new attempt", step=step_id)
         progress = self.dir / "progress" / f"{step_id}-{attempt}.jsonl"
         receipt = {
@@ -1478,13 +1532,18 @@ class FlowRunner:
         checked_resume = resume and checked_checkpoint is not None and self.verification_cli_checks is not None
         crash_resume = (resume and crash is not None and checked_checkpoint is None
                         and self.verification_cli_checks is not None)
-        if crash is not None and not crash_resume:
-            raise FlowStopped("flow.verification_reconciliation_required",
-                              "crash continuation applies only to a checked flow's resume")
         # A dashboard-owned flow without checks resumes through its owned gateway:
         # read only until the lease is held, never quarantining or replaying.
         owned_resume = (resume and not checked_resume and not crash_resume
                         and self.operation_binding is not None)
+        # Its crashed attempt, proved closed (crash.prove(owned=True)), settles first.
+        owned_crash = owned_resume and crash is not None
+        if crash is not None and (
+                not (crash_resume or owned_crash) or crash.get("dry")
+                or (crash.get("owned") is True) != (self.operation_binding is not None)):
+            raise FlowStopped("flow.verification_reconciliation_required",
+                              "crash continuation applies only to a checked flow's resume or a "
+                              "dashboard flow's owned resume, on a full proof")
         if owned_resume and (not self.owned_flow or self.verification_request is not None):
             raise FlowStopped("flow.verification_reconciliation_required",
                               "a checked owned flow resumes only from its checkpoint")
@@ -1570,7 +1629,7 @@ class FlowRunner:
                 prior, baseline_digest, coverage, existing, crash_intent = await _settled_sync(
                     self._crash_inputs, crash)
             elif owned_resume:
-                prior = await _settled_sync(self._owned_resume_inputs)
+                prior, crash_intent = await _settled_sync(self._owned_resume_inputs, crash)
             if self.quota_recovery is not None:
                 from garuda.flows.quota_recovery import RecoveryWaiting
 
@@ -1601,6 +1660,10 @@ class FlowRunner:
                         "flow.authority_changed",
                         "admitted starter sources changed before the first step") from exc
             self._validate_operation_workspace()
+            if owned_crash:
+                # The crashed attempt's receipt (stopped, flow.interrupted, its proof):
+                # under the lease and the resume claim, before the binding.
+                await self._settle_crashed(crash, crash_intent, lease)
             if owned_resume:
                 # Admission of the resume operation: its binding publishes with the
                 # running state, after every check above and before any step.
@@ -1649,8 +1712,13 @@ class FlowRunner:
 
                     await self._publish(self.flow_session, {
                         "flow_state": "running", "status": "running", "flow_stop": None,
-                        "state": started(current_owner().to_dict())})
+                        "state": started(current_owner().to_dict()),
+                        **({"flow_resume_operation": dict(self.operation_binding)}
+                           if self.operation_binding is not None else {})})
                     begun = True
+                    if self.operation_binding is not None:
+                        await self.on_admitted(self.flow_session,
+                                               self.operation_binding["lease_epoch"])
                 elif checked_resume:
                     try:
                         await self._evidence.resume(candidate, coverage)

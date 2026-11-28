@@ -6122,3 +6122,58 @@ check selection and stop checkpoint (`verification_cli_checks` is allowed with a
 owned flow-kind binding). A parent killed hard mid-step still leaves an unsettled
 attempt that refuses: crash continuation proves only CLI checked flows.
 
+## 2026-11-28: A hard-killed dashboard flow continues on the checked crash proof
+
+A dashboard killed hard (SIGKILL, OOM, reboot) while an owned step ran left that
+attempt unsettled, the flow `running` and its operation `admitted` under a dead
+owner; the owned resume refused it (`flow.recovery_required`, then
+`flow.interrupted_unsettled` after `runtime recover`), so the flow was lost.
+
+Owned workers have the same proofs as checked CLI steps: every dashboard flow
+step (checked or not) runs through `launch_owned_step` / `execute_owned_role`
+under `LinuxProcessSupervisor` (subreaper plus `PDEATHSIG`), which writes the
+same per-attempt launch record (supervisor, `activating`, worker command, parent
+lease owner); the dashboard process is the flow's owner, the lease owner and the
+operation's owner; Docker-confined steps record their containers, which
+`runtime recover` proves absent. Decided: `crash.prove(owned=True)` proves
+exactly the checked facts for a dashboard flow (`crash.applies(owned=True)`: an
+owned or checked-owned policy with a `flow_operation`, not background, not a
+role run, before any check phase), with owned refusal text pointing at the owned
+resume. Nothing is weakened: a missing record, `activating` without a command,
+a live or unknown process, a lineage survivor, or a lease or slot left refuses
+`flow.interrupted_unsettled` (or `flow.recovery_required`) and writes nothing.
+Non-Linux hosts never reach it (the gateway refuses resume,
+`starter.ownership_unavailable`); background (queue) flows and worktree
+isolation stay outside the owned resume as before.
+
+Where: only at the owned resume, never on gateway startup and never through
+`garuda flow resume` (still `flow.operation_managed`). Admission
+(`FlowStartGateway._resumable`) runs a `dry` proof, read only: the process
+facts, without reclaiming or checking holdings. Once the version-3 operation
+holds the flow's resume claim (prepared, then launch-authorized), `_execute`
+runs the full proof, which reclaims the dead dashboard's holdings as
+`runtime recover` does, then settles the dead dashboard's admitted operations of
+the flow `terminal`/`interrupted` (new `LaunchIntentStore.settle_lost`: only an
+`admitted` record bound to that session whose recorded owner is proved dead
+under the store lock; the record keeps its owner). `resume_prepared(crash=...)`
+passes the proof on; `owned_resume_check(crash=...)` admits exactly the flow
+`interrupted` with `flow.owner_lost` whose only unsettled attempt is the proved
+one (a checked flow returns its saved request: it has no checkpoint). Under the
+lease the engine re-checks that state and that the journal ends with the proved
+intent, writes the attempt's receipt (stopped, `flow.interrupted`, `crash` with
+`owned: true`; a checked flow's crash path also adds its evidence boundary,
+reopening evidence from the on-disk history as for CLI crash continuation), then
+publishes `flow_resume_operation` with the running state before any step. A
+proof refusal after the claim settles the resume operation `refused` (nothing
+launched); a dry proof is never accepted by the engine. One writer: the receipt
+is written only under the resume claim and the workspace lease, and
+`_write_once` makes a second settle impossible.
+
+The session page (#890) offers Resume from `read_model.resume_check`, which now
+answers a dashboard flow still recorded `running` (or `interrupted` with the
+crashed attempt unsettled) with the same read-only dry proof: available when it
+holds, its typed refusal when a fact is unproved, `None` while the dashboard
+may still run it. The page JS is unchanged. A dashboard killed during a resume
+(version 3) is handled the same way: the next resume supersedes the dead
+resume's claim, proves its crashed attempt, and `settle_lost` settles that
+resume's record.

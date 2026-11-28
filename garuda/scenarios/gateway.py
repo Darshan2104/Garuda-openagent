@@ -409,6 +409,7 @@ class FlowStartGateway:
                    for operation, task in self._tasks.items())
 
     def _resumable(self, session_id: str, meta: dict) -> None:
+        from garuda.flows import crash
         from garuda.flows.engine import FlowStopped, owned_resume_check
         from garuda.flows.service import _refuse_beside_waiter
 
@@ -419,7 +420,49 @@ class FlowStartGateway:
             if exc.code == "flow.recovery_required" and self._active_session(session_id):
                 raise FlowStartError("flow.resume_in_progress",
                                      "This dashboard is still running the flow.") from exc
+            if exc.code in {"flow.recovery_required", "flow.interrupted_unsettled"}:
+                # A dashboard killed hard mid-step: admitted only if every process
+                # fact of the crash proof holds already. Read only; the full proof,
+                # which reclaims the dead dashboard's holdings, runs once this
+                # operation holds the flow's resume claim (_crash_proof).
+                try:
+                    if crash.prove(self.store, session_id, meta, owned=True, dry=True):
+                        return
+                except FlowStopped as refusal:
+                    raise FlowStartError(refusal.code, str(refusal)) from refusal
             raise FlowStartError(exc.code, str(exc)) from exc
+
+    def _crash_proof(self, session_id: str) -> dict | None:
+        """Prove a hard-killed dashboard's crashed attempt closed, under the resume claim.
+
+        None when the flow has no crashed attempt. Otherwise the full proof of
+        :func:`garuda.flows.crash.prove` (``owned=True``), which reclaims the dead
+        dashboard's leases and slots as ``garuda runtime recover`` does and records
+        the flow ``interrupted``; any gap raises its typed refusal and nothing
+        settles. On proof, the dead dashboard's own admitted operations of the
+        flow settle ``terminal``/``interrupted``: their owner is dead and nothing
+        they launched survives.
+        """
+        from garuda.flows import crash
+        from garuda.flows.engine import unsettled_attempts
+
+        meta = self.store.load_meta(session_id)
+        if not crash.applies(meta, owned=True) or not unsettled_attempts(self.store, session_id):
+            return None
+        proof = crash.prove(self.store, session_id, meta, owned=True)
+        if proof is None:
+            return None
+        current = self.store.load_meta(session_id)
+        for key in ("flow_resume_operation", "flow_operation"):
+            binding = current.get(key)
+            if isinstance(binding, dict) and _canonical_uuid4(binding.get("operation_id")):
+                try:
+                    self.intents.settle_lost(binding["operation_id"], owner=self.owner,
+                                             session_id=session_id)
+                except (StorageError, IntentStateError, OSError, ValueError):
+                    # Unrecorded: it keeps projecting uncertain, then superseded.
+                    logger.warning("could not settle lost operation %s", binding["operation_id"])
+        return proof
 
     async def resume(self, spec: FlowResumeRequest) -> dict:
         """Admit one owned resume of a dashboard-started flow, at most once per operation.
@@ -612,11 +655,14 @@ class FlowStartGateway:
             if record["version"] == 3:
                 from garuda.flows.service import FlowExecutionService
 
+                # This operation now holds the flow's resume claim: prove a crashed
+                # attempt closed (and reclaim its dead dashboard's holdings) only now.
+                proof = await _settled_call(self._crash_proof, record["reserved_session"])
                 result = await FlowExecutionService(self.store).resume_prepared(
                     plan, context, flow_session=record["reserved_session"], start_binding=start,
                     operation_binding=binding, on_admitted=admitted,
                     approval_handler=approval, permission_mode=self.max_permission,
-                    checks=flow_checks(plan))
+                    checks=flow_checks(plan), crash=proof)
             elif plan.kind == "run":
                 from garuda.agents.role_runs import RoleRunService
 

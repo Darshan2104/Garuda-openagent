@@ -24,7 +24,14 @@ The crashed attempt is then recorded as a stopped ``flow.interrupted`` attempt
 (its receipt, so the journal keeps two entries per attempt) and the flow
 continues with the next attempt. If any fact cannot be proved nothing is
 written: the attempt stays quarantined and the refusal says what is uncertain
-and which command comes next. Unchecked flows are never continued this way.
+and which command comes next. Unchecked CLI flows are never continued this way.
+
+A **dashboard-started** (owned) flow, checked or not, runs every step in the
+same owned worker under the same subreaper and writes the same launch record,
+so ``owned=True`` proves the same facts for it. Its owned flow gateway's resume
+(``POST /api/scenarios/resume``) is the only way it continues (never
+``garuda flow resume``); there the flow's owner, the attempt's lease owner and
+the operation's owner are the dashboard process that ran it.
 """
 
 from __future__ import annotations
@@ -57,46 +64,71 @@ def _recover(store, flow_session: str) -> None:
         pass
 
 
-def applies(meta: dict) -> bool:
-    """Whether ``meta`` is a checked CLI flow that may have died hard mid-step."""
+def applies(meta: dict, *, owned: bool = False) -> bool:
+    """Whether ``meta`` is a checked CLI flow (``owned``: a dashboard-started flow,
+    checked or not) that may have died hard mid-step."""
     policy = meta.get("publication_policy")
     stop = meta.get("flow_stop") if isinstance(meta.get("flow_stop"), dict) else {}
-    return (isinstance(policy, dict) and policy.get("kind") == "flow-verification"
-            and meta.get("flow_operation") is None and "background_operation" not in meta
+    kind = policy.get("kind") if isinstance(policy, dict) else None
+    if owned:
+        started = (kind in {"owned-flow", "flow-verification"}
+                   and isinstance(meta.get("flow_operation"), dict)
+                   and meta.get("launch_kind") != "run")
+    else:
+        started = kind == "flow-verification" and meta.get("flow_operation") is None
+    return (started and "background_operation" not in meta
             and meta.get("flow_verification_phase") is None
             and meta.get("flow_verification_commit") is None
             and (meta.get("flow_state") == "running"
                  or (meta.get("flow_state") == "interrupted" and stop.get("code") == OWNER_LOST)))
 
 
-def prove(store, flow_session: str, meta: dict, *, recover=None) -> dict | None:
+def owned_resume_hint(flow_session: str) -> str:
+    """The owned resume a dashboard-started flow continues through."""
+    return ("the dashboard's owned resume (POST /api/scenarios/resume with "
+            f'{{"operation_id": "<new UUIDv4>", "session_id": "{flow_session}"}})')
+
+
+def prove(store, flow_session: str, meta: dict, *, recover=None, owned: bool = False,
+          dry: bool = False) -> dict | None:
     """The proof that a crashed checked step attempt's tree is gone, or None.
 
-    None: the flow is not a crashed checked flow with an unsettled attempt
-    (the caller's usual handling applies). Raises :class:`engine.FlowStopped`
-    with the uncertainty and the next command when anything cannot be proved.
-    May reclaim the dead owner's holdings (``recover``, as ``garuda runtime
-    recover`` does); writes nothing else.
+    None: the flow is not a crashed checked flow (``owned``: a crashed
+    dashboard-started flow) with an unsettled attempt (the caller's usual
+    handling applies). Raises :class:`engine.FlowStopped` with the uncertainty
+    and the next command when anything cannot be proved. May reclaim the dead
+    owner's holdings (``recover``, as ``garuda runtime recover`` does); writes
+    nothing else. ``dry`` writes nothing at all: it proves every process fact
+    but neither reclaims nor checks the holdings (the owned gateway's admission
+    check, before it holds the flow's resume claim), and returns only
+    ``{"dry": True, ...}``: the full proof must still run before anything settles.
     """
     from garuda.runtime.ownership import descendant_scan, owner_liveness
 
-    if not applies(meta):
+    if not applies(meta, owned=owned):
         return None
     pending = engine.unsettled_attempts(store, flow_session)
     if not pending:
         return None
     step, attempt = pending[-1]
     name = (meta.get("flow") or {}).get("name") or "NAME"
-    new_flow = (f"the attempt cannot be continued; inspect the workspace (`git status`) and "
-                f"start a new flow: `garuda flow run {name} --check ...`")
+    if owned:
+        label = "dashboard flow"
+        resume = owned_resume_hint(flow_session)
+        new_flow = ("the attempt cannot be continued; inspect the workspace (`git status`) and "
+                    "start a new flow from the dashboard")
+    else:
+        label = "checked flow"
+        resume = f"`garuda flow resume {flow_session}`"
+        new_flow = (f"the attempt cannot be continued; inspect the workspace (`git status`) and "
+                    f"start a new flow: `garuda flow run {name} --check ...`")
     recover_next = (f"run `garuda runtime recover --session {flow_session}`, which says what is "
-                    f"still held; once it succeeds, `garuda flow resume {flow_session}` continues "
-                    "the flow")
+                    f"still held; once it succeeds, {resume} continues the flow")
 
     def refuse(why: str, next_step: str):
         raise engine.FlowStopped(
             UNSETTLED,
-            f"checked flow {flow_session} lost its process while step {step} (attempt {attempt}) "
+            f"{label} {flow_session} lost its process while step {step} (attempt {attempt}) "
             f"was running, and Garuda cannot prove that attempt's whole process tree is gone: "
             f"{why}. The attempt stays quarantined and is never replayed. Next: {next_step}",
             step=step)
@@ -114,13 +146,13 @@ def prove(store, flow_session: str, meta: dict, *, recover=None) -> dict | None:
         if alive is True:
             raise engine.FlowStopped(
                 "flow.recovery_required",
-                f"checked flow {flow_session} is still running (pid {owner.get('pid')}); wait for "
+                f"{label} {flow_session} is still running (pid {owner.get('pid')}); wait for "
                 "it, or stop it with SIGTERM (its step settles as flow.interrupted), then "
-                f"`garuda flow resume {flow_session}`", step=step)
+                f"{resume}", step=step)
         if alive is None:
             raise engine.FlowStopped(
                 "flow.recovery_required",
-                f"checked flow {flow_session} is still recorded running and its process cannot be "
+                f"{label} {flow_session} is still recorded running and its process cannot be "
                 f"proved gone; {recover_next}", step=step)
     record = launches.read(engine.flow_dir(store, flow_session), step, attempt)
     if (record is None or record.get("backend") != "linux-subreaper"
@@ -143,12 +175,20 @@ def prove(store, flow_session: str, meta: dict, *, recover=None) -> dict | None:
         if alive is not False:
             refuse(f"the step's {label} (pid {who['pid']}) "
                    + ("is still running" if alive else "cannot be proved gone"),
-                   "wait for it to exit (it closes its tree when its parent dies), then run "
-                   f"`garuda flow resume {flow_session}` again")
+                   "wait for it to exit (it closes its tree when its parent dies), then "
+                   f"{resume} again")
     parent = record["parent_owner"]
     if owner_liveness(parent) is not False:
         refuse(f"the lease owner the attempt ran under (pid {parent['pid']}) is not proved dead",
                recover_next)
+    if dry:
+        survivors, why = descendant_scan(parent)
+        if survivors is None:
+            refuse(f"its descendants cannot be inspected ({why})", recover_next)
+        if survivors:
+            refuse(f"process(es) {', '.join(map(str, survivors))} still carry its lineage",
+                   f"stop them, then {resume} again")
+        return {"dry": True, "step": step, "attempt": attempt}
     if meta.get("flow_state") == "running":
         try:
             (recover or _recover)(store, flow_session)
@@ -163,7 +203,7 @@ def prove(store, flow_session: str, meta: dict, *, recover=None) -> dict | None:
         refuse(f"its descendants cannot be inspected ({why})", recover_next)
     if survivors:
         refuse(f"process(es) {', '.join(map(str, survivors))} still carry its lineage",
-               f"stop them, then run `garuda flow resume {flow_session}` again")
+               f"stop them, then {resume} again")
     from garuda.runtime.capacity import CapacityStore
     from garuda.workspace.lease import LeaseStore
 
@@ -180,6 +220,7 @@ def prove(store, flow_session: str, meta: dict, *, recover=None) -> dict | None:
             "backend": "linux-subreaper", "supervisor": dict(record["supervisor"]),
             "command": dict(command) if command else None,
             "parent_owner": dict(parent),
+            **({"owned": True} if owned else {}),
             "proved": ["flow owner dead", "supervisor dead", "worker dead",
                        "lease owner dead", "no process carries its lineage",
                        "step workers and recorded containers gone", "no live lease",

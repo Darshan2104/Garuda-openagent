@@ -1125,20 +1125,42 @@ def dashboard_operation(meta: dict) -> dict | None:
 def resume_check(store, session_id: str, meta: dict) -> dict | None:
     """What the dashboard's owned resume would say about this flow's state now, read only.
 
-    ``None`` for a flow no dashboard started or one still running. Otherwise
+    ``None`` for a flow no dashboard started or one still running (a flow whose
+    dashboard was killed hard mid-step is answered by the read-only crash proof,
+    ``crash.prove(owned=True, dry=True)``). Otherwise
     ``{"available": true}`` or ``{"available": false, "code", "message"}`` from the engine's
     own state check (``flows.engine.owned_resume_check``); a usage-limit wait adds its
     ``reset_at``. The gateway's admission checks (the start's record, plan and authority)
     run only when a resume is requested.
     """
-    if dashboard_operation(meta) is None or meta.get("flow_state") == "running":
+    if dashboard_operation(meta) is None:
         return None
     try:
+        from garuda.flows import crash
         from garuda.flows.engine import FlowStopped, owned_resume_check
     except ImportError:  # pragma: no cover
         return {"available": None, "code": None, "message": "the owned resume check is unavailable"}
+    if meta.get("flow_state") == "running":
+        # Running, unless its dashboard was killed hard mid-step: then the crash
+        # proof's process facts (read only, ``dry``) say whether a resume continues it.
+        try:
+            proof = crash.prove(store, session_id, meta, owned=True, dry=True)
+        except FlowStopped as exc:
+            if exc.code == "flow.recovery_required":
+                return None  # its dashboard may still run it
+            return {"available": False, "code": exc.code, "message": str(exc)}
+        except Exception:  # noqa: BLE001 - unknown, never a guess
+            return None
+        return {"available": True, "code": None, "message": None} if proof else None
     try:
-        owned_resume_check(store, session_id, meta)
+        try:
+            owned_resume_check(store, session_id, meta)
+        except FlowStopped as exc:
+            if exc.code != "flow.interrupted_unsettled":
+                raise
+            # Recorded interrupted by `runtime recover` after a hard kill: the same dry proof.
+            if not crash.prove(store, session_id, meta, owned=True, dry=True):
+                raise
     except FlowStopped as exc:
         out = {"available": False, "code": exc.code, "message": str(exc)}
         if exc.code == "flow.resume_quota_wait":

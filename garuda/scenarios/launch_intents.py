@@ -531,6 +531,43 @@ class LaunchIntentStore:
             self._write(directory_fd, operation_id, updated)
             return updated
 
+    def settle_lost(self, operation_id: str, *, owner: Owner, session_id: str) -> dict | None:
+        """Settle an admitted operation whose dashboard died hard: ``terminal``, ``interrupted``.
+
+        Only the owned gateway's crash continuation calls this, after
+        :func:`garuda.flows.crash.prove` proved the flow's crashed attempt left no
+        process, lease or slot behind and the flow recorded ``interrupted``, while
+        it holds the flow's resume claim. ``owner`` is the live caller; the
+        operation's recorded owner must be proved dead here, under the store lock,
+        and is kept. Returns the settled record, or None when there is nothing to
+        settle (not admitted, bound to another flow, or its owner not proved dead).
+        """
+        if not _uuid4(operation_id):
+            raise ValueError("operation_id must be a canonical UUIDv4")
+        if (not isinstance(owner, Owner) or not _owner(owner.to_dict())
+                or owner.pid != os.getpid() or owner_liveness(owner.to_dict()) is not True):
+            raise IntentStateError("launch intent owner identity is not live and proven")
+        with self._locked() as (directory_fd, store_identity):
+            if directory_fd is None:
+                return None
+            record = self._read(directory_fd, operation_id)
+            if record is None or record["version"] not in {1, 3}:
+                return None
+            if record["store_identity"] != store_identity:
+                raise CorruptRecord("launch intent belongs to another session store")
+            if (record["phase"] != "admitted" or record["session_id"] != session_id
+                    or record["owner"] == owner.to_dict()
+                    or owner_liveness(record["owner"]) is not False):
+                return None
+            updated = {**record, "phase": "terminal", "sequence": record["sequence"] + 1,
+                       "outcome": "interrupted", "reason": None}
+            try:
+                _validate(updated)
+            except CorruptRecord as exc:
+                raise IntentStateError(str(exc)) from exc
+            self._write(directory_fd, operation_id, updated)
+            return updated
+
     def advance(self, operation_id: str, *, expected: str, phase: str, owner: Owner,
                 session_id: str | None = None, lease_epoch: str | None = None,
                 outcome: str | None = None, reason: str | None = None) -> dict:
