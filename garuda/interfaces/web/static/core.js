@@ -514,7 +514,8 @@ function authLost() {
 var UNREACHABLE = "Can’t reach the dashboard — is `garuda web` still running?";
 var TOO_MANY_TABS = "Too many open dashboard tabs — the dashboard serves at most 32 connections at once; close some tabs.";
 var PROBE_MAX_MS = 30000;
-var CONNECTION = { down: false, checking: false, attempt: 0, delay: 0, timer: null, listeners: [] };
+var CONNECTION = { down: false, checking: false, attempt: 0, delay: 0, timer: null, listeners: [],
+                   probing: false, nudged: false };
 
 /* The server's connection-limit refusal: a 503 without a route's error envelope, or with a
  * Retry-After. A route that 503s (read-only, no flow gateway) answers in its envelope. */
@@ -580,17 +581,23 @@ function declareDown(err) {
 
 function scheduleProbe(retryAfter) {
   clearTimeout(CONNECTION.timer);
+  CONNECTION.nudged = false;  // this backoff step may be cut short once
   var delay = Math.min(1000 * Math.pow(2, CONNECTION.attempt), PROBE_MAX_MS);
   if (retryAfter) delay = Math.max(delay, retryAfter * 1000);
   CONNECTION.attempt += 1;
   CONNECTION.delay = delay;
-  CONNECTION.timer = setTimeout(probeConnection, delay);
+  CONNECTION.timer = setTimeout(function () { CONNECTION.timer = null; probeConnection(); }, delay);
 }
 
-function probeConnection() {
-  clearTimeout(CONNECTION.timer);
-  if (!CONNECTION.down) return;
+/* One probe at a time. `eager`: the user came back (below) and this probe cuts the current
+ * backoff step short; if the dashboard is still down, the step's own timer still runs, so
+ * the backoff goes on as before instead of restarting. */
+function probeConnection(eager) {
+  if (!CONNECTION.down || CONNECTION.probing) return;
+  if (!eager) clearTimeout(CONNECTION.timer);
+  CONNECTION.probing = true;
   fetch("/api/health", { headers: { "X-Garuda-Token": TOKEN }, cache: "no-store" }).then(function (response) {
+    CONNECTION.probing = false;
     if (isConnectionLimit(response, null)) {
       var err = { code: "too_many_connections", retryAfter: retryAfterSeconds(response) };
       CONNECTION.reason = err.code;
@@ -601,10 +608,34 @@ function probeConnection() {
     connectionRestored();
     if (response.status === 401) authLost();
   }, function () {
+    CONNECTION.probing = false;
     CONNECTION.reason = "network";
     showConnectionBanner({ code: "network" });
-    scheduleProbe();
+    // The backoff goes on: a regular probe reschedules; an eager one only when no step is
+    // pending (the step it cut short fired while it was in flight).
+    if (!eager || !CONNECTION.timer) scheduleProbe();
   });
+}
+
+/* While the dashboard is believed down, the user coming back to the tab (it is shown again,
+ * the window is focused, the network is back) probes at once instead of waiting out the
+ * backoff, which can be 30 s after a restart. At most one such probe per backoff step and
+ * one probe in flight, so repeated focus events cannot become a hot loop. Retry, an
+ * explicit click, always probes (one in flight). */
+function probeWhenBack() {
+  if (!CONNECTION.down || CONNECTION.probing || CONNECTION.nudged) return;
+  CONNECTION.nudged = true;
+  probeConnection(true);
+}
+
+function retryConnection() {
+  probeConnection(true);
+}
+
+if (typeof window !== "undefined" && window.addEventListener) {
+  document.addEventListener("visibilitychange", function () { if (!document.hidden) probeWhenBack(); });
+  window.addEventListener("focus", probeWhenBack);
+  window.addEventListener("online", probeWhenBack);
 }
 
 function connectionRestored() {

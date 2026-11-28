@@ -89,7 +89,10 @@ button that names the current page and carries the same count; `Esc` closes it.
 If the dashboard stops answering, one banner says **Can't reach the
 dashboard — is `garuda web` still running? Retrying…** and retries with a
 growing gap (at most 30 seconds); when the dashboard answers, the banner goes
-away and the page reloads its data. With more than 32 connections open at once
+away and the page reloads its data. Coming back to the tab (focusing the window,
+showing the tab again, or the network coming back) and **Retry now** check at
+once instead of waiting out that gap, so a restarted dashboard is back as soon as
+you look; at most one such check runs per step of the gap. With more than 32 connections open at once
 (many tabs), it says **Too many open dashboard tabs** instead and waits as long
 as the dashboard asks. Buttons that change something (Recover, Prepare,
 Providers Refresh) show **working…** and ignore repeat clicks until the request
