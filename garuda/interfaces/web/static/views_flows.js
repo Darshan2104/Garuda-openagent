@@ -79,7 +79,25 @@ function compactPipelineHtml(pipeline) {
 /* Reasons that belong to this dashboard rather than to a flow; the page says them once. */
 var FLOW_HOST_REASONS = ["dashboard.read_only", "starter.ownership_unavailable", "starter.approval_unavailable"];
 
-function flowStartLineHtml(start, host) {
+/* Flow shapes that stay CLI-only (a user decision): the reason says so with the command. */
+var FLOW_CLI_ONLY = ["starter.parallel_ownership_unavailable", "starter.retries_unsupported"];
+
+function shellWord(text) {
+  text = String(text);
+  return /^[A-Za-z0-9_@%+=:,.\/-]+$/.test(text) ? text : "'" + text.replace(/'/g, "'\"'\"'") + "'";
+}
+
+/* `garuda flow run` for a flow, with the task when known, else a placeholder to fill. */
+function flowCliCommand(name, workspace, task) {
+  return "garuda flow run " + shellWord(name) + " --task " + (task === undefined ? '"<your task>"' : shellWord(task)) +
+    (workspace ? " --workspace " + shellWord(workspace) : "");
+}
+
+function flowCliOnlyHtml(command) {
+  return 'Start this flow from the CLI for now: <code class="flow-cli-command">' + esc(command) + "</code>";
+}
+
+function flowStartLineHtml(start, host, command) {
   start = start || { supported: false, reasons: [] };
   if (start.supported) return '<p class="flow-start-line" data-start="yes">Start from dashboard: <strong>yes</strong></p>';
   var reasons = (start.reasons || []).filter(function (r) {
@@ -90,7 +108,8 @@ function flowStartLineHtml(start, host) {
       (reasons.length ? ", and:" : ")") + "</span>" : "") + "</p>" +
     '<ul class="starter-diagnostics">' + reasons.map(function (r) {
       return '<li data-reason="' + esc(r.code) + '"><code>' + esc(r.code) + "</code> " + esc(r.message) +
-        '<br><span class="stat-sub">' + esc(r.fix) + "</span></li>";
+        '<br><span class="stat-sub">' + (FLOW_CLI_ONLY.indexOf(r.code) !== -1 && command ? flowCliOnlyHtml(command) : esc(r.fix)) +
+        "</span></li>";
     }).join("") + "</ul></div>";
 }
 
@@ -107,7 +126,7 @@ function flowCardHtml(row, workspace, host) {
       esc(row.error.code) + '</div><div class="notice-body">' + esc(row.error.message) + "<br>" + esc(row.error.fix) + "</div></div>" : "") +
     ((row.missing_roles || []).length ? '<p class="flow-missing">Missing roles: <code>' + row.missing_roles.map(esc).join("</code>, <code>") +
       "</code> — define them in garuda.yaml (<code>garuda init</code> proposes them).</p>" : "") +
-    flowStartLineHtml(row.start, host) +
+    flowStartLineHtml(row.start, host, flowCliCommand(row.name, host && host.workspace)) +
     '<a class="btn" href="' + flowHref(row.name, workspace) + '">Open flow</a></section>';
 }
 
@@ -138,7 +157,7 @@ function flowsView() {
       (own.length ? "" : '<div class="empty" id="flows-empty"><p><strong>No flows of your own yet.</strong> A flow is a list of steps under ' +
         "<code>flows:</code> in garuda.yaml, each run by one of your roles; <code>garuda config show --flow plan-only</code> prints one to copy.</p>" +
         '<p><a href="' + FLOW_GUIDE + '" target="_blank" rel="noopener noreferrer">How to define a flow</a> · the packaged examples are below.</p></div>') +
-      '<div class="grid starter-grid" id="flow-cards">' + ordered.map(function (row) { return flowCardHtml(row, workspace, data.host); }).join("") + "</div>");
+      '<div class="grid starter-grid" id="flow-cards">' + ordered.map(function (row) { return flowCardHtml(row, workspace, Object.assign({ workspace: data.workspace }, data.host)); }).join("") + "</div>");
     wireFlowWorkspace("#/flows");
   }).catch(function (err) {
     if (isSuperseded(err) || STATE.flowView !== state) return;
@@ -256,7 +275,7 @@ function flowDetailView(name) {
       flowPipelineHtml(row.pipeline) +
       '<section class="card" id="flow-readiness"><h2>Readiness</h2>' +
       (row.readiness ? starterReadinessHtml(row.readiness) : '<p class="stat-sub">Not checked: the flow did not resolve.</p>') +
-      flowLoginsHtml(data.logins) + flowStartLineHtml(row.start, data.host) + "</section>" +
+      flowLoginsHtml(data.logins) + flowStartLineHtml(row.start, data.host, flowCliCommand(row.name, data.workspace)) + "</section>" +
       flowFormHtml());
     wireFlowWorkspace("#/flows/" + encodeURIComponent(name));
     wireFlowForm(state);
@@ -391,9 +410,12 @@ function flowDisclosuresHtml(data) {
         esc(s.owned_backstop.timeout_min) + " min";
     }).join("; ") + "; a stopped step quarantines the flow. Set <code>limits.deadline_min</code> for a step that needs longer.</li>");
   }
-  notes.push('<li id="flow-no-resume">A flow started here is never resumed: <code>garuda flow resume</code> refuses it ' +
-    "(<code>flow.operation_managed</code>, or a check-record refusal for a flow with checks) and the dashboard does not relaunch it. " +
-    "Start a new run instead. A flow run from the copied command resumes as usual.</li>");
+  notes.push('<li id="flow-resume">A flow started here that stops on a resumable stop (paused, interrupted, a usage limit ' +
+    "after its reset) is resumed from its session page with <strong>Resume</strong>, by this dashboard in write mode, under " +
+    "the plan and permissions its start admitted. <code>garuda flow resume</code> refuses it (<code>flow.operation_managed</code>). " +
+    "One exception: if the dashboard's server is killed (SIGKILL) or the machine reboots while a step runs, that step never " +
+    "settles and the flow cannot be resumed (<code>flow.interrupted_unsettled</code>); start a new run. A flow run from the " +
+    "copied command resumes with <code>garuda flow resume</code>.</li>");
   notes.push('<li id="flow-foreground">Stopping the dashboard (<code>garuda web</code>) interrupts a flow started here. Closing the browser tab does not; ' +
     "its approvals wait on any page of an open dashboard tab and in Approvals for up to 5 minutes (also when a step runs in its own process), " +
     "and are denied after that, about 90 seconds after no tab is watching the run, or at once if the dashboard stops.</li>");
@@ -413,7 +435,8 @@ function flowPreviewHtml(data, state) {
   return "<h3>Preview</h3>" + starterReadinessHtml(data.readiness) +
     (blockers.length ? '<ul class="starter-diagnostics" id="flow-authority">' + blockers.map(function (d) {
       return '<li data-diagnostic="' + esc(d.code) + '"><code>' + esc(d.code) + "</code> " + esc(d.message) +
-        '<br><span class="stat-sub">' + esc(d.fix) + "</span></li>";
+        '<br><span class="stat-sub">' + (FLOW_CLI_ONLY.indexOf(d.code) !== -1 ? flowCliOnlyHtml(plan.equivalent_command) : esc(d.fix)) +
+        "</span></li>";
     }).join("") + "</ul>" : "") +
     '<p class="chips">' + chip("verification", plan.provenance.verification) + " " + chip("role invocations ≤", plan.limits.max_role_invocations) + " " +
     chip("review pairs ≤", plan.limits.review_pairs) + " " + chip("cost", plan.limits.cost) + "</p>" +
@@ -432,6 +455,7 @@ function flowCopyOnlyReason(data) {
   }
   var first = ((data.authority || {}).diagnostics || [])[0] ||
     ((data.readiness || {}).diagnostics || []).filter(function (d) { return d.level === "error"; })[0];
+  if (first && FLOW_CLI_ONLY.indexOf(first.code) !== -1) return "start this flow from the CLI for now, with the command above.";
   return first ? first.code + ": " + first.fix : "this preview cannot start here.";
 }
 
@@ -530,6 +554,8 @@ function pollSessionOperation(page, panel) {
     if (OPERATION_SETTLED.indexOf(row.status) !== -1) {
       panel.done = true;
       panel.poller.stop();
+      // A settled resume: a later Resume here is a new request with a new id.
+      if (row.kind === "resume" && storedResumeId(page.row.session_id) === panel.id) storeResumeId(page.row.session_id, null);
       refreshSessionRow(page);
     }
     host.innerHTML = '<div id="session-operation">' + starterOperationHtml(row, panel.approvals, "session", panel.grace, panel.timeout, panel.settled) + "</div>";
@@ -642,3 +668,171 @@ function tickOperationWatch() {
 }
 
 onReconnect(function () { if (OPERATION_WATCH.poller) OPERATION_WATCH.poller.now(); });
+
+/* --- resuming a dashboard-started flow --------------------------------------
+ * A flow this dashboard started resumes only through its owned gateway:
+ * POST /api/scenarios/resume {operation_id, session_id}. The read model says which flows
+ * those are (`dashboard_operation`) and what the engine's state check says now
+ * (`resume_check`); the gateway checks the start's record, plan and authority again when
+ * asked. One operation id per flow is kept for this tab (sessionStorage) and reused on a
+ * retry, so a repeated click or a lost answer returns the same resume. Its approvals are
+ * keyed by that id, and the app-level watcher keeps them alive from any page. */
+
+/* Every refusal of the owned resume: one plain sentence and the next step. `command` is
+ * filled with the session id; `transient` refusals keep the operation id for a retry. */
+var RESUME_REFUSALS = {
+  "flow.resume_invalid": { text: "The resume request was malformed.", next: "Reload this page and try again." },
+  "starter.operation_invalid": { text: "The resume request's operation id was not a fresh UUID.", next: "Reload this page and try again." },
+  "flow.resume_unknown": { text: "This dashboard's session store has no such flow.", next: "Open the flow from Sessions in the dashboard that started it." },
+  "starter.operation_scope_changed": { text: "The flow's workspace left this dashboard's allowlist or changed identity.", next: "Start the dashboard with that workspace allowed (--allow-workspace) and try again." },
+  "flow.resume_not_owned": { text: "This flow was not started by a dashboard, so the dashboard cannot resume it.", next: "Resume it from a terminal:", command: "garuda flow resume {id}" },
+  "flow.resume_record_mismatch": { text: "The flow's start record is missing or does not match the flow.", next: "Start a new run of the flow." },
+  "flow.resume_start_unsettled": { text: "The flow's start operation has not settled yet.", next: "Wait until its start operation is terminal, then resume." },
+  "flow.resume_definition_changed": { text: "The flow's definition, roles, checks or configuration changed since it started, so its plan is no longer the one admitted.", next: "Start a new run of the flow (the Flows page previews the current plan)." },
+  "flow.resume_authority_changed": { text: "The dashboard's permission ceiling or a role's permissions changed since the flow started.", next: "Restore the ceiling and permissions it started with, or start a new run." },
+  "flow.resume_completed": { text: "The flow already completed; there is nothing to resume.", next: "Run it again from the Flows page if you need another run." },
+  "flow.recovery_required": { text: "The flow is still recorded running, so its processes are not proved gone.", next: "If the dashboard that ran it stopped, run this first, then resume:", command: "garuda runtime recover --session {id}" },
+  "flow.resume_in_progress": { text: "This flow is already running here, or another resume of it has not finished.", next: "Follow that operation; resume again once it has stopped." },
+  "flow.resume_owner_unknown": { text: "Another resume or the start of this flow is unfinished, and its dashboard process can be proved neither alive nor gone.", next: "Make sure that process has exited (its pid is named below), then resume again." },
+  "flow.quarantined": { text: "The flow is quarantined: Garuda could not prove a step's process tree closed or its evidence complete, so it is never resumed.", next: "Inspect the workspace (git status) and start a new run." },
+  "flow.interrupted_unsettled": { text: "A step was launched and never settled (for example the server was killed or the machine rebooted mid-step), so the flow cannot be resumed.", next: "Inspect the workspace (git status) and start a new run." },
+  "flow.stop_not_resumable": { text: "The flow stopped in a way a resume does not continue.", next: "Inspect what it did and start a new run." },
+  "flow.resume_quota_wait": { text: "The flow is paused on a usage limit that has not reset yet.", next: "Resume it after the reset." },
+  "flow.verification_reconciliation_required": { text: "The flow's check or step records are unreadable or disagree, so it is never resumed automatically.", next: "Inspect the session's records; start a new run." },
+  "starter.operation_conflict": { text: "This tab's resume operation id already names another request.", next: "Reload this page and resume again (a new id is used)." },
+  "starter.ownership_unavailable": { text: "This dashboard cannot own a resume right now (it needs the Linux supervisor).", next: "Retry on the Linux dashboard that started the flow.", transient: true },
+  "starter.gateway_closing": { text: "The dashboard is shutting down.", next: "Retry once it is running again.", transient: true },
+  "starter.operation_unavailable": { text: "The dashboard's operation store is unavailable for a moment.", next: "Retry.", transient: true },
+  "starter.gateway_unavailable": { text: "The dashboard's flow gateway did not answer in time.", next: "Retry; the same operation is reused, so nothing runs twice.", transient: true },
+  "read_only": { text: "This dashboard is read-only.", next: "Start the dashboard without --read-only to resume flows.", transient: true }
+};
+
+function resumeKey(sessionId) { return "garuda_resume_" + sessionId; }
+
+function storedResumeId(sessionId) {
+  try { return sessionStorage.getItem(resumeKey(sessionId)) || null; } catch (e) { return null; }
+}
+
+function storeResumeId(sessionId, id) {
+  try {
+    if (id) sessionStorage.setItem(resumeKey(sessionId), id);
+    else sessionStorage.removeItem(resumeKey(sessionId));
+  } catch (e) { /* this page only */ }
+}
+
+function resumeOperationId(sessionId) {
+  var id = storedResumeId(sessionId);
+  if (!OPERATION_ID.test(id || "")) { id = crypto.randomUUID(); storeResumeId(sessionId, id); }
+  return id;
+}
+
+/* A refusal as one sentence, its next step and the command to copy, when there is one. */
+function resumeRefusalHtml(code, message, sessionId) {
+  var known = RESUME_REFUSALS[code];
+  var command = known && known.command ? known.command.replace("{id}", sessionId) : null;
+  var pid = code === "flow.resume_owner_unknown" ? (String(message || "").match(/\bpid\s*:?\s*(\d+)/i) || [])[1] : null;
+  return '<div class="notice ' + (known && known.transient ? "warn" : "err") + ' resume-refusal" data-code="' + esc(code || "error") + '">' +
+    '<div class="notice-title">' + esc(known ? known.text : "The resume was refused.") + "</div>" +
+    '<div class="notice-body">' + esc(known ? known.next : "") +
+    (command ? ' <code class="resume-command">' + esc(command) + '</code> <button type="button" class="btn btn-small" data-copy-command="' +
+      esc(command) + '">Copy</button>' : "") +
+    (pid ? ' Process <code>' + esc(pid) + "</code>." : "") +
+    '<br><span class="stat-sub">' + esc(code || "") + (message ? ": " + esc(message) : "") + "</span></div></div>";
+}
+
+function resumeStepText(row) {
+  var stop = (row.flow && row.flow.stop) || {};
+  return stop.step ? "step " + stop.step : "the stopped step";
+}
+
+/* The Resume block of a dashboard-started flow's Result. */
+function resumeBlockHtml(row) {
+  var check = row.resume_check;
+  if (!row.dashboard_operation || !check) return "";
+  var health = STATE.health || {};
+  var canStart = !!(health.capabilities && health.capabilities.starter_start);
+  var flowName = (row.flow && row.flow.name) || "this flow";
+  var what = "Resume runs " + resumeStepText(row) + " of " + flowName + " again, and the steps after it, with the same flow definition, " +
+    "roles and permissions its start admitted; completed steps are not run again.";
+  var button = function (disabled, note) {
+    return '<button type="button" class="btn btn-primary" data-resume-flow="' + esc(row.session_id) + '"' +
+      ' data-step="' + esc(resumeStepText(row)) + '" data-flow="' + esc(flowName) + '"' + (disabled ? " disabled" : "") + ">Resume</button>" +
+      (note ? ' <span class="stat-sub resume-note">' + esc(note) + "</span>" : "");
+  };
+  var body;
+  if (check.available === true) {
+    body = "<p>" + esc(what) + "</p>" + (canStart ? button(false) :
+      button(true, health.mode === "read-only" ? "needs a write-mode dashboard" : "needs this dashboard's Linux supervisor"));
+  } else if (check.code === "flow.resume_quota_wait") {
+    var at = typeof check.reset_at === "number" ? new Date(check.reset_at * 1000) : null;
+    body = "<p>" + esc(what) + "</p>" + button(true, at ? "available after " +
+      at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) + " (the usage limit resets " + untilEpochText(check.reset_at) + ")"
+      : "available after the usage limit resets");
+  } else if (check.available === false) {
+    body = resumeRefusalHtml(check.code, check.message, row.session_id);
+  } else {
+    body = '<p class="stat-sub">Whether it can resume is unknown here: ' + esc(check.message || "not checked") + "</p>" + button(!canStart);
+  }
+  var resumed = row.dashboard_operation.resume_operation_id;
+  return '<div class="resume-block" id="session-resume" data-available="' + esc(String(check.available)) + '"' +
+    (check.code ? ' data-code="' + esc(check.code) + '"' : "") + ">" +
+    '<h3>Resume from the dashboard</h3>' + body +
+    (resumed ? '<p class="stat-sub">Last resumed by operation <a href="#/sessions/' + encodeURIComponent(row.session_id) +
+      "?operation=" + encodeURIComponent(resumed) + '"><code>' + esc(resumed.slice(0, 8)) + "</code></a>.</p>" : "") +
+    '<div id="session-resume-result" aria-live="polite"></div></div>';
+}
+
+/* A small link to that block, for list rows (Overview, Sessions); never a second button. */
+function resumeLinkHtml(row) {
+  var owned = row && row.dashboard_operation;
+  if (!owned || !owned.resumable_stop || isActive(row.state)) return "";
+  return ' <a class="resume-link" data-resume-link href="#/sessions/' + encodeURIComponent(row.session_id) +
+    '?focus=resume">Resume</a>';
+}
+
+function requestFlowResume(button) {
+  var sessionId = button.getAttribute("data-resume-flow");
+  var page = STATE.sessionPage;
+  var target = el("session-resume-result");
+  var id = resumeOperationId(sessionId);
+  return guardAction(button, function () {
+    if (target) target.innerHTML = '<p class="loading">Durably admitting the resume…</p>';
+    return api("/api/scenarios/resume", { method: "POST", body: { operation_id: id, session_id: sessionId } })
+      .then(function (row) {
+        watchOperation(row.operation_id);
+        if (OPERATION_SETTLED.indexOf(row.status) !== -1) storeResumeId(sessionId, null);
+        if (target) target.innerHTML = "";
+        if (page && STATE.sessionPage === page) {
+          setRouteParams({ operation: row.operation_id });
+          stopSessionOperation(page);
+          startSessionOperation(page, row.operation_id);
+          refreshSessionRow(page);
+        }
+      }, function (err) {
+        if (isSuperseded(err)) return;
+        var known = RESUME_REFUSALS[err.code];
+        var transient = !err.status || err.status >= 500 || (known && known.transient);
+        if (!transient) storeResumeId(sessionId, null);  // a refusal: a later attempt is a new request
+        var host = el("session-resume-result");
+        if (host) host.innerHTML = resumeRefusalHtml(err.code || "network", err.message, sessionId) +
+          (transient ? '<p class="stat-sub">Retrying reuses the same operation, so nothing runs twice.</p>' : "");
+      });
+  }, {
+    confirm: "Resume " + button.getAttribute("data-flow") + "? It runs " + button.getAttribute("data-step") +
+      " again, then the steps after it, with the same flow definition, roles and permissions its start admitted.",
+    busy: "Resuming…"
+  });
+}
+
+document.addEventListener("click", function (event) {
+  var target = event.target && event.target.closest ? event.target : null;
+  if (!target) return;
+  var resume = target.closest("button[data-resume-flow]");
+  if (resume) { requestFlowResume(resume); return; }
+  var copy = target.closest(".resume-refusal button[data-copy-command]");
+  if (copy) {
+    var text = copy.getAttribute("data-copy-command");
+    navigator.clipboard.writeText(text).then(function () { toast("Command copied. Run it in your terminal."); },
+      function () { toast("Select and copy the command: " + text); });
+  }
+});

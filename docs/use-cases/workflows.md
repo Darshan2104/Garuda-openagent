@@ -292,7 +292,9 @@ step retries (`starter.retries_unsupported`), a flow `isolation` other than
 terminal. A dashboard-started flow is never resumed automatically; it resumes
 explicitly through the dashboard's owned resume, under the plan and authority its
 start admitted ([Resume a dashboard flow](../guides/web-dashboard.md#resume-a-dashboard-flow)),
-and `garuda flow resume` refuses it with `flow.operation_managed`.
+and `garuda flow resume` refuses it with `flow.operation_managed`. A flow
+whose step was running when the dashboard's server was killed (SIGKILL) or the
+machine rebooted cannot be resumed (`flow.interrupted_unsettled`): start a new run.
 
 ## Inspect, interrupt and recover
 

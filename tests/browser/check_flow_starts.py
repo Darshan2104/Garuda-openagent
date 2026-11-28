@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import os
 import re
+import socket
+import subprocess
+import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -145,9 +149,11 @@ def main() -> None:
         settle_operation(context, operation, "completed")
         decided = approvals_for(context, operation)["settled"]
         assert [row["decided_by"] for row in decided] == ["stopped_watching"], decided
+
+        resume_leg(browser)
         browser.close()
-    print("Owned flow Start, approval, duplicate, progress, stale preview, the Flows page and "
-          "the app-level approval heartbeat: passed in Chrome")
+    print("Owned flow Start, approval, duplicate, progress, stale preview, the Flows page, "
+          "the app-level approval heartbeat and an owned resume: passed in Chrome")
 
 
 def start_from_flows(page, task: str) -> str:
@@ -174,16 +180,127 @@ def live_asks(context, operation: str) -> list:
     return [row for row in inbox["live"] if row["owner"] == operation]
 
 
-def settle_operation(context, operation: str, outcome: str, timeout: float = 60) -> None:
+def settle_operation(context, operation: str, outcome: str, timeout: float = 60, base: str = BASE) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        row = context.request.get(BASE + "api/scenario-operations/" + operation,
+        row = context.request.get(base + "api/scenario-operations/" + operation,
                                   headers={"X-Garuda-Token": TOKEN}).json()
         if row.get("status") == "terminal":
             assert row.get("outcome") == outcome, row
             return
         time.sleep(0.5)
     raise AssertionError(f"operation {operation} did not settle within {timeout}s")
+
+
+def free_port() -> int:
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+class Dashboard:
+    """A write-mode dashboard of its own (serve_flow_starts.py) that this check stops and
+    starts again over the same directories, ports and token."""
+
+    def __init__(self):
+        self.root = Path(tempfile.mkdtemp(prefix="garuda-owned-resume-", dir=SHOTS.parent))
+        self.port, self.model_port = free_port(), free_port()
+        self.base = f"http://127.0.0.1:{self.port}/"
+        self.env = {**os.environ, "GARUDA_GLOBAL_SETTINGS": str(self.root / "settings.yaml"),
+                    "GARUDA_SESSIONS_DIR": str(self.root / "sessions"),
+                    "GARUDA_LEASES_DIR": str(self.root / "leases"),
+                    "GARUDA_CHECK_MODEL_PORT": str(self.model_port)}
+        self.process = None
+        self.starts = 0
+
+    def start(self):
+        self.starts += 1
+        log = (self.root / f"web-{self.starts}.log").open("w")
+        self.process = subprocess.Popen(
+            [sys.executable, str(Path(__file__).with_name("serve_flow_starts.py")), str(self.port),
+             str(self.root / "sessions"), str(self.root / "workspace"), str(self.root / "settings.yaml"),
+             TOKEN], stdout=log, stderr=subprocess.STDOUT, env=self.env)
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline:
+            with socket.socket() as probe:
+                if probe.connect_ex(("127.0.0.1", self.port)) == 0:
+                    return
+            assert self.process.poll() is None, (self.root / f"web-{self.starts}.log").read_text()
+            time.sleep(0.2)
+        raise AssertionError("the resume dashboard did not come up")
+
+    def stop(self):
+        """SIGTERM: the dashboard stops the way `garuda web` does, settling what it owns."""
+        self.process.terminate()
+        self.process.wait(timeout=60)
+
+
+def resume_leg(browser) -> None:
+    """Start a two-step flow, stop the dashboard while its first step waits on an approval
+    (the supported way: it settles flow.interrupted), start it again, Resume, answer the
+    approvals, and see the flow complete and its start name the resume."""
+    errors = []
+    dashboard = Dashboard()
+    dashboard.start()
+    try:
+        context = browser.new_context(viewport={"width": 1440, "height": 1000})
+        page = context.new_page()
+        page.on("console", lambda m: errors.append(m.text) if m.type == "error"
+                and "Failed to load resource" not in m.text else None)
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        page.on("dialog", lambda dialog: dialog.accept())
+        page.goto(dashboard.base + "#t=" + TOKEN)
+        page.goto(dashboard.base + "#/flows/resume-me?workspace=0")
+        expect(page.locator("#flow-pipeline .pipe-step")).to_have_count(2, timeout=20_000)
+        page.locator('[data-field="goal"]').fill("Resume me after the dashboard stops")
+        page.locator("#flow-preview-button").click()
+        expect(page.locator("#flow-start")).to_be_visible(timeout=20_000)
+        page.locator("#flow-start").click()
+        page.wait_for_url(re.compile(r".*\?operation=[0-9a-f-]+$"), timeout=20_000)
+        start_id = page.url.rsplit("operation=", 1)[1]
+        session = page.url.split("#/sessions/", 1)[1].split("?", 1)[0]
+        expect(page.locator("#session-operation-host [data-flow-approval]")).to_have_count(2, timeout=30_000)
+
+        dashboard.stop()  # mid-step, its approval waiting
+        dashboard.start()
+        settle_operation(context, start_id, "stopped", base=dashboard.base)
+        page.goto(dashboard.base + f"#/sessions/{session}")
+        resume = page.locator("#session-resume button[data-resume-flow]:not([disabled])")
+        expect(resume).to_be_visible(timeout=30_000)
+        page.screenshot(path=str(SHOTS / "owned-resume-available.png"), full_page=True)
+        resume.click()
+        page.wait_for_url(re.compile(r".*\?operation=[0-9a-f-]+$"), timeout=20_000)
+        resume_id = page.url.rsplit("operation=", 1)[1]
+        assert resume_id != start_id
+        panel = page.locator("#session-operation-host")
+        expect(panel.locator('[data-kind="resume"]')).to_be_visible(timeout=20_000)
+        expect(panel).to_contain_text(start_id)
+        # Every approval the resumed steps ask is answered here, inside the worker's 10 s.
+        deadline = time.monotonic() + 120
+        while time.monotonic() < deadline:
+            row = context.request.get(dashboard.base + "api/scenario-operations/" + resume_id,
+                                      headers={"X-Garuda-Token": TOKEN}).json()
+            if row.get("status") in {"terminal", "quarantined", "refused", "uncertain", "abandoned"}:
+                break
+            allow = panel.locator('[data-flow-approval][data-approved="true"]')
+            if allow.count():
+                allow.first.click()
+            time.sleep(0.3)
+        assert row.get("status") == "terminal" and row.get("outcome") == "completed", row
+        assert row.get("kind") == "resume" and row.get("resumes") == start_id, row
+        page.screenshot(path=str(SHOTS / "owned-resume-panel.png"), full_page=True)
+        start = context.request.get(dashboard.base + "api/scenario-operations/" + start_id,
+                                    headers={"X-Garuda-Token": TOKEN}).json()
+        assert start.get("resumed_by") == resume_id, start
+        page.goto(dashboard.base + f"#/sessions/{session}?operation={start_id}")
+        expect(page.locator("#operation-resumed-by")).to_contain_text(resume_id, timeout=20_000)
+        expect(page.locator('#flow-detail .resume-attempt').first).to_be_visible(timeout=20_000)
+        page.screenshot(path=str(SHOTS / "owned-resume-start-resumed-by.png"), full_page=True)
+        assert not errors, errors
+        context.close()
+    finally:
+        if dashboard.process and dashboard.process.poll() is None:
+            dashboard.stop()
 
 
 if __name__ == "__main__":
