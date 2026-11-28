@@ -3,6 +3,7 @@ the read model's resume check off Linux and its memoized dry proof."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 
@@ -119,3 +120,92 @@ def test_the_read_models_dry_proof_is_memoized_per_flow_state(tmp_path, monkeypa
     read_model.resume_check(store, running, meta)
     assert len(calls) == 3
     assert uuid.UUID(running)
+
+
+async def _held_resumes(monkeypatch):
+    """Resume dispatches that start and then hold (the flow service is not reached twice)."""
+    from garuda.flows.service import FlowExecutionService
+
+    calls = []
+
+    async def held(_service, *_args, **_kwargs):
+        calls.append(1)
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(FlowExecutionService, "resume_prepared", held)
+    return calls
+
+
+async def test_a_duplicate_during_admission_gets_the_same_operation(write_context, monkeypatch):
+    """Forced: the duplicate arrives while the first request is admitting, before its
+    record exists. It waits for that admission and gets the same operation."""
+    import threading
+
+    from garuda.scenarios import compile as compile_module
+
+    ctx = write_context
+    _start_id, session = await _stopped_owned_flow(ctx, monkeypatch)
+    calls = await _held_resumes(monkeypatch)
+    real = compile_module.recompile_recorded
+    entered, gate = threading.Event(), threading.Event()
+
+    def gated(*args, **kwargs):
+        if not entered.is_set():
+            entered.set()
+            assert gate.wait(30), "the gate was never opened"
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(compile_module, "recompile_recorded", gated)
+    body = _resume_body(session)
+    first = asyncio.create_task(_call(ctx, RESUME, method="POST", body=body))
+    assert await asyncio.to_thread(entered.wait, 30)
+    assert ctx.flow_starts.intents.read(body["operation_id"]) is None  # not recorded yet
+    second = asyncio.create_task(_call(ctx, RESUME, method="POST", body=body))
+    for _ in range(50):  # the duplicate is waiting on the first admission
+        await asyncio.sleep(0.01)
+        if body["operation_id"] in ctx.flow_starts._resume_requests:
+            break
+    assert not second.done()
+    gate.set()
+    responses = await asyncio.gather(first, second)
+    assert responses[0].status in {201, 202} and responses[1].status in {200, 202}, [_body(r) for r in responses]
+    assert {_body(r)["operation_id"] for r in responses} == {body["operation_id"]}
+    assert _body(responses[1])["duplicate"] is True
+    assert len(calls) == 1  # dispatched once
+
+
+async def test_a_duplicate_while_its_resume_runs_is_never_in_progress(write_context, monkeypatch):
+    """Forced: the duplicate's first look misses the record (it was written just after),
+    and the flow is already running here. It still gets the same operation; only a
+    different operation is refused as in progress."""
+    ctx = write_context
+    _start_id, session = await _stopped_owned_flow(ctx, monkeypatch)
+    calls = await _held_resumes(monkeypatch)
+    body = _resume_body(session)
+    first = await _call(ctx, RESUME, method="POST", body=body)
+    assert first.status in {201, 202}, _body(first)
+    for _ in range(100):
+        if calls:
+            break
+        await asyncio.sleep(0.02)
+    assert calls == [1]
+    gateway = ctx.flow_starts
+    real_read = gateway.intents.read
+    missed = []
+
+    def stale_once(operation_id):
+        if operation_id == body["operation_id"] and not missed:
+            missed.append(operation_id)
+            return None  # as if read just before the first request recorded it
+        return real_read(operation_id)
+
+    monkeypatch.setattr(gateway.intents, "read", stale_once)
+    duplicate = await _call(ctx, RESUME, method="POST", body=body)
+    assert missed, "the stale read was not exercised"
+    assert duplicate.status in {200, 202}, _body(duplicate)  # existing, or still admitting
+    assert _body(duplicate)["operation_id"] == body["operation_id"]
+    assert _body(duplicate)["duplicate"] is True
+    other = await _call(ctx, RESUME, method="POST", body=_resume_body(session))
+    assert other.status == 409, _body(other)
+    assert _body(other)["error"]["code"] == "flow.resume_in_progress"
+    assert calls == [1]

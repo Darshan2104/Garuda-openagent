@@ -187,6 +187,8 @@ class FlowStartGateway:
         self._admissions: dict[str, asyncio.Future] = {}
         #: The resume operation each admitted resume superseded (its claim's previous one).
         self._replaced_claims: dict[str, str] = {}
+        #: Resume requests being answered now, by operation ID: a duplicate waits for it.
+        self._resume_requests: dict[str, asyncio.Future] = {}
         self._closing = False
 
     @property
@@ -532,7 +534,63 @@ class FlowStartGateway:
         exact plan digest and authority digest (under the start's server epoch and
         this dashboard's ceiling). A duplicate request returns the same operation;
         another unfinished resume of the flow refuses.
+
+        A duplicate arriving while this gateway is still admitting the same
+        operation (before its record exists, or while its task runs) waits for
+        that admission and gets its operation, never ``flow.resume_in_progress``:
+        only a different operation of the flow is refused as in progress.
         """
+        pending = self._resume_requests.get(spec.operation_id)
+        if pending is not None:
+            try:
+                await asyncio.shield(pending)
+            except Exception:  # noqa: BLE001 - the first request's own answer
+                pass
+            return await self._duplicate_resume(spec)
+        pending = asyncio.get_running_loop().create_future()
+        self._resume_requests[spec.operation_id] = pending
+        try:
+            payload = await self._resume_once(spec)
+        except FlowStartError as exc:
+            pending.set_exception(exc)
+            pending.exception()  # retrieved: duplicates re-read the record instead
+            if exc.code == "flow.resume_in_progress":
+                # Refused as in progress, yet this very operation may be the one in
+                # progress (its record appeared after this request first looked).
+                duplicate = await self._recorded_resume(spec)
+                if duplicate is not None:
+                    return duplicate
+            raise
+        except BaseException as exc:
+            pending.set_exception(exc if isinstance(exc, Exception) else RuntimeError("cancelled"))
+            pending.exception()
+            raise
+        else:
+            pending.set_result(None)
+            return payload
+        finally:
+            if self._resume_requests.get(spec.operation_id) is pending:
+                del self._resume_requests[spec.operation_id]
+
+    async def _recorded_resume(self, spec: FlowResumeRequest) -> dict | None:
+        """The recorded resume operation ``spec`` names, projected as a duplicate, or None."""
+        try:
+            existing = await _settled_call(self.intents.read, spec.operation_id)
+        except (StorageError, OSError, ValueError):
+            return None
+        if (existing is None or existing["version"] != 3
+                or existing["reserved_session"] != spec.session_id):
+            return None
+        return await self._project(existing, duplicate=True)
+
+    async def _duplicate_resume(self, spec: FlowResumeRequest) -> dict:
+        """A duplicate of an admission this gateway just finished: its record, or a re-run."""
+        recorded = await self._recorded_resume(spec)
+        if recorded is not None:
+            return recorded
+        return await self.resume(spec)  # nothing was recorded: answer it afresh
+
+    async def _resume_once(self, spec: FlowResumeRequest) -> dict:
         if self._closing:
             raise FlowStartError("starter.gateway_closing",
                                  "The dashboard is shutting down.", status=503)
