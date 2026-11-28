@@ -265,7 +265,20 @@ def resume_leg(browser) -> None:
         dashboard.start()
         settle_operation(context, start_id, "stopped", base=dashboard.base)
         page.goto(dashboard.base + f"#/sessions/{session}")
+        # The tab saw the dashboard go away; a reload skips waiting out its reconnect backoff.
+        page.reload()
+        # What the session page is built from, for the failure message if Resume is missing.
+        detail = context.request.get(dashboard.base + f"api/sessions/{session}",
+                                     headers={"X-Garuda-Token": TOKEN}).json()
+        facts = {key: detail.get(key) for key in ("state", "label", "dashboard_operation", "resume_check")}
+        facts["health"] = context.request.get(dashboard.base + "api/health",
+                                              headers={"X-Garuda-Token": TOKEN}).json().get("capabilities")
+        print("resume facts:", facts, flush=True)
+        assert (detail.get("resume_check") or {}).get("available") is True, facts
         resume = page.locator("#session-resume button[data-resume-flow]:not([disabled])")
+        if not resume.count():
+            page.wait_for_timeout(3000)
+            page.screenshot(path=str(SHOTS / "owned-resume-missing.png"), full_page=True)
         expect(resume).to_be_visible(timeout=30_000)
         page.screenshot(path=str(SHOTS / "owned-resume-available.png"), full_page=True)
         resume.click()
