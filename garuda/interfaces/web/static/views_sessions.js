@@ -294,6 +294,8 @@ function sessionRowHtml(row) {
   var task = fmt.truncate(firstLine(row.task), 64);
   var where = row.workspace ? fmt.tail(row.workspace, 30) : "—";
   var summary = spendSummaryText(row.spend);
+  // A flow whose dashboard died mid-step: the read model's fact, said as such.
+  var died = typeof dashboardCrashPill === "function" ? dashboardCrashPill(row) : null;
   return (
     '<tr class="session-row" data-session="' + esc(id) + '" data-label="' + esc(row.label) + '"' +
     (row.pause ? ' data-pause="' + esc(row.pause.kind) + '"' : "") + ">" +
@@ -305,9 +307,9 @@ function sessionRowHtml(row) {
     // Two runs of one task have the same name; the id and the task's first words tell them apart.
     '<div class="s-sub"><code>' + esc(id.slice(0, 8)) + "</code>" + (task ? " · " + esc(task) : "") + "</div>" +
     flowStepLinkHtml(row.flow_step) + "</td>" +
-    '<td data-th="State"><span class="pill ' + (row.pause ? "paused" : (row.crashed ? "failed" : (state.work === "working" ? "running" : "unknown"))) +
-    '" data-state="' + esc(row.pause ? "paused" : row.label) + '">' +
-    esc(row.pause ? "paused" : row.label) + "</span>" + (row.queue ? '<div class="s-sub">' + esc(queueText(row.queue)) + "</div>" : "") +
+    '<td data-th="State"><span class="pill ' + (died ? died.cls : row.pause ? "paused" : (row.crashed ? "failed" : (state.work === "working" ? "running" : "unknown"))) +
+    '" data-state="' + esc(died ? died.label : row.pause ? "paused" : row.label) + '">' +
+    esc(died ? died.label : row.pause ? "paused" : row.label) + "</span>" + (row.queue ? '<div class="s-sub">' + esc(queueText(row.queue)) + "</div>" : "") +
     pauseLineHtml(row.pause, id) + (typeof resumeLinkHtml === "function" ? resumeLinkHtml(row) : "") + "</td>" +
     '<td class="s-clip" data-th="Runtime · role · model" title="' + esc(identityText(row)) + '">' + esc(identityText(row)) + "</td>" +
     '<td class="s-facts" data-th="Outcome / verification">' + chip("outcome", state.outcome || "—", row.pause ? "chip-pause" : outcomeClass(state.outcome)) + " " +
@@ -985,6 +987,8 @@ function flowPausedBlockHtml(live, flowId) {
 function flowLiveHtml(row) {
   var flow = row && row.flow;
   var live = flow && flow.in_flight;
+  // Its dashboard died mid-step: nothing is in flight; the Result says what happened.
+  if (typeof dashboardCrash === "function" && dashboardCrash(row)) return "";
   if (!live) {
     // A running flow whose reader returned nothing: an older flow, or unreadable records.
     return isActive((row || {}).state) && flow
@@ -1346,8 +1350,9 @@ function sessionHeadHtml(page) {
   if (stop.message) {
     stopHtml += ' <span class="stat-sub' + (stop.phase === "error" ? " err-text" : "") + '" id="session-stop-result">' + esc(stop.message) + "</span>";
   }
-  var labelCls = row.pause ? "paused" : (row.crashed || sessionFailed(row) ? "failed" : (isActive(state) ? "running" : (state.outcome === "completed" ? "success" : "unknown")));
-  var label = row.pause ? "paused" : row.label;
+  var died = typeof dashboardCrashPill === "function" ? dashboardCrashPill(row) : null;
+  var labelCls = died ? died.cls : row.pause ? "paused" : (row.crashed || sessionFailed(row) ? "failed" : (isActive(state) ? "running" : (state.outcome === "completed" ? "success" : "unknown")));
+  var label = died ? died.label : row.pause ? "paused" : row.label;
   return '<h1>' + esc(row.name || String(row.session_id).slice(0, 8)) + "</h1>" +
     '<span class="pill ' + labelCls + '" id="session-label" data-state="' + esc(label) + '">' + esc(label) + "</span>" +
     (row.pause ? '<span class="stat-sub" id="session-pause">' + esc(pauseText(row.pause, row.flow && row.flow.stop)) + "</span>" : "") +
@@ -1369,7 +1374,7 @@ function sessionOverviewHtml(row) {
   if (preview.length > 400) preview = preview.slice(0, 399) + "…";
   var longer = preview !== task;
   var times = "Started " + relativeTimeHtml(row.created_at) + ' <span class="stat-sub">(' + esc(absoluteTime(row.created_at)) + ")</span>";
-  if (isActive(state)) {
+  if (isActive(state) && !(typeof dashboardCrash === "function" && dashboardCrash(row))) {
     times += " · running" + (row.created_at ? " for " + esc(fmt.duration(Math.max(0, Date.now() - new Date(row.created_at).getTime()))) : "");
   } else if (row.ended_at) {
     times += " · Ended " + relativeTimeHtml(row.ended_at) + ' <span class="stat-sub">(' + esc(absoluteTime(row.ended_at)) + ")</span>" +
@@ -1409,6 +1414,8 @@ function sessionResultHtml(row) {
       '<pre class="final-text">' + esc(row.final_message) + "</pre></div>";
   } else if (row.output_withheld) {
     body += '<p class="stat-sub" id="session-final">The output was withheld; it is not shown here.</p>';
+  } else if (typeof dashboardCrash === "function" && dashboardCrash(row)) {
+    body += '<p class="stat-sub" id="session-final">The dashboard that ran it stopped mid-step; no result was recorded.</p>';
   } else if (isActive(state)) {
     body += '<p class="stat-sub" id="session-final">Still running: the result appears here when it finishes.</p>';
   } else {
@@ -1421,10 +1428,13 @@ function sessionResultHtml(row) {
       (files.total > files.files.length ? '<p class="stat-sub">and ' + esc(files.total - files.files.length) + " more</p>" : "") +
       '<p class="stat-sub">From its working state; the Trace page has the workspace diff.</p></div>';
   }
-  if (row.dashboard_operation && row.resume_check && row.kind === "flow" && row.resume_check.code !== "flow.resume_completed") {
+  var crashed = typeof dashboardCrash === "function" && dashboardCrash(row);
+  if (row.dashboard_operation && (row.resume_check || crashed) && row.kind === "flow" &&
+      !(row.resume_check && row.resume_check.code === "flow.resume_completed")) {
     var ownedStop = row.flow && row.flow.stop;
+    // A flow whose dashboard died says so in its Resume block (dashboardCrashHtml), not as a crash.
     var ownedCause = row.pause ? "Paused: " + pauseText(row.pause, ownedStop) + "."
-      : (sessionFailed(row) ? failureSentence(row).cause : null);
+      : (typeof dashboardCrash === "function" && dashboardCrash(row) ? null : sessionFailed(row) ? failureSentence(row).cause : null);
     var afterResume = (row.flow || {}).state === "quarantined" && row.dashboard_operation.resume_operation_id;
     body += '<div class="session-cause" id="session-cause"' + (row.pause ? ' data-state="paused"' : "") + ">" +
       (ownedCause ? '<p class="' + (row.pause ? "pause-text" : "err-text") + '">' + esc(ownedCause) + "</p>" : "") +

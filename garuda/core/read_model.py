@@ -905,7 +905,7 @@ def session_row(store, meta: dict, *, queue_index: dict | None = None, liveness=
         "resumed_from": meta.get("resumed_from"),
         # A flow a dashboard's owned gateway started (and, when one ran, resumed); ``None``
         # for every other session. Only that gateway resumes such a flow.
-        "dashboard_operation": dashboard_operation(meta),
+        "dashboard_operation": _owned_row(store, session_id, meta, state),
         # A flow step's own session names its flow, step and attempt (recorded at creation,
         # #859): the one link from a step session back to its flow.
         "flow_step": _flow_step(meta.get("flow_step")),
@@ -1090,7 +1090,7 @@ def flow_progress(store, meta: dict) -> dict | None:
             "total": len(declared)}
 
 
-def dashboard_operation(meta: dict) -> dict | None:
+def dashboard_operation(meta: dict, state: dict | None = None) -> dict | None:
     """The owned start (and latest resume) operation of a dashboard-started flow, or ``None``.
 
     Read from the flow's own records: its ``flow_operation`` binding under an owned
@@ -1099,6 +1099,12 @@ def dashboard_operation(meta: dict) -> dict | None:
     (a settled stop in the engine's resumable set, or a usage-limit wait); the owned
     resume itself checks again, and :func:`session_result`'s ``resume_check`` says what
     it would answer now.
+
+    ``dashboard_died``: the dashboard that ran it was killed hard mid-step (SIGKILL, OOM,
+    a reboot): the flow is recorded running and its owner (``state``, the effective state)
+    is gone, or ``garuda runtime recover`` recorded it interrupted with ``flow.owner_lost``
+    (the crash proof's own scope, ``flows.crash.applies(owned=True)``). ``crash`` is then
+    filled by :func:`session_row` (:func:`crash_facts`), else ``None``.
     """
     binding = meta.get("flow_operation")
     policy = meta.get("publication_policy")
@@ -1117,9 +1123,46 @@ def dashboard_operation(meta: dict) -> dict | None:
                      and (code is None or code in RESUMABLE_CHECKED_STOPS or code == QUOTA_WAIT_STOP))
     except ImportError:  # pragma: no cover - the engine moved: unknown, never a guess
         resumable = None
+    try:
+        from garuda.flows import crash
+
+        died = crash.applies(meta, owned=True) and (
+            meta.get("flow_state") != "running" or (state is not None and is_crashed(state)))
+    except ImportError:  # pragma: no cover - the crash proof moved: not claimed
+        died = False
     return {"start_operation_id": binding.get("operation_id"),
             "resume_operation_id": resumed.get("operation_id") if isinstance(resumed, dict) else None,
-            "checks": kind == "flow-verification", "stop": code, "resumable_stop": resumable}
+            "checks": kind == "flow-verification", "stop": code, "resumable_stop": resumable,
+            "dashboard_died": bool(died), "crash": None}
+
+
+def _owned_row(store, session_id: str, meta: dict, state: dict) -> dict | None:
+    owned = dashboard_operation(meta, state)
+    if owned is not None and owned["dashboard_died"]:
+        owned["crash"] = crash_facts(store, session_id, meta)
+    return owned
+
+
+def crash_facts(store, session_id: str, meta: dict) -> dict:
+    """What the read-only crash proof found for a flow whose dashboard died mid-step.
+
+    ``step`` and ``attempt``: the attempt launched and never settled (the journal's last
+    open intent; ``None`` when there is none). ``resume``: :func:`resume_check`'s answer,
+    which runs the proof's process facts read only (``crash.prove(owned=True, dry=True)``):
+    ``{"available": true}`` when they hold, the engine's typed refusal (its message names
+    what is uncertain and what to do next) when not, ``None`` when the dashboard that ran
+    it may still be alive.
+    """
+    step = attempt = None
+    try:
+        from garuda.flows.engine import unsettled_attempts
+
+        pending = unsettled_attempts(store, session_id)
+        if pending:
+            step, attempt = pending[-1]
+    except Exception:  # noqa: BLE001 - unknown, never a guess
+        pass
+    return {"step": step, "attempt": attempt, "resume": resume_check(store, session_id, meta)}
 
 
 def owned_supervisor_available() -> bool:
@@ -1262,6 +1305,8 @@ def session_result(store, session_id: str, meta: dict, row: dict) -> dict[str, A
         files_changed = {"files": files[:MAX_CHANGED_FILES], "total": len(files),
                          "source": "working state"}
     active = row["state"].get("work") in ACTIVE_WORK
+    owned = row.get("dashboard_operation") or {}
+    crash = owned.get("crash") if owned.get("dashboard_died") else None
     ended_at = duration = None
     if not active:
         end_text = meta.get("updated_at")
@@ -1277,7 +1322,9 @@ def session_result(store, session_id: str, meta: dict, row: dict) -> dict[str, A
     return {
         "starter_origin": meta.get("starter") is not None,
         # A dashboard-started flow's owned resume, checked read only (``resume_check``).
-        "resume_check": resume_check(store, session_id, meta) if not active else None,
+        # A flow whose dashboard died mid-step is recorded running: the crash proof's answer.
+        "resume_check": (crash["resume"] if crash is not None
+                         else resume_check(store, session_id, meta) if not active else None),
         "final_message": final,
         "output_withheld": withheld,
         "files_changed": files_changed,

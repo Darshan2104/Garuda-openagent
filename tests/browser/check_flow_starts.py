@@ -149,9 +149,11 @@ def main() -> None:
 
         retry_leg(context)
         resume_leg(browser)
+        crash_leg(browser)
         browser.close()
     print("Owned flow Start, approval, duplicate, progress, stale preview, the Flows page, "
-          "the app-level approval heartbeat, an owned retry and an owned resume: passed in Chrome")
+          "the app-level approval heartbeat, an owned retry, an owned resume and a resume after a "
+          "SIGKILL: passed in Chrome")
 
 
 def retry_leg(context) -> None:
@@ -283,6 +285,11 @@ class Dashboard:
             time.sleep(0.2)
         raise AssertionError("the resume dashboard did not come up")
 
+    def kill(self):
+        """SIGKILL: no shutdown drain, the running step never settles (#892)."""
+        self.process.kill()
+        self.process.wait(timeout=60)
+
     def stop(self):
         """SIGTERM: the dashboard stops the way `garuda web` does, settling what it owns."""
         self.process.terminate()
@@ -368,6 +375,102 @@ def resume_leg(browser) -> None:
         look = [a["ran_as"] for a in detail["flow"]["steps"][0]["attempts"]]
         assert look[1:] == ["resume"], detail["flow"]["steps"]
         page.screenshot(path=str(SHOTS / "owned-resume-start-resumed-by.png"), full_page=True)
+        assert not errors, errors
+        context.close()
+    finally:
+        if dashboard.process and dashboard.process.poll() is None:
+            dashboard.stop()
+
+
+def crash_leg(browser) -> None:
+    """SIGKILL the dashboard while a flow's first step waits on an approval, start it again:
+    the flow reads "stopped (dashboard died)", the crash proof holds once the step's tree is
+    gone, Resume runs that step again and the flow completes (#892)."""
+    errors = []
+    dashboard = Dashboard()
+    dashboard.start()
+    try:
+        context = browser.new_context(viewport={"width": 1440, "height": 1000})
+        page = context.new_page()
+        page.on("console", lambda m: errors.append(m.text) if m.type == "error"
+                and "Failed to load resource" not in m.text else None)
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        page.on("dialog", lambda dialog: dialog.accept())
+        page.goto(dashboard.base + "#t=" + TOKEN)
+        page.goto(dashboard.base + "#/flows/resume-me?workspace=0")
+        expect(page.locator("#flow-pipeline .pipe-step")).to_have_count(2, timeout=20_000)
+        page.locator('[data-field="goal"]').fill("Resume me after the dashboard is killed")
+        page.locator("#flow-preview-button").click()
+        expect(page.locator("#flow-start")).to_be_visible(timeout=20_000)
+        page.locator("#flow-start").click()
+        page.wait_for_url(re.compile(r".*\?operation=[0-9a-f-]+$"), timeout=20_000)
+        start_id = page.url.rsplit("operation=", 1)[1]
+        session = page.url.split("#/sessions/", 1)[1].split("?", 1)[0]
+        expect(page.locator("#session-operation-host [data-flow-approval]")).to_have_count(2, timeout=30_000)
+
+        dashboard.kill()  # mid-step, its approval waiting: nothing settles
+        dashboard.start()
+        headers = {"X-Garuda-Token": TOKEN}
+        # The step's supervisor closes its tree when its parent dies; the read-only proof
+        # holds once every process of it is gone.
+        deadline = time.monotonic() + 60
+        detail = {}
+        while time.monotonic() < deadline:
+            detail = context.request.get(dashboard.base + f"api/sessions/{session}", headers=headers).json()
+            if (detail.get("resume_check") or {}).get("available") is True:
+                break
+            time.sleep(0.5)
+        owned = detail.get("dashboard_operation") or {}
+        print("crash facts:", {k: detail.get(k) for k in ("state", "label", "resume_check")},
+              owned.get("crash"), flush=True)
+        assert owned.get("dashboard_died") is True, owned
+        assert (owned.get("crash") or {}).get("step") == "look", owned
+        assert (detail.get("resume_check") or {}).get("available") is True, detail.get("resume_check")
+        assert (detail.get("state") or {}).get("work") == "working", detail.get("state")  # still recorded running
+
+        page.goto(dashboard.base + "#/")
+        row = page.locator(f'.home-row[data-key="crashed:{session}"]')
+        expect(row).to_contain_text("stopped (dashboard died)", timeout=20_000)
+        expect(row.locator("a.resume-link")).to_have_count(1)
+        running = page.locator("#home-running")
+        if running.count():
+            assert session not in running.inner_html(), "a dead dashboard's flow is listed as running"
+        page.screenshot(path=str(SHOTS / "owned-crash-overview.png"), full_page=True)
+
+        page.goto(dashboard.base + f"#/sessions/{session}")
+        expect(page.locator("#session-label")).to_have_text("stopped (dashboard died)", timeout=20_000)
+        expect(page.locator('#resume-crash[data-proof="holds"]')).to_contain_text(
+            "its processes were proved gone")
+        resume = page.locator("#session-resume button[data-resume-flow]:not([disabled])")
+        expect(resume).to_be_visible(timeout=20_000)
+        page.screenshot(path=str(SHOTS / "owned-crash-resume-available.png"), full_page=True)
+        resume.click()
+        page.wait_for_url(re.compile(r".*\?operation=[0-9a-f-]+$"), timeout=20_000)
+        resume_id = page.url.rsplit("operation=", 1)[1]
+        assert resume_id != start_id
+        panel = page.locator("#session-operation-host")
+        deadline = time.monotonic() + 120
+        row = {}
+        while time.monotonic() < deadline:
+            row = context.request.get(dashboard.base + "api/scenario-operations/" + resume_id,
+                                      headers=headers).json()
+            if row.get("status") in {"terminal", "quarantined", "refused", "uncertain", "abandoned"}:
+                break
+            allow = panel.locator('[data-flow-approval][data-approved="true"]')
+            if allow.count():
+                allow.first.click()
+            time.sleep(0.3)
+        assert row.get("status") == "terminal" and row.get("outcome") == "completed", row
+        detail = context.request.get(dashboard.base + f"api/sessions/{session}", headers=headers).json()
+        look = detail["flow"]["steps"][0]["attempts"]
+        assert [(a["attempt"], a["status"], (a["stop"] or {}).get("code")) for a in look] == [
+            (1, "stopped", "flow.interrupted"), (2, "done", None)], look
+        assert detail["dashboard_operation"]["dashboard_died"] is False, detail["dashboard_operation"]
+        start = context.request.get(dashboard.base + "api/scenario-operations/" + start_id, headers=headers).json()
+        assert start.get("resumed_by") == resume_id, start
+        page.goto(dashboard.base + f"#/sessions/{session}")
+        expect(page.locator("#session-label")).to_have_text("completed", timeout=20_000)
+        page.screenshot(path=str(SHOTS / "owned-crash-resumed.png"), full_page=True)
         assert not errors, errors
         context.close()
     finally:

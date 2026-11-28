@@ -447,9 +447,10 @@ function flowDisclosuresHtml(data) {
   notes.push('<li id="flow-resume">A flow started here that stops on a resumable stop (paused, interrupted, a usage limit ' +
     "after its reset) is resumed from its session page with <strong>Resume</strong>, by this dashboard in write mode, under " +
     "the plan and permissions its start admitted. <code>garuda flow resume</code> refuses it (<code>flow.operation_managed</code>). " +
-    "One exception: if the dashboard's server is killed (SIGKILL) or the machine reboots while a step runs, that step never " +
-    "settles and the flow cannot be resumed (<code>flow.interrupted_unsettled</code>); start a new run. A flow run from the " +
-    "copied command resumes with <code>garuda flow resume</code>.</li>");
+    "If the dashboard's server is killed (SIGKILL, the OOM killer) or the machine reboots while a step runs, that step never " +
+    "settles; the dashboard started again offers <strong>Resume</strong> once it proves that step's processes are gone, and runs the " +
+    "step again. If it cannot prove that, it names what is uncertain (<code>flow.interrupted_unsettled</code>) and never replays " +
+    "the step. A flow run from the copied command resumes with <code>garuda flow resume</code>.</li>");
   notes.push('<li id="flow-foreground">Stopping the dashboard (<code>garuda web</code>) interrupts a flow started here. Closing the browser tab does not; ' +
     "its approvals wait on any page of an open dashboard tab and in Approvals for up to 5 minutes (also when a step runs in its own process), " +
     "and are denied after that, about 90 seconds after no tab is watching the run, or at once if the dashboard stops.</li>");
@@ -730,16 +731,17 @@ var RESUME_REFUSALS = {
   "flow.resume_definition_changed": { text: "The flow's definition, roles, checks or configuration changed since it started, so its plan is no longer the one admitted.", next: "Start a new run of the flow (the Flows page previews the current plan)." },
   "flow.resume_authority_changed": { text: "The dashboard's permission ceiling or a role's permissions changed since the flow started.", next: "Restore the ceiling and permissions it started with, or start a new run." },
   "flow.resume_completed": { text: "The flow already completed; there is nothing to resume.", next: "Run it again from the Flows page if you need another run." },
-  "flow.recovery_required": { text: "The flow is still recorded running, so its processes are not proved gone.", next: "If the dashboard that ran it stopped, run this first, then resume:", command: "garuda runtime recover --session {id}" },
+  "flow.recovery_required": { text: "The flow is still recorded running, and the dashboard that ran it is alive or cannot be proved gone.", next: "Stop that dashboard, or run this, then resume:", command: "garuda runtime recover --session {id}" },
   "flow.resume_in_progress": { text: "This flow is already running here, or another resume of it has not finished.", next: "Follow that operation; resume again once it has stopped." },
   "flow.resume_owner_unknown": { text: "Another resume or the start of this flow is unfinished, and its dashboard process can be proved neither alive nor gone.", next: "Make sure that process has exited (its pid is named below), then resume again." },
   "flow.quarantined": { text: "The flow is quarantined: Garuda could not prove a step's process tree closed or its evidence complete, so it is never resumed.", next: "Inspect the workspace (git status) and start a new run." },
-  "flow.interrupted_unsettled": { text: "A step was launched and never settled (for example the server was killed or the machine rebooted mid-step), so the flow cannot be resumed.", next: "Inspect the workspace (git status) and start a new run." },
+  "flow.interrupted_unsettled": { text: "The dashboard stopped without settling a step, and Garuda cannot prove yet that the step's processes are gone, so it is not run again yet.", next: "Do what the engine's reason below names, wait until the crash proof holds (this page checks again), then Resume:", own: true },
+  "flow.owner_host_unproved": { text: "The step that never settled ran on another host or pid namespace, or no record says where it ran, so its processes cannot be proved gone from here.", next: "The engine's own reason and next step:", own: true },
   "flow.stop_not_resumable": { text: "The flow stopped in a way a resume does not continue.", next: "Inspect what it did and start a new run." },
   "flow.resume_quota_wait": { text: "The flow is paused on a usage limit that has not reset yet.", next: "Resume it after the reset." },
   "flow.verification_reconciliation_required": { text: "The flow's check or step records are unreadable or disagree, so it is never resumed automatically.", next: "Inspect the session's records; start a new run." },
   "starter.operation_conflict": { text: "This tab's resume operation id already names another request.", next: "Reload this page and resume again (a new id is used)." },
-  "starter.ownership_unavailable": { text: "This dashboard cannot own a resume right now (it needs the Linux supervisor).", next: "Retry on the Linux dashboard that started the flow.", transient: true },
+  "starter.ownership_unavailable": { text: "This dashboard cannot own a resume: it runs off Linux, and an owned resume needs the Linux descendant supervisor.", next: "Resume it from a Linux dashboard over the same session store.", transient: true },
   "starter.gateway_closing": { text: "The dashboard is shutting down.", next: "Retry once it is running again.", transient: true },
   "starter.operation_unavailable": { text: "The dashboard's operation store is unavailable for a moment.", next: "Retry.", transient: true },
   "starter.gateway_unavailable": { text: "The dashboard's flow gateway did not answer in time.", next: "Retry; the same operation is reused, so nothing runs twice.", transient: true },
@@ -773,21 +775,72 @@ function resumeRefusalHtml(code, message, sessionId) {
   return '<div class="notice ' + (known && known.transient ? "warn" : "err") + ' resume-refusal" data-code="' + esc(code || "error") + '">' +
     '<div class="notice-title">' + esc(known ? known.text : "The resume was refused.") + "</div>" +
     '<div class="notice-body">' + esc(known ? known.next : "") +
+    // A refusal whose message is the answer (what is uncertain, what to do): said in full.
+    (known && known.own && message ? '<p class="resume-reason">' + esc(message) + "</p>" : "") +
     (command ? ' <code class="resume-command">' + esc(command) + '</code> <button type="button" class="btn btn-small" data-copy-command="' +
       esc(command) + '">Copy</button>' : "") +
     (pid ? ' Process <code>' + esc(pid) + "</code>." : "") +
-    '<br><span class="stat-sub">' + esc(code || "") + (message ? ": " + esc(message) : "") + "</span></div></div>";
+    '<br><span class="stat-sub">' + esc(code || "") + (message && !(known && known.own) ? ": " + esc(message) : "") + "</span></div></div>";
 }
 
 function resumeStepText(row) {
+  var crash = dashboardCrash(row);
+  if (crash && crash.step) return "step " + crash.step;
   var stop = (row.flow && row.flow.stop) || {};
   return stop.step ? "step " + stop.step : "the stopped step";
+}
+
+/* A dashboard flow whose dashboard died mid-step (the read model's `dashboard_died`), with
+ * what the read-only crash proof found (`crash`: the unsettled step and attempt, and the
+ * resume check's answer); null for every other row. */
+function dashboardCrash(row) {
+  var owned = row && row.dashboard_operation;
+  return owned && owned.dashboard_died ? (owned.crash || { step: null, attempt: null, resume: null }) : null;
+}
+
+/* What a list or a header says for such a flow, never "crashed" or "running": the label
+ * and its pill class (paused when the proof holds and Resume continues it). */
+var DASHBOARD_DIED = "stopped (dashboard died)";
+
+function dashboardCrashPill(row) {
+  var crash = dashboardCrash(row);
+  if (!crash) return null;
+  var check = crash.resume;
+  return { label: DASHBOARD_DIED, cls: check && check.available === true ? "paused" : check && check.available === false ? "failed" : "unknown" };
+}
+
+/* Whether that proof holds: the owned resume continues the flow. */
+function dashboardCrashResumable(row) {
+  var crash = dashboardCrash(row);
+  return !!(crash && crash.resume && crash.resume.available === true);
+}
+
+/* The one line that says what happened to such a flow, and what the proof found. */
+function dashboardCrashHtml(row) {
+  var crash = dashboardCrash(row);
+  if (!crash) return "";
+  var step = crash.step ? "step " + crash.step + (crash.attempt ? " (attempt " + crash.attempt + ")" : "") : "a step";
+  var check = crash.resume;
+  var found = check && check.available === true ? "; its processes were proved gone, so Resume runs it again."
+    : check && check.available === false ? ", and Garuda cannot prove its processes are gone (below)."
+    : ", and the dashboard that ran it may still be running (not proved gone yet).";
+  return '<p class="resume-crash" id="resume-crash" data-proof="' +
+    (check && check.available === true ? "holds" : check && check.available === false ? "fails" : "unknown") + '">' +
+    "The dashboard stopped without settling " + esc(step) + esc(found) + "</p>";
 }
 
 /* The Resume block of a dashboard-started flow's Result. */
 function resumeBlockHtml(row) {
   var check = row.resume_check;
-  if (!row.dashboard_operation || !check) return "";
+  if (!row.dashboard_operation) return "";
+  if (!check) {
+    // A flow whose dashboard died, while the read-only proof has no answer: the dashboard
+    // that ran it may still be running, or the proof cannot run here. Said, never a button.
+    return dashboardCrash(row) ? '<div class="resume-block" id="session-resume" data-available="unknown">' +
+      "<h3>Resume from the dashboard</h3>" + dashboardCrashHtml(row) +
+      '<p class="stat-sub" id="resume-checking">Checking: whether it can resume is not known yet. This page asks again ' +
+      "every few seconds; Resume appears once the crash proof holds.</p></div>" : "";
+  }
   var health = STATE.health || {};
   var canStart = !!(health.capabilities && health.capabilities.starter_start);
   var flowName = (row.flow && row.flow.name) || "this flow";
@@ -799,6 +852,7 @@ function resumeBlockHtml(row) {
       (note ? ' <span class="stat-sub resume-note">' + esc(note) + "</span>" : "");
   };
   var body;
+  var crashLine = dashboardCrashHtml(row);
   if (check.available === true) {
     body = "<p>" + esc(what) + "</p>" + (canStart ? button(false) :
       button(true, health.mode === "read-only" ? "needs a write-mode dashboard" : "needs this dashboard's Linux supervisor"));
@@ -815,7 +869,7 @@ function resumeBlockHtml(row) {
   var resumed = row.dashboard_operation.resume_operation_id;
   return '<div class="resume-block" id="session-resume" data-available="' + esc(String(check.available)) + '"' +
     (check.code ? ' data-code="' + esc(check.code) + '"' : "") + ">" +
-    '<h3>Resume from the dashboard</h3>' + body +
+    '<h3>Resume from the dashboard</h3>' + crashLine + body +
     (resumed ? '<p class="stat-sub">Last resumed by operation <a href="#/sessions/' + encodeURIComponent(row.session_id) +
       "?operation=" + encodeURIComponent(resumed) + '"><code>' + esc(resumed.slice(0, 8)) + "</code></a>.</p>" : "") +
     '<div id="session-resume-result" aria-live="polite"></div></div>';
@@ -824,7 +878,8 @@ function resumeBlockHtml(row) {
 /* A small link to that block, for list rows (Overview, Sessions); never a second button. */
 function resumeLinkHtml(row) {
   var owned = row && row.dashboard_operation;
-  if (!owned || !owned.resumable_stop || isActive(row.state)) return "";
+  // A flow whose dashboard died is still recorded running: the crash proof decides.
+  if (!owned || !(dashboardCrashResumable(row) || (owned.resumable_stop && !isActive(row.state)))) return "";
   return ' <a class="resume-link" data-resume-link href="#/sessions/' + encodeURIComponent(row.session_id) +
     '?focus=resume">Resume</a>';
 }
