@@ -894,6 +894,26 @@ class FlowRunner:
                     and step["id"] not in settled):
                 self._review_plans(step, self.steps[-1])
 
+    async def _settle_closed_interruption(self, outcome: StepResult, step: dict, attempt: int,
+                                          plan) -> None:
+        """Settle the step session of an interruption that stays a cancellation (#898).
+
+        A run parent or a queued background run keeps the cancellation, so its
+        attempt is not receipted; its step session must still not read as a
+        crashed run. Only when the attempt's closure proves its worker and every
+        descendant closed is the session marked cancelled, like the parent; an
+        unproved closure leaves it for ``garuda runtime recover``.
+        """
+        if not self.require_owned:
+            return
+        try:
+            self._closed_step(outcome, step, attempt, plan.record() if plan else None,
+                              interrupted=True)
+        except FlowStopped:
+            return
+        await _settled_sync(_settle_interrupted_step, self.store, outcome.session_id,
+                            complete_on_cancel=True)
+
     def _closed_step(self, outcome: StepResult, step: dict, attempt: int, role_record=None,
                      *, interrupted: bool = False) -> dict:
         """Keep only bound lifetime facts, never raw process output tails.
@@ -2672,6 +2692,7 @@ class FlowRunner:
             if not (self.require_owned and (
                     (self.verification_cli_checks is not None and self._evidence is not None)
                     or (self.owned_flow and self.verification_request is None))):
+                await self._settle_closed_interruption(exc.result, step, attempt, plan)
                 raise
             interrupted = exc
             outcome = exc.result

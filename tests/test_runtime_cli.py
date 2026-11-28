@@ -891,6 +891,52 @@ async def test_recover_command_reports():
     assert report["state"] == "resumable"
 
 
+@pytest.mark.parametrize("case", ["cli", "dashboard", "unsettled", "quarantined", "role-run"])
+def test_recover_of_a_flow_points_to_the_resume_that_accepts_it(case):
+    """#899: a dashboard-owned flow is resumed by the dashboard, never `garuda flow resume`."""
+    from garuda.flows import engine
+    from garuda.runtime.session_state import finished
+
+    store = SessionStore()
+    if case != "cli":
+        from garuda.core.session_publication import protect_session
+
+        directory = store.session_dir("f1")
+        directory.mkdir(mode=0o700, parents=True)
+        protect_session(directory / "meta.json", kind="owned-flow")
+    store.begin("f1", task="t", model="flow", agent="flow:one", workspace="w")
+    meta = {"kind": "flow", "flow": {"name": "one"}, "flow_state": "stopped",
+            "status": "failed", "state": finished(success=False),
+            "flow_stop": {"code": engine.INTERRUPTED_STOP, "step": "only", "message": "stopped"}}
+    if case != "cli":
+        meta["flow_operation"] = {"operation_id": "op", "session_id": "f1"}
+    if case == "quarantined":
+        meta["flow_state"] = "quarantined"
+    if case == "role-run":
+        meta["launch_kind"] = "run"
+    store.update_meta("f1", meta)
+    if case == "unsettled":
+        flow_dir = engine.flow_dir(store, "f1")
+        flow_dir.mkdir(parents=True)
+        (flow_dir / engine.JOURNAL).write_text(json.dumps(
+            {"event": "intent", "index": 0, "step": "only", "attempt": 1}) + "\n")
+    text = cmd_recover(store, "f1")
+    assert "session f1: flow" in text
+    if case == "cli":
+        assert "continue it with `garuda flow resume f1`" in text
+        return
+    assert "garuda flow resume f1" not in text, text
+    if case == "dashboard":
+        assert "Resume on its session page" in text and "POST /api/scenarios/resume" in text
+        assert '"session_id": "f1"' in text
+        return
+    assert "/api/scenarios/resume" not in text, text
+    expected = {"unsettled": "cannot be resumed now (flow.interrupted_unsettled)",
+                "quarantined": "cannot be resumed now (flow.quarantined)",
+                "role-run": "neither `garuda flow resume` nor the dashboard's Resume"}[case]
+    assert expected in text, text
+
+
 def test_reclaim_rechecks_live_children_inside_the_write(tmp_path, monkeypatch):
     """A child recorded after the recovery pass (e.g. a concurrent launch) is
     still seen: the live-child check runs inside the locked ownership write."""
