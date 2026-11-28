@@ -363,6 +363,7 @@ def _launch_recorder(payload, request, control):
 
     from garuda.core.sessions import SessionStore
     from garuda.flows import launches
+    from garuda.runtime.ownership import host_identity
 
     flow = payload["flow"]
     try:
@@ -370,6 +371,7 @@ def _launch_recorder(payload, request, control):
     except (OSError, ValueError):
         return lambda **_fields: False
     base = {"session_id": request.session_id, "backend": "linux-subreaper",
+            "host": host_identity(),
             "started_at": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
             "parent_owner": {key: control.parent_snapshot["lease"][key]
                              for key in ("pid", "identity", "pgid", "epoch")}}

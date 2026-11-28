@@ -1054,6 +1054,46 @@ def dashboard_operation(meta: dict) -> dict | None:
             "checks": kind == "flow-verification", "stop": code, "resumable_stop": resumable}
 
 
+#: How long one flow's dry crash proof (a /proc scan, maybe a Docker query) is reused.
+DRY_PROOF_TTL_SEC = 5.0
+_DRY_PROOFS: dict = {}
+
+
+def _dry_crash_proof(store, session_id: str, meta: dict):
+    """``crash.prove(owned=True, dry=True)``, memoized for a few seconds per flow state.
+
+    The session page polls; the proof scans /proc. The key is the flow's recorded
+    state and owner plus the journal's size, so a new attempt or settlement
+    recomputes at once. A refusal is cached the same way (and re-raised).
+    """
+    import json as _json
+    import time as _time
+
+    from garuda.flows import crash, engine
+
+    try:
+        size = (engine.flow_dir(store, session_id) / engine.JOURNAL).stat().st_size
+    except OSError:
+        size = -1
+    key = (str(store.root), session_id, size, meta.get("flow_state"),
+           _json.dumps(meta.get("state"), sort_keys=True, default=str),
+           _json.dumps(meta.get("flow_stop"), sort_keys=True, default=str))
+    now = _time.monotonic()
+    for stale in [k for k, (at, _) in _DRY_PROOFS.items() if now - at > DRY_PROOF_TTL_SEC]:
+        _DRY_PROOFS.pop(stale, None)
+    cached = _DRY_PROOFS.get(key)
+    if cached is None:
+        try:
+            value = ("ok", crash.prove(store, session_id, meta, owned=True, dry=True))
+        except Exception as exc:  # noqa: BLE001 - re-raised below, cached alike
+            value = ("raise", exc)
+        cached = _DRY_PROOFS[key] = (now, value)
+    kind, value = cached[1]
+    if kind == "raise":
+        raise value
+    return value
+
+
 def resume_check(store, session_id: str, meta: dict) -> dict | None:
     """What the dashboard's owned resume would say about this flow's state now, read only.
 
@@ -1067,8 +1107,15 @@ def resume_check(store, session_id: str, meta: dict) -> dict | None:
     """
     if dashboard_operation(meta) is None:
         return None
+    import sys
+
+    if sys.platform != "linux":
+        # What the gateway answers first on such a host, whatever the flow's state.
+        if meta.get("flow_state") == "running":
+            return None
+        return {"available": False, "code": "starter.ownership_unavailable",
+                "message": "Owned flow resumes require the Linux descendant supervisor."}
     try:
-        from garuda.flows import crash
         from garuda.flows.engine import FlowStopped, owned_resume_check
     except ImportError:  # pragma: no cover
         return {"available": None, "code": None, "message": "the owned resume check is unavailable"}
@@ -1076,7 +1123,7 @@ def resume_check(store, session_id: str, meta: dict) -> dict | None:
         # Running, unless its dashboard was killed hard mid-step: then the crash
         # proof's process facts (read only, ``dry``) say whether a resume continues it.
         try:
-            proof = crash.prove(store, session_id, meta, owned=True, dry=True)
+            proof = _dry_crash_proof(store, session_id, meta)
         except FlowStopped as exc:
             if exc.code == "flow.recovery_required":
                 return None  # its dashboard may still run it
@@ -1091,7 +1138,7 @@ def resume_check(store, session_id: str, meta: dict) -> dict | None:
             if exc.code != "flow.interrupted_unsettled":
                 raise
             # Recorded interrupted by `runtime recover` after a hard kill: the same dry proof.
-            if not crash.prove(store, session_id, meta, owned=True, dry=True):
+            if not _dry_crash_proof(store, session_id, meta):
                 raise
     except FlowStopped as exc:
         out = {"available": False, "code": exc.code, "message": str(exc)}

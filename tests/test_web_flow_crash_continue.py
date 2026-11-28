@@ -475,3 +475,139 @@ async def test_a_dashboard_killed_during_a_resume_is_resumed_again_once(crashed_
         await asyncio.to_thread(_holdings_free, workspace, "native")
     finally:
         await _close(ctx)
+
+
+async def test_a_crash_on_another_host_or_pid_namespace_is_never_continued(crashed_dashboard):
+    """A dead pid is only dead here: an attempt recorded under another host or pid
+    namespace, or with no host record, refuses before anything is reclaimed."""
+    start, workspace, sessions, requests, _resume_and_kill = crashed_dashboard
+    start_id, flow_id, record, _ = start(
+        checks=False, starter="plan-change", inputs={"goal": "produce one bounded plan"})
+    ctx = _restarted(sessions, workspace)
+    flow_dir = engine.flow_dir(ctx.store, flow_id)
+    host = dict(record["host"])
+    try:
+        for elsewhere, why in (
+                ({**host, "pid_ns": "pid:[1]"}, "pid namespace"),
+                ({**host, "boot_id": "0" * 32, "machine_id": "f" * 32}, "another boot"),
+                (None, "no record names the host")):
+            launches.write(flow_dir, "scout", 1, {"host": elsewhere})
+            body = _resume_body(flow_id)
+            refused = await _call(ctx, RESUME, method="POST", body=body)
+            assert refused.status == 409, _body(refused)
+            error = _body(refused)["error"]
+            assert error["code"] == "flow.owner_host_unproved", error
+            assert why in error["message"] and "never replayed" in error["message"]
+            assert ctx.flow_starts.intents.read(body["operation_id"]) is None
+            assert engine.receipts(ctx.store, flow_id) == []
+            assert ctx.store.load_meta(flow_id)["flow_state"] == "running"  # nothing reclaimed
+            read_model._DRY_PROOFS.clear()
+            check = read_model.resume_check(ctx.store, flow_id, ctx.store.load_meta(flow_id))
+            assert check["available"] is False and check["code"] == "flow.owner_host_unproved"
+        assert ctx.flow_starts.intents.read(start_id)["phase"] == "admitted"
+        # Recorded on this host again: the same resume continues.
+        launches.write(flow_dir, "scout", 1, {"host": host})
+        body = _resume_body(flow_id)
+        response = await _call(ctx, RESUME, method="POST", body=body)
+        assert response.status in {201, 202}, _body(response)
+        terminal = await _status(ctx, body["operation_id"],
+                                 {"terminal", "uncertain", "quarantined", "refused"}, timeout=120)
+        assert terminal["status"] == "terminal" and terminal["outcome"] == "completed", terminal
+        assert len(requests) == 3
+    finally:
+        await _close(ctx)
+
+
+async def test_the_dry_proof_refuses_what_recovery_would_refuse(crashed_dashboard, monkeypatch):
+    """A recorded container or holding recovery cannot release refuses at admission,
+    read only: no operation is recorded and the page does not offer Resume."""
+    from garuda.runtime import recovery
+
+    start, workspace, sessions, requests, _resume_and_kill = crashed_dashboard
+    _start_id, flow_id, _record, _ = start(
+        checks=False, starter="plan-change", inputs={"goal": "produce one bounded plan"})
+    ctx = _restarted(sessions, workspace)
+    real = recovery._prove_flow_executors_gone
+
+    def container_left(_store, session, **_kwargs):
+        raise recovery.RecoveryError(f"flow {session} owned container garuda-test still exists")
+
+    try:
+        monkeypatch.setattr(recovery, "_prove_flow_executors_gone", container_left)
+        body = _resume_body(flow_id)
+        refused = await _call(ctx, RESUME, method="POST", body=body)
+        assert refused.status == 409, _body(refused)
+        error = _body(refused)["error"]
+        assert error["code"] == "flow.interrupted_unsettled", error
+        assert "recovery would refuse" in error["message"]
+        assert "garuda-test still exists" in error["message"]
+        assert ctx.flow_starts.intents.read(body["operation_id"]) is None
+        read_model._DRY_PROOFS.clear()
+        check = read_model.resume_check(ctx.store, flow_id, ctx.store.load_meta(flow_id))
+        assert check["available"] is False and check["code"] == "flow.interrupted_unsettled"
+        assert ctx.store.load_meta(flow_id)["flow_state"] == "running"
+        monkeypatch.setattr(recovery, "_prove_flow_executors_gone", real)
+        body = _resume_body(flow_id)
+        response = await _call(ctx, RESUME, method="POST", body=body)
+        assert response.status in {201, 202}, _body(response)
+        terminal = await _status(ctx, body["operation_id"],
+                                 {"terminal", "uncertain", "quarantined", "refused"}, timeout=120)
+        assert terminal["status"] == "terminal" and terminal["outcome"] == "completed", terminal
+    finally:
+        await _close(ctx)
+
+
+LOST_RESUME = (
+    "import json, sys\n"
+    "from garuda.runtime.ownership import current_owner\n"
+    "from garuda.scenarios.launch_intents import LaunchIntentStore\n"
+    "a = json.loads(sys.argv[1])\n"
+    "store, owner = LaunchIntentStore(a['root']), current_owner()\n"
+    "record, _ = store.prepare_resume(owner=owner, **a['prepare'])\n"
+    "store.advance(record['operation_id'], expected='prepared', phase='launch-authorized',\n"
+    "              owner=owner)\n")
+
+
+async def test_a_resume_lost_before_its_binding_settles_refused(crashed_dashboard):
+    """A resume whose dashboard died in launch-authorized never ran a step: the next
+    resume supersedes its claim and settles it refused/owner.lost, not uncertain."""
+    start, workspace, sessions, requests, _resume_and_kill = crashed_dashboard
+    start_id, flow_id, _record, _ = start(
+        checks=False, starter="plan-change", inputs={"goal": "produce one bounded plan"})
+    ctx = _restarted(sessions, workspace)
+    try:
+        intents = ctx.flow_starts.intents
+        started = intents.read(start_id)
+        lost = str(uuid.uuid4())
+        prepare = {key: started[key] for key in (
+            "plan_digest", "authority_digest", "workspace", "workspace_identity",
+            "compiler_version", "catalog_version")}
+        prepare.update(operation_id=lost, session_id=flow_id, start_operation_id=start_id,
+                       request_digest="a" * 64)
+        import json
+
+        done = subprocess.run(
+            [sys.executable, "-c", LOST_RESUME,
+             json.dumps({"root": str(ctx.store.root), "prepare": prepare})],
+            env=dict(os.environ, PYTHONPATH=str(REPO)), capture_output=True, text=True,
+            timeout=60)
+        assert done.returncode == 0, done.stdout + done.stderr  # it exits: its owner is dead
+        assert intents.read(lost)["phase"] == "launch-authorized"
+        assert intents.claimed(flow_id) == lost
+        assert _body(await _call(ctx, f"/api/scenario-operations/{lost}"))["status"] == "uncertain"
+
+        body = _resume_body(flow_id)
+        response = await _call(ctx, RESUME, method="POST", body=body)
+        assert response.status in {201, 202}, _body(response)
+        terminal = await _status(ctx, body["operation_id"],
+                                 {"terminal", "uncertain", "quarantined", "refused"}, timeout=120)
+        assert terminal["status"] == "terminal" and terminal["outcome"] == "completed", terminal
+        settled = intents.read(lost)
+        assert (settled["phase"], settled["reason"]) == ("refused", "owner.lost")
+        projected = _body(await _call(ctx, f"/api/scenario-operations/{lost}"))
+        assert projected["status"] == "refused" and projected["reason"] == "owner.lost"
+        assert intents.claimed(flow_id) == body["operation_id"]
+        _two_entries_per_attempt(ctx.store, flow_id)
+        assert len(requests) == 3
+    finally:
+        await _close(ctx)

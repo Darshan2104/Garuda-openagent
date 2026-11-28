@@ -43,6 +43,9 @@ from garuda.flows import engine, launches
 #: Recorded ``flow_stop`` code of a flow whose owner died, settled by recovery.
 OWNER_LOST = "flow.owner_lost"
 UNSETTLED = "flow.interrupted_unsettled"
+#: The crashed attempt's processes ran on another host or pid namespace (or it is
+#: not recorded where): "absent here" proves nothing about them.
+HOST_UNPROVED = "flow.owner_host_unproved"
 
 
 def _identity(value) -> bool:
@@ -62,6 +65,40 @@ def _recover(store, flow_session: str) -> None:
         withdraw_dead_session_approvals(store, flow_session)
     except Exception:  # noqa: BLE001 - parked approvals of a dead flow are advisory here
         pass
+
+
+def _holdings_refusal(store, flow_session: str) -> str | None:
+    """Why ``runtime recover`` would not release the flow, read only, or None.
+
+    What the dry proof can check without writing: every step worker and every
+    recorded confinement container is gone (Docker is asked by name, nothing is
+    removed), and each lease and capacity slot naming the flow has a dead,
+    unquarantined owner that recovery may reclaim.
+    """
+    from garuda.runtime.capacity import CapacityStore
+    from garuda.runtime.ownership import reclaim_refusal
+    from garuda.runtime.recovery import (
+        RecoveryError,
+        _dead_owner_leases,
+        _prove_flow_executors_gone,
+    )
+
+    try:
+        _prove_flow_executors_gone(store, flow_session)
+        _dead_owner_leases(flow_session, None)
+        slots = CapacityStore().slots_for_session(flow_session)
+    except RecoveryError as exc:
+        return f"recovery would refuse ({exc})"
+    except Exception as exc:  # noqa: BLE001 - unreadable holdings prove nothing
+        return f"its leases, slots or step records cannot be read ({exc})"
+    for slot in slots:
+        refusal = ("it is queue- or loan-bound" if "queue" in slot or "loan" in slot else
+                   reclaim_refusal(slot.get("owner") or {},
+                                   quarantined=slot.get("quarantined", False) is not False,
+                                   scan_descendants=False))
+        if refusal is not None:
+            return f"capacity slot {slot.get('holder')} cannot be reclaimed: {refusal}"
+    return None
 
 
 def applies(meta: dict, *, owned: bool = False) -> bool:
@@ -111,7 +148,8 @@ def prove(store, flow_session: str, meta: dict, *, recover=None, owned: bool = F
     if not pending:
         return None
     step, attempt = pending[-1]
-    name = (meta.get("flow") or {}).get("name") or "NAME"
+    flow = meta.get("flow")
+    name = (flow.get("name") if isinstance(flow, dict) else None) or "NAME"
     if owned:
         label = "dashboard flow"
         resume = owned_resume_hint(flow_session)
@@ -168,6 +206,23 @@ def prove(store, flow_session: str, meta: dict, *, recover=None, owned: bool = F
         refuse("the worker was being activated and its identity was never recorded", new_flow)
     if record.get("phase") not in {"prepared", "active"}:
         refuse("the attempt's launch record is incomplete", new_flow)
+    # Every liveness and /proc fact below is about this kernel's pid namespace:
+    # refuse unless the attempt's processes and the flow's owner ran in it.
+    from garuda.runtime.ownership import same_host_refusal
+
+    state = meta.get("state") if isinstance(meta.get("state"), dict) else {}
+    flow_owner = state.get("owner") if meta.get("flow_state") == "running" else None
+    elsewhere = same_host_refusal(record.get("host"), [
+        who for who in (record["supervisor"], command, record["parent_owner"], flow_owner)
+        if isinstance(who, dict)])
+    if elsewhere is not None:
+        raise engine.FlowStopped(
+            HOST_UNPROVED,
+            f"{label} {flow_session} lost its process while step {step} (attempt {attempt}) "
+            f"was running, and Garuda cannot prove that attempt ran on this host: {elsewhere}. "
+            "A process that is absent here may still run there, so the attempt stays "
+            f"quarantined and is never replayed. Next: resume from the host (and pid "
+            f"namespace) whose dashboard or flow ran it, or {new_flow}", step=step)
     for label, who in (("subreaper supervisor", record["supervisor"]), ("worker", command)):
         if who is None:
             continue
@@ -188,6 +243,9 @@ def prove(store, flow_session: str, meta: dict, *, recover=None, owned: bool = F
         if survivors:
             refuse(f"process(es) {', '.join(map(str, survivors))} still carry its lineage",
                    f"stop them, then {resume} again")
+        why = _holdings_refusal(store, flow_session)
+        if why is not None:
+            refuse(why, recover_next)
         return {"dry": True, "step": step, "attempt": attempt}
     if meta.get("flow_state") == "running":
         try:
@@ -219,7 +277,7 @@ def prove(store, flow_session: str, meta: dict, *, recover=None, owned: bool = F
     return {"version": 1, "step": step, "attempt": attempt, "session_id": record["session_id"],
             "backend": "linux-subreaper", "supervisor": dict(record["supervisor"]),
             "command": dict(command) if command else None,
-            "parent_owner": dict(parent),
+            "parent_owner": dict(parent), "host": dict(record["host"]),
             **({"owned": True} if owned else {}),
             "proved": ["flow owner dead", "supervisor dead", "worker dead",
                        "lease owner dead", "no process carries its lineage",

@@ -62,6 +62,68 @@ def current_owner() -> Owner:
     return Owner(pid=pid, identity=identity, pgid=os.getpgid(pid), epoch=uuid.uuid4().hex)
 
 
+def host_identity() -> dict | None:
+    """This process's host: boot id, pid namespace, machine id and hostname; None off Linux.
+
+    Recorded beside an owner's identity so a later proof can tell "this owner's
+    pid is absent here" (dead) from "this owner ran on another host or in another
+    pid namespace sharing the store" (unknown): pids, start identities and
+    ``/proc`` scans only describe processes of this kernel and pid namespace.
+    """
+    import socket
+
+    try:
+        with open("/proc/sys/kernel/random/boot_id") as handle:
+            boot = handle.read().strip()
+        pid_ns = os.readlink("/proc/self/ns/pid")
+    except OSError:
+        return None
+    try:
+        with open("/etc/machine-id") as handle:
+            machine = handle.read().strip() or None
+    except OSError:
+        machine = None
+    if not boot or not pid_ns:
+        return None
+    return {"boot_id": boot, "pid_ns": pid_ns, "machine_id": machine,
+            "hostname": socket.gethostname() or None}
+
+
+def same_host_refusal(recorded, identities: list) -> str | None:
+    """Why ``identities`` cannot be proved processes of this host's pid namespace, or None.
+
+    ``recorded`` is the :func:`host_identity` written when they ran. The same
+    boot id is the same running kernel; with the same pid namespace too, an
+    absent pid there is an absent process here. A different boot id is this
+    host after a reboot only when the machine id and hostname both match (and
+    the pid namespace, which only the initial namespace keeps across boots);
+    anything else, or anything unrecorded, is unproved. Every identity must be a
+    Linux start identity under the recorded boot.
+    """
+    here = host_identity()
+    if here is None:
+        return "this host's boot id and pid namespace cannot be read"
+    if (not isinstance(recorded, dict)
+            or not all(isinstance(recorded.get(key), str) and recorded[key]
+                       for key in ("boot_id", "pid_ns"))):
+        return "no record names the host and pid namespace it ran in (an older Garuda wrote it)"
+    if recorded["pid_ns"] != here["pid_ns"]:
+        return (f"it ran in pid namespace {recorded['pid_ns']}, not this one ({here['pid_ns']}), "
+                "so its processes cannot be seen from here")
+    if recorded["boot_id"] != here["boot_id"] and (
+            not here["machine_id"] or recorded.get("machine_id") != here["machine_id"]
+            or not here["hostname"] or recorded.get("hostname") != here["hostname"]):
+        return ("it ran under another boot of a host that cannot be proved to be this one "
+                "(its machine id or hostname differs or is unknown)")
+    for who in identities:
+        identity = who.get("identity") if isinstance(who, dict) else None
+        parts = identity.split(":") if isinstance(identity, str) else []
+        if len(parts) != 3 or parts[0] != "linux" or parts[1] != recorded["boot_id"]:
+            return (f"process {who.get('pid') if isinstance(who, dict) else '?'} has no Linux "
+                    "start identity under that host's boot")
+    return None
+
+
 def lineage_token(pid: object, identity: object) -> str | None:
     """The token an owner's descendants inherit, or None without a usable identity."""
     if (not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0

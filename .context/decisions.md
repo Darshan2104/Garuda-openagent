@@ -6177,3 +6177,33 @@ may still run it. The page JS is unchanged. A dashboard killed during a resume
 (version 3) is handled the same way: the next resume supersedes the dead
 resume's claim, proves its crashed attempt, and `settle_lost` settles that
 resume's record.
+
+Review follow-ups. Same host: `owner_liveness` reads "pid absent here" as dead
+and `descendant_scan` returns nothing for another boot, which is only true of
+this kernel and pid namespace. A dashboard on another host, or in another pid
+namespace sharing the store, would look dead: two writers. So the launch record
+and each gateway owner (`launch-intents/host-<epoch>.json`, written on its first
+prepare) now record `ownership.host_identity()` (boot id, pid namespace, machine
+id, hostname), and `ownership.same_host_refusal` requires the same pid namespace
+and either the same boot or the same machine id and hostname (a reboot of this
+host), with every identity under the recorded boot. The crash proof (owned and
+CLI) refuses `flow.owner_host_unproved` otherwise, and before any reclaim;
+records without a host (older Garuda) refuse too. `settle_lost` applies the same
+rule to an operation's owner, plus owner death and an empty lineage scan.
+Residual: two cloned machines with the same machine id and hostname, in the
+initial pid namespace, after one rebooted, are indistinguishable.
+
+The dry proof now also runs recovery's read-only checks (step workers and
+recorded containers gone by `docker container ls` filter, no removal; leases
+and slots reclaimable by owner death and no quarantine), so admission and the
+page refuse what the full proof would; only a change in between records a
+`refused` operation. Malformed journals, launch records or metadata map to
+`flow.resume_record_mismatch` (409) at admission and as the resume's refusal
+after the claim; an unreadable store stays 503 or uncertain. `settle_lost` also
+settles a superseded resume lost in `launch-authorized` as `refused`/`owner.lost`
+(it never bound, so no step ran under it) and a bound one with the flow's
+outcome. Off Linux `resume_check` says `starter.ownership_unavailable`, as the
+gateway does; its dry proof is memoized per flow state and journal size for 5 s.
+
+Not detected (documented): a worker that escapes lineage (`env -i`, `sudo`,
+`systemd-run`, a container it starts itself with `docker run -d`).
