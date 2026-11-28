@@ -112,9 +112,6 @@ def main() -> None:
 
         # The heartbeat follows the user: wander off for longer than the grace window, the
         # approval still waits, the badge counts it, Approvals answers it.
-        # The whole wait stays under 10 s: the owned role worker's control socket times out
-        # after 10 s (garuda/runtime/role_control.py), and an approval answered later than
-        # that fails the step whatever the dashboard does (reported; not this page's code).
         operation = start_from_flows(page, "Wait while the user is on other pages")
         asked = time.monotonic()
         grace = SERVER_GRACE_SECONDS
@@ -288,7 +285,7 @@ def resume_leg(browser) -> None:
         panel = page.locator("#session-operation-host")
         expect(panel.locator('[data-kind="resume"]')).to_be_visible(timeout=20_000)
         expect(panel).to_contain_text(start_id)
-        # Every approval the resumed steps ask is answered here, inside the worker's 10 s.
+        # Every approval the resumed steps ask is answered here.
         deadline = time.monotonic() + 120
         while time.monotonic() < deadline:
             row = context.request.get(dashboard.base + "api/scenario-operations/" + resume_id,
