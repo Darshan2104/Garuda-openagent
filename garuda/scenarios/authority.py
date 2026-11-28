@@ -99,25 +99,35 @@ def _capabilities(backend_available: bool, approval_available: bool) -> dict:
     }
 
 
-def _owned_shape_blockers(name: str, flow: dict, block) -> None:
+def _checked(plan) -> bool:
+    """Whether this flow start runs checks at finalization (a checked owned flow)."""
+    return any(check.get("execution") == "available-at-flow-finalization"
+               for check in getattr(plan, "checks", None) or ())
+
+
+def _owned_shape_blockers(name: str, flow: dict, block, *, checked: bool) -> None:
     """Flow shapes the owned engine refuses after admission, refused before it.
 
-    The owned flow parent refuses step retries (``flow.retries_unsupported``)
-    and a non-shared ``isolation`` (``flow.isolation_unsupported``); parallel
-    groups are refused below. Packaged flows have neither, so the packaged
-    starters' authority is unchanged; a configured override that has them now
-    refuses at preview instead of at start. Blockers are not part of the
-    envelope or its digest.
+    Step ``retries`` follow the CLI rule (#810): a reviewed step, the terminal
+    reviewer of a reviewed flow and a parallel group refuse them when the
+    configuration loads (for every caller), and a checked flow refuses them with
+    the engine's own ``flow.retries_unsupported``; a dashboard-owned flow without
+    checks runs them. A non-shared ``isolation`` refuses
+    (``starter.isolation_unsupported``); parallel groups are refused below.
+    Packaged flows have none of these shapes, so the packaged starters'
+    authority is unchanged. Blockers are not part of the envelope or its digest.
     """
     from garuda.config.garuda_yaml import effective_flow_steps
+    from garuda.flows.engine import RETRIES_UNSUPPORTED, retries_refused
 
     for step in effective_flow_steps(flow):
-        if step.get("retries"):
-            block("starter.retries_unsupported",
-                  f"Step {step['id']} sets retries: {step['retries']}, "
-                  "which a dashboard-owned flow never runs.",
-                  f"Remove the step's retries, or run `garuda flow run {name}` from a terminal "
-                  "without checks.")
+        if step.get("retries") and retries_refused(verification=checked):
+            block(RETRIES_UNSUPPORTED,
+                  f"Step {step['id']} sets retries: {step['retries']}, which a checked flow "
+                  "never runs: its evidence and resume checkpoint assume a stopped attempt "
+                  "ends the run.",
+                  f"Remove the step's retries or the checks; `garuda flow run {name}` without "
+                  "--check runs them.")
     isolation = flow.get("isolation", "shared")
     if isolation != "shared":
         block("starter.isolation_unsupported",
@@ -202,12 +212,16 @@ def flow_authority(plan, context, *, max_permission: str, server_epoch: str,
     roles = {}
     steps = []
     flow = context.flow or {"steps": []}
-    _owned_shape_blockers(plan.target, flow, block)
+    _owned_shape_blockers(plan.target, flow, block, checked=_checked(plan))
     for index, step in enumerate(flow.get("steps", [])):
         if step.get("parallel"):
+            from garuda.flows.engine import PARALLEL_OWNED_REASON
+
             block("starter.parallel_ownership_unavailable",
-                  "This flow contains a parallel snapshot step without owned closure evidence.",
-                  "Use a sequential flow for one-click Start.")
+                  f"Step {step.get('id')} is a parallel group, which a dashboard start never "
+                  f"runs: {PARALLEL_OWNED_REASON}.",
+                  f"Run `garuda flow run {plan.target}` from a terminal, which runs parallel "
+                  "groups, or make the step sequential for one-click Start.")
         names = [step.get("role"), *step.get("parallel", [])]
         reviewer = step.get("review", {}).get("by")
         if reviewer:
