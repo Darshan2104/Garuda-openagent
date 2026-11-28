@@ -413,7 +413,7 @@ el("keys-help").addEventListener("click", function (event) {
   if (event.target === el("keys-help")) toggleKeysHelp(false);
 });
 
-el("conn-retry").addEventListener("click", probeConnection);
+el("conn-retry").addEventListener("click", retryConnection);
 
 window.addEventListener("hashchange", onHashChange);
 boot();

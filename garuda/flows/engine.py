@@ -58,6 +58,28 @@ INTERRUPTED_STOP = "flow.interrupted"
 # quota waits and input errors never do.
 RETRYABLE_STOPS = frozenset({"flow.step_failed", "flow.output_missing", "flow.artifact_too_large",
                              "flow.artifact_malformed"})
+#: Where ``retries`` is refused before the lease (#810): a checked flow (CLI
+#: ``--check`` or a checked dashboard start), an owned run parent or queued
+#: background run, and quota recovery. A dashboard-owned flow without checks
+#: retries like ``garuda flow run``; the starter authority refuses the same
+#: shapes at preview with the same code.
+RETRIES_UNSUPPORTED = "flow.retries_unsupported"
+RETRIES_UNSUPPORTED_MESSAGE = ("step retries are not supported in checked flows, run parents or "
+                               "quota-recovered flows (their evidence and checkpoints assume a "
+                               "stopped attempt ends the run); remove retries or run the flow "
+                               "without checks")
+
+#: Why a dashboard-owned or checked flow never runs a parallel group.
+PARALLEL_OWNED_REASON = ("a parallel group runs its members concurrently in-process on a snapshot, "
+                         "outside the owned worker supervision, closure proof and dashboard "
+                         "approval broker that every owned step attempt needs")
+
+def retries_refused(*, verification: bool, owned_parent: bool = False,
+                    quota_recovery: bool = False) -> bool:
+    """Whether a flow run in this mode refuses step ``retries`` (#810)."""
+    return verification or owned_parent or quota_recovery
+
+
 RETRY_NOTE = ("[garuda] An earlier attempt of this step failed. Its partial edits may already be "
               "in the workspace; inspect existing work before acting.")
 #: Every step a quota continuation runs; a long step's new attempt gets its brief
@@ -1525,14 +1547,17 @@ class FlowRunner:
         if owned_resume and (not self.owned_flow or self.verification_request is not None):
             raise FlowStopped("flow.verification_reconciliation_required",
                               "a checked owned flow resumes only from its checkpoint")
-        if (self.require_owned or self.quota_recovery is not None) and any(
+        if retries_refused(verification=self.verification_request is not None,
+                           owned_parent=self.require_owned and not self.owned_flow,
+                           quota_recovery=self.quota_recovery is not None) and any(
                 step.get("retries") for step in self.steps):
-            # An owned or checked flow accounts for every attempt in its evidence
-            # and quota recovery continues from recorded stops; neither knows
-            # about an automatic retry, so the combination is refused (#810).
-            raise FlowStopped("flow.retries_unsupported",
-                              "step retries are not supported in checked, dashboard-owned or "
-                              "quota-recovered flows; remove retries or run the flow without them")
+            # A checked flow accounts for every attempt in its evidence and
+            # checkpoints, a run parent or queued run is one attempt, and quota
+            # recovery continues from recorded stops; none of them knows about an
+            # automatic retry, so the combination is refused (#810). A
+            # dashboard-owned flow without checks retries as `garuda flow run`
+            # does: every attempt is its own proved-closed owned worker.
+            raise FlowStopped(RETRIES_UNSUPPORTED, RETRIES_UNSUPPORTED_MESSAGE)
         if resume and not checked_resume and not crash_resume and not owned_resume:
             from garuda.runtime.strict_store import StorageError
 
@@ -1984,9 +2009,11 @@ class FlowRunner:
         (C.8a). Source and snapshot must both be unchanged afterwards.
         """
         if self.require_owned:
+            # Members launch in-process, concurrently, outside the owned worker,
+            # its closure proof and the approval broker (see .context/decisions.md).
             raise FlowStopped("flow.parallel_verification_unavailable",
-                              "parallel snapshot members have no owned closure evidence",
-                              step=step["id"])
+                              PARALLEL_OWNED_REASON + f"; run `garuda flow run {self.name}` "
+                              "from a terminal", step=step["id"])
         import asyncio
 
         from garuda.workspace import snapshot_proto as snap

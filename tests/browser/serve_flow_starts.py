@@ -29,9 +29,9 @@ from garuda.interfaces.web import DashboardConfig, build_context
 from garuda.interfaces.web import http as http_module
 from garuda.interfaces.web.approvals import ApprovalBroker
 
-#: The approval heartbeat grace window, shortened for the browser checks. Kept short so a
-#: whole wait stays under the owned role worker's 10 s control-socket timeout
-#: (garuda/runtime/role_control.py): an approval answered later than that fails the step.
+#: The approval heartbeat grace window, shortened so the heartbeat checks run in seconds.
+#: An owned worker waits for an answer as long as the broker does (its timeout plus a
+#: margin, garuda/runtime/role_control.py), so a wait longer than this window is fine.
 GRACE_SECONDS = 2.0
 
 

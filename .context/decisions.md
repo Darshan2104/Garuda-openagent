@@ -1,5 +1,53 @@
 # Durable decisions
 
+## 2026-11-28 — Owned flows run step `retries`; parallel groups stay CLI-only
+
+**Retries.** A dashboard-owned flow without checks (owned start and owned resume)
+now runs step `retries` exactly as `garuda flow run` does (#810): only a launched,
+settled attempt that stopped with a `RETRYABLE_STOPS` code runs again, the budget
+is the step's total recorded attempts (a resume after exhaustion runs one more),
+and refusals, settled role refusals, `flow.no_edits_changed`, interruptions,
+liveness and quota stops never retry. The CLI's refusals are unchanged and shared:
+`retries` on a parallel group, a reviewed step or a reviewed flow's terminal
+reviewer refuses when the configuration loads (`config.invalid`, every caller),
+and a checked flow refuses them with `flow.retries_unsupported`, now also at
+preview (`garuda.scenarios.authority`, replacing `starter.retries_unsupported`)
+and in `/api/flows` `start.reasons`. The engine still refuses them for checked
+flows (their evidence coverage and resume checkpoint assume a stopped attempt
+ends the run), owned run parents and queued runs (one attempt) and quota
+recovery (`engine.retries_refused`).
+
+Why it is safe without new machinery: `_run_with_retries` calls the same
+`_run_step` per attempt, so each attempt has its own journal intent and receipt,
+its own delegated lease capability (revoked after it), the start's approval
+handler, its own owned worker and its own `_closed_step` proof (step id and
+attempt bound). An unproved cleanup is `flow.cleanup_unproved` (or
+`CleanupUncertain`), never retryable, so the flow quarantines. The authority
+envelope and ceiling do not depend on retries; the plan digest contains the
+flow definition, so a changed `retries` refuses a start (`starter.preview_changed`)
+and a resume (`flow.resume_definition_changed`).
+
+**Parallel groups: assessed, not implemented.** `_run_group` launches members
+concurrently and in-process on a detached snapshot repository with
+`capability=None`, no `require_owned`, no approval handler and no fallback
+probe, and writes one intent and one receipt for the whole group. Owning them
+would need: an owned worker per member bound to the snapshot (the closure's
+`workspace_identity` is the operation's checkout, not the snapshot), a closure
+proof per member and a group receipt that holds them all; all-or-nothing
+capacity reservation for N concurrent workers (a `max_parallel: 1` harness would
+otherwise deadlock or silently serialize); approval broker asks attributed per
+member while N are parked at once; cancellation that proves every member closed
+before the flow settles; and a journal/evidence shape for N concurrent attempts
+(checked evidence counts boundaries sequentially and requires exactly two
+journal entries per attempt). Guarantees at risk: per-attempt supervision
+proof, capacity ceilings, evidence ordering and the two-entries-per-attempt
+journal; review independence of members is unaffected. Estimate: several
+hundred lines across the engine, owned role worker, flow evidence and capacity
+plus a comparable test suite, so it is out of scope for a modest change. The
+owned refusal (`starter.parallel_ownership_unavailable` at preview,
+`flow.parallel_verification_unavailable` in the engine) now says why and that
+`garuda flow run NAME` runs it.
+
 ## 2026-11-27 — A starter may select a configured flow by name (run-flow)
 
 The browser (and `garuda starter run`) may now select any available configured

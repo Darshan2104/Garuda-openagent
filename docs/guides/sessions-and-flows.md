@@ -628,10 +628,12 @@ runs it once more, without further retries.
 
 `retries` is refused when the flow loads on a parallel group, on a reviewed
 step (`review.max_rounds` reruns it) and on the terminal reviewer of a reviewed
-flow. A checked (`--check`) or dashboard-owned flow, or one under automatic
-quota recovery, refuses a flow with `retries` with `flow.retries_unsupported`
-before anything starts, because those flows account for every attempt
-themselves; remove `retries` to run it there.
+flow. A checked flow (`--check`, or a dashboard start with checks), or one
+under automatic quota recovery, refuses a flow with `retries` with
+`flow.retries_unsupported` before anything starts, because those flows account
+for every attempt themselves; remove `retries` to run it there. A
+dashboard-owned flow without checks runs `retries` as `garuda flow run` does,
+each attempt its own owned worker with its own closure proof.
 
 ### Step limits
 

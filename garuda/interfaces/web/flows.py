@@ -49,7 +49,7 @@ logger = logging.getLogger(__name__)
 STARTER = "run-flow"
 _SOURCES = {gy.PACKAGE: "packaged", gy.USER: "user", gy.PROJECT: "project"}
 #: The shapes the owned engine refuses, reported even when no gateway exists (read-only).
-SHAPE_CODES = ("starter.parallel_ownership_unavailable", "starter.retries_unsupported",
+SHAPE_CODES = ("starter.parallel_ownership_unavailable", "flow.retries_unsupported",
                "starter.isolation_unsupported")
 _NAME_FIX = "Review `garuda config show` and rerun `garuda init`."
 
@@ -81,10 +81,19 @@ def _available(resolved) -> dict:
 
 
 def _probe(name: str, root, context):
-    """The fields of a plan the authority reads, without compiling a task."""
+    """The fields of a plan the authority reads, without compiling a task.
+
+    ``checks`` marks the effective checks as the run-flow plan does (a checked
+    flow starter runs them at finalization): only their presence is read, since a
+    checked flow refuses step ``retries`` (``flow.retries_unsupported``).
+    """
+    from garuda.core.acceptance import checks_with_authority
+
+    checks = [{"execution": "available-at-flow-finalization"}
+              for _check in checks_with_authority(context.resolved)]
     return SimpleNamespace(kind="flow", target=name, workspace=str(root), starter_id=STARTER,
-                           checks=[], provenance={"workspace_identity": None,
-                                                  "flow_source": context.source})
+                           checks=checks, provenance={"workspace_identity": None,
+                                                      "flow_source": context.source})
 
 
 def _start(ctx, name: str, root, context, state, failure=None) -> dict:
