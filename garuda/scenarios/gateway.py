@@ -16,7 +16,7 @@ from typing import Any
 from garuda.core import setup_view
 from garuda.core.sessions import SessionStore
 from garuda.runtime.ownership import current_owner, owner_liveness
-from garuda.runtime.strict_store import StorageError
+from garuda.runtime.strict_store import CorruptRecord, StorageError
 from garuda.scenarios.authority import start_authority
 from garuda.scenarios.catalog import VERSION as CATALOG_VERSION
 from garuda.scenarios.compile import COMPILER_VERSION, compile_with_context
@@ -185,6 +185,10 @@ class FlowStartGateway:
         #: and whether it was a proved refusal, so a later request can settle them.
         self._unsettled: dict[str, tuple[str, bool]] = {}
         self._admissions: dict[str, asyncio.Future] = {}
+        #: The resume operation each admitted resume superseded (its claim's previous one).
+        self._replaced_claims: dict[str, str] = {}
+        #: Resume requests being answered now, by operation ID: a duplicate waits for it.
+        self._resume_requests: dict[str, asyncio.Future] = {}
         self._closing = False
 
     @property
@@ -409,6 +413,26 @@ class FlowStartGateway:
                    for operation, task in self._tasks.items())
 
     def _resumable(self, session_id: str, meta: dict) -> None:
+        try:
+            self._check_resumable(session_id, meta)
+        except FlowStartError:
+            raise
+        except CorruptRecord as exc:
+            raise FlowStartError(
+                "flow.resume_record_mismatch",
+                f"The flow's records are corrupt ({exc}); it is never resumed.") from exc
+        except (StorageError, OSError) as exc:
+            raise FlowStartError("starter.operation_unavailable",
+                                 "The flow's records are unavailable.", status=503) from exc
+        except (ValueError, AttributeError, TypeError, KeyError) as exc:
+            # A non-UTF-8 or non-object journal line, a malformed launch record or
+            # metadata: never a malformed request, never a guess.
+            raise FlowStartError(
+                "flow.resume_record_mismatch",
+                f"The flow's step records are unreadable or malformed ({type(exc).__name__}), "
+                "so its state cannot be proved; it is never resumed.") from exc
+
+    def _check_resumable(self, session_id: str, meta: dict) -> None:
         from garuda.flows import crash
         from garuda.flows.engine import FlowStopped, owned_resume_check
         from garuda.flows.service import _refuse_beside_waiter
@@ -444,25 +468,63 @@ class FlowStartGateway:
         they launched survives.
         """
         from garuda.flows import crash
-        from garuda.flows.engine import unsettled_attempts
+        from garuda.flows.engine import FlowStopped, unsettled_attempts
 
-        meta = self.store.load_meta(session_id)
-        if not crash.applies(meta, owned=True) or not unsettled_attempts(self.store, session_id):
-            return None
-        proof = crash.prove(self.store, session_id, meta, owned=True)
+        try:
+            meta = self.store.load_meta(session_id)
+            if (not crash.applies(meta, owned=True)
+                    or not unsettled_attempts(self.store, session_id)):
+                return None
+            proof = crash.prove(self.store, session_id, meta, owned=True)
+        except (CorruptRecord, ValueError, AttributeError, TypeError, KeyError) as exc:
+            # Malformed records read before anything was reclaimed or written: a
+            # proved refusal (an unreadable store stays uncertain).
+            raise FlowStopped("flow.resume_record_mismatch",
+                              "the flow's step records are unreadable or malformed "
+                              f"({type(exc).__name__}); it is never resumed") from exc
         if proof is None:
             return None
         current = self.store.load_meta(session_id)
         for key in ("flow_resume_operation", "flow_operation"):
             binding = current.get(key)
             if isinstance(binding, dict) and _canonical_uuid4(binding.get("operation_id")):
-                try:
-                    self.intents.settle_lost(binding["operation_id"], owner=self.owner,
-                                             session_id=session_id)
-                except (StorageError, IntentStateError, OSError, ValueError):
-                    # Unrecorded: it keeps projecting uncertain, then superseded.
-                    logger.warning("could not settle lost operation %s", binding["operation_id"])
+                self._settle_lost(binding["operation_id"], session_id, bound=True,
+                                  outcome="interrupted")
         return proof
+
+    def _settle_lost(self, operation_id: str, session_id: str, *, bound: bool,
+                     outcome: str = "interrupted") -> None:
+        """Best effort: an operation it cannot settle keeps projecting ``uncertain``."""
+        try:
+            self.intents.settle_lost(operation_id, owner=self.owner, session_id=session_id,
+                                     bound=bound, outcome=outcome)
+        except (StorageError, IntentStateError, OSError, ValueError):
+            logger.warning("could not settle lost operation %s", operation_id)
+
+    def _settle_superseded(self, record: dict) -> None:
+        """Settle the resume this one superseded, when its dashboard is proved gone.
+
+        ``prepare_resume`` replaced its claim because its owner was dead. If it
+        died before its resume binding (``launch-authorized``) it never ran a
+        step: ``refused``/``owner.lost``. If the flow names it (``admitted``) it
+        settles with the flow's recorded outcome, once the flow is no longer
+        recorded running (a crashed attempt is settled by the crash proof).
+        """
+        previous = self._replaced_claims.pop(record["operation_id"], None)
+        if previous is None:
+            return
+        session_id = record["reserved_session"]
+        try:
+            meta = self.store.load_meta(session_id)
+        except (StorageError, OSError, ValueError):
+            return
+        binding = meta.get("flow_resume_operation")
+        bound = isinstance(binding, dict) and binding.get("operation_id") == previous
+        state = meta.get("flow_state")
+        if bound and state not in {"completed", "stopped", "interrupted"}:
+            return
+        self._settle_lost(previous, session_id, bound=bound,
+                          outcome=state if bound else "interrupted")
 
     async def resume(self, spec: FlowResumeRequest) -> dict:
         """Admit one owned resume of a dashboard-started flow, at most once per operation.
@@ -472,7 +534,63 @@ class FlowStartGateway:
         exact plan digest and authority digest (under the start's server epoch and
         this dashboard's ceiling). A duplicate request returns the same operation;
         another unfinished resume of the flow refuses.
+
+        A duplicate arriving while this gateway is still admitting the same
+        operation (before its record exists, or while its task runs) waits for
+        that admission and gets its operation, never ``flow.resume_in_progress``:
+        only a different operation of the flow is refused as in progress.
         """
+        pending = self._resume_requests.get(spec.operation_id)
+        if pending is not None:
+            try:
+                await asyncio.shield(pending)
+            except Exception:  # noqa: BLE001 - the first request's own answer
+                pass
+            return await self._duplicate_resume(spec)
+        pending = asyncio.get_running_loop().create_future()
+        self._resume_requests[spec.operation_id] = pending
+        try:
+            payload = await self._resume_once(spec)
+        except FlowStartError as exc:
+            pending.set_exception(exc)
+            pending.exception()  # retrieved: duplicates re-read the record instead
+            if exc.code == "flow.resume_in_progress":
+                # Refused as in progress, yet this very operation may be the one in
+                # progress (its record appeared after this request first looked).
+                duplicate = await self._recorded_resume(spec)
+                if duplicate is not None:
+                    return duplicate
+            raise
+        except BaseException as exc:
+            pending.set_exception(exc if isinstance(exc, Exception) else RuntimeError("cancelled"))
+            pending.exception()
+            raise
+        else:
+            pending.set_result(None)
+            return payload
+        finally:
+            if self._resume_requests.get(spec.operation_id) is pending:
+                del self._resume_requests[spec.operation_id]
+
+    async def _recorded_resume(self, spec: FlowResumeRequest) -> dict | None:
+        """The recorded resume operation ``spec`` names, projected as a duplicate, or None."""
+        try:
+            existing = await _settled_call(self.intents.read, spec.operation_id)
+        except (StorageError, OSError, ValueError):
+            return None
+        if (existing is None or existing["version"] != 3
+                or existing["reserved_session"] != spec.session_id):
+            return None
+        return await self._project(existing, duplicate=True)
+
+    async def _duplicate_resume(self, spec: FlowResumeRequest) -> dict:
+        """A duplicate of an admission this gateway just finished: its record, or a re-run."""
+        recorded = await self._recorded_resume(spec)
+        if recorded is not None:
+            return recorded
+        return await self.resume(spec)  # nothing was recorded: answer it afresh
+
+    async def _resume_once(self, spec: FlowResumeRequest) -> dict:
         if self._closing:
             raise FlowStartError("starter.gateway_closing",
                                  "The dashboard is shutting down.", status=503)
@@ -543,10 +661,16 @@ class FlowStartGateway:
                 state, "Resolve the starter readiness diagnostics before resuming."))
         self._admitting.add(spec.operation_id)
         try:
+            try:
+                previous = await _settled_call(self.intents.claimed, spec.session_id)
+            except (StorageError, OSError, ValueError):
+                previous = None
             record, created = await self._prepare_resume(
                 spec, start, request_digest, root, identity)
             if not created:
                 return await self._project(record, duplicate=True)
+            if previous is not None and previous != spec.operation_id:
+                self._replaced_claims[spec.operation_id] = previous
             return await self._schedule(record, plan, context, start=meta["flow_operation"])
         finally:
             self._admitting.discard(spec.operation_id)
@@ -655,8 +779,10 @@ class FlowStartGateway:
             if record["version"] == 3:
                 from garuda.flows.service import FlowExecutionService
 
-                # This operation now holds the flow's resume claim: prove a crashed
-                # attempt closed (and reclaim its dead dashboard's holdings) only now.
+                # This operation now holds the flow's resume claim: settle the lost
+                # resume it superseded, and prove a crashed attempt closed (reclaiming
+                # its dead dashboard's holdings) only now.
+                await _settled_call(self._settle_superseded, record)
                 proof = await _settled_call(self._crash_proof, record["reserved_session"])
                 result = await FlowExecutionService(self.store).resume_prepared(
                     plan, context, flow_session=record["reserved_session"], start_binding=start,

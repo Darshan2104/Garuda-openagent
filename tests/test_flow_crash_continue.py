@@ -209,3 +209,23 @@ def test_a_live_owner_is_never_continued(flow_owner):
     finally:
         proc.send_signal(signal.SIGTERM)
         proc.communicate(timeout=120)
+
+
+def test_a_crash_recorded_on_another_pid_namespace_is_never_continued(flow_owner):
+    """A pid absent here proves nothing about a process of another host or namespace."""
+    start, workspace, shim, marker = flow_owner
+    proc, flow_id = start()
+    store = SessionStore()
+    _step_id, record = _kill(proc, store, flow_id)
+    host = dict(record["host"])
+    flow_dir = engine.flow_dir(store, flow_id)
+    launches.write(flow_dir, "only", 1, {"host": {**host, "pid_ns": "pid:[1]"}})
+    _shim(shim, "success", marker)
+    rc, out = _cli(workspace, "flow", "resume", flow_id)
+    assert rc == 2 and "flow.owner_host_unproved" in out, out
+    assert "pid namespace" in out and "never replayed" in out, out
+    assert engine.receipts(store, flow_id) == []
+    assert store.load_meta(flow_id)["flow_state"] == "running"  # nothing was reclaimed
+    launches.write(flow_dir, "only", 1, {"host": host})
+    rc, out = _cli(workspace, "flow", "resume", flow_id)
+    assert rc == 0, out
