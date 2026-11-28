@@ -154,6 +154,11 @@ async def test_owned_resume_refuses_changed_authority_and_unresumable_states(
     await refused(_resume_body(session), 409, "flow.interrupted_unsettled")
     journal.write_text(settled)
 
+    # A malformed recorded start: a typed mismatch, never an internal error.
+    ctx.store.update_meta(session, {"starter": {**original["starter"], "sources": ["not-a-map"]}})
+    await refused(_resume_body(session), 409, "flow.resume_record_mismatch")
+    ctx.store.update_meta(session, {"starter": original["starter"]})
+
     # A changed permission ceiling: the start's authority digest no longer matches.
     smart = ctx.flow_starts
     ctx.flow_starts = _gateway(ctx, max_permission="auto")
@@ -307,6 +312,118 @@ async def test_duplicate_resumes_run_once_and_restart_never_replays(write_contex
     assert calls == 2
 
 
+def test_unproved_cleanup_is_never_a_proved_refusal():
+    from garuda.scenarios.gateway import _failure_reason
+
+    for code in sorted(engine.QUARANTINE_STOPS):
+        assert _failure_reason(FlowStopped(code, "unproved")) == (code, False)
+    assert _failure_reason(FlowStopped("flow.workspace_changed", "x")) == (
+        "flow.workspace_changed", True)
+
+
+async def test_an_unrecorded_settlement_never_blocks_later_resumes(write_context, monkeypatch):
+    """A resume this process ended but could not record is settled by the next request."""
+    from garuda.runtime.strict_store import StorageUnavailable
+    from garuda.scenarios import launch_intents
+
+    ctx = write_context
+    _start_id, session = await _stopped_owned_flow(ctx, monkeypatch)
+    calls = 0
+    held = asyncio.Event()
+
+    async def resume_prepared(_service, *_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise FlowStopped("flow.workspace_changed", "refused before its binding (test)")
+        held.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(FlowExecutionService, "resume_prepared", resume_prepared)
+    gateway = ctx.flow_starts
+    advance = gateway.intents.advance
+    offline = True
+
+    def flaky(operation_id, **kwargs):
+        if offline and kwargs.get("expected") == "launch-authorized":
+            raise StorageUnavailable("session store offline (test)")
+        return advance(operation_id, **kwargs)
+
+    monkeypatch.setattr(gateway.intents, "advance", flaky)
+    first = _resume_body(session)
+    response = await _call(ctx, RESUME, method="POST", body=first)
+    assert response.status in {201, 202}, _body(response)
+    stuck = await _status(ctx, first["operation_id"], {"uncertain"})
+    assert stuck["reason"] == "publication.uncertain"
+    assert gateway.intents.read(first["operation_id"])["phase"] == "launch-authorized"
+
+    # Still unwritable: a typed, retryable refusal rather than "in progress" forever.
+    blocked = await _call(ctx, RESUME, method="POST", body=_resume_body(session))
+    assert blocked.status == 503, _body(blocked)
+    assert _body(blocked)["error"]["code"] == "starter.operation_unavailable"
+
+    # Another dashboard process cannot settle it: an owner neither alive nor dead
+    # is a typed refusal naming what to do; a live one is "in progress".
+    other = _gateway(ctx)
+    ctx.flow_starts = other
+    mine = other.owner.to_dict()
+    liveness = launch_intents.owner_liveness
+    try:
+        monkeypatch.setattr(launch_intents, "owner_liveness",
+                            lambda owner: True if owner == mine else None)
+        unknown = await _call(ctx, RESUME, method="POST", body=_resume_body(session))
+        assert unknown.status == 409
+        assert _body(unknown)["error"]["code"] == "flow.resume_owner_unknown"
+        assert str(gateway.owner.pid) in _body(unknown)["error"]["message"]
+        monkeypatch.setattr(launch_intents, "owner_liveness", lambda _owner: True)
+        live = await _call(ctx, RESUME, method="POST", body=_resume_body(session))
+        assert live.status == 409
+        assert _body(live)["error"]["code"] == "flow.resume_in_progress"
+    finally:
+        monkeypatch.setattr(launch_intents, "owner_liveness", liveness)
+        await other.aclose()
+        ctx.flow_starts = gateway
+
+    offline = False
+    fresh = await _call(ctx, RESUME, method="POST", body=_resume_body(session))
+    assert fresh.status in {201, 202}, _body(fresh)
+    await asyncio.wait_for(held.wait(), 5)
+    record = gateway.intents.read(first["operation_id"])
+    assert record["phase"] == "refused" and record["reason"] == "flow.workspace_changed"
+    assert calls == 2
+
+
+async def test_a_retry_returns_its_operation_and_superseded_records_keep_their_own(
+        write_context, monkeypatch, tmp_path):
+    ctx = write_context
+    start_id, session = await _stopped_owned_flow(ctx, monkeypatch)
+
+    async def held(_service, *_args, **_kwargs):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(FlowExecutionService, "resume_prepared", held)
+    body = _resume_body(session)
+    response = await _call(ctx, RESUME, method="POST", body=body)
+    assert response.status in {201, 202}, _body(response)
+    allowed = ctx.flow_starts.workspaces
+    ctx.flow_starts.workspaces = (tmp_path,)  # the flow's workspace left the allowlist
+    try:
+        retry = await _call(ctx, RESUME, method="POST", body=body)
+        assert retry.status in {200, 202}, _body(retry)
+        assert _body(retry)["operation_id"] == body["operation_id"]
+        assert _body(retry)["duplicate"] is True
+    finally:
+        ctx.flow_starts.workspaces = allowed
+
+    # A start a later resume continued projects its own record, not the live flow.
+    later = str(uuid.uuid4())
+    ctx.store.update_meta(session, {"flow_resume_operation": {"operation_id": later},
+                                    "flow_state": "running", "status": "running"})
+    start = _body(await _call(ctx, f"/api/scenario-operations/{start_id}"))
+    assert start["status"] == "terminal" and start["outcome"] == "interrupted", start
+    assert start["resumed_by"] == later and start["flow_state"] is None
+
+
 async def test_cli_resume_points_operation_managed_flows_at_the_owned_resume(
         write_context, monkeypatch):
     ctx = write_context
@@ -410,6 +527,8 @@ async def _interrupt_start(ctx, started, *, starter, inputs):
     assert meta["flow_state"] == "stopped"
     assert meta["flow_stop"]["code"] == engine.INTERRUPTED_STOP
     assert engine.unsettled_attempts(ctx.store, projection["session_id"]) == []
+    assert RESUME in meta["flow_stop"]["message"]
+    assert "garuda flow resume" not in meta["flow_stop"]["message"]
     return start_id, projection["session_id"]
 
 
@@ -468,6 +587,47 @@ async def test_interrupted_dashboard_flow_resumes_once_to_completion(tmp_path, m
         assert _body(again)["error"]["code"] == "flow.resume_completed"
         await asyncio.sleep(.1)
         assert len(requests) == 3
+    finally:
+        release.set()
+        await ctx.flow_starts.aclose()
+        await ctx.live.aclose()
+        server.shutdown()
+        server.server_close()
+
+
+@LINUX
+async def test_checked_resume_without_proved_cleanup_quarantines_instead_of_refusing(
+        tmp_path, monkeypatch):
+    """A resume whose evidence worker did not settle before its binding is no refusal."""
+    from garuda.runtime.process_supervision import CleanupUncertain
+    from garuda.workspace.flow_evidence import OwnedFlowEvidence
+
+    ctx, server, requests, started, release = _owned_dashboard(tmp_path, monkeypatch,
+                                                               checks=True)
+    try:
+        _start_id, session = await _interrupt_start(
+            ctx, started, starter="build-review", inputs={"goal": "build one checked change"})
+        release.set()
+        ctx.flow_starts = _gateway(ctx)
+
+        async def unsettled(_evidence, *_args, **_kwargs):
+            raise CleanupUncertain("the resume evidence worker did not settle (test)")
+
+        monkeypatch.setattr(OwnedFlowEvidence, "resume", unsettled)
+        body = _resume_body(session)
+        response = await _call(ctx, RESUME, method="POST", body=body)
+        assert response.status in {200, 201, 202}, _body(response)
+        settled = await _status(ctx, body["operation_id"],
+                                {"quarantined", "refused", "uncertain", "terminal"}, timeout=60)
+        assert settled["status"] == "quarantined", settled
+        assert ctx.flow_starts.intents.read(body["operation_id"])["phase"] == "quarantined"
+        meta = ctx.store.load_meta(session)
+        assert meta["flow_state"] == "quarantined"
+        assert meta["flow_stop"]["code"] == "flow.cleanup_unproved"
+        assert "flow_resume_operation" not in meta
+        again = await _call(ctx, RESUME, method="POST", body=_resume_body(session))
+        assert again.status == 409 and _body(again)["error"]["code"] == "flow.quarantined"
+        assert len(requests) == 1  # only the interrupted attempt ever ran
     finally:
         release.set()
         await ctx.flow_starts.aclose()

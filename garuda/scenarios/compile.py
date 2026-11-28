@@ -332,6 +332,8 @@ def recompile_recorded(record: dict, task: str, workspace: str | Path, *,
             or not isinstance(record.get("starter_id"), str)
             or not isinstance(record.get("inputs"), dict)
             or not isinstance(record.get("sources"), list)
+            or any(type(source) is not dict or any(type(key) is not str for key in source)
+                   for source in record["sources"])
             or not isinstance(record.get("approved_scope"), list)
             or record.get("context_grant") not in {None, "user-request"}):
         raise StarterError("starter.record_invalid", "the flow's recorded start is incomplete")

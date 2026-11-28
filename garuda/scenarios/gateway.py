@@ -22,6 +22,7 @@ from garuda.scenarios.catalog import VERSION as CATALOG_VERSION
 from garuda.scenarios.compile import COMPILER_VERSION, compile_with_context
 from garuda.scenarios.digests import digest
 from garuda.scenarios.launch_intents import (
+    UNFINISHED,
     IntentConflict,
     IntentStateError,
     LaunchIntentStore,
@@ -138,9 +139,12 @@ def _failure_reason(exc: BaseException) -> tuple[str, bool]:
     if isinstance(exc, CapacityUnavailable):
         return "capacity.unavailable", True
     if isinstance(exc, FlowStopped):
+        from garuda.flows.engine import QUARANTINE_STOPS
+
         code = getattr(exc, "code", None)
-        return (code if isinstance(code, str) and _REASON.fullmatch(code)
-                else "flow.stopped"), True
+        reason = code if isinstance(code, str) and _REASON.fullmatch(code) else "flow.stopped"
+        # Unproved cleanup or evidence is never a proved refusal, whatever its type.
+        return reason, code not in QUARANTINE_STOPS
     return "flow.failed", False
 
 
@@ -175,6 +179,11 @@ class FlowStartGateway:
         self.intents = LaunchIntentStore(store.root)
         self._tasks: dict[str, asyncio.Task] = {}
         self._sessions: dict[str, str] = {}
+        #: Operations whose admission is between their durable prepare and their task.
+        self._admitting: set[str] = set()
+        #: Operations this process ended but could not settle durably: their reason
+        #: and whether it was a proved refusal, so a later request can settle them.
+        self._unsettled: dict[str, tuple[str, bool]] = {}
         self._admissions: dict[str, asyncio.Future] = {}
         self._closing = False
 
@@ -275,27 +284,31 @@ class FlowStartGateway:
         if not authority["can_start"]:
             first = authority["diagnostics"][0]
             raise FlowStartError(first["code"], first["message"])
+        self._admitting.add(spec.operation_id)
         try:
-            record, created = await _settled_call(
-                self.intents.prepare, operation_id=spec.operation_id,
-                request_digest=request_digest, plan_digest=plan.digest,
-                authority_digest=authority["digest"], workspace=str(root),
-                workspace_identity=identity, compiler_version=COMPILER_VERSION,
-                catalog_version=CATALOG_VERSION, owner=self.owner,
-                background=plan.kind == "run" and bool(plan.options.get("bg")))
-        except IntentConflict as exc:
-            raise FlowStartError("starter.operation_conflict", str(exc)) from exc
-        except (StorageError, IntentStateError, OSError, ValueError) as exc:
-            raise FlowStartError("starter.operation_unavailable",
-                                 "The launch operation could not be durably prepared.",
-                                 status=503) from exc
-        if not created:
-            if not self._same_request(record, spec, request_digest, root, identity):
-                raise FlowStartError("starter.operation_conflict",
-                                     "operation_id already names another launch request.")
-            return await self._project(record, duplicate=True)
+            try:
+                record, created = await _settled_call(
+                    self.intents.prepare, operation_id=spec.operation_id,
+                    request_digest=request_digest, plan_digest=plan.digest,
+                    authority_digest=authority["digest"], workspace=str(root),
+                    workspace_identity=identity, compiler_version=COMPILER_VERSION,
+                    catalog_version=CATALOG_VERSION, owner=self.owner,
+                    background=plan.kind == "run" and bool(plan.options.get("bg")))
+            except IntentConflict as exc:
+                raise FlowStartError("starter.operation_conflict", str(exc)) from exc
+            except (StorageError, IntentStateError, OSError, ValueError) as exc:
+                raise FlowStartError("starter.operation_unavailable",
+                                     "The launch operation could not be durably prepared.",
+                                     status=503) from exc
+            if not created:
+                if not self._same_request(record, spec, request_digest, root, identity):
+                    raise FlowStartError("starter.operation_conflict",
+                                         "operation_id already names another launch request.")
+                return await self._project(record, duplicate=True)
 
-        return await self._schedule(record, plan, context)
+            return await self._schedule(record, plan, context)
+        finally:
+            self._admitting.discard(spec.operation_id)
 
     @staticmethod
     def _resume_digest(spec: FlowResumeRequest, start: dict, root: Path,
@@ -337,13 +350,58 @@ class FlowStartGateway:
                 "flow.resume_record_mismatch",
                 "The flow's start operation record is missing or disagrees with the flow, so its "
                 "admitted authority cannot be proved; it is never resumed.")
-        if start["phase"] != "terminal" and not (
-                start["phase"] == "admitted" and owner_liveness(start["owner"]) is False):
+        if start["phase"] in UNFINISHED and await self._resettle(start["operation_id"]):
+            start = await _settled_call(self.intents.read, operation)
+        if start["phase"] != "terminal":
+            liveness = owner_liveness(start["owner"])
+            if start["phase"] == "admitted" and liveness is False:
+                return meta, start
+            if start["phase"] in UNFINISHED and liveness is None:
+                raise self._owner_unknown(start)
             raise FlowStartError(
                 "flow.resume_start_unsettled",
                 f"The flow's start operation is {start['phase']}; only a flow whose start "
                 "settled (or whose dashboard is proved gone) is resumed.")
         return meta, start
+
+    @staticmethod
+    def _owner_unknown(record: dict) -> FlowStartError:
+        pid = record["owner"].get("pid")
+        return FlowStartError(
+            "flow.resume_owner_unknown",
+            f"Operation {record['operation_id']} of this flow is unfinished and the dashboard "
+            f"process that owns it (pid {pid}) can be proved neither alive nor dead, so another "
+            f"operation could run beside it. Make sure process {pid} and its process group have "
+            "exited (stop that dashboard); once Garuda can prove it gone, resume again.")
+
+    async def _resettle(self, operation_id: str) -> bool:
+        """Durably settle an operation this process ended but could not record.
+
+        Only an operation owned by this gateway, with no task and no admission in
+        progress, qualifies: nothing of it can still act. Its recorded settlement
+        reason is reused (a proved refusal stays one); anything else settles as
+        uncertain. True when the record is now final.
+        """
+        task = self._tasks.get(operation_id)
+        if (task is not None and not task.done()) or operation_id in self._admitting:
+            return False
+        try:
+            record = await _settled_call(self.intents.read, operation_id)
+        except (StorageError, OSError, ValueError):
+            return False
+        if (record is None or record["phase"] not in UNFINISHED
+                or record["owner"] != self.owner.to_dict()):
+            return False
+        reason, refusal = self._unsettled.get(operation_id, ("publication.uncertain", False))
+        await self._settle_interruption(record, reason=reason, refusal=refusal)
+        try:
+            latest = await _settled_call(self.intents.read, operation_id)
+        except (StorageError, OSError, ValueError):
+            return False
+        if latest is None or latest["phase"] in UNFINISHED:
+            return False
+        self._unsettled.pop(operation_id, None)
+        return True
 
     def _active_session(self, session_id: str) -> bool:
         """Whether this gateway still owns a task for the flow session."""
@@ -381,18 +439,19 @@ class FlowStartGateway:
         except (StorageError, OSError, ValueError) as exc:
             raise FlowStartError("starter.operation_unavailable",
                                  "The launch operation store is unavailable.", status=503) from exc
+        if existing is not None:
+            # The operation ID and flow session are the whole request: a retry gets
+            # the recorded operation even if the flow's scope changed since.
+            if existing["version"] != 3 or existing["reserved_session"] != spec.session_id:
+                raise FlowStartError("starter.operation_conflict",
+                                     "operation_id already names another launch request.")
+            return await self._project(existing, duplicate=True)
         meta, start = await self._resume_target(spec.session_id)
         root, identity = self._workspace_for_record(start)
         if start["workspace"] != str(root) or start["workspace_identity"] != identity:
             raise FlowStartError("starter.operation_scope_changed",
                                  "The flow's workspace is no longer authorized.", status=403)
         request_digest = self._resume_digest(spec, start, root, identity)
-        if existing is not None:
-            if (existing["version"] != 3 or existing["request_digest"] != request_digest
-                    or existing["reserved_session"] != spec.session_id):
-                raise FlowStartError("starter.operation_conflict",
-                                     "operation_id already names another launch request.")
-            return await self._project(existing, duplicate=True)
         if not self.available:
             raise FlowStartError("starter.ownership_unavailable",
                                  "Owned flow resumes require the Linux descendant supervisor.",
@@ -404,9 +463,15 @@ class FlowStartGateway:
             plan, context = await _settled_call(
                 recompile_recorded, meta.get("starter"), meta.get("task"), root, store=self.store)
         except RESOLUTION_ERRORS as exc:
+            if getattr(exc, "code", None) == "starter.record_invalid":
+                raise FlowStartError("flow.resume_record_mismatch",
+                                     f"The flow's recorded start is malformed: {exc}") from exc
             raise FlowStartError("flow.resume_definition_changed",
                                  f"The flow's starter, configuration, roles or checks no longer "
                                  f"resolve as they did at its start: {exc}") from exc
+        except (TypeError, ValueError, KeyError, AttributeError) as exc:
+            raise FlowStartError("flow.resume_record_mismatch",
+                                 "The flow's recorded start is malformed.") from exc
         if plan.provenance.get("workspace_identity") != identity:
             raise FlowStartError("starter.workspace_changed",
                                  "The flow's workspace changed during compilation.")
@@ -433,27 +498,52 @@ class FlowStartGateway:
         if not state["can_run"]:
             raise FlowStartError(*readiness_refusal(
                 state, "Resolve the starter readiness diagnostics before resuming."))
+        self._admitting.add(spec.operation_id)
         try:
-            record, created = await _settled_call(
-                self.intents.prepare_resume, operation_id=spec.operation_id,
-                session_id=spec.session_id, start_operation_id=start["operation_id"],
-                request_digest=request_digest, plan_digest=start["plan_digest"],
-                authority_digest=start["authority_digest"], workspace=str(root),
-                workspace_identity=identity, compiler_version=COMPILER_VERSION,
-                catalog_version=CATALOG_VERSION, owner=self.owner)
-        except ResumeInProgress as exc:
-            raise FlowStartError("flow.resume_in_progress",
-                                 f"Resume operation {exc.operation_id} of this flow is still "
-                                 "unfinished; poll it instead of starting another.") from exc
-        except IntentConflict as exc:
-            raise FlowStartError("starter.operation_conflict", str(exc)) from exc
-        except (StorageError, IntentStateError, OSError, ValueError) as exc:
-            raise FlowStartError("starter.operation_unavailable",
-                                 "The resume operation could not be durably prepared.",
-                                 status=503) from exc
-        if not created:
-            return await self._project(record, duplicate=True)
-        return await self._schedule(record, plan, context, start=meta["flow_operation"])
+            record, created = await self._prepare_resume(
+                spec, start, request_digest, root, identity)
+            if not created:
+                return await self._project(record, duplicate=True)
+            return await self._schedule(record, plan, context, start=meta["flow_operation"])
+        finally:
+            self._admitting.discard(spec.operation_id)
+
+    async def _prepare_resume(self, spec, start, request_digest, root, identity):
+        prepare = lambda: _settled_call(  # noqa: E731 - the same call, retried once
+            self.intents.prepare_resume, operation_id=spec.operation_id,
+            session_id=spec.session_id, start_operation_id=start["operation_id"],
+            request_digest=request_digest, plan_digest=start["plan_digest"],
+            authority_digest=start["authority_digest"], workspace=str(root),
+            workspace_identity=identity, compiler_version=COMPILER_VERSION,
+            catalog_version=CATALOG_VERSION, owner=self.owner)
+        for retry in (True, False):
+            try:
+                return await prepare()
+            except ResumeInProgress as exc:
+                if exc.owner == self.owner.to_dict():
+                    if retry and await self._resettle(exc.operation_id):
+                        continue  # this process's own stuck resume, now settled
+                    task = self._tasks.get(exc.operation_id)
+                    if ((task is None or task.done())
+                            and exc.operation_id not in self._admitting):
+                        raise FlowStartError(
+                            "starter.operation_unavailable",
+                            f"Resume operation {exc.operation_id} of this flow ended but "
+                            "could not be recorded durably; retry once the session store "
+                            "is writable.", status=503) from exc
+                elif exc.liveness is None:
+                    raise self._owner_unknown(
+                        {"operation_id": exc.operation_id, "owner": exc.owner}) from exc
+                raise FlowStartError("flow.resume_in_progress",
+                                     f"Resume operation {exc.operation_id} of this flow is still "
+                                     "unfinished; poll it instead of starting another.") from exc
+            except IntentConflict as exc:
+                raise FlowStartError("starter.operation_conflict", str(exc)) from exc
+            except (StorageError, IntentStateError, OSError, ValueError) as exc:
+                raise FlowStartError("starter.operation_unavailable",
+                                     "The resume operation could not be durably prepared.",
+                                     status=503) from exc
+        raise AssertionError("unreachable")
 
     async def _schedule(self, record: dict, plan, context, *, start: dict | None = None) -> dict:
         operation = record["operation_id"]
@@ -576,6 +666,7 @@ class FlowStartGateway:
 
     async def _settle_interruption(self, record: dict, *, reason: str,
                                    refusal: bool = False) -> dict:
+        """Durably settle an ended operation; an unrecorded result is remembered."""
         try:
             latest = await _settled_call(self.intents.read, record["operation_id"])
             if latest is None:
@@ -621,6 +712,20 @@ class FlowStartGateway:
                 # holds the lease, no child precedes it, and it has unwound here.
                 # Cancellation and unknown failures stay uncertain.
                 reserved = self.store.session_dir(record["reserved_session"])
+                if record["version"] == 3:
+                    # A resume that could not prove its workers closed before its
+                    # binding quarantined the flow itself: never a refusal.
+                    try:
+                        current = await _settled_call(self.store.load_meta,
+                                                      record["reserved_session"])
+                    except (FileNotFoundError, OSError, ValueError, StorageError):
+                        current = None
+                    if current is None or current.get("flow_state") == "quarantined":
+                        return await _settled_call(
+                            self.intents.advance, record["operation_id"], expected=phase,
+                            phase="quarantined" if current is not None else "uncertain",
+                            owner=self.owner, reason="flow.quarantined"
+                            if current is not None else "publication.uncertain")
                 # A resume continues an existing session: its engine publishes the
                 # resume binding before any step, so its absence (checked above)
                 # with a pre-launch refusal proves nothing launched.
@@ -634,6 +739,8 @@ class FlowStartGateway:
                     phase="uncertain", owner=self.owner, reason=reason)
             return record
         except (StorageError, IntentStateError, OSError, ValueError, KeyError):
+            # Not recorded: kept here so a later request of this process settles it.
+            self._unsettled[record["operation_id"]] = (reason, refusal)
             return {**record, "phase": "uncertain", "reason": "publication.uncertain"}
 
     async def _bound_meta(self, record: dict) -> dict | None:
@@ -719,8 +826,8 @@ class FlowStartGateway:
     async def _superseded(self, record: dict) -> dict | None:
         """The flow's metadata when a later resume of it replaced this operation's binding.
 
-        Only a terminal record qualifies: its own terminal publication precedes
-        the next resume's admission, so its recorded outcome stands.
+        A terminal record's outcome stands: its terminal publication preceded the
+        next resume's admission. An admitted one's owner was proved gone first.
         """
         try:
             meta = await _settled_call(self.store.load_meta, record["reserved_session"])
@@ -730,7 +837,7 @@ class FlowStartGateway:
         start = meta.get("flow_operation")
         start_id = (record["resumes"]["start_operation_id"] if record["version"] == 3
                     else record["operation_id"])
-        if (record["phase"] == "terminal" and isinstance(later, dict)
+        if (record["phase"] in {"admitted", "terminal"} and isinstance(later, dict)
                 and later.get("operation_id") != record["operation_id"]
                 and isinstance(start, dict) and start.get("operation_id") == start_id):
             return meta
@@ -756,6 +863,11 @@ class FlowStartGateway:
                    "session_id": record.get("session_id"),
                    "outcome": record.get("outcome"), "reason": record.get("reason"),
                    "duplicate": duplicate}
+        if record["operation_id"] in self._unsettled and not active:
+            # Ended here but not durably recorded: uncertain until a later request
+            # of this process settles it.
+            payload.update(status="uncertain", reason="publication.uncertain")
+            return payload
         if phase == "prepared":
             payload["status"] = "admission-pending" if active else (
                 "abandoned" if owner_live is False else "uncertain")
@@ -771,12 +883,16 @@ class FlowStartGateway:
                 payload["status"] = "admission-pending" if active else "uncertain"
             return payload
         if phase in {"admitted", "terminal"}:
-            later = await self._superseded(record) if phase == "terminal" else None
+            later = await self._superseded(record)
             if later is not None:
-                # A start or earlier resume a later resume continued: terminal as
-                # recorded, never re-derived from the flow's current state.
-                payload.update(status="terminal", flow_state=later.get("flow_state"),
+                # A start or earlier resume a later resume continued: projected from
+                # its own record only, never from the flow's current state.
+                payload.update(flow_state=None,
                                resumed_by=later["flow_resume_operation"]["operation_id"])
+                if phase == "terminal":
+                    payload["status"] = "terminal"
+                else:  # its owner was proved gone before the later resume was admitted
+                    payload.update(status="uncertain", reason="owner.uncertain")
                 return payload
             meta = await self._bound_meta(record)
             if meta is None:

@@ -271,8 +271,11 @@ Stopping the dashboard while a step runs settles that attempt as a resumable
 `flow.interrupted` stop once the supervisor proved its tree closed, so a
 dashboard restart is followed by a resume, never a replay. The workspace lease,
 review independence, approvals and evidence work as in the start; the engine
-proves the stop again under the lease before any step runs. A refusal names
-its code (below); nothing is written to make a flow resumable.
+proves the stop again under the lease before any step runs. A resume that
+cannot prove its owned workers closed before that point quarantines the flow
+rather than refusing. A retry with the same `operation_id` returns the recorded
+operation. A refusal names its code (below); nothing is written to make a flow
+resumable.
 
 Everything else is copy-only, with its reason: a read-only dashboard
 (`dashboard.read_only`), a host without the Linux supervisor
@@ -956,7 +959,9 @@ digest differs: definition, roles, checks or configuration changed);
 `flow.resume_completed`, `flow.recovery_required` (still recorded running: run
 `garuda runtime recover --session ID` if its dashboard died),
 `flow.resume_in_progress` (this dashboard still runs it, or another resume is
-unfinished), `flow.quarantined`, `flow.interrupted_unsettled`,
+unfinished), `flow.resume_owner_unknown` (another resume or the start is unfinished
+and its dashboard process can be proved neither alive nor dead: make sure it has
+exited, then resume again), `flow.quarantined`, `flow.interrupted_unsettled`,
 `flow.stop_not_resumable`, `flow.resume_quota_wait` (before the usage limit's
 reset) and `flow.verification_reconciliation_required` (409);
 `starter.operation_conflict` (409, the operation ID names another request);

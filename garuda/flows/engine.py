@@ -89,11 +89,14 @@ RESUMABLE_CHECKED_STOPS = {"workspace.readonly_unenforced", "flow.step_failed", 
                            "flow.artifact_malformed", "flow.artifact_too_large",
                            "flow.review_invalid", INTERRUPTED_STOP, DEADLINE_STOP, SILENT_STOP,
                            NO_PROGRESS_STOP, MAX_TURNS_STOP, REFUSED_STOP, "flow.quota_wait"}
-#: A dashboard-owned flow without checks resumes (through its owned gateway, never
-#: ``garuda flow resume``) only from these settled stops: every resumable checked
-#: stop, and a Claude usage-limit pause (#834) once its reset has passed.
+#: A Claude usage-limit pause (#834); a dashboard-owned flow resumes from it (through
+#: its owned gateway, never ``garuda flow resume``) only once its reset has passed.
 QUOTA_WAIT_STOP = "flow.quota_wait"
-OWNED_RESUMABLE_STOPS = frozenset(RESUMABLE_CHECKED_STOPS | {QUOTA_WAIT_STOP})
+#: Stops after which an owned worker may still be live or a step's evidence is
+#: incomplete: the flow is quarantined and never resumed, and a dashboard operation
+#: that ended on one is never recorded as a proved refusal.
+QUARANTINE_STOPS = frozenset({"flow.cleanup_unproved", "flow.evidence_incomplete",
+                              "flow.evidence_unavailable"})
 #: While a tool call is in flight a silence-watched step waits this long (#828).
 DEFAULT_TOOL_SILENCE_MIN = 120
 
@@ -145,7 +148,7 @@ def step_limits(flow: dict, step: dict) -> StepLimits | None:
 
 
 def _liveness_stop(what: str, outcome, limits: StepLimits | None, step: str,
-                   cause: dict | None):
+                   cause: dict | None, resume: str = "`garuda flow resume`"):
     """The resumable stop of a step its own deadline or silence watchdog ended (#828)."""
     code = LIVENESS_STOPS.get(outcome.liveness or "")
     if code is None or limits is None:
@@ -155,7 +158,7 @@ def _liveness_stop(what: str, outcome, limits: StepLimits | None, step: str,
     else:
         reason = "sent nothing for longer than its silence limit"
     return FlowStopped(code, f"{what} {reason}; the turn was cancelled and the agent stopped. "
-                       "`garuda flow resume` runs it again as a new attempt",
+                       f"{resume} runs it again as a new attempt",
                        step=step, cause=cause)
 
 
@@ -468,7 +471,7 @@ def owned_resume_check(store, flow_session: str, meta: dict, *, now: float | Non
     ``garuda flow resume`` would continue for the same kind of flow qualifies:
     a checked flow needs its resume checkpoint (a resumable checked stop before
     its checks began); a flow without checks needs a stop in
-    :data:`OWNED_RESUMABLE_STOPS` or an interruption between steps. Running,
+    :data:`RESUMABLE_CHECKED_STOPS` or an interruption between steps. Running,
     completed, quarantined and unsettled (launched, never receipted) states
     refuse; nothing is written to make a state resumable. Returns the checked
     flow's original check request, or ``None`` for a flow without checks.
@@ -553,7 +556,7 @@ def owned_resume_check(store, flow_session: str, meta: dict, *, now: float | Non
                 "no resume checkpoint (only a settled step stop before its checks began "
                 "resumes); start a new flow")
         return request
-    if state == "stopped" and stop.get("code") not in OWNED_RESUMABLE_STOPS:
+    if state == "stopped" and stop.get("code") not in RESUMABLE_CHECKED_STOPS:
         raise FlowStopped("flow.stop_not_resumable",
                           f"the flow stopped with {stop.get('code')}, which is not resumable; "
                           "start a new flow")
@@ -1164,6 +1167,34 @@ class FlowRunner:
             raise FlowStopped("flow.verification_reconciliation_required",
                               "original check authority or stopped flow evidence could not be proved") from exc
 
+    def _resume_hint(self) -> str:
+        """What continues this flow after a resumable stop."""
+        if self.operation_binding is None:
+            return "`garuda flow resume`"
+        return "the dashboard's Resume (`POST /api/scenarios/resume`)"
+
+    async def _quarantine_unbound(self, exc: BaseException, lease) -> None:
+        """Quarantine an owned resume that failed before its binding without proved cleanup.
+
+        Its resume evidence worker or another owned helper may still be live, so
+        the stopped flow must not keep its resumable stop: it is published
+        quarantined (sticky, never resumed) and the lease keeps its quarantine,
+        so neither another resume nor a released lease can admit a replay. A
+        failure that proves nothing launched leaves the flow as it was.
+        """
+        from garuda.runtime.process_supervision import CleanupUncertain
+
+        if not (isinstance(exc, CleanupUncertain) or self._verification_quarantined
+                or (isinstance(exc, FlowStopped) and exc.code in QUARANTINE_STOPS)):
+            return
+        await lease.stop_heartbeat()
+        await self._publish(self.flow_session, {
+            "flow_state": "quarantined", "status": "failed",
+            "flow_stop": {"code": exc.code if isinstance(exc, FlowStopped) else "flow.cleanup_unproved",
+                          "step": getattr(exc, "step", None),
+                          "message": f"a resume could not prove its owned workers closed before "
+                                     f"it started: {exc}"}})
+
     def _owned_start(self, prior: dict) -> None:
         """The resumed flow's recorded start binds the same plan, authority and workspace."""
         start = prior.get("flow_operation")
@@ -1711,6 +1742,8 @@ class FlowRunner:
                 await self.quota_recovery.completed(self)
         except FlowStopped as stop:
             if not begun:
+                if resume and self.operation_binding is not None:
+                    await self._quarantine_unbound(stop, lease)
                 raise
             checkpoint = None
             refusal = None
@@ -1724,9 +1757,8 @@ class FlowRunner:
             failure = refusal or stop
             result.stopped = failure
             await self._publish(self.flow_session, {
-                "flow_state": "quarantined" if self._verification_quarantined or failure.code in {
-                    "flow.cleanup_unproved", "flow.evidence_incomplete", "flow.evidence_unavailable"
-                } else "stopped",
+                "flow_state": ("quarantined" if self._verification_quarantined
+                               or failure.code in QUARANTINE_STOPS else "stopped"),
                 "status": "failed", "state": finished(success=False),
                 **({"flow_resume_checkpoint": checkpoint} if checkpoint is not None else {}),
                 "flow_stop": {"code": failure.code, "step": failure.step, "message": str(failure),
@@ -1742,6 +1774,8 @@ class FlowRunner:
             if uncertain:
                 await lease.stop_heartbeat()
             if not begun:
+                if resume and self.operation_binding is not None:
+                    await self._quarantine_unbound(exc, lease)
                 raise
             updates = {
                 "flow_state": "quarantined" if uncertain else "interrupted",
@@ -1963,7 +1997,8 @@ class FlowRunner:
                       "role_plan": plans[role].record() if plans[role] is not None else None}
             if stop is None and not outcome.success:
                 cause = await _settled_sync(self._step_cause, outcome)
-                stop = _liveness_stop(f"reviewer {role}", outcome, limits, step["id"], cause) \
+                stop = _liveness_stop(f"reviewer {role}", outcome, limits, step["id"], cause,
+                                      self._resume_hint()) \
                     or FlowStopped("flow.step_failed",
                                    _failed(f"reviewer {role}", outcome, cause, no_edits=True),
                                    step=step["id"], cause=cause)
@@ -2664,10 +2699,16 @@ class FlowRunner:
         }
         stop: FlowStopped | None = None
         if interrupted is not None:
+            if self.operation_binding is None:
+                again = "`garuda flow resume` runs it again under the original checks"
+            else:
+                again = (f"{self._resume_hint()} runs it again"
+                         + (" under the original checks"
+                            if self.verification_request is not None else ""))
             stop = FlowStopped(INTERRUPTED_STOP,
                                f"step {step['id']} was interrupted (SIGTERM or Ctrl-C) after its "
-                               "worker and every descendant were proved closed; `garuda flow resume` "
-                               "runs it again under the original checks", step=step["id"])
+                               f"worker and every descendant were proved closed; {again}",
+                               step=step["id"])
         if guard is not None:
             check = await _settled_sync(guard.check)
             receipt["no_edits"] = check.record()
@@ -2703,7 +2744,8 @@ class FlowRunner:
             cause = await _settled_sync(self._step_cause, outcome)
             paused = outcome.quota_wait or self._limit_pause(plan, cause)
             stop = (None if paused
-                    else _liveness_stop(f"step {step['id']}", outcome, limits, step["id"], cause)) \
+                    else _liveness_stop(f"step {step['id']}", outcome, limits, step["id"], cause,
+                                        self._resume_hint())) \
                 or FlowStopped("flow.quota_wait" if paused else "flow.step_failed",
                                _failed(f"step {step['id']}", outcome, cause,
                                        no_edits=self._read_only(step, role)),

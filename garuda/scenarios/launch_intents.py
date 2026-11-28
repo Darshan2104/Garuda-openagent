@@ -75,9 +75,13 @@ class IntentStateError(Exception):
 class ResumeInProgress(IntentConflict):
     """Another resume operation of the same flow is unfinished and its owner may be alive."""
 
-    def __init__(self, operation_id: str):
+    def __init__(self, operation_id: str, *, owner: dict, liveness: bool | None):
         super().__init__(f"resume operation {operation_id} of this flow is still unfinished")
         self.operation_id = operation_id
+        #: The unfinished operation's owner, and whether it is proved alive (True)
+        #: or neither alive nor dead (None); a proved-dead owner never blocks.
+        self.owner = owner
+        self.liveness = liveness
 
 
 #: Phases of an operation that may still act.
@@ -495,9 +499,10 @@ class LaunchIntentStore:
             claimed = self._read_claim(directory_fd, session_id)
             if claimed is not None and claimed != operation_id:
                 active = self._read(directory_fd, claimed)
-                if (active is not None and active["phase"] in UNFINISHED
-                        and owner_liveness(active["owner"]) is not False):
-                    raise ResumeInProgress(claimed)
+                if active is not None and active["phase"] in UNFINISHED:
+                    liveness = owner_liveness(active["owner"])
+                    if liveness is not False:
+                        raise ResumeInProgress(claimed, owner=active["owner"], liveness=liveness)
             self._publish(directory_fd, f"resume-{session_id}", json.dumps(
                 {"version": 1, "session_id": session_id, "operation_id": operation_id},
                 sort_keys=True, separators=(",", ":")).encode())

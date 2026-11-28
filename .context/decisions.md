@@ -6051,13 +6051,21 @@ digest under the start's server epoch with the current ceiling; either mismatch
 refuses (`flow.resume_definition_changed`, `flow.resume_authority_changed`).
 `engine.owned_resume_check`, repeated by the engine under the lease, admits only
 a checked flow's resume checkpoint or, without checks, a stop in
-`OWNED_RESUMABLE_STOPS` or an interruption between steps; `flow.quota_wait` only
+`RESUMABLE_CHECKED_STOPS` or an interruption between steps; `flow.quota_wait` only
 after its reset plus margin. A per-flow claim (`resume-<session>.json`) admits at
 most one unfinished resume while its owner may be alive. The engine publishes
 `flow_resume_operation` with the running state after every check and before any
 step; the start's `flow_operation` never changes. A failure before that binding
-is a proved refusal; after it the start's terminal/quarantine/uncertain rules
-apply and nothing is replayed.
+is a proved refusal only when it proves nothing launched: a pre-binding stop
+whose cleanup or evidence is unproved (`engine.QUARANTINE_STOPS`, or a raw
+`CleanupUncertain`) quarantines the flow and settles the operation quarantined.
+After the binding the start's terminal/quarantine/uncertain rules apply and
+nothing is replayed. An operation this process ended but could not record is
+kept in the gateway's memory and settled by its next request (503 while the store
+stays unwritable); another process's unfinished resume whose owner is neither
+proved alive nor dead refuses with `flow.resume_owner_unknown`. A retry with the
+same operation ID returns the recorded operation before any scope revalidation,
+and a start or resume a later resume continued projects its own record only.
 
 To make owned flows resumable at all, owned flow starts now settle a proved-closed
 interrupted attempt as `flow.interrupted` (`StepInterrupted`, as checked CLI flows
