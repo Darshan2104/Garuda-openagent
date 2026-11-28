@@ -349,6 +349,14 @@ function operationSettledHtml(settled) {
   }).join("") + '</ul><p class="stat-sub">As this dashboard recorded it; it forgets these when it restarts.</p></div>';
 }
 
+/* The flow chip of an operation. A start a resume continued reports no flow state of its
+ * own (`flow_state: null`), but it was admitted (it has a session): it read "not admitted". */
+function operationFlowState(row) {
+  if (row.flow_state) return row.flow_state;
+  if (!row.session_id) return "not admitted";
+  return row.resumed_by ? "continued by its resume" : "unknown";
+}
+
 function starterOperationHtml(row, approvals, where, grace, timeout, settled) {
   var session = row.session_id && where !== "session" ?
     '<a class="btn" href="#/sessions/' + encodeURIComponent(row.session_id) + '">Open session details</a>' : '';
@@ -364,7 +372,7 @@ function starterOperationHtml(row, approvals, where, grace, timeout, settled) {
       "<code>" + esc(row.resumed_by) + "</code>" + (row.session_id ? "</a>" : "") + "; this start's own outcome is shown here.</p>" : "");
   return '<section class="card starter-operation-card"' + (resume ? ' data-kind="resume"' : "") + '><h3>' +
     (resume ? "Dashboard resume" : where === "session" ? "Dashboard operation" : "Starter operation") + '</h3>' + follow + '<p>' +
-    chip("operation", row.status || row.phase) + ' ' + chip("flow", row.flow_state || "not admitted") +
+    chip("operation", row.status || row.phase) + ' ' + chip("flow", operationFlowState(row)) +
     '</p><p class="stat-sub">Operation <code>' + esc(row.operation_id) + '</code>' +
     (row.session_id ? ' · session <code>' + esc(row.session_id) + '</code>' : '') +
     (row.background ? '. This run continues after the dashboard closes. Answer its durable requests in <a href="#/inbox">Approval inbox</a>.</p>' : keep) +
