@@ -41,11 +41,14 @@ def _records(store):
 WAIT_SEC = 15
 
 
-async def _parked(broker, timeout=WAIT_SEC):
+async def _parked(broker, timeout=WAIT_SEC, *, run=None):
+    """The first parked request; fails at once, with its outcome, if ``run`` ended first."""
     deadline = asyncio.get_running_loop().time() + timeout
     while asyncio.get_running_loop().time() < deadline:
         if broker.pending():
             return broker.pending()[0]
+        if run is not None and run.done():
+            raise AssertionError(f"the run ended before anything parked: {run!r}")
         await asyncio.sleep(0.01)
     raise AssertionError("nothing parked")
 
@@ -219,7 +222,9 @@ def native_factory(store, tmp_path):
         engine = engine or PermissionEngine(tool_rules={"write_file": "ask"})
         broker = install_session_broker(engine, store, session_id, external=True)
         agent = DefaultAgent()
-        config = AgentConfig(max_turns=5, enable_verifier=False)
+        # #893: no host probe. Its shell runs each runtime's `--version` (20 s cap) before the
+        # first model turn; on a loaded macOS runner that alone outlasted the 15 s park wait.
+        config = AgentConfig(max_turns=5, enable_verifier=False, bootstrap_environment=False)
         tools = tools_for_names(["read_file", "write_file", "bash", "task_complete"])
         calls = calls or [ToolCall(id="write", name="write_file", arguments={"path": "proof.txt", "content": "approved"})]
         model = ScriptModel([
@@ -248,7 +253,7 @@ async def test_native_permission_response_uses_the_request_lifecycle(store, tmp_
     runtime, engine, broker = native_factory(engine=delegated if answer == "child-ceiling" else None)
     await runtime.start(task="approval", session_id=SID)
     prompting = asyncio.create_task(runtime.prompt("write proof"))
-    request = await _parked(broker)
+    request = await _parked(broker, run=prompting)
     digest = request.digest
     if answer == "ceiling":
         engine._mode = "readonly"
@@ -279,7 +284,7 @@ async def test_native_unbound_and_foreign_answers_are_audited_without_settling_a
     runtime, _, broker = native_factory()
     await runtime.start(task="approval", session_id=SID)
     prompting = asyncio.create_task(runtime.prompt("write proof"))
-    request = await _parked(broker)
+    request = await _parked(broker, run=prompting)
     other, _, _ = native_factory("other")
     await other.start(task="foreign", session_id="other")
     with pytest.raises(RuntimeProtocolError):
@@ -320,7 +325,7 @@ async def test_acp_server_approve_binds_and_audits_the_native_request(store, nat
     _, broker = runtimes[0]
     prompting = asyncio.create_task(duplex.call("session/prompt", {"sessionId": sid,
                                     "prompt": [{"type": "text", "text": "write proof"}]}))
-    request = await _parked(broker)
+    request = await _parked(broker, run=prompting)
     if await _permission_request(duplex) is None:
         raise AssertionError("server did not request permission")
     with pytest.raises(AssertionError, match="cannot be bound"):
@@ -430,7 +435,7 @@ async def test_native_disconnect_settles_and_audits_the_waiting_request(store, n
     runtime, _, broker = native_factory()
     await runtime.start(task="approval", session_id=SID)
     prompting = asyncio.create_task(runtime.prompt("write proof"))
-    request = await _parked(broker)
+    request = await _parked(broker, run=prompting)
     await runtime.cancel(reason="client disconnected")
     with pytest.raises(RuntimeCancelledError):
         await asyncio.wait_for(prompting, 10)
@@ -473,7 +478,7 @@ async def test_an_answer_during_a_cancel_settles_the_ask_as_a_deny(store, tmp_pa
     runtime, _, broker = native_factory()
     await runtime.start(task="approval", session_id=SID)
     prompting = asyncio.create_task(runtime.prompt("write proof"))
-    request = await _parked(broker)
+    request = await _parked(broker, run=prompting)
     await runtime.cancel(reason="client cancel")
     await runtime.permission_response(approval_id=request.approval_id, allow=allow, digest="0" * 64)
     assert broker.pending() == []
