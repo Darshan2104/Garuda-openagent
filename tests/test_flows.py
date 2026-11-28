@@ -1149,8 +1149,10 @@ async def test_a_refusal_or_quota_wait_is_never_retried(repo, how):
     assert [launch.attempt for launch in fake.launches] == [1]
 
 
-@pytest.mark.parametrize("owner", ["require_owned", "quota_recovery"])
+@pytest.mark.parametrize("owner", ["require_owned", "verification_request", "quota_recovery"])
 async def test_retries_are_refused_where_every_attempt_is_accounted_for(repo, owner):
+    """A checked flow, an owned run parent and quota recovery refuse retries; a
+    dashboard-owned flow without checks runs them (tests/test_owned_retries.py)."""
     fake = Fake(repo, {})
     runner = _runner(repo, fake, config=RETRY_CONFIG)
     setattr(runner, owner, True if owner == "require_owned" else object())
